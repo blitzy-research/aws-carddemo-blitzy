@@ -16,11 +16,10 @@
  */
 package com.carddemo.config;
 
-import com.carddemo.api.AuthController;
-import com.carddemo.api.GlobalExceptionHandler;
-import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.domain.enums.UserType;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.carddemo.service.CredentialDigestService;
+import com.carddemo.util.ApiRoutePaths;
+import com.carddemo.util.RefusalBodyRenderer;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -73,168 +72,189 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * estate is served over HTTP, so this class is the whole of the route-to-role table and the only place
  * that decides what may be reached without a credential.
  *
- * <p><strong>The route-to-role table is the eighteen registered transaction definitions, and it is
- * complete on purpose.</strong> {@code app/csd/CARDDEMO.CSD} registers eighteen transaction definitions
- * and eighteen program definitions, and every transaction definition names exactly one program - a census
- * taken by extraction rather than by reading, because that file indents each definition by one column and
- * a search anchored at the start of a line silently finds none of them. {@link TransactionRoute} carries
- * one entry per registered transaction, each naming its four-character transaction identifier, the
- * eight-character program the definition binds it to, the line that definition begins on, and the
- * entitlement this module requires of a caller who reaches it. Nothing in that table is mutable, nothing
- * in it is assembled at run time, and the authorization rules below are derived from it rather than
- * restating it - so a reclassified entry changes what the chain answers, and cannot become a comment that
- * disagrees with the rule beside it.
+ * <h2>The route-to-role table</h2>
  *
- * <p><strong>Exactly five of the eighteen are administrative, and five is a fact about the estate rather
- * than a preference.</strong> They are the administrative menu and the four transactions that list, add,
- * update and delete a sign-on record. Every other transaction is reachable by any signed-on caller, which
- * is the estate's own arrangement: the sign-on program tests one condition and sends an administrator to
- * the administrative menu, and its alternative is unconditional. Gating a sixth would refuse a caller the
- * estate admits; leaving one of the five ungated would admit one it refuses. Both are behavioural
- * regressions, so the count is asserted rather than assumed.
+ * <p>{@code app/csd/CARDDEMO.CSD} registers eighteen transaction definitions, each naming exactly one
+ * program. {@link TransactionRoute} carries one entry per registered transaction - its four-character
+ * transaction identifier, the eight-character program bound to it, the line its definition begins on, and
+ * the entitlement this module requires of a caller who reaches it. The table is immutable, is not assembled
+ * at run time, and the authorization rules below are <em>derived</em> from it rather than restating it, so a
+ * reclassified entry changes what the chain answers instead of producing a comment that disagrees with the
+ * rule beside it.
  *
- * <p><strong>The eighteenth transaction is bound to a program that has no source member, and the table
- * keeps it.</strong> The developer transaction {@code CDV1}, defined at {@code app/csd/CARDDEMO.CSD}
- * L388, names a program definition for which no member exists anywhere in {@code app/cbl} - anomaly
- * register entry 3 of {@code docs/decision-log.md}, verified by looking. It was therefore never
- * dispatchable on the mainframe either. No target class is generated for that program, here or in any
- * other package, and no route constant names it; the navigation vocabulary accordingly derives seventeen
- * destinations from eighteen definitions. It still appears below, carrying the entitlement it would have
- * required and marked as having no implemented program, because an inventory that quietly drops its own
- * anomaly cannot be audited and cannot be reconciled against that seventeen.
+ * <p><strong>Exactly five of the eighteen are administrative</strong> - the administrative menu and the
+ * four transactions that list, add, update and delete a sign-on record. Every other transaction is
+ * reachable by any signed-on caller, which is the estate's own arrangement: the sign-on program tests one
+ * condition and sends an administrator to the administrative menu, and its alternative is unconditional.
+ * Gating a sixth would refuse a caller the estate admits; leaving one of the five ungated would admit one
+ * it refuses. Both are behavioural regressions, so the count is asserted rather than assumed.
  *
- * <p><strong>Least privilege is the default, and it is structural rather than stated.</strong> The last
- * rule is {@code anyRequest().authenticated()}, so a route that no rule below mentions requires a
- * credential. A new endpoint is therefore protected the moment it exists and becomes reachable only when
- * someone deliberately adds a rule for it. The opposite arrangement - a permissive default with denials
- * listed - fails silently every time a route is added and forgotten.
+ * <p><strong>The developer transaction {@code CDV1} is bound to a program that has no source member, and
+ * the table keeps it.</strong> Its definition at {@code app/csd/CARDDEMO.CSD} L388 names a program for
+ * which no member exists in {@code app/cbl} - anomaly register entry 3 of {@code docs/decision-log.md} -
+ * so it was never dispatchable on the mainframe either. No target class is generated for it and no route
+ * constant names it, which is why the navigation vocabulary derives seventeen destinations from eighteen
+ * definitions (DL-104). It still appears in the table, carrying the entitlement it would have required and
+ * marked as having no implemented program, because an inventory that drops its own anomaly cannot be
+ * reconciled against that seventeen.
+ *
+ * <h2>Least privilege, and the surfaces that are anonymous</h2>
+ *
+ * <p>The last rule is {@code anyRequest().authenticated()}, so a route no rule mentions requires a
+ * credential: a new endpoint is protected the moment it exists and becomes reachable only when someone
+ * deliberately adds a rule for it. Against that default, at most four kinds of surface are anonymous - two
+ * unconditionally and two only where a profile opens them:
+ * <p><strong>That default is sufficient for a screen transaction and was not sufficient for the one
+ * surface that is not one.</strong> The batch-control surface starts jobs, and a job is not a screen: one
+ * of the nine clears the transaction master as its second step. Requiring only a credential there meant
+ * any signed-on caller could invoke an irreversible operation that no legacy transaction exposed at all,
+ * because job submission was a facility outside the online system rather than a transaction within it.
+ * {@link #BATCH_CONTROL_PATH_PREFIX} therefore carries its own rule requiring the administrative
+ * authority, stated explicitly beside the rules derived from the table rather than added to the table -
+ * the table is the census of the eighteen definitions, and a nineteenth row for a surface with no legacy
+ * counterpart would make that census untrue. The distinction to hold on to is that the table is an
+ * inventory of what the estate defined, while the chain is the whole of what this module enforces, and
+ * the chain is therefore allowed one rule the inventory has no row for.
+ *
+ * <p><strong>Authenticated is not sufficient for every surface, and batch control is the case that proves
+ * it.</strong> The catch-all admits any caller holding a valid token, which is right for the twelve
+ * ordinary transactions and wrong for a surface that starts jobs. Launching the posting, accrual,
+ * consolidation, statement, report or backup job re-runs financial work across the whole estate, and in the
+ * estate that was job submission - a submitted job stream, never a dispatchable transaction, reachable only
+ * by whoever held submission rights. {@link #BATCH_CONTROL_PATH_PATTERN} therefore carries the
+ * administrative authority under a rule of its own, kept out of the transaction table below because batch
+ * control is not one of the eighteen definitions that table counts, and kept out from under
+ * {@link #ADMIN_PATH_PREFIX} because that prefix exists to carry five administrative transactions and would
+ * be the same misreport by a different route. One entitlement, two independently reviewable rules, and a
+ * census that stays honest.
  *
  * <p><strong>At most four kinds of surface are anonymous, two of them unconditionally and two only where
  * a profile opens them, and each is anonymous for a reason that can be checked against a sibling
  * file.</strong>
  * <ul>
  *   <li>The health probe, because {@code carddemo-java/Dockerfile} names it as the image
- *       {@code HEALTHCHECK} and Compose services wait on it. A container that cannot answer its own
- *       health check never becomes ready, so requiring a credential here would break orchestration
- *       rather than protect anything: the aggregate body is a status word, and the shared baseline
- *       closes component detail so that it stays one.</li>
+ *       {@code HEALTHCHECK} and Compose services wait on it. Requiring a credential would break
+ *       orchestration rather than protect anything: the aggregate body is a status word, and the shared
+ *       baseline closes component detail so that it stays one.</li>
  *   <li>The metrics scrape endpoint, <strong>and only where the running profile opens it.</strong> The
  *       permit is conditional on {@code carddemo.security.anonymous-metrics-scrape}, which the shared
  *       baseline and production leave closed and only the local and test overlays open - the same two
  *       overlays that relax transport, and for the same reason: their collector is
  *       {@code config/prometheus/prometheus.yml} running in the Compose stack on the same machine.
- *       Production leaves it closed because the exposition is not a status word. It carries per-endpoint
+ *       Production leaves it closed because the exposition is not a status word: it carries per-endpoint
  *       request counts and latency distributions, per-step batch record counts, data-source pool
- *       saturation and JVM internals, which between them let an unauthenticated network client profile
- *       transaction volume, infer business activity and time an attack against a deployment it has no
- *       credential for. The endpoint remains PUBLISHED in production - a collector that presents a
- *       bearer token still collects, so the performance gate is unaffected - and what closes is
+ *       saturation and JVM internals. The endpoint stays PUBLISHED in production - a collector that
+ *       presents a bearer token still collects, so the performance gate is unaffected - and what closes is
  *       collection by a client that presents nothing.</li>
  *   <li>The interface description, <strong>and only where the running profile publishes it.</strong> The
- *       permit is conditional on the same switch that decides whether the document is served at all, so
- *       a profile that does not publish it does not have an anonymous rule for it either. The shared
- *       baseline and production leave it unpublished; the local overlay publishes it.</li>
- *   <li>The sign-on route, because it is the route that issues tokens. A token-issuing route that
- *       required a token could never be reached, and no other route could ever be reached either. It is
- *       named by {@link #SIGN_ON_PATH} so that the exemption is a single reviewable rule rather than a
- *       pattern that happens to match.</li>
+ *       permit is conditional on the same switch that decides whether the document is served at all. The
+ *       shared baseline and production leave it unpublished; the local overlay publishes it.</li>
+ *   <li>The sign-on route, because it is the route that issues tokens: a token-issuing route that required
+ *       a token could never be reached, and no other route could be reached either. It is named by
+ *       {@link #SIGN_ON_PATH} so the exemption is a single reviewable rule rather than a pattern that
+ *       happens to match.</li>
  * </ul>
  *
  * <p><strong>Every other management endpoint requires a credential, including the ones only the local
- * overlay publishes.</strong> That overlay adds the environment, configuration-property, bean, migration,
- * request-mapping and logger endpoints, which between them describe the configuration, the wiring and
- * the schema history of the running system. The rule authenticating the management base path is placed
- * after the two permits and before the catch-all, so widening the published set in a profile can never
- * widen the anonymous set: a newly published endpoint is authenticated by that rule the moment it
- * appears, without this class being edited. There is no blanket permit for the management base path
- * anywhere.
+ * overlay publishes</strong> - the environment, configuration-property, bean, migration, request-mapping
+ * and logger endpoints, which describe the configuration, the wiring and the schema history of the running
+ * system. The rule authenticating the management base path is placed after the two permits and before the
+ * catch-all, so widening the published set in a profile can never widen the anonymous set: a newly
+ * published endpoint is authenticated by that rule the moment it appears. There is no blanket permit for
+ * the management base path anywhere.
  *
  * <p><strong>The framework's generated-user path is removed rather than left dormant.</strong> Declaring
- * an {@link AuthenticationManager} bean is what withdraws the auto-configured in-memory user, and with
- * it the generated password that would otherwise be written to the log at start-up. Form login and HTTP
- * basic are both disabled explicitly, so there is no interactive login page, no browser credential
- * prompt, and no second way to become authenticated besides presenting a token.
+ * an {@link AuthenticationManager} bean withdraws the auto-configured in-memory user, and with it the
+ * generated password that would otherwise be written to the log at start-up. Form login and HTTP basic are
+ * both disabled explicitly, so there is no interactive login page, no browser credential prompt, and no
+ * second way to become authenticated besides presenting a token.
  *
- * <p><strong>One deliberate behavioural change lives in this file, and it is labelled rather than
- * hidden.</strong> The sign-on record holds a credential field eight characters wide - the fourth field of
- * an exactly eighty-byte record laid out at {@code app/cpy/CSUSR01Y.cpy} L17-L23 as eight, twenty, twenty,
- * eight, one and twenty-three characters, whose key length and record width the provisioning job at
- * {@code app/jcl/DUSRSECJ.jcl} independently corroborates - and the sign-on program compares it against
- * the submission directly, as equal text, at {@code app/cbl/COSGN00C.cbl} L223. This module hashes
- * instead, through {@link #passwordEncoder()}, and the stored column is widened to hold a digest. That is
- * the single point in the migration where the requirement that no credential be hardcoded outranks
- * byte-for-byte faithfulness, because reproducing a cleartext comparison would satisfy parity and breach
- * the constraint in the same statement. It is recorded as a documented parity exception in
- * {@code docs/decision-log.md} rather than left to be discovered, and it is the only entry in this file
- * that is not pure faithfulness. No value carried by those provisioning records is restated anywhere in
- * this module - not in code, configuration, documentation, a log line or an assertion message.
+ * <h2>Credential storage: the migration's one documented parity exception</h2>
  *
- * <p><strong>Four behaviours of the sign-on program are contractual, and this chain is wired so that no
- * framework default can quietly replace them.</strong> Each is implemented in the authentication service;
- * what matters here is that nothing installed on this chain stands in front of it and answers first.
+ * <p>The sign-on record holds a credential field eight characters wide - the fourth field of the
+ * eighty-byte record at {@code app/cpy/CSUSR01Y.cpy} L17-L23 - and the sign-on program compares it against
+ * the submission directly, as equal text, at {@code app/cbl/COSGN00C.cbl} L223. This module hashes instead,
+ * through {@link #passwordEncoder()}, and the stored column is widened to hold a digest. That is the single
+ * point in the migration where the requirement that no credential be hardcoded outranks byte-for-byte
+ * faithfulness, because reproducing a cleartext comparison would satisfy parity and breach the constraint
+ * in the same statement; it is recorded as a documented parity exception in {@code docs/decision-log.md}.
+ * What this class guarantees is confined to what it controls: a credential is stored only as a digest,
+ * verification is a digest comparison rather than an equality test on cleartext, and neither this chain nor
+ * the encoder it publishes writes a submitted or stored credential to a log, a response or a refusal
+ * message.
+ *
+ * <h2>Four sign-on behaviours no framework default may replace</h2>
+ *
+ * <p>Each is implemented in the authentication service; what matters here is that nothing installed on
+ * this chain stands in front of it and answers first.
  * <ul>
  *   <li><em>Blank-field reporting is ordered, not aggregated.</em> The program evaluates the blank
  *       user-identifier condition at {@code app/cbl/COSGN00C.cbl} L120 before the blank-credential
  *       condition at L125, inside a construct that stops at the first condition that holds - so a
  *       submission with both fields blank reports the user-identifier message and only that one.
  *       Declarative constraint validation reports whatever it finds in whatever order it finds it, which
- *       is why the sign-on submission is screened by an ordered cascade in the service rather than by
- *       unordered constraints, and why nothing on this chain translates a constraint violation into an
- *       answer.</li>
+ *       is why the sign-on submission is screened by an ordered cascade in the service, and why nothing on
+ *       this chain translates a constraint violation into an answer.</li>
  *   <li><em>Both submitted values are folded to upper case unconditionally.</em> The program folds the
- *       identifier and the credential at L132-L136, positioned after the blank-field cascade and before
- *       the guard at L138 that skips verification when an error is already flagged - so the fold happens
- *       whether or not that flag is set. Verification therefore compares a folded submission against the
- *       stored digest, and the digests were produced from folded values. The fold is a fixed
- *       twenty-six-character substitution rather than a language-sensitive one, matching the substitution
- *       tables the estate uses for the same purpose elsewhere.</li>
- *   <li><em>The entitlement split has an unconditional alternative.</em> Across L230-L240 the program tests
- *       one condition at L230 - the one-character user-type field holding the administrative code declared
- *       at {@code app/cpy/COCOM01Y.cpy} L27, beside the standard code at L28 - and its alternative at L235
- *       is unconditional, with no third branch and no failure path for a code the estate does not declare.
- *       So the administrative authority is granted for that one code and the ordinary authority for
- *       everything else. {@link JwtTokenProvider#authorityOf(UserType)} is that mapping, and the filter
- *       below either establishes an identity or leaves the request unauthenticated for the rules to
- *       decide; neither ever fails on an unexpected code.</li>
+ *       identifier and the credential at L132-L136, before the guard at L138 that skips verification when
+ *       an error is already flagged - so the fold happens whether or not that flag is set. Verification
+ *       therefore compares a folded submission against a digest produced from a folded value. The fold is
+ *       a fixed twenty-six-character substitution rather than a language-sensitive one, matching the
+ *       substitution tables the estate uses elsewhere.</li>
+ *   <li><em>The entitlement split has an unconditional alternative.</em> Across L230-L240 the program
+ *       tests one condition at L230 - the one-character user-type field holding the administrative code
+ *       declared at {@code app/cpy/COCOM01Y.cpy} L27, beside the standard code at L28 - and its
+ *       alternative at L235 is unconditional, with no third branch and no failure path for an undeclared
+ *       code. {@link JwtTokenProvider#authorityOf(UserType)} is that mapping, and the filter below either
+ *       establishes an identity or leaves the request unauthenticated for the rules to decide; neither
+ *       ever fails on an unexpected code.</li>
  *   <li><em>A wrong credential is not the same outcome as an unknown user.</em> The program raises its
- *       general error flag for an unknown user at L248-L249 - the record-not-found response - and for an
- *       unclassified failure at L253-L254, and deliberately does not raise it for a credential that does
- *       not match at L242. Three outcomes, not two. The refusal shaping installed below distinguishes a
- *       request that established no identity from one whose identity does not entitle it, and carries the
- *       module's own summaries, so no framework authentication-failure text reaches a caller and collapses
- *       the distinction.</li>
+ *       general error flag for an unknown user at L248-L249 and for an unclassified failure at L253-L254,
+ *       and deliberately does not raise it for a credential that does not match at L242. Three outcomes,
+ *       not two. The refusal shaping installed below distinguishes a request that established no identity
+ *       from one whose identity does not entitle it, and carries the module's own summaries, so no
+ *       framework authentication-failure text reaches a caller and collapses the distinction.</li>
  * </ul>
  *
  * <p>The seven message texts those paths emit belong to the message catalogue service, which is their one
  * home; none is restated here.
  *
  * <p><strong>A refusal reads identically whether the filter chain or the dispatch decided it.</strong>
- * An authorization failure inside the dispatch is answered by
- * {@link GlobalExceptionHandler}; one decided here happens before any dispatch, so no exception handler
- * is consulted and the response would otherwise be the container's default error page. The entry point
- * and access-denied handler below therefore render the module's own
- * {@link ErrorResponse} and reuse
- * {@link GlobalExceptionHandler#AUTHENTICATION_REQUIRED_MESSAGE} and
- * {@link GlobalExceptionHandler#ACCESS_DENIED_MESSAGE} rather than literals of their own, so the two
+ * An authorization failure inside the dispatch is answered by the boundary's own failure handler; one
+ * decided here happens before any dispatch, so no exception handler is consulted and the response would
+ * otherwise be the container's default error page. The entry point and access-denied handler below
+ * therefore render the module's own error contract through the injected
+ * {@link RefusalBodyRenderer} - whose implementation the boundary supplies, because the shape is a
+ * transport type the boundary owns - and reuse
+ * {@link RefusalBodyRenderer#AUTHENTICATION_REQUIRED_MESSAGE} and
+ * {@link RefusalBodyRenderer#ACCESS_DENIED_MESSAGE} rather than literals of their own, so the two
  * boundaries cannot drift into disagreeing about the same condition.
  *
- * <p><strong>Cross-site request forgery protection is disabled, and that is a consequence of
- * statelessness rather than a relaxation of it.</strong> The attack it defends against requires the
- * browser to attach a credential to a request the user did not intend, which requires the credential to
- * be ambient - a session cookie. This module establishes no session, issues no cookie, and authenticates
- * only a token that a caller must place in a request header deliberately. A cross-site request carries no
- * such header, so there is no ambient authority for it to borrow. Session creation is set to stateless so
- * that this stays true rather than being true only by accident.
+ * <p>Cross-site request forgery protection is disabled as a consequence of statelessness rather than a
+ * relaxation of it. That attack requires the credential to be ambient - a session cookie. This module
+ * establishes no session, issues no cookie, and authenticates only a token a caller must place in a
+ * request header deliberately, so a cross-site request has no ambient authority to borrow. Session
+ * creation is set to stateless so that this stays true rather than being true by accident.
  *
- * <p><strong>Statelessness is what the estate's conversational re-arm becomes.</strong> Each online program
- * ended a turn by returning with its own transaction identifier and its communication area attached - the
- * sign-on program does it at {@code app/cbl/COSGN00C.cbl} L98-L102 - so the next keystroke resumed with the
- * previous turn's state already in hand. There are nineteen such re-arms across the seventeen online
- * programs and twenty-five program-to-program transfers between them. None of that survives here: the two
- * facts the communication area carried forward become claims in the token this chain verifies, screen state
- * becomes a transfer object the client echoes back, and the transfers become route values returned in
- * response bodies by the navigation service. Nothing is held between requests, which is why the session
- * policy below is stateless rather than merely unused.
+ * <p>Statelessness is what the estate's conversational re-arm becomes. Each online program ended a turn by
+ * returning with its own transaction identifier and its communication area attached - the sign-on program
+ * at {@code app/cbl/COSGN00C.cbl} L98-L102 - so the next keystroke resumed with the previous turn's state
+ * in hand. Here the two facts that area carried forward become claims in the token this chain verifies,
+ * screen state becomes a transfer object the client echoes back, and the program-to-program transfers
+ * become route values returned in response bodies by the navigation service. Nothing is held between
+ * requests.
+ *
+ * <p><strong>Statelessness is not the same as trusting a claim forever, and the difference is a second
+ * question this chain asks.</strong> Each of those terminal turns re-entered a transaction that read the
+ * credential master again, so an entitlement could not go stale - there was nothing carried to go stale. A
+ * signed claim is the opposite: it stays true to its signature after it has stopped being true about the
+ * record it describes. So a verified token establishes an identity here only while it still names the
+ * record it was minted from, which the token carries as a fingerprint and
+ * {@code JwtTokenProvider.namesCurrentState} recomputes on every request that presents a credential. An
+ * operator demoted, promoted, deleted, or given a new credential is refused on the next request rather
+ * than at the end of the token's lifetime. Nothing is stored to achieve it - no revocation list, no
+ * session table, no cache - so the chain stays stateless; what it does instead is read the record, which
+ * is what the estate did on every single turn.
  *
  * <p><strong>Transport security is a rule here, not a comment.</strong> When
  * {@code carddemo.security.require-https} is set, every request must arrive over a secure channel and an
@@ -242,21 +262,15 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * test overlays clear it, because both address containers over the loopback interface of one machine.
  * That setting had no consumer before this class existed, which is precisely why it is bound here.
  *
- * <p>No latency, time-out, capacity, heap, pool or availability figure appears anywhere in this class, and
- * none is implied by anything in it. Two kinds of number do appear and neither is a service level: the
- * password-hashing cost, which is a resistance factor, and the line at which each transaction definition
- * begins in the resource definition file, which is a citation anchor for the traceability matrix over a
- * tree that is held byte-identical.
+ * <p>No latency, time-out, capacity, heap, pool or availability figure appears anywhere in this class. Two
+ * kinds of number do appear and neither is a service level: the password-hashing cost, which is a
+ * resistance factor, and the line at which each transaction definition begins in the resource definition
+ * file, which is a citation anchor over a tree held byte-identical.
  *
- * <p>The rule ordering, the deliberate choice of path matcher, the withdrawal of the generated user, the
- * cross-site posture and the transport rule are each reasoned once in {@code docs/decision-log.md}
- * DL-096 and DL-098, including the guard that was removed after being proved unreachable. The signing
- * primitive this chain verifies with is reasoned in DL-097, and the agreement between the routes
- * permitted here and the security scheme the published interface description advertises is DL-099. The
- * dangling program definition the table below keeps is anomaly register entry 3, and the derivation of
- * seventeen navigable destinations from these eighteen registered definitions is DL-104. The credential
- * hashing this class publishes is the parity exception that log records against
- * {@code app/cbl/COSGN00C.cbl} L223.
+ * <p>The rule ordering, the choice of path matcher, the withdrawal of the generated user, the cross-site
+ * posture and the transport rule are each reasoned in {@code docs/decision-log.md} DL-096 and DL-098; the
+ * signing primitive this chain verifies with in DL-097; and the agreement between the routes permitted
+ * here and the security scheme the published interface description advertises in DL-099.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableWebSecurity
@@ -271,30 +285,99 @@ public class SecurityConfig {
      * exempts it name one authority: a controller mapped to some other path would be authenticated by the
      * catch-all rule and would fail closed, which is the safe direction for that mistake to fail in.</p>
      *
-     * <p>That authority is the controller's own constant, read here rather than restated. The direction is
-     * deliberate: configuration is permitted to depend on the boundary and the boundary is not permitted to
-     * depend on configuration, so the declaring site has to be the controller. This field remains published
+     * <p>That authority is the neutral route contract in the base layer, read here rather than restated.
+     * The direction is deliberate: neither the boundary nor this configuration may import the other, so
+     * the declaring site is the one package both are permitted to depend on. This field remains published
      * because the security rules and their tests are written in terms of it.</p>
      */
-    public static final String SIGN_ON_PATH = AuthController.SIGN_ON_PATH;
+    public static final String SIGN_ON_PATH = ApiRoutePaths.SIGN_ON_PATH;
 
     /**
      * Path prefix beneath which every administrator-only route lives.
      *
      * <p>The legacy resource definitions bind eighteen transactions to programs, and five of those are
      * administrative: the administrative menu, and the four user-maintenance transactions that list, add,
-     * update and delete a sign-on record. Rather than restate five route patterns that no controller has
-     * yet claimed, this module gives the administrative surface one prefix and gates the prefix, so a
-     * route added beneath it is administrator-only from the moment it exists. A route placed outside it
-     * is still authenticated by the catch-all rule, so the failure mode of forgetting the prefix is a
-     * route that admits any signed-on user rather than one that admits anybody - and the prefix is
-     * published here as the single authority a controller binds against.</p>
+     * update and delete a sign-on record. Rather than restate five route patterns, this module gives the
+     * administrative surface one prefix and gates the prefix, so a route added beneath it is
+     * administrator-only from the moment it exists. A route placed outside it is still authenticated by the
+     * catch-all rule, so the failure mode of forgetting the prefix is a route that admits any signed-on
+     * user rather than one that admits anybody - and the prefix is published here as the single authority a
+     * controller binds against.</p>
+     *
+     * <p>All five are claimed. {@code api.MenuController} maps the administrative menu at
+     * {@code /api/admin/menu} and {@code api.AdminUserController} maps the four sign-on-record operations
+     * beneath {@code /api/admin/users}, so every one of the five is inside this prefix and reached by the
+     * one rule below. Because the prefix and the mapping are written in different files, their agreement is
+     * asserted rather than assumed: {@code config.DeliveredRouteSecurityStateTest} classifies every
+     * delivered route against this prefix and requires the set of gated legacy transactions to equal
+     * exactly the five that {@code service.NavigationService} marks administrative - so an administrative
+     * operation mapped elsewhere, or an ordinary one nested in here, fails the build rather than silently
+     * changing who can reach it.</p>
      *
      * <p>All five administrative entries of {@link TransactionRoute} therefore name one enforcement
      * pattern, and the chain deduplicates them into the one rule below. That is the honest reading of the
      * arrangement: five transactions, one gate.</p>
      */
-    public static final String ADMIN_PATH_PREFIX = "/api/admin";
+    public static final String ADMIN_PATH_PREFIX = ApiRoutePaths.ADMIN_PATH_PREFIX;
+
+    /**
+     * Path prefix beneath which the operational batch-control surface lives, gated to the administrative
+     * authority.
+     *
+     * <p><strong>Why this is a second gate and not a nineteenth row of {@link TransactionRoute}.</strong>
+     * That table is an inventory of the eighteen transaction definitions the legacy resource file
+     * registers, and <em>not one of them starts a batch job</em> - a job was submitted from outside the
+     * online system entirely. Adding a row for a surface with no legacy counterpart would corrupt an
+     * audit whose entire value is that it matches the resource definition exactly. So the batch-control
+     * surface is classified here, beside the table rather than inside it, as what it is: an operational
+     * capability this migration had to invent because job submission had no screen.</p>
+     *
+     * <p><strong>Why administrative and not merely authenticated.</strong> Reaching this prefix starts a
+     * job, and the jobs are not read-only. One of them clears the transaction master outright as its
+     * second step, reproducing a legacy condition-code reset. On the mainframe the equivalent authority
+     * was the right to submit a job - a facility an ordinary terminal operator did not have and which no
+     * transaction exposed - so requiring the administrative authority here is the narrower reading of the
+     * estate, not a widened one. The alternative the chain would otherwise apply is its closing rule,
+     * which admits any signed-on caller; that is the correct default for a screen transaction and the
+     * wrong one for an irreversible operation.</p>
+     *
+     * <p>Gating the prefix rather than each operation means an operation added beneath it is
+     * administrator-only from the moment it exists. The value is read from the controller that claims the
+     * surface rather than written again here, exactly as {@link #SIGN_ON_PATH} is, so the rule and the
+     * mapping cannot name different addresses.</p>
+     */
+    public static final String BATCH_CONTROL_PATH_PREFIX = ApiRoutePaths.BATCH_CONTROL_PATH_PREFIX;
+
+    /** Compatibility name used by the published interface contract. */
+    public static final String BATCH_PATH_PREFIX = BATCH_CONTROL_PATH_PREFIX;
+
+    /**
+     * Path prefix of the batch control surface, which is administrator-only.
+     *
+     * <p><strong>This surface is not a migrated transaction, and that is precisely why it needs a rule of
+     * its own.</strong> The eighteen transaction definitions of {@code app/csd/CARDDEMO.CSD} bind no
+     * transaction to batch control: on the estate a batch member was submitted through the job entry
+     * system, which required an authority an ordinary terminal user did not hold and which the sign-on
+     * record's user type does not describe. This module publishes that control as REST, so the entitlement
+     * has to be stated here rather than read out of the resource definitions.</p>
+     *
+     * <p><strong>It is stated as administrator-only because of what the nine jobs do.</strong> They post
+     * the day's transactions, accrue interest, replace the transaction master's contents, and - in the
+     * backup job's second step - clear the master outright. Answering those to any caller that merely
+     * holds a token would let an ordinary sign-on record trigger work the estate never let a terminal user
+     * near. The rule therefore names {@link JwtTokenProvider#ADMIN_AUTHORITY}, the same authority the five
+     * administrative transactions require, and it covers the launch operation and the execution-status
+     * operation alike: the status body names jobs and executions, which is operational metadata about what
+     * the installation is running.</p>
+     *
+     * <p>The value is {@code api/BatchJobController}'s own published constant, read here rather than
+     * restated, in the direction {@link #SIGN_ON_PATH} establishes - configuration may depend on the
+     * boundary, and the boundary may not depend on configuration. It deliberately does <em>not</em> sit
+     * beneath {@link #ADMIN_PATH_PREFIX}: the administrative prefix stands for the five administrative
+     * <em>transactions</em> of the estate, and folding an operational surface that reproduces no
+     * transaction into that prefix would make the census of five unreadable.</p>
+     */
+    public static final String BATCH_OPERATIONS_PATH_PREFIX = ApiRoutePaths.BATCH_JOBS_PATH;
 
     /**
      * Pattern suffix matching a path and everything beneath it.
@@ -302,10 +385,46 @@ public class SecurityConfig {
      * <p>Named once so that a rule reads as a prefix plus its descendants rather than as a literal a
      * reader has to recognise.</p>
      */
-    private static final String ANY_DESCENDANT = "/**";
+    private static final String ANY_DESCENDANT = ApiRoutePaths.ANY_DESCENDANT;
 
     /**
-     * Cost factor for password hashing.
+     * The batch control surface and everything beneath it: administrator-only, by a rule of its own.
+     *
+     * <p><strong>Deliberately not a {@link TransactionRoute} entry, and deliberately not beneath
+     * {@link #ADMIN_PATH_PREFIX}.</strong> That table is the census of the eighteen transaction definitions
+     * the estate's resource definitions actually register, and starting a batch job is not one of them:
+     * batch work reached the estate through job submission, never through a transaction, so inventing a
+     * nineteenth entry would misreport the census that the same table's start-up log line publishes. Folding
+     * the path under the administrative prefix would be the same misreport by a different route, because
+     * that prefix exists to carry the five administrative transactions and its documentation says so.</p>
+     *
+     * <p>The entitlement is nevertheless identical - {@link JwtTokenProvider#ADMIN_AUTHORITY} - and for a
+     * stronger reason than the user-maintenance transactions have. Launching the posting, accrual,
+     * consolidation, statement, report or backup job re-runs financial work over the whole estate: it posts
+     * balances, accrues interest and writes generation datasets. In the estate that was a submitted job,
+     * which only whoever held submission rights could run. An ordinary signed-on cardholder identity must
+     * therefore not reach it, and without a rule naming this path the closing catch-all would admit exactly
+     * that - any caller holding any valid token.</p>
+     *
+     * <p>Read from the neutral route contract rather than restated, so the gate and the boundary that binds
+     * the path cannot drift apart, and published so the rule is assertable by a test that exercises a real
+     * response.</p>
+     */
+    public static final String BATCH_CONTROL_PATH_PATTERN =
+            ApiRoutePaths.BATCH_JOBS_PATH + ApiRoutePaths.ANY_DESCENDANT;
+
+    /**
+     * The one pattern the chain installs for the batch-control surface: the prefix and everything
+     * beneath it.
+     *
+     * <p>Assembled from the published prefix rather than written out, so the rule cannot name a different
+     * address from the constant a controller binds against.</p>
+     */
+    private static final String BATCH_CONTROL_PATTERN = BATCH_CONTROL_PATH_PREFIX + ANY_DESCENDANT;
+
+    /**
+     * Cost factor for password hashing, read from the service that owns the policy rather than
+     * declared here.
      *
      * <p>The legacy sign-on record held an eight-character cleartext password that the sign-on program
      * compared directly. This module stores a hash and compares through the encoder below, which is the
@@ -314,8 +433,18 @@ public class SecurityConfig {
      * doubles the work of both a legitimate verification and an attacker's guess - and it is above the
      * library's default because the value it protects is a credential. It is not a latency or throughput
      * figure and asserts no service level.</p>
+     *
+     * <p><strong>Why it is read and not written.</strong> The module has two live encoders: the bean
+     * published below, which the administrative user-maintenance path writes digests through, and the
+     * one inside {@link CredentialDigestService}, which is the declared authority for the stored form
+     * of a credential. Two encoders at two strengths is not a verification failure - a digest carries
+     * its own cost - it is a silent policy split in which the weaker of the two becomes the module's
+     * real strength. Restating the number here is exactly how that split happens, so the number has one
+     * home and this is a reference to it. The direction is the permitted one: configuration may depend
+     * on a service, and a service may never depend on configuration, which is why the constant lives
+     * in the service and not here.</p>
      */
-    private static final int PASSWORD_HASHING_STRENGTH = 12;
+    private static final int PASSWORD_HASHING_STRENGTH = CredentialDigestService.HASHING_STRENGTH;
 
     /** Credential scheme name a challenge names, and the prefix a presented credential carries. */
     private static final String BEARER_SCHEME = "Bearer";
@@ -330,7 +459,7 @@ public class SecurityConfig {
     private final JwtTokenProvider tokenProvider;
 
     /** Renders a refusal body in the module's own error shape. */
-    private final ObjectMapper objectMapper;
+    private final RefusalBodyRenderer refusalBodyRenderer;
 
     /** Whether every request must arrive over a secure channel. */
     private final boolean requireHttps;
@@ -359,8 +488,8 @@ public class SecurityConfig {
      * binding them means a path that moves in configuration moves in the authorization rules with it.</p>
      *
      * @param tokenProvider      verifier for presented bearer tokens
-     * @param objectMapper       renderer for the refusal body, so a filter-boundary refusal is shaped
-     *                           exactly like a dispatch-boundary one
+     * @param refusalBodyRenderer renderer for the refusal body, supplied by the boundary so a
+     *                           filter-boundary refusal is shaped exactly like a dispatch-boundary one
      * @param requireHttps       whether to require a secure channel; set by the shared baseline and
      *                           production, cleared by the local and test overlays
      * @param apiDocsPublished   whether the running profile serves the interface description, which is
@@ -376,7 +505,7 @@ public class SecurityConfig {
      */
     public SecurityConfig(
             final JwtTokenProvider tokenProvider,
-            final ObjectMapper objectMapper,
+            final RefusalBodyRenderer refusalBodyRenderer,
             @Value("${carddemo.security.require-https}") final boolean requireHttps,
             @Value("${springdoc.api-docs.enabled:false}") final boolean apiDocsPublished,
             @Value("${carddemo.security.anonymous-metrics-scrape}")
@@ -385,7 +514,8 @@ public class SecurityConfig {
             @Value("${management.endpoints.web.base-path:/actuator}") final String managementBasePath,
             @Value("${spring.mvc.servlet.path:/}") final String servletPath) {
         this.tokenProvider = Objects.requireNonNull(tokenProvider, "tokenProvider must not be null");
-        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        this.refusalBodyRenderer =
+                Objects.requireNonNull(refusalBodyRenderer, "refusalBodyRenderer must not be null");
         this.requireHttps = requireHttps;
         this.apiDocsPublished = apiDocsPublished;
         this.anonymousMetricsScrape = anonymousMetricsScrape;
@@ -434,8 +564,9 @@ public class SecurityConfig {
      * <p>Rule order is the contract. The permits come first and name individual surfaces; the rule
      * authenticating the management base path comes next, so it catches every management endpoint the two
      * permits did not name, including any a profile publishes later; the administrative prefix follows;
-     * and the catch-all closes the chain. Reordering these changes behaviour, so the order is asserted by
-     * tests that exercise real responses rather than inspect the configuration.</p>
+     * the batch-control prefix follows that; and the catch-all closes the chain. Reordering these changes
+     * behaviour, so the order is asserted by tests that exercise real responses rather than inspect the
+     * configuration.</p>
      *
      * <p><strong>The two business rules are read out of {@link TransactionRoute} rather than written
      * here.</strong> The anonymous permit exists because exactly one registered transaction is classified
@@ -444,6 +575,13 @@ public class SecurityConfig {
      * the twelve ordinary transactions and the one whose bound program has no source member - is answered
      * by the closing catch-all, which is why none of them needs a rule and why an unlisted route is
      * refused rather than admitted.</p>
+     *
+     * <p><strong>One rule is written here rather than read from the table, and that is the point of
+     * it.</strong> {@link #BATCH_CONTROL_PATH_PATTERN} gates the batch control surface behind the same
+     * administrative authority, because job submission was never a transaction in the estate and adding a
+     * nineteenth table entry would misreport the census the table exists to publish. The rule sits between
+     * the administrative loop and the catch-all: placed after, so it cannot shadow a narrower rule; placed
+     * before, so the catch-all cannot admit an ordinary signed-on identity to it.</p>
      *
      * @param http the chain builder supplied by the framework
      * @return the configured chain
@@ -460,6 +598,9 @@ public class SecurityConfig {
                 // A cross-site request cannot borrow authority that is never ambient: no session, no
                 // cookie, and a credential the caller must set as a header deliberately.
                 .csrf(AbstractHttpConfigurer::disable)
+                // WebMvcConfig supplies one exact-origin policy for /api/**. Enabling the security
+                // integration processes permitted preflights before bearer authentication.
+                .cors(Customizer.withDefaults())
                 // No interactive login page and no browser credential prompt. Presenting a token is the
                 // only way to become authenticated.
                 .formLogin(AbstractHttpConfigurer::disable)
@@ -492,6 +633,14 @@ public class SecurityConfig {
                     }
                     // Everything else under the management base path, named or not, needs a credential.
                     requests.requestMatchers(matcher(managementSubPaths)).authenticated();
+                    // The batch control surface, gated before the catch-all because the catch-all would
+                    // admit any signed-on caller. Both of its operations are covered - the launch and the
+                    // execution status - and so is anything added beneath the prefix later. See
+                    // BATCH_OPERATIONS_PATH_PREFIX for why this entitlement is stated here rather than read
+                    // out of the resource definitions.
+                    requests.requestMatchers(matcher(BATCH_OPERATIONS_PATH_PREFIX),
+                                    matcher(BATCH_OPERATIONS_PATH_PREFIX + ANY_DESCENDANT))
+                            .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     // The table's five administrative transactions share one prefix, so they yield one
                     // rule. A sixth classified administrative would be gated by it; one declassified
                     // would fall through to the catch-all and admit any signed-on caller.
@@ -500,6 +649,12 @@ public class SecurityConfig {
                         requests.requestMatchers(matcher(administrative))
                                 .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     }
+                    // Batch control carries the same authority by its own rule, because it is not one of
+                    // the eighteen registered transactions and must not be counted as one. Without this
+                    // rule the catch-all below would admit any signed-on caller to a surface that re-runs
+                    // posting, accrual and statement generation over the whole estate.
+                    requests.requestMatchers(matcher(BATCH_CONTROL_PATH_PATTERN))
+                            .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
                     requests.anyRequest().authenticated();
                 })
                 .exceptionHandling(handling -> handling
@@ -520,9 +675,13 @@ public class SecurityConfig {
 
         LOG.info("HTTP security configured: anonymous surfaces are the health probe{}{}, and the sign-on "
                         + "route; every other route requires a bearer token, the metrics scrape endpoint "
-                        + "included unless named here; secure channel required: {}",
+                        + "included unless named here; the administrative prefix {} and the batch-control "
+                        + "prefix {} additionally require the {} authority; secure channel required: {}",
                 this.anonymousMetricsScrape ? ", the metrics scrape endpoint" : "",
                 this.apiDocsPublished ? ", the interface description" : "",
+                ADMIN_PATH_PREFIX,
+                BATCH_CONTROL_PATH_PREFIX,
+                JwtTokenProvider.ADMIN_AUTHORITY,
                 this.requireHttps);
         // The census the rules were derived from, recorded once at start-up so that an operator reading a
         // log can reconcile the delivered gate against the resource definitions without reading this file.
@@ -568,6 +727,12 @@ public class SecurityConfig {
      * stores or compares a cleartext credential, and no value from the legacy sign-on records is restated
      * anywhere in it.</p>
      *
+     * <p>The strength this bean is built at is {@link CredentialDigestService#HASHING_STRENGTH}, read
+     * through {@link #PASSWORD_HASHING_STRENGTH}. That service is the module's declared authority for the
+     * stored form of a credential and holds the module's other encoder; both are built from that one
+     * constant, so the two cannot be at different strengths and the module has one hashing policy in
+     * fact and not only in intent.</p>
+     *
      * <p><strong>This is the migration's one documented parity exception.</strong> The sign-on program
      * compares a stored eight-character credential against the submission as equal text at
      * {@code app/cbl/COSGN00C.cbl} L223, over the record laid out at {@code app/cpy/CSUSR01Y.cpy} L17-L23.
@@ -600,7 +765,7 @@ public class SecurityConfig {
         return (request, response, authenticationException) -> {
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, BEARER_SCHEME);
             writeRefusal(response, HttpStatus.UNAUTHORIZED,
-                    GlobalExceptionHandler.AUTHENTICATION_REQUIRED_MESSAGE);
+                    RefusalBodyRenderer.AUTHENTICATION_REQUIRED_MESSAGE);
         };
     }
 
@@ -617,7 +782,7 @@ public class SecurityConfig {
     private AccessDeniedHandler forbiddenHandler() {
         return (request, response, accessDeniedException) ->
                 writeRefusal(response, HttpStatus.FORBIDDEN,
-                        GlobalExceptionHandler.ACCESS_DENIED_MESSAGE);
+                        RefusalBodyRenderer.ACCESS_DENIED_MESSAGE);
     }
 
     /**
@@ -641,7 +806,8 @@ public class SecurityConfig {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        this.objectMapper.writeValue(response.getOutputStream(), new ErrorResponse(message));
+        response.getOutputStream()
+                .write(this.refusalBodyRenderer.renderRefusal(message).getBytes(StandardCharsets.UTF_8));
     }
 
     /**
@@ -1083,12 +1249,23 @@ public class SecurityConfig {
      * Establishes an identity from a bearer credential, and never refuses on its own.
      *
      * <p>It runs once per request, ahead of the position an interactive login filter would occupy. When a
-     * bearer credential is present and verifies, the identity it names is established for the remainder of
-     * the request; in every other case - absent, malformed, wrongly signed, expired, issued elsewhere, or
-     * carrying a user type this estate does not define - the request simply continues unauthenticated and
-     * the authorization rules decide it. That division is deliberate: this filter's job is to establish
-     * what it can prove, and refusing is the chain's job, so there is exactly one place a refusal is
-     * shaped.</p>
+     * bearer credential is present, verifies, <em>and still names the record it was minted from</em>, the
+     * identity it names is established for the remainder of the request; in every other case - absent,
+     * malformed, wrongly signed, expired, issued elsewhere, carrying a user type this estate does not
+     * define, or naming a record that has since been deleted, demoted, promoted or had its credential
+     * set - the request simply continues unauthenticated and the authorization rules decide it. That
+     * division is deliberate: this filter's job is to establish what it can prove, and refusing is the
+     * chain's job, so there is exactly one place a refusal is shaped.</p>
+     *
+     * <p><strong>Verifying and establishing are two questions, and both are asked.</strong> A verified
+     * signature proves this module minted the token and that its window is open; it proves nothing about
+     * whether the two facts inside it are still true. Trusting the signature alone is what left a
+     * demotion, a deletion and a credential reset with no effect until the token expired, so
+     * {@code JwtTokenProvider.namesCurrentState} is consulted before an identity is established and a
+     * token that no longer describes its record establishes nothing. The cost is one keyed read of the
+     * credential master per authenticated request, which is the honest price of revoking at once with no
+     * session store to consult and nothing cached - and it is only paid when a bearer credential is
+     * actually presented.</p>
      *
      * <p>A fresh security context is created rather than the current one mutated, so nothing is carried
      * between requests by a context that outlived one. Nothing here logs the credential, any part of it,
@@ -1127,7 +1304,10 @@ public class SecurityConfig {
                 final String presented = header.substring(BEARER_PREFIX.length()).trim();
                 this.tokenProvider.verify(presented).ifPresent(verified -> {
                     final UserType userType = this.tokenProvider.userTypeOf(verified).orElse(null);
-                    if (userType != null) {
+                    // Both conditions, in this order: a token whose type cannot be read has an unknown
+                    // entitlement, and a token that no longer names its record has a revoked one. Neither
+                    // establishes anything, and the record is not read at all for the first.
+                    if (userType != null && this.tokenProvider.namesCurrentState(verified)) {
                         establish(verified.getSubject(), userType);
                     }
                 });

@@ -44,7 +44,11 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.AccountScanRepository;
+import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.CardCrossReferenceScanRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CardScanRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.AbendService;
@@ -95,7 +99,11 @@ final class CategoryBalanceReportJobConfigTest {
         final MeterRegistry meterRegistry = new SimpleMeterRegistry();
         final FileMaintenanceService fileMaintenanceService = new FileMaintenanceService(
                 mock(AccountRepository.class),
+                mock(AccountScanRepository.class),
                 mock(CardRepository.class),
+                mock(CardScanRepository.class),
+                mock(CardCrossReferenceRepository.class),
+                mock(CardCrossReferenceScanRepository.class),
                 mock(TransactionCategoryBalanceRepository.class),
                 mock(CustomerRepository.class),
                 new AbendService());
@@ -205,10 +213,12 @@ final class CategoryBalanceReportJobConfigTest {
         @DisplayName("each step bean is published under its own name")
         void eachStepIsPublishedUnderItsOwnName() {
             final CategoryBalanceReportJobConfig configuration = configuration();
+            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Step clear = configuration.categoryBalanceReportClearPriorReportStep();
-            final Step unload = configuration.categoryBalanceReportUnloadStep();
-            final Step sort = configuration.categoryBalanceReportSortAndReprojectStep();
+            final Step unload = configuration.categoryBalanceReportUnloadStep(stagingArea);
+            final Step sort =
+                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea);
 
             assertThat(clear.getName())
                     .isEqualTo(CategoryBalanceReportJobConfig.CLEAR_PRIOR_REPORT_STEP_NAME);
@@ -222,11 +232,12 @@ final class CategoryBalanceReportJobConfigTest {
                 + "so it holds no flow and therefore no failure-ending transition at all")
         void theJobIsPlainlySequential() {
             final CategoryBalanceReportJobConfig configuration = configuration();
+            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Job job = configuration.categoryBalanceReportJob(
                     configuration.categoryBalanceReportClearPriorReportStep(),
-                    configuration.categoryBalanceReportUnloadStep(),
-                    configuration.categoryBalanceReportSortAndReprojectStep());
+                    configuration.categoryBalanceReportUnloadStep(stagingArea),
+                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea));
 
             assertThat(job.getName()).isEqualTo(CategoryBalanceReportJobConfig.JOB_NAME);
             assertThat(job)
@@ -244,11 +255,12 @@ final class CategoryBalanceReportJobConfigTest {
                 + "parameters validator that would demand a parameter it never takes")
         void theJobCanBeAdvancedByNameWithoutParameters() {
             final CategoryBalanceReportJobConfig configuration = configuration();
+            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Job job = configuration.categoryBalanceReportJob(
                     configuration.categoryBalanceReportClearPriorReportStep(),
-                    configuration.categoryBalanceReportUnloadStep(),
-                    configuration.categoryBalanceReportSortAndReprojectStep());
+                    configuration.categoryBalanceReportUnloadStep(stagingArea),
+                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea));
 
             assertThat(job.getJobParametersIncrementer()).isNotNull();
             assertThat(job.getJobParametersValidator())
@@ -272,7 +284,11 @@ final class CategoryBalanceReportJobConfigTest {
                             mock(JobParametersIncrementer.class),
                             new FileMaintenanceService(
                                     mock(AccountRepository.class),
+                                    mock(AccountScanRepository.class),
                                     mock(CardRepository.class),
+                                    mock(CardScanRepository.class),
+                                    mock(CardCrossReferenceRepository.class),
+                                    mock(CardCrossReferenceScanRepository.class),
                                     mock(TransactionCategoryBalanceRepository.class),
                                     mock(CustomerRepository.class),
                                     new AbendService()),

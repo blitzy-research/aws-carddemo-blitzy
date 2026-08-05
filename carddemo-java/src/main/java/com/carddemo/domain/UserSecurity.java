@@ -58,14 +58,27 @@ import java.util.Objects;
  * wider than its legacy field - {@code customer.cust_ssn} and {@code customer.govt_issued_id} are
  * the other two, widened for protection at rest - and the only one widened for a credential.
  *
- * <p><strong>What this class stores, and what does not yet exist.</strong> This entity performs no
- * hashing, no verification and no comparison, and it is the width and the format of the column that
- * are fixed here - not the production or checking of the digest. Producing and checking a digest
- * belongs to {@code service.CredentialDigestService}, which is delivered: it wraps a BCrypt encoder,
- * exposes a verifying comparison, and refuses at the persistence boundary any value that is not
- * digest-shaped. <strong>What does not exist yet is the sign-on path that would call it</strong> - no
- * authentication service and no sign-on endpoint is delivered, so no request is authenticated against
- * this column. Decision log entry D-12 records that remaining gap.
+ * <p><strong>What this class stores, and what reads it.</strong> This entity performs no hashing, no
+ * verification and no comparison, and it is the width and the format of the column that are fixed here -
+ * not the production or checking of the digest. Producing and checking a digest belongs to
+ * {@code service.CredentialDigestService}, which wraps a BCrypt encoder at the module's single
+ * configured strength, exposes a verifying comparison, and refuses at the persistence boundary any value
+ * that is not digest-shaped.
+ *
+ * <p>The sign-on path that calls it is delivered. {@code service.AuthenticationService} reproduces the
+ * legacy sign-on transaction and verifies a presented credential against this column;
+ * {@code api.AuthController} maps the one route reachable without a credential;
+ * {@code service.SessionTokenIssuer} and {@code config.JwtTokenProvider} mint the bearer grant that
+ * carries the outcome. So requests are authenticated against this column, and this class's two standing
+ * obligations on whatever writes it - write only a digest, never store or compare a cleartext credential
+ * - are discharged by that service rather than merely stated here.
+ *
+ * <p>One consequence of this column belongs in this class's own description, because it is a property of
+ * the stored value rather than of the service. The digest is one of three fields whose bytes
+ * {@code service.SignOnStateService} folds into the fingerprint a bearer grant carries, so replacing the
+ * credential in this column revokes every session already issued to that identity at the next request
+ * rather than at the grant's expiry. Nothing about the mapping enforces that; the mapping simply makes it
+ * possible, by keeping the digest here and nowhere else.
  *
  * <p>Rows do exist in this table from the outset: {@code V4__seed_user_security.sql} sits flat beside
  * the other four migrations and seeds ten identities, every credential an independently salted
@@ -239,8 +252,17 @@ public class UserSecurity {
      *
      * <p>Named so that the column declaration and the persistence-time rule read the one figure rather
      * than two copies of it.
+     *
+     * <p><strong>Published, because the key width is part of this entity's external contract.</strong>
+     * Every caller that turns an operator-typed identifier into this record's key has to move it into
+     * exactly this many character positions first - the legacy screen item and the legacy record field
+     * are both {@code PIC X(08)}, so the terminal did that move and a REST caller has no terminal to do
+     * it. The services that authenticate, add, update and delete an identity therefore read this figure
+     * rather than each restating {@code 8}, which is what keeps the one width in one place. The
+     * transformation itself belongs to the utility layer, not here: an entity states its layout and does
+     * not perform screen-field arithmetic.
      */
-    static final int SEC_USR_ID_WIDTH = 8;
+    public static final int SEC_USR_ID_WIDTH = 8;
 
     /**
      * Exact character length of a BCrypt digest: a seven-character prefix of the form

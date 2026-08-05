@@ -16,6 +16,10 @@
  */
 package com.carddemo.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
@@ -23,7 +27,9 @@ import com.carddemo.repository.UserSecurityRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -31,6 +37,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -95,6 +104,13 @@ class AuthenticationServiceTest {
     /** Subject under test. */
     private AuthenticationService subject;
 
+    /** Captures this service's diagnostics so identifiers and failure text can be checked. */
+    private ListAppender<ILoggingEvent> logCapture;
+
+    private Logger serviceLogger;
+
+    private Level previousLogLevel;
+
     /** Assembles the service over a mocked repository and otherwise real collaborators. */
     @BeforeEach
     void setUp() {
@@ -102,6 +118,20 @@ class AuthenticationServiceTest {
         credentialDigestService = new CredentialDigestService();
         subject = new AuthenticationService(repository, credentialDigestService,
                 new NavigationService(), new MessageCatalogService(), FIXED_CLOCK);
+
+        serviceLogger = (Logger) LoggerFactory.getLogger(AuthenticationService.class);
+        previousLogLevel = serviceLogger.getLevel();
+        serviceLogger.setLevel(Level.TRACE);
+        logCapture = new ListAppender<>();
+        logCapture.start();
+        serviceLogger.addAppender(logCapture);
+    }
+
+    @AfterEach
+    void detachLogCapture() {
+        serviceLogger.detachAppender(logCapture);
+        serviceLogger.setLevel(previousLogLevel);
+        logCapture.stop();
     }
 
     /**
@@ -114,6 +144,39 @@ class AuthenticationServiceTest {
     private UserSecurity storedRecord(final String userId, final String typeCode) {
         return new UserSecurity(userId, "Test", "Operator",
                 credentialDigestService.encode(SEEDED_SECRET), typeCode);
+    }
+
+    private List<String> loggedMessages() {
+        return logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+    }
+
+    @Test
+    @DisplayName("a rejected identifier is omitted from the fixed outcome diagnostic")
+    void rejectedIdentifierIsRedacted() {
+        when(repository.findById(ORDINARY_USER_ID)).thenReturn(Optional.empty());
+
+        subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET);
+
+        assertThat(loggedMessages())
+                .contains("Sign-on rejected: rule=identifier-not-on-file")
+                .noneMatch(message -> message.contains(ORDINARY_USER_ID));
+    }
+
+    @Test
+    @DisplayName("credential-store exception messages and their embedded values never reach the log")
+    void credentialStoreFailureTextIsWithheld() {
+        final String sensitiveFailureText =
+                "lookup failed for " + ORDINARY_USER_ID + " at jdbc:private";
+        when(repository.findById(ORDINARY_USER_ID))
+                .thenThrow(new DataAccessResourceFailureException(sensitiveFailureText));
+
+        subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET);
+
+        assertThat(loggedMessages())
+                .anyMatch(message -> message.contains(
+                        "failureChain=DataAccessResourceFailureException"))
+                .noneMatch(message -> message.contains(sensitiveFailureText))
+                .noneMatch(message -> message.contains(ORDINARY_USER_ID));
     }
 
     // ------------------------------------------------------------------------------------------
@@ -138,6 +201,7 @@ class AuthenticationServiceTest {
             assertThat(screen.decision()).isEqualTo(AuthenticationService.Decision.ADMITTED);
             assertThat(screen.userId()).isEqualTo(ADMIN_USER_ID);
             assertThat(screen.userType()).isEqualTo(UserType.ADMIN);
+            assertThat(screen.userTypeCode()).isEqualTo("A");
         }
 
         @Test
@@ -164,6 +228,112 @@ class AuthenticationServiceTest {
                     .isEqualTo(AuthenticationService.Decision.PASSWORD_MISSING);
 
             verify(repository, never()).findById(any());
+        }
+
+        @Test
+        @DisplayName("a short identifier is moved into the record's own eight-position key before the "
+                + "lookup, so it finds the row a terminal would have found")
+        void aShortIdentifierIsWidenedToTheRecordKey() {
+            final String storedKey = "USER1   ";
+            when(repository.findById(storedKey))
+                    .thenReturn(Optional.of(storedRecord(storedKey, "U")));
+
+            final AuthenticationService.SignOnScreen screen = subject.signOn("user1", SEEDED_SECRET);
+
+            // The screen item and the record field are both PIC X(08), so a terminal delivered eight
+            // positions whatever the operator typed. A REST caller delivers five, and against a
+            // variable-length key column five characters are a different key: without the move this
+            // reads as identifier-not-on-file for a credential that exists.
+            verify(repository).findById(storedKey);
+            assertThat(screen.decision()).isEqualTo(AuthenticationService.Decision.ADMITTED);
+            assertThat(screen.userType()).isEqualTo(UserType.USER);
+        }
+
+        @Test
+        @DisplayName("the raw short identifier is never used as the key, which is what the defect was")
+        void theRawShortIdentifierIsNotUsedAsTheKey() {
+            when(repository.findById(any())).thenReturn(Optional.empty());
+
+            subject.signOn("user1", SEEDED_SECRET);
+
+            verify(repository, never()).findById("USER1");
+            verify(repository, never()).findById("user1");
+            verify(repository).findById("USER1   ");
+        }
+
+        @Test
+        @DisplayName("an identifier already at the key width is passed through unchanged, so the move "
+                + "adds nothing on the ordinary path")
+        void anExactWidthIdentifierIsUnchanged() {
+            when(repository.findById(ORDINARY_USER_ID))
+                    .thenReturn(Optional.of(storedRecord(ORDINARY_USER_ID, "U")));
+
+            assertThat(subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET).decision())
+                    .isEqualTo(AuthenticationService.Decision.ADMITTED);
+
+            verify(repository).findById(ORDINARY_USER_ID);
+        }
+
+        @Test
+        @DisplayName("the fold precedes the move, so a short lower-case entry is both folded and "
+                + "widened in the source's order")
+        void theFoldPrecedesTheMove() {
+            final String storedKey = "AD1     ";
+            when(repository.findById(storedKey))
+                    .thenReturn(Optional.of(storedRecord(storedKey, "A")));
+
+            assertThat(subject.signOn("ad1", SEEDED_SECRET).decision())
+                    .isEqualTo(AuthenticationService.Decision.ADMITTED);
+
+            // Folding after the move would produce the same string here, but folding a value that has
+            // already been space-filled is not what the program does and would break the moment a
+            // width-changing fold were ever introduced; asserting the key proves the composition.
+            verify(repository).findById(storedKey);
+        }
+    }
+
+    @Nested
+    @DisplayName("sign-on diagnostics carry fixed outcomes and no operator identifier")
+    class SignOnDiagnostics {
+
+        @Test
+        @DisplayName("not-found, unusable, wrong-secret and admitted logs contain no raw identifier")
+        void everyCredentialOutcomeLogOmitsTheIdentifier() {
+            when(repository.findById(ADMIN_USER_ID))
+                    .thenReturn(Optional.empty())
+                    .thenReturn(Optional.of(storedRecord(ADMIN_USER_ID, "Z")))
+                    .thenReturn(Optional.of(storedRecord(ADMIN_USER_ID, "A")))
+                    .thenReturn(Optional.of(storedRecord(ADMIN_USER_ID, "A")));
+
+            final Logger logger = (Logger) LoggerFactory.getLogger(AuthenticationService.class);
+            final Level previousLevel = logger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            logger.setLevel(Level.INFO);
+            logger.addAppender(recorder);
+            try {
+                subject.signOn(ADMIN_USER_ID, SEEDED_SECRET);
+                subject.signOn(ADMIN_USER_ID, SEEDED_SECRET);
+                subject.signOn(ADMIN_USER_ID, "WRONGONE");
+                subject.signOn(ADMIN_USER_ID, SEEDED_SECRET);
+            } finally {
+                logger.detachAppender(recorder);
+                logger.setLevel(previousLevel);
+                recorder.stop();
+            }
+
+            final List<String> messages = recorder.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+            assertThat(messages)
+                    .contains(
+                            "Sign-on rejected: rule=identifier-not-on-file",
+                            "Sign-on rejected: rule=secret-does-not-match")
+                    .filteredOn(message -> message.startsWith(
+                            "Sign-on admitted: outcome=admitted"))
+                    .hasSize(2);
+            assertThat(messages).allSatisfy(message -> assertThat(message)
+                    .doesNotContain(ADMIN_USER_ID, "userId=", "\n", "\r"));
         }
     }
 
@@ -253,26 +423,32 @@ class AuthenticationServiceTest {
         }
 
         @Test
-        @DisplayName("the not-found and unclassifiable outcomes both raise the flag and both return the "
-                + "cursor to the identifier")
-        void theRecordLevelRejectionsRaiseTheFlag() {
+        @DisplayName("the not-found response raises the flag and returns the cursor to the identifier")
+        void theNotFoundResponseRaisesTheFlag() {
             when(repository.findById(ORDINARY_USER_ID)).thenReturn(Optional.empty());
             final AuthenticationService.SignOnScreen notFound =
                     subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET);
-
-            when(repository.findById(ADMIN_USER_ID))
-                    .thenReturn(Optional.of(storedRecord(ADMIN_USER_ID, "Z")));
-            final AuthenticationService.SignOnScreen unclassifiable =
-                    subject.signOn(ADMIN_USER_ID, SEEDED_SECRET);
 
             assertThat(notFound.decision()).isEqualTo(AuthenticationService.Decision.USER_NOT_FOUND);
             assertThat(notFound.errorFlag()).isTrue();
             assertThat(notFound.focusScreenFieldId())
                     .isEqualTo(AuthenticationService.FIELD_USER_ID);
-            assertThat(unclassifiable.decision())
+        }
+
+        @Test
+        @DisplayName("a credential-store failure becomes the source catch-all screen outside the failed "
+                + "repository transaction")
+        void aCredentialStoreFailureBecomesUnableToVerify() {
+            when(repository.findById(ORDINARY_USER_ID))
+                    .thenThrow(new DataAccessResourceFailureException("credential store unavailable"));
+
+            final AuthenticationService.SignOnScreen unable =
+                    subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET);
+
+            assertThat(unable.decision())
                     .isEqualTo(AuthenticationService.Decision.UNABLE_TO_VERIFY);
-            assertThat(unclassifiable.errorFlag()).isTrue();
-            assertThat(unclassifiable.focusScreenFieldId())
+            assertThat(unable.errorFlag()).isTrue();
+            assertThat(unable.focusScreenFieldId())
                     .isEqualTo(AuthenticationService.FIELD_USER_ID);
         }
     }
@@ -296,14 +472,47 @@ class AuthenticationServiceTest {
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"", " ", "        ", "\t"})
-        @DisplayName("an empty and an all-blank entry are the same state as an absent one, because a "
+        @ValueSource(strings = {"", " ", "        "})
+        @DisplayName("an empty and an all-space entry are the same state as an absent one, because a "
                 + "fixed-width field the operator left alone arrives as spaces")
-        void blankIsTheSameStateAsAbsent(final String blank) {
-            assertThat(subject.signOn(blank, SEEDED_SECRET).decision())
+        void spacesAreTheSameStateAsAbsent(final String spaces) {
+            assertThat(subject.signOn(spaces, SEEDED_SECRET).decision())
                     .isEqualTo(AuthenticationService.Decision.USER_ID_MISSING);
-            assertThat(subject.signOn(ADMIN_USER_ID, blank).decision())
+            assertThat(subject.signOn(ADMIN_USER_ID, spaces).decision())
                     .isEqualTo(AuthenticationService.Decision.PASSWORD_MISSING);
+        }
+
+        @Test
+        @DisplayName("an all-low-values item is blank, while a mixture of spaces and low values is a "
+                + "supplied field because neither exact comparison holds")
+        void lowValuesAreComparedExactly() {
+            final String lowValues = String.valueOf('\0').repeat(8);
+            final String mixed = new String(new char[] {' ', '\0'});
+            final String widenedMixed = mixed + " ".repeat(6);
+            when(repository.findById(widenedMixed)).thenReturn(Optional.empty());
+
+            assertThat(subject.signOn(lowValues, SEEDED_SECRET).decision())
+                    .isEqualTo(AuthenticationService.Decision.USER_ID_MISSING);
+            assertThat(subject.signOn(ADMIN_USER_ID, lowValues).decision())
+                    .isEqualTo(AuthenticationService.Decision.PASSWORD_MISSING);
+            assertThat(subject.signOn(mixed, SEEDED_SECRET).decision())
+                    .isEqualTo(AuthenticationService.Decision.USER_NOT_FOUND);
+            verify(repository).findById(widenedMixed);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"\t", "\n", "\u2003"})
+        @DisplayName("tabs, line separators and Unicode spaces are supplied characters rather than COBOL "
+                + "spaces, so they never take a missing-field arm")
+        void javaWhitespaceIsNotCobolSpaces(final String whitespace) {
+            when(repository.findById(whitespace)).thenReturn(Optional.empty());
+            when(repository.findById(ADMIN_USER_ID))
+                    .thenReturn(Optional.of(storedRecord(ADMIN_USER_ID, "A")));
+
+            assertThat(subject.signOn(whitespace, SEEDED_SECRET).decision())
+                    .isEqualTo(AuthenticationService.Decision.USER_NOT_FOUND);
+            assertThat(subject.signOn(ADMIN_USER_ID, whitespace).decision())
+                    .isEqualTo(AuthenticationService.Decision.WRONG_PASSWORD);
         }
 
         @Test
@@ -328,6 +537,20 @@ class AuthenticationServiceTest {
     class TheRoleSplitAndTheKeyDispatch {
 
         @Test
+        @DisplayName("a zero-length first entry returns the blank screen with USERID focused before any "
+                + "attention key is evaluated")
+        void firstEntryPrecedesKeyEvaluation() {
+            final AuthenticationService.SignOnScreen screen = subject.initialEntry();
+
+            assertThat(screen.decision()).isEqualTo(AuthenticationService.Decision.INITIAL_ENTRY);
+            assertThat(screen.errorFlag()).isFalse();
+            assertThat(screen.focusScreenFieldId()).isEqualTo(AuthenticationService.FIELD_USER_ID);
+            assertThat(screen.userId()).isNull();
+            assertThat(screen.route()).isNull();
+            verify(repository, never()).findById(any());
+        }
+
+        @Test
         @DisplayName("an administrator is routed to the administrative menu and an ordinary operator to "
                 + "the main menu, which is the whole of the program's role split")
         void theRoleSplitSendsEachTypeToItsOwnMenu() {
@@ -340,6 +563,23 @@ class AuthenticationServiceTest {
                     .isEqualTo(NavigationService.Route.ADMIN_MENU);
             assertThat(subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET).route())
                     .isEqualTo(NavigationService.Route.USER_MENU);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"Z", "a", " ", "0"})
+        @DisplayName("every raw type code other than A is admitted with standard authority and routed to "
+                + "the main menu while the raw code remains available to the response")
+        void everyUndeclaredTypeUsesTheUnconditionalUserBranch(final String rawCode) {
+            when(repository.findById(ORDINARY_USER_ID))
+                    .thenReturn(Optional.of(storedRecord(ORDINARY_USER_ID, rawCode)));
+
+            final AuthenticationService.SignOnScreen screen =
+                    subject.signOn(ORDINARY_USER_ID, SEEDED_SECRET);
+
+            assertThat(screen.decision()).isEqualTo(AuthenticationService.Decision.ADMITTED);
+            assertThat(screen.userType()).isEqualTo(UserType.USER);
+            assertThat(screen.userTypeCode()).isEqualTo(rawCode);
+            assertThat(screen.route()).isEqualTo(NavigationService.Route.USER_MENU);
         }
 
         @Test
@@ -383,6 +623,7 @@ class AuthenticationServiceTest {
 
             for (final AuthenticationService.SignOnScreen screen : java.util.List.of(
                     subject.signOn(ADMIN_USER_ID, SEEDED_SECRET),
+                    subject.initialEntry(),
                     subject.signOn(null, null),
                     subject.handle(KeyAction.PFK03, null, null),
                     subject.handle(KeyAction.PFK09, null, null))) {
@@ -402,6 +643,7 @@ class AuthenticationServiceTest {
 
             for (final AuthenticationService.SignOnScreen screen : java.util.List.of(
                     subject.signOn(null, null),
+                    subject.initialEntry(),
                     subject.signOn(ORDINARY_USER_ID, null),
                     subject.signOn(ORDINARY_USER_ID, "WRONGONE"),
                     subject.handle(KeyAction.PFK03, null, null),
@@ -409,6 +651,7 @@ class AuthenticationServiceTest {
                 assertThat(screen.decision().isAdmitted()).isFalse();
                 assertThat(screen.userId()).isNull();
                 assertThat(screen.userType()).isNull();
+                assertThat(screen.userTypeCode()).isNull();
                 assertThat(screen.route()).isNull();
             }
         }
@@ -421,48 +664,52 @@ class AuthenticationServiceTest {
                     .as("a turn that did not admit must name nothing")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
                             AuthenticationService.Decision.WRONG_PASSWORD, ADMIN_USER_ID, UserType.ADMIN,
-                            NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
+                            "A", NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must name the operator")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, null, UserType.ADMIN,
+                            AuthenticationService.Decision.ADMITTED, null, UserType.ADMIN, "A",
                             NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must nominate a destination")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, UserType.ADMIN,
+                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, UserType.ADMIN, "A",
                             null, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must name the resolved role")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, null,
+                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, null, "A",
                             NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("a decision is always required")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            null, null, null, null, false, null, null, null, null, null));
+                            null, null, null, null, null, false, null, null, null, null, null));
         }
 
         @Test
         @DisplayName("a refused turn is rejected for naming any one of the three on its own, not only for "
                 + "naming all three, so no partial leak of an unverified identity is representable")
         void aRefusedTurnIsRejectedForNamingAnyOneOfTheThree() {
-            // The check is a disjunction, so a test that only ever supplies all three would leave two of
-            // its arms unexercised and a later edit could drop one without failing anything.
+            // The check is a disjunction, so each identity component is exercised independently.
             assertThatIllegalArgumentException()
                     .as("an operator alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
                             AuthenticationService.Decision.USER_NOT_FOUND, ADMIN_USER_ID, null, null,
-                            true, null, null, null, null, null));
+                            null, true, null, null, null, null, null));
             assertThatIllegalArgumentException()
                     .as("a role alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
                             AuthenticationService.Decision.USER_NOT_FOUND, null, UserType.ADMIN, null,
+                            null, true, null, null, null, null, null));
+            assertThatIllegalArgumentException()
+                    .as("a raw role code alone")
+                    .isThrownBy(() -> new AuthenticationService.SignOnScreen(
+                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, "A", null,
                             true, null, null, null, null, null));
             assertThatIllegalArgumentException()
                     .as("a destination alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.USER_NOT_FOUND, null, null,
+                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, null,
                             NavigationService.Route.USER_MENU, true, null, null, null, null, null));
         }
 
@@ -503,6 +750,22 @@ class AuthenticationServiceTest {
             assertThatNullPointerException().isThrownBy(() -> new AuthenticationService(
                     repository, credentialDigestService, new NavigationService(),
                     new MessageCatalogService(), null));
+        }
+
+        @Test
+        @DisplayName("the screen entry points are non-transactional and the service is final, so a caught "
+                + "repository failure is translated only after the repository proxy has completed rollback")
+        void storeFailuresAreCaughtOutsideAnyServiceTransaction() throws NoSuchMethodException {
+            assertThat(java.lang.reflect.Modifier.isFinal(
+                    AuthenticationService.class.getModifiers())).isTrue();
+            assertThat(AuthenticationService.class.getMethod("initialEntry")
+                    .getAnnotation(Transactional.class)).isNull();
+            assertThat(AuthenticationService.class.getMethod(
+                    "handle", KeyAction.class, String.class, String.class)
+                    .getAnnotation(Transactional.class)).isNull();
+            assertThat(AuthenticationService.class.getMethod(
+                    "signOn", String.class, String.class)
+                    .getAnnotation(Transactional.class)).isNull();
         }
 
         @Test

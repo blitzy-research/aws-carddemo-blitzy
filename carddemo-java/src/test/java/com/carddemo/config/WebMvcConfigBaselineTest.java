@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -31,19 +32,16 @@ import org.springframework.web.ErrorResponse;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.HandlerMethodReturnValueHandler;
 import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * Verifies that {@link WebMvcConfig} contributes an empty web-tier configuration.
+ * Verifies that {@link WebMvcConfig} preserves MVC defaults around its explicit security boundaries.
  *
- * <p>This class exists to hold a seam open, not to change anything. The legacy presentation layer was a CICS
- * 3270 contract expressed as 17 BMS mapsets, and the migration exposes it as REST endpoints consumed by
- * tests rather than by a browser - so there is deliberately no view resolver to register, no static resource
- * handler to mount, no CORS policy to declare and no custom message converter to install. Every one of those
- * would be a change to an external interface contract, which the migration's preservation boundary forbids.
- * The correct configuration is therefore the empty one, and the value of asserting it is that an empty
- * configuration and a missing configuration look identical from the outside: this test distinguishes them,
- * and will fail the moment a customisation is added here without a corresponding decision behind it.</p>
+ * <p>The legacy presentation layer was a CICS 3270 contract and supplies no browser origin. The migrated
+ * API therefore ships an explicit empty exact-origin list, while still registering no view resolver,
+ * static resource handler, custom message converter, argument resolver or return-value handler.</p>
  *
  * <p>The verification is behavioural rather than structural. Rather than inspecting the class for the absence
  * of overrides - which would require introspection the module forbids - each contribution point that can be
@@ -57,7 +55,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.</p>
  */
-@DisplayName("WebMvcConfig - an intentionally empty web-tier contribution")
+@DisplayName("WebMvcConfig - defaults preserved around explicit web boundaries")
 final class WebMvcConfigBaselineTest {
 
     /** The configuration under test. */
@@ -73,8 +71,7 @@ final class WebMvcConfigBaselineTest {
     class Construction {
 
         @Test
-        @DisplayName("the configuration constructs without any collaborator, because it has nothing to "
-                + "inject and nothing to initialise")
+        @DisplayName("direct construction chooses the secure deny-all and 64 KiB posture")
         void theConfigurationConstructsWithoutAnyCollaborator() {
             assertThatCode(WebMvcConfig::new).doesNotThrowAnyException();
         }
@@ -90,6 +87,31 @@ final class WebMvcConfigBaselineTest {
         @DisplayName("two configurations are independent objects carrying no state between them")
         void twoConfigurationsAreIndependentObjects() {
             assertThat(new WebMvcConfig()).isNotSameAs(new WebMvcConfig());
+        }
+    }
+
+    @Nested
+    @DisplayName("The shipped CORS posture")
+    class CorsPosture {
+
+        @Test
+        @DisplayName("one API mapping is registered and its exact-origin list is empty")
+        void oneDenyAllApiMappingIsRegistered() {
+            ExposedCorsRegistry registry = new ExposedCorsRegistry();
+
+            config.addCorsMappings(registry);
+
+            assertThat(registry.configurations()).containsOnlyKeys(WebMvcConfig.API_PATH_PATTERN);
+            assertThat(registry.configurations().get(WebMvcConfig.API_PATH_PATTERN)
+                    .getAllowedOrigins()).isEmpty();
+        }
+    }
+
+    /** Registry seam exposing the policy MVC would install. */
+    private static final class ExposedCorsRegistry extends CorsRegistry {
+
+        private Map<String, CorsConfiguration> configurations() {
+            return getCorsConfigurations();
         }
     }
 

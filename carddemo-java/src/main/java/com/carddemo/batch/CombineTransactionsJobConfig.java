@@ -18,8 +18,23 @@ package com.carddemo.batch;
 
 import com.carddemo.batch.step.CombineTransactionsProcessor;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.BatchJobCatalog;
+import com.carddemo.util.ExternalStringSorter;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.StagedResourceNames;
+import com.carddemo.util.TransactionRecordMapper;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -40,15 +55,16 @@ import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
-import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemStreamException;
 import org.springframework.batch.item.ItemStreamReader;
+import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -107,9 +123,21 @@ import org.springframework.transaction.PlatformTransactionManager;
  * five generations and with roll-off scratching the generation that falls out. Retention is
  * <strong>not</strong> implemented here: a generation group's depth is a property of the environment
  * that provisions the storage, and a job that enforced its own retention would apply a second,
- * competing policy. Every resource this job reads is resolved from configuration by its logical
- * parameter name - see {@link #BACKUP_INPUT_LOCATION} and {@link #SYNTHESIZED_INPUT_LOCATION} - and
- * <strong>no filesystem path is written anywhere in this file</strong>.
+ * competing policy. Every resource this job reads is resolved from this deployment's own configuration by
+ * its logical property name - see {@link #BACKUP_RESOURCE_PROPERTY} and
+ * {@link #SYNTHESIZED_RESOURCE_PROPERTY} - and <strong>no filesystem path is written anywhere in this
+ * file</strong>.
+ *
+ * <p><strong>Neither input location is a job parameter, and that is a faithfulness requirement before it
+ * is a security one.</strong> The legacy member declares both inputs inside itself, as two fixed dataset
+ * names on two data-definition statements; whoever submitted the job named neither, and the submission
+ * carried no location of any kind. Binding them from configuration reproduces exactly that division: the
+ * environment that provisions the storage names the storage, and a launch says only which job to run. It
+ * closes a hazard in the same stroke - a location that arrives with a request and is handed to a resource
+ * loader is a read the server performs on the caller's behalf against whatever that loader understands, so
+ * a job launch would otherwise double as a general read facility over the server's filesystem, classpath
+ * and network position. With the locations bound from configuration there is no scheme to filter and no
+ * path to bound, because no untrusted value reaches the loader at all.
  *
  * <p>The combined generation itself is an <strong>in-job artefact</strong>. An executed search of the
  * whole legacy tree finds it named twice, both times inside this one member: minted as a new
@@ -258,8 +286,13 @@ public final class CombineTransactionsJobConfig {
      * symbolically rather than repeat a literal. The legacy member's own name is not reused as the
      * registered name; it is available from {@link CombineTransactionsProcessor#LEGACY_JOB} for
      * traceability, which keeps one origin identifier in one place.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = "combineTransactionsJob";
+    public static final String JOB_NAME = BatchJobCatalog.COMBINE_TRANSACTIONS_JOB_NAME;
 
     /**
      * Name of the ordering step, which replaces the legacy external-sort step {@code STEP05R}.
@@ -279,25 +312,67 @@ public final class CombineTransactionsJobConfig {
     public static final String LOAD_STEP_NAME = "combineTransactionsLoadStep";
 
     /**
-     * Job-parameter key naming the location of the <strong>first</strong> concatenated input: the
-     * transaction backup dataset at its current generation.
+     * Configuration prefix under which this job's two staged input generations are named.
      *
-     * <p>A location is supplied per execution rather than compiled in, so that the same job serves
-     * every environment and no filesystem path is written into this module. The value is handed to the
-     * application's resource loader, so any location form that loader understands is accepted.
+     * <p><strong>Configuration, deliberately, and not a job parameter.</strong> The legacy job member
+     * declares both inputs inside itself, as two fixed dataset names on two data-definition statements;
+     * neither was ever supplied by whoever submitted the job, and the submission carried no location of
+     * any kind. Resolving them from the deployment's own configuration reproduces that: the environment
+     * that provisions the storage names the storage, and a caller launching the job cannot name anything.
+     *
+     * <p>That is also the only arrangement that is safe. A location that arrives from a caller and is
+     * handed to a resource loader is a request the server performs on the caller's behalf against
+     * whatever the loader understands - a URL, a file path, a classpath entry - which turns a job launch
+     * into a general read facility over the server's network position and filesystem. Reading the two
+     * locations from configuration removes the caller from the decision entirely, so there is no scheme
+     * to filter and no path to bound: no untrusted value reaches the loader at all.
+     */
+    public static final String RESOURCE_PROPERTY_PREFIX = "carddemo.batch.combine-transactions.";
+
+    /**
+     * Property naming the location of the <strong>first</strong> concatenated input: the transaction
+     * backup dataset at its current generation.
+     *
+     * <p>Configured per environment rather than compiled in, so that the same job serves every
+     * deployment and no filesystem path is written into this module.
      *
      * <p>This is the stream whose records precede the other's wherever two identifiers are equal.
      */
-    public static final String BACKUP_INPUT_LOCATION = "transactionBackupCurrentGeneration";
+    public static final String BACKUP_RESOURCE_PROPERTY =
+            RESOURCE_PROPERTY_PREFIX + "transaction-backup";
 
     /**
-     * Job-parameter key naming the location of the <strong>second</strong> concatenated input: the
+     * Property naming the location of the <strong>second</strong> concatenated input: the
      * synthesized-transaction dataset at its current generation.
      *
      * <p>The interest-accrual job mints a new generation of this dataset; this job reads it at its
      * current generation, never at a new one.
      */
-    public static final String SYNTHESIZED_INPUT_LOCATION = "synthesizedTransactionCurrentGeneration";
+    public static final String SYNTHESIZED_RESOURCE_PROPERTY =
+            RESOURCE_PROPERTY_PREFIX + "synthesized-transaction";
+
+    /**
+     * Typed-launch compatibility name for the first configured input. The controller may expose this
+     * name while the deployed location remains server-owned.
+     */
+    public static final String BACKUP_INPUT_NAME = "transactionBackupCurrentGeneration";
+
+    /** Typed-launch compatibility name for the second configured input. */
+    public static final String SYNTHESIZED_INPUT_NAME = "synthesizedTransactionCurrentGeneration";
+
+    /** Prefix of the per-execution combined object staged for downstream inspection or reuse. */
+    private static final String COMBINED_OBJECT_KEY_PREFIX = JOB_NAME + "/combined/";
+
+    /**
+     * Property naming the one directory a supplied location may name a relative name beneath.
+     *
+     * <p>The local half of the staged-input allow-list, and the same key shape the other staged-dataset
+     * jobs of this package use for their own staging directory. Published so that a deployment, a test and
+     * a diagnostic all spell it once. It defaults to the platform's temporary location, so no configuration
+     * document has to name it for the job to be launchable.
+     */
+    public static final String STAGING_DIRECTORY_PROPERTY =
+            "carddemo.batch.combine-transactions.staging-directory";
 
     /**
      * Human-readable label for the first concatenated stream, used only in diagnostics.
@@ -362,13 +437,34 @@ public final class CombineTransactionsJobConfig {
     private final FixedWidthFlatFileReaderFactory readerFactory;
 
     /**
-     * Turns a logical location supplied as a job parameter into a readable resource.
+     * Turns a configured logical location into a readable resource.
      *
      * <p>Injected rather than reached for statically, so that the location form is the application
      * context's decision and so that a test can supply its own loader. This is the only mechanism by
      * which this job locates an input, which is what keeps every path out of this file.
+     *
+     * <p>Every location it is ever given comes from this deployment's own configuration. No value that
+     * arrived with a request reaches it, which is what stops a job launch from becoming a read of
+     * whatever a caller can name.
      */
     private final ResourceLoader resourceLoader;
+
+    /** Shared object-store boundary used for staged inputs and the combined output generation. */
+    private final BatchStagingArea stagingArea;
+
+    /** Local staging root used when a configured logical name is not present in object storage. */
+    private final Path stagingDirectory;
+
+    /**
+     * Configured location of the first concatenated input, exactly as the deployment named it.
+     *
+     * <p>Held rather than resolved at construction, because the resource is opened once per step
+     * execution and a resolved handle held across executions would outlive the storage it names.
+     */
+    private final String backupLocation;
+
+    /** Configured location of the second concatenated input, exactly as the deployment named it. */
+    private final String synthesizedLocation;
 
     /**
      * The transaction master this job loads into.
@@ -382,30 +478,54 @@ public final class CombineTransactionsJobConfig {
     /**
      * Creates the configuration.
      *
-     * <p>Constructor injection only, and every field final: the three collaborators are the whole of
+     * <p>Constructor injection only, and every field final: these collaborators are the whole of
      * what this configuration holds, and holding them immutably is what makes the configuration safe
      * to share and impossible to re-point at run time. The job repository, the transaction manager
      * and the framework listeners this job attaches are taken as bean-method arguments rather than
      * fields, because they belong to individual bean definitions rather than to the configuration as
      * a whole.
      *
+     * <p>Both input locations arrive here, from configuration, at construction. That placement is the
+     * point: they are properties of the deployment rather than of an execution, so they are bound once
+     * when the context is built and no per-execution value can replace them.
+     *
      * @param  readerFactory         builds readers over the transaction master layout; must not be
      *                               {@code null}
      * @param  resourceLoader        resolves a job parameter's logical location into a readable
      *                               resource; must not be {@code null}
+     * @param  stagingArea           shared object-store staging boundary; must not be {@code null}
      * @param  transactionRepository the transaction master the load step writes through; must not be
      *                               {@code null}
+     * @param  stagingDirectory      local root for deployment-owned logical input names
+     * @param  backupLocation        configured location of the transaction backup current generation,
+     *                               blank when the deployment has staged none
+     * @param  synthesizedLocation   configured location of the synthesized-transaction current
+     *                               generation, blank when the deployment has staged none
      * @throws NullPointerException  if any argument is {@code null}
      */
     public CombineTransactionsJobConfig(final FixedWidthFlatFileReaderFactory readerFactory,
             final ResourceLoader resourceLoader,
-            final TransactionRepository transactionRepository) {
+            final BatchStagingArea stagingArea,
+            final TransactionRepository transactionRepository,
+            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}")
+                    final String stagingDirectory,
+            @Value("${" + BACKUP_RESOURCE_PROPERTY + ":}") final String backupLocation,
+            @Value("${" + SYNTHESIZED_RESOURCE_PROPERTY + ":}") final String synthesizedLocation) {
         this.readerFactory = Objects.requireNonNull(readerFactory,
                 "readerFactory must not be null");
         this.resourceLoader = Objects.requireNonNull(resourceLoader,
                 "resourceLoader must not be null");
+        this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
         this.transactionRepository = Objects.requireNonNull(transactionRepository,
                 "transactionRepository must not be null");
+        this.stagingDirectory = Path.of(requireConfiguredValue(
+                stagingDirectory, STAGING_DIRECTORY_PROPERTY)).toAbsolutePath().normalize();
+        this.backupLocation = Objects.requireNonNull(backupLocation,
+                "backupLocation must not be null");
+        this.synthesizedLocation = Objects.requireNonNull(synthesizedLocation,
+                "synthesizedLocation must not be null");
     }
 
     // ------------------------------------------------------------------------------------------
@@ -449,27 +569,24 @@ public final class CombineTransactionsJobConfig {
      * is proxied through that interface, so no subclass of an implementation type is generated - which
      * keeps this path clear of the class generation the module's reflection budget rules out.
      *
-     * <p>Both locations arrive as job parameters and neither may be absent: a missing or blank location
-     * is diagnosed and refused rather than resolved to some default, because a job that quietly read
-     * one input instead of two would produce a plausible combined stream missing half its records.
+     * <p><strong>Both locations come from this deployment's configuration, and neither may be blank.</strong>
+     * They are not job parameters and cannot be supplied with a launch: the legacy member declared both
+     * inputs inside itself and the submission named neither, so a caller has nothing to say about where
+     * this job reads. An unconfigured location is diagnosed and refused rather than resolved to some
+     * default, because a job that quietly read one input instead of two would produce a plausible combined
+     * stream missing half its records.
      *
-     * @param  backupLocation       location of the transaction backup current generation, the first of
-     *                              the two concatenated inputs
-     * @param  synthesizedLocation  location of the synthesized-transaction current generation, the
-     *                              second of the two
      * @return a reader over both inputs in the legacy concatenation order, ordered by the identifier,
      *         never {@code null}
-     * @throws IllegalArgumentException if either location is absent or blank
+     * @throws IllegalStateException if either location is unconfigured or blank
      */
     @Bean
     @StepScope
-    public ItemStreamReader<Transaction> combineTransactionsOrderedReader(
-            @Value("#{jobParameters['" + BACKUP_INPUT_LOCATION + "']}") final String backupLocation,
-            @Value("#{jobParameters['" + SYNTHESIZED_INPUT_LOCATION + "']}")
-                    final String synthesizedLocation) {
+    public ItemStreamReader<Transaction> combineTransactionsOrderedReader() {
         return new ConcatenatedOrderingReader(readerFactory,
-                resolveInput(backupLocation, BACKUP_INPUT_LOCATION, BACKUP_STREAM),
-                resolveInput(synthesizedLocation, SYNTHESIZED_INPUT_LOCATION, SYNTHESIZED_STREAM));
+                resolveInput(this.backupLocation, BACKUP_RESOURCE_PROPERTY, BACKUP_STREAM),
+                resolveInput(this.synthesizedLocation, SYNTHESIZED_RESOURCE_PROPERTY,
+                        SYNTHESIZED_STREAM));
     }
 
     /**
@@ -487,26 +604,34 @@ public final class CombineTransactionsJobConfig {
      * dataset served both legacy steps. Reading begins at the first record written, so the load step
      * sees the ordering the first step established, in that order, once each.
      *
+     * @param jobExecutionId the execution whose object key must be distinct
      * @return the per-execution combined generation, never {@code null}
      */
     @Bean
     @JobScope
-    public CombinedGeneration combineTransactionsCombinedGeneration() {
-        return new InMemoryCombinedGeneration();
+    public CombinedGeneration combineTransactionsCombinedGeneration(
+            @Value("#{jobExecution.id}") final Long jobExecutionId) {
+        final long identifier = Objects.requireNonNull(jobExecutionId,
+                "the framework must assign a job execution identifier before creating the generation")
+                .longValue();
+        return new InMemoryCombinedGeneration(this.stagingArea,
+                COMBINED_OBJECT_KEY_PREFIX + identifier);
     }
 
     /**
-     * Publishes the load step's writer, which saves each record into the transaction master.
+     * Publishes the load step's writer, which inserts each record into the transaction master.
      *
      * <p><strong>This is the whole of what replaced the legacy copy utility.</strong> It writes rows
      * through the repository - no process is launched, no command is composed, no external tool is
      * addressed and no statement text is assembled, so there is no dynamic query and nothing to
-     * concatenate. The repository's own save is the mechanism, which is why no method name is handed to
-     * a framework to resolve on this path.
+     * concatenate. A keyed-file duplicate fails the legacy load rather than replacing the row already
+     * present, so the assigned-key entity goes through the insert-only repository fragment and is
+     * flushed before that call returns. Spring Data merge semantics are deliberately not used.
      *
      * <p>The writer is stateless and therefore an ordinary singleton: it holds no accumulated records,
      * no counter and no position, and it takes each group exactly as the step hands it over, in the
-     * order the reader produced it. An empty group is a no-operation rather than an empty save.
+     * order the reader produced it. The step's record-at-a-time boundary makes each flushed insert one
+     * unit of work. An empty group is a no-operation rather than an empty insert.
      *
      * @return the writer that loads the combined stream into the transaction master, never
      *         {@code null}
@@ -515,9 +640,8 @@ public final class CombineTransactionsJobConfig {
     public ItemWriter<Transaction> combineTransactionsMasterWriter() {
         return (final Chunk<? extends Transaction> loaded) -> {
             Objects.requireNonNull(loaded, "loaded must not be null");
-            final List<? extends Transaction> records = loaded.getItems();
-            if (!records.isEmpty()) {
-                transactionRepository.saveAll(records);
+            for (final Transaction record : loaded.getItems()) {
+                transactionRepository.insertAndFlush(record);
             }
         };
     }
@@ -616,6 +740,14 @@ public final class CombineTransactionsJobConfig {
      * with the same cards. The boundary listener emits the job-level start and end diagnostics, so the
      * two step-level lines this class emits sit inside a job-level frame.
      *
+     * <p><strong>A parameter validator is attached, and this job is the reason the staged-input contract
+     * exists.</strong> Its two parameters are locations, and a location is afterwards handed to a resource
+     * resolver, so it is the one kind of launch parameter that decides what the process reads rather than
+     * merely what it computes with. The rule is the allow-list owned by {@link JobParameterValidators},
+     * built from the configured staging bucket and {@value #STAGING_DIRECTORY_PROPERTY}, so a launch naming
+     * anything else is refused as an invalid parameter set before any step opens anything - and refused
+     * again at resolution, because a boundary that can be reached around is not a boundary.
+     *
      * <p>Nothing launches this job automatically. It is registered under {@value #JOB_NAME} and
      * launched on demand; it is not chained to another job and no aggregate job exists that would run
      * it as part of a wider pipeline.
@@ -663,34 +795,75 @@ public final class CombineTransactionsJobConfig {
     }
 
     /**
-     * Turns a job parameter's logical location into a readable resource, refusing an absent one.
+     * Turns a configured logical location into a readable resource, refusing an unconfigured one.
      *
      * <p>The diagnostic precedes the refusal, which is the ordering the batch tier uses throughout. The
-     * refusal itself is a caller error rather than a stream failure - a job was submitted without one
-     * of the two inputs it needs - so it is reported as an illegal argument and not dressed as an
-     * input/output fault.
+     * refusal itself is a deployment error rather than a stream failure - this environment has not named
+     * one of the two inputs the job needs - so it is reported as an illegal state and not dressed as an
+     * input/output fault. It is deliberately not a caller error either, because a caller has no say in
+     * these locations and reporting one would misattribute the fault.
      *
-     * <p>No default is substituted and no location is composed. A job that resolved a missing parameter
-     * to some conventional path would read whatever happened to be there, and a combine job that read
-     * one input instead of two produces a perfectly well-formed result that is missing half its
-     * records.
+     * <p>No default is substituted and no location is composed. A job that resolved a missing property to
+     * some conventional path would read whatever happened to be there, and a combine job that read one
+     * input instead of two produces a perfectly well-formed result that is missing half its records.
      *
-     * @param  location     the location the job parameter carried, possibly {@code null}
-     * @param  parameterKey the parameter key, named in both the diagnostic and the refusal
+     * @param  location     the configured location, possibly blank
+     * @param  propertyName the property that names it, reported in both the diagnostic and the refusal
      * @param  streamName   the stream the location was expected to name
      * @return the resolved resource, never {@code null}
-     * @throws IllegalArgumentException if {@code location} is {@code null} or blank
+     * @throws IllegalStateException if {@code location} is blank
      */
-    private Resource resolveInput(final String location, final String parameterKey,
+    private Resource resolveInput(final String location, final String propertyName,
             final String streamName) {
-        if (location == null || location.isBlank()) {
-            LOGGER.error("{} {}: job parameter {} named no location for the {}, so the input cannot be"
+        if (location.isBlank()) {
+            LOGGER.error("{} {}: property {} names no location for the {}, so the input cannot be"
                             + " resolved", CombineTransactionsProcessor.LEGACY_JOB,
-                    CombineTransactionsProcessor.LEGACY_SORT_STEP, parameterKey, streamName);
-            throw new IllegalArgumentException("job parameter " + parameterKey
+                    CombineTransactionsProcessor.LEGACY_SORT_STEP, propertyName, streamName);
+            throw new IllegalStateException("property " + propertyName
                     + " must name the " + streamName + ", and no default may be substituted for it");
         }
-        return resourceLoader.getResource(location);
+        final String normalized = location.strip();
+        if (this.stagingArea.holds(normalized)) {
+            return this.stagingArea.stagedInput(normalized);
+        }
+        if (isSimpleLocation(normalized)) {
+            final String logicalName =
+                    StagedResourceNames.requireSimpleName(normalized, propertyName);
+            final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
+            if (Files.exists(localCandidate)) {
+                return new FileSystemResource(localCandidate);
+            }
+        }
+        return resourceLoader.getResource(normalized);
+    }
+
+    /**
+     * Reports whether a configured location is one logical file name rather than a resource URI or
+     * path. Logical names may fall back to the configured local staging root; explicit resource
+     * locations continue through the application resource loader unchanged.
+     *
+     * @param location normalized configured location
+     * @return {@code true} only for a single path segment with no URI scheme
+     */
+    private static boolean isSimpleLocation(final String location) {
+        return location.indexOf(':') < 0
+                && location.indexOf('/') < 0
+                && location.indexOf('\\') < 0;
+    }
+
+    /**
+     * Requires one non-blank configured value.
+     *
+     * @param value configured value
+     * @param propertyName property reported by a refusal
+     * @return the stripped value
+     */
+    private static String requireConfiguredValue(final String value, final String propertyName) {
+        final String required = Objects.requireNonNull(value, propertyName + " must not be null");
+        if (required.isBlank()) {
+            throw new IllegalArgumentException(propertyName + " must not be blank");
+        }
+        return required.strip();
     }
 
     // ------------------------------------------------------------------------------------------
@@ -712,7 +885,15 @@ public final class CombineTransactionsJobConfig {
      *
      * @since 1.0.0
      */
-    public interface CombinedGeneration extends ItemReader<Transaction>, ItemWriter<Transaction> {
+    public interface CombinedGeneration
+            extends ItemStreamReader<Transaction>, ItemStreamWriter<Transaction> {
+
+        /**
+         * Renders the complete ordered generation at the fixed-width dataset boundary.
+         *
+         * @return the generation bytes, including record separators
+         */
+        byte[] content();
     }
 
     /**
@@ -731,11 +912,20 @@ public final class CombineTransactionsJobConfig {
      */
     private static final class InMemoryCombinedGeneration implements CombinedGeneration {
 
+        /** Shared staging boundary that publishes the completed generation. */
+        private final BatchStagingArea stagingArea;
+
+        /** Per-execution object key under which the generation is published. */
+        private final String objectKey;
+
         /** The records of this execution's combined generation, in the order they were written. */
         private final List<Transaction> records = new ArrayList<>();
 
         /** How many records have already been served to the load step. */
         private int served;
+
+        /** Whether the ordering step has already published this generation. */
+        private boolean published;
 
         /**
          * Creates an empty combined generation.
@@ -744,8 +934,18 @@ public final class CombineTransactionsJobConfig {
          * artefact begins empty because the legacy generation began empty, and every record it holds
          * arrives through the ordering step rather than through construction.
          */
-        InMemoryCombinedGeneration() {
-            // Intentionally empty: both fields carry their initial state from their declarations.
+        InMemoryCombinedGeneration(final BatchStagingArea stagingArea, final String objectKey) {
+            this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
+            this.objectKey = Objects.requireNonNull(objectKey, "objectKey must not be null");
+        }
+
+        @Override
+        public void open(final ExecutionContext executionContext) {
+            Objects.requireNonNull(executionContext, "executionContext must not be null");
+            if (!this.published) {
+                this.records.clear();
+            }
+            this.served = 0;
         }
 
         /**
@@ -760,6 +960,16 @@ public final class CombineTransactionsJobConfig {
         public void write(final Chunk<? extends Transaction> loaded) {
             Objects.requireNonNull(loaded, "loaded must not be null");
             records.addAll(loaded.getItems());
+        }
+
+        @Override
+        public byte[] content() {
+            final ByteArrayOutputStream rendered = new ByteArrayOutputStream();
+            for (final Transaction record : this.records) {
+                rendered.writeBytes(TransactionRecordMapper.toRecordBytes(record));
+                rendered.write('\n');
+            }
+            return rendered.toByteArray();
         }
 
         /**
@@ -779,6 +989,14 @@ public final class CombineTransactionsJobConfig {
             final Transaction next = records.get(served);
             served++;
             return next;
+        }
+
+        @Override
+        public void close() {
+            if (!this.published) {
+                this.stagingArea.publish(this.objectKey, content());
+                this.published = true;
+            }
         }
     }
 
@@ -822,11 +1040,17 @@ public final class CombineTransactionsJobConfig {
         /** The second concatenated input: the synthesized transactions at their current generation. */
         private final Resource synthesizedCurrentGeneration;
 
-        /** Every record of both inputs, ordered once the stream has been opened. */
-        private final List<Transaction> ordered = new ArrayList<>();
+        /** Disk-backed ordered stream served after both inputs have been externally sorted. */
+        private Path orderedFile;
 
-        /** How many ordered records have already been served. */
-        private int served;
+        /** Reader over the completed ordered stream. */
+        private BufferedReader orderedReader;
+
+        /** Records contributed by the backup input. */
+        private int fromBackup;
+
+        /** Records contributed by the synthesized input. */
+        private int fromSynthesized;
 
         /**
          * Creates the reader over the two inputs, in the order they must be read.
@@ -857,17 +1081,36 @@ public final class CombineTransactionsJobConfig {
         @Override
         public void open(final ExecutionContext executionContext) {
             Objects.requireNonNull(executionContext, "executionContext must not be null");
-            ordered.clear();
-            served = 0;
-            final int fromBackup = drainInto(backupCurrentGeneration, BACKUP_STREAM);
-            final int fromSynthesized = drainInto(synthesizedCurrentGeneration, SYNTHESIZED_STREAM);
-            ordered.sort(TRAN_ID_ASCENDING);
-            LOGGER.info("{} {}: ordered {} records of {} bytes by transaction identifier ascending -"
-                            + " {} from the {} followed by {} from the {}",
-                    CombineTransactionsProcessor.LEGACY_JOB,
-                    CombineTransactionsProcessor.LEGACY_SORT_STEP, ordered.size(),
-                    CombineTransactionsProcessor.COMBINED_RECORD_LENGTH, fromBackup, BACKUP_STREAM,
-                    fromSynthesized, SYNTHESIZED_STREAM);
+            close();
+            try {
+                this.orderedFile = Files.createTempFile("carddemo-combine-order-", ".dat");
+                try (ExternalStringSorter sorter = new ExternalStringSorter(
+                        ConcatenatedOrderingReader::compareRecordImages,
+                        ExternalStringSorter.DEFAULT_RECORDS_PER_RUN);
+                        BufferedWriter orderedWriter = Files.newBufferedWriter(
+                                this.orderedFile, StandardCharsets.US_ASCII)) {
+
+                    this.fromBackup =
+                            drainInto(sorter, this.backupCurrentGeneration, BACKUP_STREAM);
+                    this.fromSynthesized =
+                            drainInto(sorter, this.synthesizedCurrentGeneration, SYNTHESIZED_STREAM);
+                    sorter.writeTo(record -> writeOrderedRecord(orderedWriter, record));
+                }
+                this.orderedReader =
+                        Files.newBufferedReader(this.orderedFile, StandardCharsets.US_ASCII);
+                LOGGER.info("{} {}: ordered {} records of {} bytes by transaction identifier"
+                                + " ascending - {} from the {} followed by {} from the {}",
+                        CombineTransactionsProcessor.LEGACY_JOB,
+                        CombineTransactionsProcessor.LEGACY_SORT_STEP,
+                        this.fromBackup + this.fromSynthesized,
+                        CombineTransactionsProcessor.COMBINED_RECORD_LENGTH,
+                        this.fromBackup, BACKUP_STREAM, this.fromSynthesized, SYNTHESIZED_STREAM);
+            } catch (final IOException | UncheckedIOException failure) {
+                close();
+                throw new ItemStreamException(
+                        "the combine-transactions ordered work stream could not be prepared",
+                        failure);
+            }
         }
 
         /**
@@ -891,8 +1134,30 @@ public final class CombineTransactionsJobConfig {
          */
         @Override
         public void close() {
-            ordered.clear();
-            served = 0;
+            if (this.orderedReader != null) {
+                try {
+                    this.orderedReader.close();
+                } catch (final IOException failure) {
+                    throw new ItemStreamException(
+                            "the combine-transactions ordered work stream could not be closed",
+                            failure);
+                } finally {
+                    this.orderedReader = null;
+                }
+            }
+            if (this.orderedFile != null) {
+                try {
+                    Files.deleteIfExists(this.orderedFile);
+                } catch (final IOException failure) {
+                    throw new ItemStreamException(
+                            "the combine-transactions ordered work stream could not be released",
+                            failure);
+                } finally {
+                    this.orderedFile = null;
+                }
+            }
+            this.fromBackup = 0;
+            this.fromSynthesized = 0;
         }
 
         /**
@@ -905,12 +1170,16 @@ public final class CombineTransactionsJobConfig {
          */
         @Override
         public Transaction read() {
-            if (served >= ordered.size()) {
+            if (this.orderedReader == null) {
                 return null;
             }
-            final Transaction next = ordered.get(served);
-            served++;
-            return next;
+            try {
+                final String record = this.orderedReader.readLine();
+                return record == null ? null : TransactionRecordMapper.fromRecord(record);
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions ordered stream could not be read", failure);
+            }
         }
 
         /**
@@ -937,8 +1206,10 @@ public final class CombineTransactionsJobConfig {
          * @return how many records this input contributed
          * @throws ItemStreamException if the input cannot be read in full
          */
-        private int drainInto(final Resource input, final String streamName) {
-            final FlatFileItemReader<Transaction> stream = readerFactory.transactionReader(input);
+        private int drainInto(final ExternalStringSorter sorter, final Resource input,
+                final String streamName) {
+            final FlatFileItemReader<Transaction> stream =
+                    readerFactory.fixedTransactionReader(input);
             int records = 0;
             boolean opened = false;
             try {
@@ -946,24 +1217,42 @@ public final class CombineTransactionsJobConfig {
                 opened = true;
                 Transaction record = stream.read();
                 while (record != null) {
-                    ordered.add(record);
+                    sorter.add(TransactionRecordMapper.toRecord(record));
                     records++;
                     record = stream.read();
                 }
             } catch (final Exception failure) {
-                LOGGER.error("{} {}: the {} at {} could not be read in full; {} records had been read",
+                LOGGER.error("{} {}: the {} could not be read in full; {} records had been read;"
+                                + " failureChain={}",
                         CombineTransactionsProcessor.LEGACY_JOB,
                         CombineTransactionsProcessor.LEGACY_SORT_STEP, streamName,
-                        input.getDescription(), records, failure);
+                        records, FailureDiagnostics.failureChainOf(failure));
                 throw new ItemStreamException("the " + streamName
-                        + " of the combine-transactions job could not be read in full from "
-                        + input.getDescription(), failure);
+                        + " of the combine-transactions job could not be read in full", failure);
             } finally {
                 if (opened) {
-                    closeQuietly(stream, streamName, input);
+                    closeQuietly(stream, streamName);
                 }
             }
             return records;
+        }
+
+        private static void writeOrderedRecord(
+                final BufferedWriter orderedWriter, final String record) {
+            try {
+                orderedWriter.write(record);
+                orderedWriter.newLine();
+            } catch (final IOException failure) {
+                throw new UncheckedIOException(
+                        "the combine-transactions ordered work stream could not be written",
+                        failure);
+            }
+        }
+
+        private static int compareRecordImages(final String left, final String right) {
+            return TRAN_ID_ASCENDING.compare(
+                    TransactionRecordMapper.fromRecord(left),
+                    TransactionRecordMapper.fromRecord(right));
         }
 
         /**
@@ -977,17 +1266,17 @@ public final class CombineTransactionsJobConfig {
          *
          * @param stream     the delegate reader to close
          * @param streamName the stream's role, used in the diagnostic
-         * @param input      the resource the reader was reading, used in the diagnostic
          */
         private static void closeQuietly(final FlatFileItemReader<Transaction> stream,
-                final String streamName, final Resource input) {
+                final String streamName) {
             try {
                 stream.close();
             } catch (final ItemStreamException closeFailure) {
-                LOGGER.warn("{} {}: the {} at {} did not close cleanly; every record it produced had"
-                                + " already been read", CombineTransactionsProcessor.LEGACY_JOB,
+                LOGGER.warn("{} {}: the {} did not close cleanly; every record it produced had"
+                                + " already been read; failureChain={}",
+                        CombineTransactionsProcessor.LEGACY_JOB,
                         CombineTransactionsProcessor.LEGACY_SORT_STEP, streamName,
-                        input.getDescription(), closeFailure);
+                        FailureDiagnostics.failureChainOf(closeFailure));
             }
         }
     }

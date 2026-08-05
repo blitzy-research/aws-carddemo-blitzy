@@ -83,8 +83,21 @@ class SignOnContractAdapterTest {
      */
     private static AuthenticationService.SignOnScreen admitted(final UserType userType,
                                                                final NavigationService.Route route) {
+        return admitted(userType, userType.getCode(), route);
+    }
+
+    /**
+     * Builds an admitted turn whose effective authority and raw stored code are deliberately distinct.
+     *
+     * @param userType effective security authority
+     * @param rawUserTypeCode raw code read from the credential record
+     * @param route destination
+     * @return the turn
+     */
+    private static AuthenticationService.SignOnScreen admitted(final UserType userType,
+            final String rawUserTypeCode, final NavigationService.Route route) {
         return new AuthenticationService.SignOnScreen(AuthenticationService.Decision.ADMITTED,
-                USER_ID, userType, route, false, null,
+                USER_ID, userType, rawUserTypeCode, route, false, null,
                 MessageCatalogService.CCDA_TITLE01, MessageCatalogService.CCDA_TITLE02, DATE, TIME);
     }
 
@@ -100,7 +113,7 @@ class SignOnContractAdapterTest {
             final AuthenticationService.Decision decision,
             final boolean errorFlag,
             final String focusScreenFieldId) {
-        return new AuthenticationService.SignOnScreen(decision, null, null, null, errorFlag,
+        return new AuthenticationService.SignOnScreen(decision, null, null, null, null, errorFlag,
                 focusScreenFieldId, MessageCatalogService.CCDA_TITLE01,
                 MessageCatalogService.CCDA_TITLE02, DATE, TIME);
     }
@@ -172,6 +185,15 @@ class SignOnContractAdapterTest {
                     .isNull();
         }
 
+        @Test
+        @DisplayName("the first-entry turn carries no message, because the source clears the output map "
+                + "before it focuses USERID")
+        void theFirstEntryCarriesNoMessage() {
+            assertThat(subject.toResponse(refused(
+                    AuthenticationService.Decision.INITIAL_ENTRY, false, "USERID")).message())
+                    .isNull();
+        }
+
         @ParameterizedTest
         @EnumSource(AuthenticationService.Decision.class)
         @DisplayName("every decision the service can reach is mapped, and no two message-bearing outcomes "
@@ -184,7 +206,7 @@ class SignOnContractAdapterTest {
                             : refused(decision, true, null);
 
             final String message = subject.toResponse(screen).message();
-            if (decision.isAdmitted()) {
+            if (decision.isAdmitted() || decision == AuthenticationService.Decision.INITIAL_ENTRY) {
                 assertThat(message).isNull();
             } else {
                 assertThat(message).isNotNull().isNotBlank();
@@ -198,7 +220,8 @@ class SignOnContractAdapterTest {
                     new EnumMap<>(AuthenticationService.Decision.class);
             for (final AuthenticationService.Decision decision
                     : AuthenticationService.Decision.values()) {
-                if (decision.isAdmitted()) {
+                if (decision.isAdmitted()
+                        || decision == AuthenticationService.Decision.INITIAL_ENTRY) {
                     continue;
                 }
                 byDecision.put(decision, subject.toResponse(refused(decision, true, null)).message());
@@ -297,6 +320,20 @@ class SignOnContractAdapterTest {
                     .isEqualTo(NavigationService.Route.USER_MENU.getRouteValue());
             assertThat(asAdmin.userType()).isEqualTo("A");
             assertThat(asUser.userType()).isEqualTo("U");
+        }
+
+        @Test
+        @DisplayName("an undeclared raw role code is echoed into the response and navigation state while "
+                + "the effective authority remains the standard-user one")
+        void theRawRoleCodeSurvivesTheBoundary() {
+            final SignOnResponse response = subject.toResponse(
+                    admitted(UserType.USER, "X", NavigationService.Route.USER_MENU));
+
+            assertThat(response.userType()).isEqualTo("X");
+            assertThat(response.navigationContext()).isNotNull();
+            assertThat(response.navigationContext().userType()).isEqualTo("X");
+            assertThat(response.nextRoute())
+                    .isEqualTo(NavigationService.Route.USER_MENU.getRouteValue());
         }
     }
 

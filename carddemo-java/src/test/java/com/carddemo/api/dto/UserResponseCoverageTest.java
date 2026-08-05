@@ -118,10 +118,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("UserResponse :: response contract of legacy transactions CU00 through CU03")
 class UserResponseCoverageTest {
 
-    /** The nineteen components, in the order the record declares them. */
+    /** The twenty components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
+            "rowSnapshotToken",
             "userId",
             "firstName",
             "lastName",
@@ -155,10 +156,11 @@ class UserResponseCoverageTest {
             "message",
             "focusScreenFieldId");
 
-    /** The seven components that carry no declared maximum length. */
+    /** The eight components that carry no declared maximum length. */
     private static final List<String> UNBOUNDED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
+            "rowSnapshotToken",
             "fieldErrors",
             "generalError",
             "actionSucceeded",
@@ -493,6 +495,7 @@ class UserResponseCoverageTest {
         return new UserResponse(
                 rows,
                 pageMetadata,
+                text.get("rowSnapshotToken"),
                 text.get("userId"),
                 text.get("firstName"),
                 text.get("lastName"),
@@ -591,6 +594,7 @@ class UserResponseCoverageTest {
     private static UserResponse populated(NavigationContext navigation) {
         Map<String, String> text = new HashMap<>();
         text.put("userId", USER_ID);
+        text.put("rowSnapshotToken", "sealed-page-token");
         text.put("firstName", FIRST_NAME);
         text.put("lastName", LAST_NAME);
         text.put("userType", USER_TYPE);
@@ -719,7 +723,7 @@ class UserResponseCoverageTest {
 
             assertThat(partition).containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
             assertThat(BOUNDED_COMPONENTS).hasSize(12);
-            assertThat(UNBOUNDED_COMPONENTS).hasSize(7);
+            assertThat(UNBOUNDED_COMPONENTS).hasSize(8);
         }
 
         /** Each declared width constant carries its documented value. */
@@ -855,13 +859,14 @@ class UserResponseCoverageTest {
             assertThat(declared).containsExactlyInAnyOrder("hasRows", "hasFieldErrors");
         }
 
-        /** Only the compact canonical constructor exists, taking all nineteen components. */
+        /** The canonical constructor and the pre-token compatibility constructor are both present. */
         @Test
-        @DisplayName("keeps only the compact canonical constructor")
+        @DisplayName("publishes the canonical token-aware constructor and the compatibility constructor")
         void onlyTheCompactCanonicalConstructorExists() {
-            assertThat(UserResponse.class.getDeclaredConstructors()).hasSize(1);
-            assertThat(UserResponse.class.getDeclaredConstructors()[0].getParameterCount())
-                    .isEqualTo(EXPECTED_COMPONENTS.size());
+            assertThat(Arrays.stream(UserResponse.class.getDeclaredConstructors())
+                    .map(constructor -> constructor.getParameterCount()).toList())
+                    .containsExactlyInAnyOrder(EXPECTED_COMPONENTS.size(),
+                            EXPECTED_COMPONENTS.size() - 1);
         }
 
         /** No serialisation annotation appears on any component. */
@@ -2202,7 +2207,7 @@ class UserResponseCoverageTest {
     class DiagnosticRendering {
 
         /**
-         * The six components this type withholds itself, each named and replaced by the fixed marker.
+         * The seven components this type withholds itself, each named and replaced by the fixed marker.
          *
          * <p>The four top-level person values are withheld because a single list response carries the
          * same four again in each of up to ten rows, so one log statement over one response would
@@ -2211,7 +2216,8 @@ class UserResponseCoverageTest {
          * another name and would reintroduce exactly the identities the row withholding removes.</p>
          */
         private static final List<String> WITHHELD_BY_THIS_TYPE = List.of(
-                "rows", "pageMetadata", "userId", "firstName", "lastName", "userType");
+                "rows", "pageMetadata", "rowSnapshotToken", "userId", "firstName", "lastName",
+                "userType");
 
         /**
          * Each of the six withheld components is named and replaced by the marker, so a reader can
@@ -2220,7 +2226,7 @@ class UserResponseCoverageTest {
          * problem actually needs.
          */
         @Test
-        @DisplayName("names each of the six withheld components and replaces its value")
+        @DisplayName("names each of the seven withheld components and replaces its value")
         void eachWithheldComponentIsNamedAndReplaced() {
             String rendered =
                     build(
@@ -2255,9 +2261,9 @@ class UserResponseCoverageTest {
                     .doesNotContain(NEXT_CURSOR_KEY);
         }
 
-        /** No component outside the six is withheld, so the rendering stays diagnosable. */
+        /** No component outside the seven is withheld, so the rendering stays diagnosable. */
         @Test
-        @DisplayName("withholds nothing outside the six")
+        @DisplayName("withholds nothing outside the seven")
         void nothingOutsideTheSixIsWithheld() {
             String rendered = populated(null).toString();
 

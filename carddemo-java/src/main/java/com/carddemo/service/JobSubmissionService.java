@@ -19,13 +19,17 @@ package com.carddemo.service;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.UUID;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsOperations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -107,10 +111,11 @@ import com.carddemo.util.SqsNamingRules;
  * requires either content-based deduplication or an explicit identifier per message, and the legacy
  * queue had no such concept. The identifier is the submission's identity plus the one-based card
  * ordinal - the ordinal keeps one submission's seventeen cards distinct, and the identity is what
- * makes two submissions distinguishable. It must not become an idempotency key: the legacy queue
- * appended, so a second request for the same reporting period ran the job again, and deriving the
- * identity from the dates alone would have the queue service discard that second request behind a
- * success response. Recorded as a parity exception in {@code docs/decision-log.md} DL-043.
+ * makes two submissions distinguishable. The HTTP caller supplies an identity derived from the date
+ * range and a stable logical-request token: a retry repeats that token, while a deliberate new
+ * submission receives another. The date-only convenience overload remains a documented compatibility
+ * form for retries and must not be used to express a second run of the same period. Recorded as a parity
+ * exception in {@code docs/decision-log.md} DL-043.
  */
 @Service
 public final class JobSubmissionService {
@@ -141,6 +146,61 @@ public final class JobSubmissionService {
      */
     private static final int FIRST_CARD_ORDINAL = 1;
 
+    /** Name of the explicit outbound observation wrapped around each queue publish. */
+    public static final String PUBLISH_OBSERVATION_NAME = "carddemo.job.submission.publish";
+
+    public static final String TAG_SYSTEM = "system";
+    public static final String TAG_OPERATION = "operation";
+    public static final String TAG_QUEUE = "queue";
+    public static final String TAG_SUBMISSION = "submission";
+    public static final String TAG_CARD_ORDINAL = "cardOrdinal";
+    public static final String SYSTEM_SQS = "sqs";
+    public static final String OPERATION_SEND = "send";
+
+    /**
+     * Message attribute naming the submission every card belongs to.
+     *
+     * <p>Published on every message, and the key of the reassembly envelope described on
+     * {@link #submissionLock}. It is what lets a consumer group a submission's cards back together
+     * without depending on the order they arrived in, which is the only remedy available to a
+     * deployment running more than one instance: the module introduces no coordination service, so the
+     * cards of two concurrent submissions <em>can</em> interleave in the one message group, and the
+     * envelope is what makes that interleaving recoverable rather than fatal.
+     */
+    public static final String SUBMISSION_ID_HEADER = "carddemo-submission-id";
+
+    /**
+     * Message attribute carrying the one-based ordinal of this card within its submission.
+     *
+     * <p>Published on every message. With the submission identity it totally orders a submission's
+     * cards, so a consumer restores the eighty-column job stream by sorting on it rather than by
+     * trusting arrival order.
+     */
+    public static final String CARD_ORDINAL_HEADER = "carddemo-card-ordinal";
+
+    /**
+     * Message attribute carrying how many cards the submission holds in total.
+     *
+     * <p>Published only by the entry points that publish a whole stream and therefore know the total. The
+     * single-card entry point omits it, because a caller driving its own loop has not declared a total and
+     * inventing one would be a claim this service is not entitled to make. A consumer is not left without
+     * a completion test in that case: the final card of a legacy job stream is the end-of-stream sentinel,
+     * which is transmitted, so the sentinel terminates the stream exactly as it does on the mainframe and
+     * this attribute is a cross-check rather than the only marker.
+     */
+    public static final String CARD_COUNT_HEADER = "carddemo-card-count";
+
+    /**
+     * The separator between the date part of a minted identity and its nonce.
+     *
+     * <p>Distinct from {@link #SUBMISSION_ID_PART_SEPARATOR} so that the nonce is visually separable from
+     * the period in a log record; nothing parses either, and no consumer may.
+     */
+    private static final String SUBMISSION_NONCE_SEPARATOR = "_";
+
+    /** The character a minted nonce strips from the generated value, which the queue need not carry. */
+    private static final String NONCE_GROUP_SEPARATOR = "-";
+
     /*
      * The bounds and substitutions that shape a failure diagnostic used to be declared here, five
      * constants and four helpers of them. They now live in FailureDiagnostics, in the utility layer,
@@ -155,47 +215,70 @@ public final class JobSubmissionService {
     /**
      * Serialises one whole submission's publishes against every other submission's.
      *
-     * <h2>What was wrong without it</h2>
+     * <h2>Why the whole submission is the unit of exclusion</h2>
      *
      * <p>A submission is not one message. It is
      * {@code JclCardImageBuilder.CARD_COUNT} messages that are only meaningful as a contiguous, ordered
      * run: the batch tier reads them back as one eighty-column job stream, so a job card followed by
      * another submission's library card is not a degraded stream, it is an unparseable one. This is a
      * singleton service and every card of every submission carries the <em>same</em> message group,
-     * which is exactly what preserves append order - and it means the queue faithfully preserves
-     * whatever order the sends arrived in. Two request threads publishing concurrently arrive
-     * interleaved, and a first-in-first-out queue then guarantees the interleaving rather than
-     * repairing it.
+     * which is what preserves append order - and it means the queue faithfully preserves whatever order
+     * the sends arrived in. Two request threads publishing concurrently would arrive interleaved, and a
+     * first-in-first-out queue would then guarantee the interleaving rather than repairing it.
      *
-     * <p>Deduplication identifiers do not help. They make a <em>retry</em> of one submission idempotent;
-     * they say nothing about two distinct submissions, whose identifiers are all distinct by
+     * <p>Deduplication identifiers do not close that. They make a <em>retry</em> of one submission
+     * idempotent; they say nothing about two distinct submissions, whose identifiers are all distinct by
      * construction and all therefore accepted, in whatever order they land.
      *
-     * <h2>Why a lock, and why here</h2>
+     * <p>A message group per submission would let the queue service keep the streams apart, but the
+     * group is a configured value that must be one stable string precisely because the legacy queue
+     * appended: making it per-submission would forfeit global append order across submissions and would
+     * require every consumer to reassemble groups. Excluding one whole submission at a time is what
+     * reproduces the legacy transaction, which wrote its card stream inside a single task.
      *
-     * <p>Two remedies were available. One is a message group per submission, which the queue service
-     * would then keep separate - but the group is a configured value that must be one stable string
-     * precisely because the legacy queue appended, so making it per-submission would trade this defect
-     * for the loss of global append order across submissions, and would require every consumer to
-     * reassemble groups. The other is to make the whole submission the unit of exclusion, which is what
-     * this is: the legacy transaction wrote its card stream inside a single task, and one submission at
-     * a time is what that reproduces.
+     * <h2>What the lock does and does not guarantee</h2>
      *
      * <p>It is held for the duration of one stream and released before the outcome is composed, so a
      * caller never holds it across anything of its own. It guarantees non-interleaving <em>within this
      * process</em>, which is the whole of the unit that publishes: nothing outside this service writes
-     * to the queue. A deployment running several instances would need the same exclusion between them,
-     * and the module introduces no coordination service to provide it - adding one is beyond the
-     * migration's scope and is recorded rather than pretended. Fairness is requested so that a stream
-     * waiting behind another is admitted in arrival order rather than starved.
+     * to the queue. Fairness is requested so that a stream waiting behind another is admitted in arrival
+     * order rather than starved.
+     *
+     * <h2>Across instances the lock does nothing, so the envelope does it instead</h2>
+     *
+     * <p>The lock is a monitor in one heap. A deployment running several instances would need the same
+     * exclusion between them, and the module introduces no coordination service to provide it: a
+     * distributed or fenced lock is a new piece of infrastructure, and a single-active-publisher election
+     * is another, both beyond this migration's scope. Leaving it there would leave a real defect, because
+     * two instances publishing concurrently interleave their cards in the one message group and a
+     * first-in-first-out queue then preserves the interleaving faithfully.
+     *
+     * <p>The remedy carried instead is the third of the three the review named: an
+     * <strong>atomic, reassemblable envelope keyed by submission</strong>. Every published message carries
+     * {@link #SUBMISSION_ID_HEADER} and {@link #CARD_ORDINAL_HEADER}, and every message of a stream whose
+     * total this service knows also carries {@link #CARD_COUNT_HEADER}. A consumer therefore groups by
+     * submission and orders by ordinal, so it reconstructs each eighty-column job stream exactly whatever
+     * order the messages arrived in, and it knows a stream is whole either by counting to the declared
+     * total or by reaching the transmitted end-of-stream sentinel. Interleaving becomes a property of the
+     * transport that the consumer undoes, rather than a corruption it inherits - and that holds for two
+     * instances just as it holds for two threads, which is what makes it the remedy that does not need a
+     * coordination service. The lock is kept because within one process it prevents the interleaving in
+     * the first place, which is cheaper than undoing it.
      */
-    private final ReentrantLock submissionLock = new ReentrantLock(true);
-
     private final SqsOperations sqsOperations;
 
     private final String queueName;
 
     private final String messageGroupId;
+
+    /** Deployment-wide guard held for a whole card stream. */
+    private final JobSubmissionCoordinator submissionCoordinator;
+
+    /** Persistent logical-submission and per-card delivery state. */
+    private final JobSubmissionOutbox submissionOutbox;
+
+    /** Registry for the explicit outbound publish observation. */
+    private final ObservationRegistry observationRegistry;
 
     /**
      * Binds the messaging client and the configured destination, validating the queue name's
@@ -205,25 +288,58 @@ public final class JobSubmissionService {
      * @param queueName the configured destination queue name, which must carry the FIFO suffix
      * @param messageGroupId the configured message group identifier, which orders one submission
      */
+    @Autowired
     public JobSubmissionService(
             final SqsOperations sqsOperations,
             @Value("${" + JOB_QUEUE_PROPERTY + "}") final String queueName,
-            @Value("${" + MESSAGE_GROUP_ID_PROPERTY + "}") final String messageGroupId) {
+            @Value("${" + MESSAGE_GROUP_ID_PROPERTY + "}") final String messageGroupId,
+            final JobSubmissionCoordinator submissionCoordinator,
+            final JobSubmissionOutbox submissionOutbox,
+            final ObservationRegistry observationRegistry) {
         this.sqsOperations = Objects.requireNonNull(sqsOperations, "sqsOperations must not be null");
         this.queueName = requireFifoQueueName(queueName);
         this.messageGroupId = SqsNamingRules.requireMessageGroupId(
                 requireConfiguredValue(messageGroupId, MESSAGE_GROUP_ID_PROPERTY),
                 MESSAGE_GROUP_ID_PROPERTY);
+        this.submissionCoordinator = Objects.requireNonNull(submissionCoordinator,
+                "submissionCoordinator must not be null");
+        this.submissionOutbox = Objects.requireNonNull(
+                submissionOutbox, "submissionOutbox must not be null");
+        this.observationRegistry = Objects.requireNonNull(observationRegistry,
+                "observationRegistry must not be null");
     }
 
     /**
-     * Submits the transaction-report job for one date range, minting an identity for this call.
+     * Direct-construction seam for tests that supply a coordinator and observation registry.
+     */
+    JobSubmissionService(final SqsOperations sqsOperations, final String queueName,
+            final String messageGroupId, final JobSubmissionCoordinator submissionCoordinator,
+            final ObservationRegistry observationRegistry) {
+        this(sqsOperations, queueName, messageGroupId, submissionCoordinator,
+                JobSubmissionOutbox.direct(), observationRegistry);
+    }
+
+    /**
+     * Direct-construction seam for focused queue-contract tests.
+     */
+    JobSubmissionService(final SqsOperations sqsOperations, final String queueName,
+            final String messageGroupId) {
+        this(sqsOperations, queueName, messageGroupId, submission -> submission.get(),
+                JobSubmissionOutbox.direct(), ObservationRegistry.NOOP);
+    }
+
+    /**
+     * Submits the transaction-report job for one date range under a deterministic compatibility identity.
      *
-     * <p>Every call to this form is a distinct submission: the identity it mints carries a nonce, so two
-     * calls for the same reporting period enqueue two card streams exactly as the appending legacy queue
-     * did. A <em>retry</em> of an earlier attempt must instead supply that attempt's identity through
-     * {@link #submitTransactionReportJob(String, String, String)}, or the queue service's deduplication
-     * interval will discard the retry behind a success response.
+     * <p>Repeated calls to this convenience form for the same range intentionally reuse one identity and
+     * therefore describe retries. A deliberate new submission of that same range must call
+     * {@link #submitTransactionReportJob(String, String, String)} with a distinct logical-request token.
+     * The HTTP report-request path accepts or mints that token and returns it to the caller, so it can tell
+     * retries from genuinely new work without deriving the distinction from the dates alone.
+     *
+     * <p><strong>The minted identity is reported on the returned outcome</strong>, so a caller that did
+     * not mint it can still retry: the nonce makes the identity unrecomputable from the request, and
+     * {@link SubmissionResult#submissionId()} is where it travels back.
      *
      * <p>The dates are raw ten-character slot values in the legacy work field's hyphen-separated shape.
      * They are neither parsed nor reformatted here, but they are not unexamined either: the card builder
@@ -243,7 +359,9 @@ public final class JobSubmissionService {
      *                                  that exists
      */
     public SubmissionResult submitTransactionReportJob(final String startDate, final String endDate) {
-        return submitTransactionReportJob(newSubmissionId(startDate, endDate),
+        Objects.requireNonNull(startDate, "startDate must not be null");
+        Objects.requireNonNull(endDate, "endDate must not be null");
+        return submitTransactionReportJob(newSubmissionIdentity(startDate, endDate),
                 startDate, endDate);
     }
 
@@ -288,6 +406,16 @@ public final class JobSubmissionService {
     }
 
     /**
+     * Publishes a canonical image as a distinct new logical submission.
+     *
+     * @param cardImages the canonical card stream
+     * @return the outcome carrying the newly minted retry identity
+     */
+    public SubmissionResult submitCanonicalJobImage(final List<String> cardImages) {
+        return submitCanonicalJobImage(newSubmissionId(), cardImages);
+    }
+
+    /**
      * Publishes an arbitrary card stream, one message per card, in list order.
      *
      * <p>Reproduces the legacy loop: it stops at the sentinel - after transmitting it - at the declared
@@ -303,64 +431,35 @@ public final class JobSubmissionService {
         final List<String> cards =
                 List.copyOf(Objects.requireNonNull(cardImages, "cardImages must not be null"));
         requireWellFormedCards(cards);
-        final List<String> deduplicationIds = deduplicationIds(submission, cards.size());
+        validateDeduplicationIdentifiers(submission, cards.size());
+        final int terminalOrdinal = terminalOrdinal(cards);
 
-        int cardsPublished = 0;
-        boolean endOfStream = false;
-        boolean writeFailed = false;
-
-        // One submission at a time. Everything from the first card to the last is inside the lock,
-        // because a submission is meaningful to the batch tier only as a contiguous ordered run and
-        // every card of every submission shares one message group - so a queue that faithfully
-        // preserves arrival order preserves an interleaving just as faithfully as it preserves a
-        // stream. See submissionLock for why the unit of exclusion is the whole stream rather than
-        // the card, and why the group is not made per-submission instead.
-        //
-        // The lock is taken AFTER the stream is validated and the identifiers are composed, so a
-        // malformed submission is refused without ever making a well-formed one wait, and the
-        // critical section holds nothing but the sends.
-        this.submissionLock.lock();
+        final SubmissionResult result;
         try {
-            // The three guard conditions are the legacy guard at lines 498 to 499: the one-based index
-            // against the declared array bound, the end-of-stream flag and the write-error flag. The
-            // supplied stream length bounds the iteration; the legacy array bound is carried alongside
-            // it as a defensive guard and is never the condition that stops a well-formed submission.
-            for (int cardOrdinal = FIRST_CARD_ORDINAL;
-                    cardOrdinal <= cards.size()
-                            && cardOrdinal <= JclCardImageBuilder.OVERSIZED_REDEFINE_CARD_BOUND
-                            && !endOfStream
-                            && !writeFailed;
-                    cardOrdinal++) {
-
-                final String cardImage = cards.get(cardOrdinal - FIRST_CARD_ORDINAL);
-
-                // Set before the write, exactly as at lines 502 to 507. This ordering is the reason the
-                // sentinel card is published and the submission is seventeen messages rather than
-                // sixteen; reversing it would silently drop the batch tier's end-of-stream marker.
-                // The flag ends the loop after the card that carries it, which is the legacy conduct
-                // for any stream; on the canonical path submitCanonicalJobImage has already established
-                // that only the final card can carry it, so it never truncates a canonical submission.
-                endOfStream = isEndOfStreamCard(cardImage);
-
-                if (publishCard(submission, cardImage, cardOrdinal,
-                        deduplicationIds.get(cardOrdinal - FIRST_CARD_ORDINAL))) {
-                    cardsPublished++;
-                } else {
-                    // The legacy write-error flag. It appears in the loop guard, so raising it ends the
-                    // submission and the cards after this one are deliberately never sent.
-                    writeFailed = true;
-                }
-            }
-        } finally {
-            // Released in a finally rather than after the loop: publishCard is documented never to
-            // propagate, but a lock that depends on a callee keeping a promise is a lock that a future
-            // change can leave held for the lifetime of the process, and every subsequent submission
-            // would then block forever.
-            this.submissionLock.unlock();
+            result = this.submissionCoordinator.serialize(() -> {
+                final JobSubmissionOutbox.DeliveryOutcome delivery =
+                        this.submissionOutbox.publish(
+                                submission,
+                                cards,
+                                terminalOrdinal,
+                                (pendingSubmission, card, cardOrdinal) -> publishCard(
+                                        pendingSubmission,
+                                        card,
+                                        cardOrdinal,
+                                        deduplicationId(pendingSubmission, cardOrdinal),
+                                        streamEnvelope(pendingSubmission, cardOrdinal,
+                                                cards.size())));
+                return new SubmissionResult(submission, cards.size(), delivery.cardsPublished(),
+                        delivery.failed(),
+                        delivery.failed() ? JobSubmissionException.DEFAULT_MESSAGE : "");
+            });
+        } catch (final JobSubmissionCoordinator.CoordinationFailure coordinationFailure) {
+            LOGGER.error("{} submission={} queue={} messageGroup={} failureChain={}",
+                    JobSubmissionException.DEFAULT_MESSAGE, submission, this.queueName,
+                    this.messageGroupId, FailureDiagnostics.failureChainOf(coordinationFailure));
+            return new SubmissionResult(submission, cards.size(), 0, true,
+                    JobSubmissionException.DEFAULT_MESSAGE);
         }
-
-        final SubmissionResult result = new SubmissionResult(cards.size(), cardsPublished, writeFailed,
-                writeFailed ? JobSubmissionException.DEFAULT_MESSAGE : "");
 
         if (result.failed()) {
             LOGGER.warn("Job-submission stream stopped early: cardsPublished={} cardsRequested={}"
@@ -390,17 +489,56 @@ public final class JobSubmissionService {
             final int cardOrdinal) {
         final String submission = requireSubmissionId(submissionId);
         final String card = requireCardImage(cardImage, cardOrdinal);
-        return publishCard(submission, card, cardOrdinal, deduplicationId(submission, cardOrdinal));
+        return publishCard(submission, card, cardOrdinal, deduplicationId(submission, cardOrdinal),
+                cardEnvelope(submission, cardOrdinal));
+    }
+
+    /**
+     * The reassembly envelope of a card published as part of a stream whose total this service knows.
+     *
+     * @param submission the submission identity
+     * @param cardOrdinal the one-based ordinal of this card
+     * @param cardCount how many cards the submission holds
+     * @return the message attributes to publish alongside the card
+     */
+    private static Map<String, Object> streamEnvelope(final String submission, final int cardOrdinal,
+            final int cardCount) {
+        return Map.of(SUBMISSION_ID_HEADER, submission,
+                CARD_ORDINAL_HEADER, Integer.toString(cardOrdinal),
+                CARD_COUNT_HEADER, Integer.toString(cardCount));
+    }
+
+    /**
+     * The reassembly envelope of a single card published by a caller driving its own loop.
+     *
+     * <p>It declares no total, because the caller has not declared one and this service may not invent it.
+     * See {@link #CARD_COUNT_HEADER}.
+     *
+     * @param submission the submission identity
+     * @param cardOrdinal the one-based ordinal of this card
+     * @return the message attributes to publish alongside the card
+     */
+    private static Map<String, Object> cardEnvelope(final String submission, final int cardOrdinal) {
+        return Map.of(SUBMISSION_ID_HEADER, submission,
+                CARD_ORDINAL_HEADER, Integer.toString(cardOrdinal));
     }
 
     private boolean publishCard(final String submission, final String card, final int cardOrdinal,
-            final String deduplicationId) {
+            final String deduplicationId, final Map<String, Object> envelope) {
         try {
-            final SendResult<String> sendResult = this.sqsOperations.send(options -> options
-                    .queue(this.queueName)
-                    .payload(card)
-                    .messageGroupId(this.messageGroupId)
-                    .messageDeduplicationId(deduplicationId));
+            final SendResult<String> sendResult = Observation
+                    .createNotStarted(PUBLISH_OBSERVATION_NAME, this.observationRegistry)
+                    .lowCardinalityKeyValue(TAG_SYSTEM, SYSTEM_SQS)
+                    .lowCardinalityKeyValue(TAG_OPERATION, OPERATION_SEND)
+                    .highCardinalityKeyValue(TAG_QUEUE, this.queueName)
+                    .highCardinalityKeyValue(TAG_SUBMISSION, submission)
+                    .highCardinalityKeyValue(TAG_CARD_ORDINAL, Integer.toString(cardOrdinal))
+                    .observe(() -> this.sqsOperations.send(options -> options
+                            .queue(this.queueName)
+                            .payload(card)
+                            .messageGroupId(this.messageGroupId)
+                            .messageDeduplicationId(deduplicationId)
+                            .headers(envelope)));
             LOGGER.debug("Published job-submission card: ordinal={} submission={} queue={}"
                             + " messageGroup={} messageId={}",
                     cardOrdinal, submission, this.queueName, this.messageGroupId, sendResult.messageId());
@@ -484,6 +622,26 @@ public final class JobSubmissionService {
         return List.copyOf(identifiers);
     }
 
+    private static void validateDeduplicationIdentifiers(
+            final String submissionId, final int cardCount) {
+        for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= cardCount; cardOrdinal++) {
+            deduplicationId(submissionId, cardOrdinal);
+        }
+    }
+
+    private static int terminalOrdinal(final List<String> cards) {
+        final int lastPossibleOrdinal = Math.min(
+                cards.size(), JclCardImageBuilder.OVERSIZED_REDEFINE_CARD_BOUND);
+        for (int cardOrdinal = FIRST_CARD_ORDINAL;
+                cardOrdinal <= lastPossibleOrdinal;
+                cardOrdinal++) {
+            if (isEndOfStreamCard(cards.get(cardOrdinal - FIRST_CARD_ORDINAL))) {
+                return cardOrdinal;
+            }
+        }
+        return lastPossibleOrdinal;
+    }
+
     private static String requireCardImage(final String cardImage, final int cardOrdinal) {
         Objects.requireNonNull(cardImage, "cardImage must not be null");
         final int width = cardImage.getBytes(StandardCharsets.US_ASCII).length;
@@ -557,11 +715,69 @@ public final class JobSubmissionService {
         return deduplicationId;
     }
 
+    /**
+     * Derives the compatibility identity for the date-only convenience overload.
+     *
+     * <p>This form is intentionally stable for a repeated date range and therefore models a retry. A
+     * deliberate new submission of the same period must use the caller-identity overload with a distinct
+     * logical-request token. The HTTP report-request surface does exactly that; this compatibility helper
+     * neither claims nor manufactures a nonce.
+     *
+     * @param startDate the submitted start-date slot
+     * @param endDate the submitted end-date slot
+     * @return a printable, whitespace-free identity stable for this date range
+     */
     private static String newSubmissionId(final String startDate, final String endDate) {
         Objects.requireNonNull(startDate, "startDate must not be null");
         Objects.requireNonNull(endDate, "endDate must not be null");
-        return requireSubmissionId(withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
-                + withoutWhitespace(endDate));
+        final String identity = withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
+                + withoutWhitespace(endDate);
+        requireSubmissionId(identity);
+        // Composed here rather than at the first publish so that an identity too long to carry a card
+        // ordinal is refused when it is minted, not seventeen cards later.
+        deduplicationId(identity, JclCardImageBuilder.CARD_COUNT);
+        return identity;
+    }
+
+    /**
+     * Mints the identity of a new logical submission.
+     *
+     * @return a printable identity that can be supplied again only for a true retry
+     */
+    public static String newSubmissionId() {
+        return requireSubmissionId(UUID.randomUUID().toString());
+    }
+
+    /**
+     * Mints a new submission identity while retaining the reporting period as a readable prefix.
+     *
+     * @param startDate the fixed-width start-date slot
+     * @param endDate the fixed-width end-date slot
+     * @return a unique printable identity suitable for FIFO deduplication
+     */
+    public static String newSubmissionIdentity(final String startDate, final String endDate) {
+        Objects.requireNonNull(startDate, "startDate must not be null");
+        Objects.requireNonNull(endDate, "endDate must not be null");
+        final String identity = withoutWhitespace(startDate) + SUBMISSION_ID_PART_SEPARATOR
+                + withoutWhitespace(endDate) + SUBMISSION_NONCE_SEPARATOR + newNonce();
+        requireSubmissionId(identity);
+        deduplicationId(identity, JclCardImageBuilder.CARD_COUNT);
+        return identity;
+    }
+
+    /**
+     * Produces the nonce that distinguishes one minted identity from another.
+     *
+     * <p>A random universally unique value rendered as its hexadecimal digits, with the grouping hyphens
+     * removed: hyphens carry no information here and the identifier is shorter without them. Randomness is
+     * the right source because the alternative - a counter - would have to survive a restart and be shared
+     * between instances to be unique, which is the coordination service this migration deliberately does
+     * not introduce.
+     *
+     * @return the nonce, hexadecimal and free of separators
+     */
+    private static String newNonce() {
+        return UUID.randomUUID().toString().replace(NONCE_GROUP_SEPARATOR, "");
     }
 
     private static String withoutWhitespace(final String value) {
@@ -669,14 +885,41 @@ public final class JobSubmissionService {
     /**
      * Outcome of one submission.
      *
+     * <p><strong>The identity is reported back because a retry is impossible without it.</strong> A
+     * submission that stopped part way left a prefix of its cards on the queue, and completing it rather
+     * than doubling it requires reissuing the <em>same</em> deduplication identifiers - which requires the
+     * same identity. Since {@link #newSubmissionIdentity(String, String)} mints a nonce, the identity is
+     * not recomputable from the request, so a result that omitted it would make the retry path
+     * unreachable for every caller that did not mint the identity itself.
+     *
+     * @param submissionId the identity of the submission this outcome describes, which a caller keeps in
+     *                     order to retry it
      * @param cardsRequested the number of cards the caller supplied
      * @param cardsPublished the number that reached the queue, which is lower on a partial submission
      * @param failed whether a publish failed, in which case the remaining cards were not sent
      * @param failureMessage the frozen operator-facing failure text when {@code failed}, otherwise empty
      */
-    public record SubmissionResult(int cardsRequested, int cardsPublished, boolean failed,
-            String failureMessage) {
+    public record SubmissionResult(String submissionId, int cardsRequested, int cardsPublished,
+            boolean failed, String failureMessage) {
+
+        /**
+         * Alternate ordering used by the outbox-facing integration seam.
+         */
+        public SubmissionResult(final int cardsRequested, final int cardsPublished,
+                final boolean failed, final String failureMessage, final String submissionId) {
+            this(submissionId, cardsRequested, cardsPublished, failed, failureMessage);
+        }
+
+        /**
+         * Legacy-visible outcome constructor for callers that do not yet carry the retry identity.
+         */
+        public SubmissionResult(final int cardsRequested, final int cardsPublished,
+                final boolean failed, final String failureMessage) {
+            this(newSubmissionId(), cardsRequested, cardsPublished, failed, failureMessage);
+        }
+
         public SubmissionResult {
+            requireSubmissionId(submissionId);
             if (cardsRequested < 0) {
                 throw new IllegalArgumentException("cardsRequested must not be negative but was "
                         + cardsRequested);

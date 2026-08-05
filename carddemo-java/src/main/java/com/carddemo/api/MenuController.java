@@ -42,15 +42,49 @@ import org.springframework.web.bind.annotation.RestController;
  * REST surface of the two menu transactions: {@code CM00}, the menu a regular operator reaches, and
  * {@code CA00}, the menu an administrator reaches instead.
  *
- * <p><strong>What this class does and does not do.</strong> Each endpoint binds the three things a
- * legacy menu turn was driven by - the echoed communication area, the attention key, and the
- * two-character option field - hands them to {@link MenuService} once, projects the answer through
- * {@link MenuResponseAdapter}, and records how long the turn took. It holds no rule of its own. The
- * option catalogues, the blank-to-zero normalisation of the option field, the range test, the
- * administrator-only gate, the suppressed-dispatch text and every message literal live in the service
- * tier and are reached from here by delegation, never reproduced. That is what keeps this class from
- * becoming a second, divergent copy of the menu rules, and it is what lets all of that behaviour be
- * exercised without a servlet.
+ * <h2>The HTTP contract</h2>
+ *
+ * <table border="1">
+ *   <caption>The two menu endpoints</caption>
+ *   <tr><th>Method and path</th><th>Entitlement</th><th>Handler</th></tr>
+ *   <tr><td>{@code POST /api/menu} ({@link #USER_MENU_PATH})</td><td>any signed-on caller</td>
+ *       <td>{@link #userMenu}</td></tr>
+ *   <tr><td>{@code POST /api/admin/menu} ({@link #ADMIN_MENU_PATH})</td><td>administrator only</td>
+ *       <td>{@link #adminMenu}</td></tr>
+ * </table>
+ *
+ * <p>Both endpoints take the same three inputs and answer the same way.
+ * <ul>
+ *   <li><strong>Request body</strong> - an optional {@code application/json}
+ *       {@link com.carddemo.api.dto.NavigationContext}, the echoed navigation state standing in for the
+ *       legacy communication area. Optional because the legacy programs have a defined behaviour for a
+ *       turn that arrives with no communication area at all, and that behaviour has to stay reachable.
+ *       It is validated on binding, so a value wider than the state it mirrors is refused before the
+ *       handler runs.</li>
+ *   <li><strong>Query parameter {@code keyAction}</strong> ({@link #KEY_ACTION_PARAMETER}) - the
+ *       attention key, one of the module's {@link com.carddemo.domain.enums.KeyAction} values, optional.
+ *       No default is applied: an absent key is "no key resolved", which is a state the legacy key
+ *       mapping can produce.</li>
+ *   <li><strong>Query parameter {@code option}</strong> ({@link #OPTION_PARAMETER}) - the
+ *       two-character option field exactly as the operator typed it, optional and carried verbatim.</li>
+ *   <li><strong>Response body</strong> - {@code application/json}
+ *       {@link com.carddemo.api.dto.MenuResponse}, carrying the screen titles and header, the
+ *       presentable option rows, the echoed option, the summary message and its severity, the error
+ *       indicator, the field input focus belongs on, the route the client is to call next, and the
+ *       navigation state for the following turn.</li>
+ *   <li><strong>Statuses</strong> - {@code 200} for every outcome the legacy program could compose,
+ *       including a rejected option, a refused administrator-only option and a suppressed dispatch;
+ *       {@code 400} when declarative validation refuses a body the screen could not have transmitted;
+ *       {@code 401} or {@code 403} from the filter chain, which answers before this class is reached.</li>
+ * </ul>
+ *
+ * <p><strong>What this class does and does not do.</strong> Each endpoint binds those three inputs,
+ * hands them to {@link MenuService} once, projects the answer through {@link MenuResponseAdapter}, and
+ * records how long the turn took. It holds no rule of its own. The option catalogues, the blank-to-zero
+ * normalisation of the option field, the range test, the administrator-only gate, the suppressed-dispatch
+ * text and every message literal live in the service tier and are reached from here by delegation, never
+ * reproduced. That is what keeps this class from becoming a second, divergent copy of the menu rules, and
+ * it is what lets all of that behaviour be exercised without a servlet.
  *
  * <p><strong>Why there are two endpoints and not one.</strong> The estate defines two transactions
  * bound to two programs reading two catalogues, and the resource definitions gate them differently:
@@ -68,14 +102,11 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code MenuControllerTest}, which is free to read both. A literal guarded by an assertion is the
  * honest arrangement; an unguarded literal would not be.
  *
- * <p><strong>Why a turn is a {@code POST} that carries no request record.</strong> A turn has to carry
- * the navigation state the client echoes back, which is the whole sixteen-field communication area, so
- * it travels as the request body. The two remaining inputs are the attention key and the option field,
- * and they travel as query parameters rather than as components of a new request record: the delivered
- * transport contract has no menu request type, and inventing one would add a shape to a contract that
- * is frozen against the symbolic maps. The body is optional because the legacy programs have a defined
- * behaviour for a turn that arrives with no communication area at all, and that behaviour has to stay
- * reachable.
+ * <p><strong>Why a turn is a {@code POST} that carries no request record.</strong> The navigation state
+ * the client echoes back is the whole sixteen-field communication area, so it travels as the request
+ * body. The attention key and the option field travel as query parameters rather than as components of a
+ * new request record: the transport contract has no menu request type, and inventing one would add a
+ * shape to a contract that is frozen against the symbolic maps.
  *
  * <p><strong>Why every outcome answers {@code 200}.</strong> A rejected option, a refused
  * administrator-only option and a suppressed dispatch are all screens the legacy program successfully
@@ -152,11 +183,14 @@ public final class MenuController {
     /** Tag naming which of the two menu transactions the turn belongs to. */
     private static final String TAG_TRANSACTION = "transaction";
 
-    /** Tag naming how the turn's message is to be presented, or that it carries none. */
+    /** Tag naming how the turn's message is presented, that it carries none, or that it raised. */
     private static final String TAG_OUTCOME = "outcome";
 
     /** Tag value for a turn that reports nothing, so the tag is never absent and never {@code null}. */
     private static final String OUTCOME_NONE = "NONE";
+
+    /** Tag value for a turn that raises before it can compose a menu screen. */
+    private static final String OUTCOME_FAILED = "FAILED";
 
     /**
      * Prefix the framework's default authority naming puts in front of a role.
@@ -238,19 +272,23 @@ public final class MenuController {
             @RequestParam(name = OPTION_PARAMETER, required = false) final String option,
             final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final ConversationState inbound =
+                    this.conversationStateAdapter.toConversationState(navigationContext);
+            final String signedOnUserId = signedOnUserId(authentication);
+            final UserType signedOnUserType = signedOnUserType(authentication);
 
-        final ConversationState inbound =
-                this.conversationStateAdapter.toConversationState(navigationContext);
-        final String signedOnUserId = signedOnUserId(authentication);
-        final UserType signedOnUserType = signedOnUserType(authentication);
+            final MenuService.MenuScreen screen =
+                    this.menuService.userMenu(inbound, keyAction, option, signedOnUserType);
+            final MenuResponse body = this.menuResponseAdapter.toResponse(screen, navigationContext,
+                    signedOnUserId, signedOnUserType);
 
-        final MenuService.MenuScreen screen =
-                this.menuService.userMenu(inbound, keyAction, option, signedOnUserType);
-        final MenuResponse body = this.menuResponseAdapter.toResponse(screen, navigationContext,
-                signedOnUserId, signedOnUserType);
-
-        recordTurn(sample, MenuService.USER_MENU_TRANSACTION_ID, screen.severity());
-        return body;
+            outcome = outcomeOf(screen.severity());
+            return body;
+        } finally {
+            recordTurn(sample, MenuService.USER_MENU_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -296,19 +334,23 @@ public final class MenuController {
             @RequestParam(name = OPTION_PARAMETER, required = false) final String option,
             final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final ConversationState inbound =
+                    this.conversationStateAdapter.toConversationState(navigationContext);
+            final String signedOnUserId = signedOnUserId(authentication);
+            final UserType signedOnUserType = signedOnUserType(authentication);
 
-        final ConversationState inbound =
-                this.conversationStateAdapter.toConversationState(navigationContext);
-        final String signedOnUserId = signedOnUserId(authentication);
-        final UserType signedOnUserType = signedOnUserType(authentication);
+            final MenuService.MenuScreen screen =
+                    this.menuService.adminMenu(inbound, keyAction, option);
+            final MenuResponse body = this.menuResponseAdapter.toResponse(screen, navigationContext,
+                    signedOnUserId, signedOnUserType);
 
-        final MenuService.MenuScreen screen =
-                this.menuService.adminMenu(inbound, keyAction, option);
-        final MenuResponse body = this.menuResponseAdapter.toResponse(screen, navigationContext,
-                signedOnUserId, signedOnUserType);
-
-        recordTurn(sample, MenuService.ADMIN_MENU_TRANSACTION_ID, screen.severity());
-        return body;
+            outcome = outcomeOf(screen.severity());
+            return body;
+        } finally {
+            recordTurn(sample, MenuService.ADMIN_MENU_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -322,20 +364,30 @@ public final class MenuController {
      * presentation outcomes - so neither can become a high-cardinality label, and neither is a
      * measurement of anything this module asserts a service level for.
      *
-     * <p>A turn that fails is deliberately not timed: the failure surface reports it, and stopping the
-     * sample on a path that produced no screen would mix two different measurements into one series.
+     * <p>The caller invokes this method from {@code finally}. A turn that raises is therefore measured
+     * under the fixed {@value #OUTCOME_FAILED} label instead of disappearing from the series.
      *
      * @param sample the timing sample started at the head of the turn
      * @param transactionId the four-character transaction identifier of the menu served
-     * @param severity how the turn's message is to be presented, or {@code null} when it carries none
+     * @param outcome the bounded message-severity or failure label
      */
     private void recordTurn(final Timer.Sample sample, final String transactionId,
-                            final MenuService.MessageSeverity severity) {
+                            final String outcome) {
         sample.stop(Timer.builder(METRIC_MENU_TURN)
                 .description("Elapsed time of one CardDemo menu turn, transactions CM00 and CA00")
                 .tag(TAG_TRANSACTION, transactionId)
-                .tag(TAG_OUTCOME, (severity == null) ? OUTCOME_NONE : severity.name())
+                .tag(TAG_OUTCOME, outcome)
                 .register(this.meterRegistry));
+    }
+
+    /**
+     * Maps the optional message severity to the bounded timer label.
+     *
+     * @param severity how the turn's message is presented, or {@code null} when it carries none
+     * @return the bounded label
+     */
+    private static String outcomeOf(final MenuService.MessageSeverity severity) {
+        return (severity == null) ? OUTCOME_NONE : severity.name();
     }
 
     /**

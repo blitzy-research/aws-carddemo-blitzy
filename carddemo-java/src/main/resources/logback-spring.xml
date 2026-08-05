@@ -49,33 +49,24 @@
   module's .gitignore and .dockerignore each carry an explicit negation for this exact path so the
   file is neither untracked nor left out of the container image.
 
-  CORRELATION IDENTIFIERS, AND WHY THE JSON ENCODER NAMES THEM RATHER THAN EXPORTING THE LOT. The
-  tracing bridge publishes the current trace and span into the logging context under the keys traceId
-  and spanId. Those are the two keys to search on, and they are what joins a log line to the matching
-  exported trace. The JSON encoder therefore emits an ALLOW LIST of exactly those two keys, and not the
-  whole diagnostic context.
+  CORRELATION IDENTIFIERS ARE AN ALLOW LIST, NOT THE WHOLE DIAGNOSTIC CONTEXT. The tracing bridge
+  publishes the current trace and span into the logging context under the keys traceId and spanId, which
+  are what joins a log line to its exported trace. The JSON encoder emits exactly those two keys. The
+  logging context is a thread-local map any code on the request thread can write, including a library
+  this module did not author, and the machine-facing appender is the one whose output leaves the process;
+  exporting the whole map would publish every future key with no review at the point it is added, and the
+  values this application handles include a card primary account number, a card verification code, a
+  government-issued identifier and a sign-on credential. An allow list makes a new key invisible until
+  someone adds it here deliberately. The readable pattern spells the same two keys out explicitly rather
+  than relying on the optional correlation segment of the framework's own console pattern, so the
+  identifiers are present whether or not that segment has been populated.
 
-  The distinction matters because the logging context is a thread local map that any code on the request
-  thread can write, including a framework or a library this module did not author, and because the
-  machine facing appender is the one whose output leaves the process. Exporting the whole map means every
-  future key is published to the log pipeline by default, with no review at the point it is added - and
-  the values this application handles include a card primary account number, a card verification code, a
-  government issued identifier and a sign on credential. A key carrying one of those would be emitted
-  without an edit here, which is precisely the property that makes a default-open export the wrong
-  default for this service. An allow list inverts that: a new key is invisible until someone adds it
-  here, which is a one line change and a deliberate one.
-
-  Nothing is lost today. The two keys named below are the only keys this module uses, and no code in
-  src/main/java writes to the logging context at all, so the emitted field set is unchanged by the
-  narrowing. The readable pattern spells the same two keys out explicitly rather than relying on the
-  optional correlation segment of the framework's own console pattern, so the identifiers are present
-  whether or not that segment has been populated.
-
-  NEVER IN A LOG LINE, UNDER ANY PROFILE. No credential, no signing value, no bearer token, no full
-  card primary account number, no national identifier. Nothing may be added to this file's allow list
-  without that rule being applied to the key first. The two categories that would otherwise carry
-  such a value out of the persistence provider, its statement text and its bound parameter values,
-  are held below at a level that emits neither.
+  THE CONSTRAINT ON WHAT THIS CONFIGURATION EMITS. No key is added to the allow list above without first
+  establishing that it cannot carry a credential, a signing value, a bearer token, a full card primary
+  account number or a national identifier. The two categories that would otherwise carry such a value out
+  of the persistence provider - its statement text and its bound parameter values - are held below at a
+  level that emits neither. What a given application message contains is decided by the code composing
+  it, not by this file.
 
   DIAGNOSTIC ORDERING IS PRESERVED ON PURPOSE. On a batch terminal path the legacy programs wrote the
   error, then the raw two byte file status, and only then abended. The migrated batch tier keeps that
@@ -85,16 +76,13 @@
   WHAT IS DELIBERATELY ABSENT, each an explicit decision rather than an omission
     * No rolling file appender. The artefact runs as a container: its image writes the log to
       standard output and its health check reads the actuator health endpoint, so a file appender
-      would write into an ephemeral layer that nothing collects. Standard output is the correct
-      destination under every profile.
-    * No asynchronous appender and therefore no queue size. An asynchronous appender needs a policy
-      for a full queue, and every such policy either blocks or discards events. Discarding would lose
-      exactly the diagnostics an end to end output comparison is read to explain, so events are
-      written on the calling thread.
-    * No heap figure, no thread count, no latency, throughput, volume or availability number, here or
-      in any comment. No numeric service level is documented anywhere in the legacy estate, so
-      performance for this implementation is measured and recorded rather than asserted.
-    * No caching layer of any kind, in keeping with the rest of the module.
+      would write into an ephemeral layer that nothing collects.
+    * No asynchronous appender and therefore no queue size. Every full-queue policy either blocks or
+      discards events, and discarding would lose exactly the diagnostics an end-to-end output
+      comparison is read to explain, so events are written on the calling thread.
+    * No heap figure, no thread count, no latency, throughput, volume or availability number. No
+      numeric service level is documented anywhere in the legacy estate, so performance for this
+      implementation is measured and recorded rather than asserted.
     * No second logging backend, no additional bridge and no additional appender library. The only
       logging dependency beyond the framework's own logging starter is the structured encoder
       declared in pom.xml, and no version is restated here: the build owns versions.
@@ -247,28 +235,23 @@
          written first so it is the first thing read, and frames already printed by an enclosing cause
          are summarised rather than repeated.
 
-         AND THE RENDERING IS BOUNDED IN BOTH DIRECTIONS. An earlier revision left it unbounded, on
-         the reasoning that a truncated cause is what makes a failure unexplainable. That trades a
-         diagnostic convenience against two things it cannot pay for. First, a throwable message is
-         arbitrary text that this module does not author: a driver failure carries the connection
-         string, a constraint violation carries the bound values, an interpolated message carries
-         whatever a caller submitted, and a rejected oversized input carries itself. Unbounded, every
-         one of those is published verbatim to a collector that retains it. Second, an attacker who can
-         provoke a failure whose message they control can then choose how many bytes each request
-         writes into centralised storage, which is a log amplification lever rather than a diagnostic.
+         THE RENDERING IS BOUNDED IN BOTH DIRECTIONS, because a throwable message is arbitrary text this
+         module does not author: a driver failure carries the connection string, a constraint violation
+         carries the bound values, an interpolated message carries whatever a caller submitted, and a
+         rejected oversized input carries itself. Unbounded, each of those is published verbatim to a
+         collector that retains it, and a caller who can provoke a failure whose message they control can
+         choose how many bytes each request writes into centralised storage.
 
-         Two bounds close both. maxDepthPerThrowable caps the frames printed for each throwable in the
-         chain, which keeps the cause chain itself complete - every cause is still named, with its own
-         top frames - while removing the repetitive tail that explains nothing. maxLength caps the
-         whole rendered trace, so a single event cannot grow without limit whatever the chain does. The
-         converter marks each cut it makes, so a reader can see that a bound was reached instead of
-         mistaking a bound for the end of the evidence, and the frame that names the failing migrated
+         maxDepthPerThrowable caps the frames printed for each throwable in the chain, which keeps the
+         cause chain complete - every cause is still named, with its own top frames - while removing the
+         repetitive tail that explains nothing. maxLength caps the whole rendered trace, so one event
+         cannot grow without limit whatever the chain does. The converter marks each cut it makes, so a
+         reader can tell a bound from the end of the evidence, and the frame naming the failing migrated
          unit is inside the cap because the root cause is written first.
 
-         The bounds are not the primary control and are not asked to be. They are the backstop for a
-         throwable this module never sees - one raised inside the framework, a driver or a library. The
-         primary control is at the boundary log sites, which record a sanitised, bounded failure chain
-         and do not hand an arbitrary throwable to an appender at all. -->
+         These bounds are a backstop for a throwable this module never sees - one raised inside the
+         framework, a driver or a library. The primary control is at the boundary log sites, which record
+         a sanitised, bounded failure chain and do not hand an arbitrary throwable to an appender. -->
     <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
       <encoder class="net.logstash.logback.encoder.LogstashEncoder">
         <timeZone>UTC</timeZone>
@@ -317,17 +300,20 @@
          component detail, samples traces rather than exporting all of them, requires transport
          security, and resolves every secret from the environment with no fallback.
 
-         Publishing an endpoint there is not the same as opening it: config/SecurityConfig permits
-         exactly two management paths anonymously, the health probe and the metrics scrape endpoint,
-         because a container health check and a Prometheus scrape both arrive without a token. The
-         other two, info and metrics in its individual-meter form, are published but authenticated. So
-         the surface a deployment exposes to an unauthenticated caller is two paths, and the surface it
-         exposes at all is four.
+         Publishing an endpoint there is not the same as opening it. config/SecurityConfig permits the
+         health probe anonymously, because a container health check arrives without a token, and adds an
+         anonymous permit for the metrics scrape path ONLY where carddemo.security.anonymous-metrics-scrape
+         is set. Production leaves that key false, as the shared baseline does, so in production the
+         unauthenticated surface is the health probe alone and the other three published paths -
+         prometheus, metrics and info - are published but authenticated. A collector that presents a
+         bearer token still scrapes.
 
-         No statement text is logged in production: the persistence provider's own statement echo is
-         off in that overlay, and the two provider categories at the end of this file emit neither
-         statement text nor bound parameter values. A production log line carries no credential, no
-         signing value, no full card primary account number and no national identifier. -->
+         What this configuration guarantees about a production log line is what an encoder and an appender
+         can guarantee: no statement text and no bound parameter value reaches a log, because the
+         persistence provider's own statement echo is off in that overlay and the two provider categories
+         at the end of this file are held at levels that emit neither. It cannot guarantee the content of
+         an arbitrary application message; that is the responsibility of the code composing the message,
+         and the module's diagnostic rule for it is recorded in docs/decision-log.md. -->
     <springProfile name="prod">
       <root level="WARN">
         <appender-ref ref="CONSOLE_JSON"/>
@@ -354,9 +340,8 @@
        so that raising the parent tree in a profile reaches it.
        =============================================================================================== -->
 
-  <!-- The application base package. Spelled com.carddemo: earlier delivery documentation misspells it
-       with a single d, and that spelling matches nothing in this module. Every overlay names this
-       category, so its effective level is theirs. -->
+  <!-- The application base package, com.carddemo. Every overlay names this category, so its effective
+       level is theirs. -->
   <logger name="com.carddemo" level="INFO"/>
 
   <!-- The batch tier: the ten migrated batch programs. Their legacy diagnostics were console displays
@@ -373,8 +358,10 @@
        transaction reject reason codes, 100, 101, 102, 103 and 109, each written with the record it
        rejected identified by key rather than reproduced; and the disclosure group default fallback,
        where a missing group is reported and the run continues against the default group code. A
-       diagnostic in this tier records outcomes, status codes, format identifiers and the module's own
-       message numbers, never the value a caller submitted. -->
+       sensitive record-display and user-administration diagnostics use bounded outcomes, counts,
+       status/reference codes and failure types rather than protected fields or provider text. Those
+       source-level decisions are recorded in DL-100 and DL-152; this category declaration is not itself
+       a confidentiality control. -->
   <logger name="com.carddemo.service" level="INHERITED"/>
 
   <!-- The request tier, standing in for the 17 screen transactions. A request scoped event carries
@@ -389,6 +376,23 @@
        this level; the test overlay lowers it for the suite, where per step chatter multiplied by every
        refreshed context is what makes a captured log unusable. -->
   <logger name="org.springframework.batch" level="INFO"/>
+
+  <!-- The framework's job launcher, named here because it is the ONE category in this tree that must sit
+       ABOVE its parent rather than with it. At INFO that class announces every launch as "Attempting to
+       launch job with name=... and parameters=..." - the whole parameter map, VALUES INCLUDED - and the
+       launch surface of this module is reached over HTTP, so those values arrive from a caller. Every
+       diagnostic this module authors reports parameter KEYS and withholds their values, for the reason set
+       out on com.carddemo.config.BatchConfig#batchJobBoundaryListener: a log stream leaves the process while
+       the values stay readable in the framework's own execution-parameter table, which is reached through
+       the database. One INFO line from inside the framework would undo that policy on every launch.
+       The level itself is WARN and lives with the other levels in application.yml, as this file's own
+       ownership rule requires; it is pinned in the SHARED BASELINE rather than per overlay so that raising
+       the parent category in any profile cannot reach it. WARN rather than OFF because the same class
+       reports genuine launch failures, and those must still be heard. Nothing is lost by the raise: the
+       boundary listener still announces START OF JOB with the job name, the instance and execution
+       identifiers and the sorted parameter keys, and the launch endpoint records the job and the execution
+       the framework assigned. -->
+  <logger name="org.springframework.batch.core.launch.support.SimpleJobOperator" level="INHERITED"/>
 
   <!-- Schema migration, and this one is a CROSS FILE CONTRACT rather than a preference. Local
        validation reads the application's log to confirm that every delivered migration was applied and

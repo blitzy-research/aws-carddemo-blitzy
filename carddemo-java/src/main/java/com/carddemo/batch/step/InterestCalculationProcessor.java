@@ -86,7 +86,8 @@ import org.springframework.batch.item.ItemProcessor;
  *       {@code L201};</li>
  *   <li>close the final group after the last row, which is the end-of-file arm at {@code L219} to
  *       {@code L221};</li>
- *   <li>invoke the fee paragraph at {@code L216} once per row that the rate gate did not skip;</li>
+ *   <li>preserve the service's report that its single fee-paragraph owner was reached at
+ *       {@code L216} once per row that the rate gate did not skip;</li>
  *   <li>and confirm, for every transaction the group synthesized, that it still satisfies the
  *       fixed-width output contract of the legacy dataset before it is handed on.</li>
  * </ul>
@@ -122,11 +123,12 @@ import org.springframework.batch.item.ItemProcessor;
  * announcement are never reached after one - and posting a group after a failed step would write
  * through a control break the legacy would not have run.
  *
- * <p>The group's business effects are durable as soon as the service returns, because the service
- * saves the rewritten account and every synthesized transaction inside its own transaction. The final
- * group is additionally retained on this instance and published by {@link #finalAccruedGroup()}, so a
- * job configuration that renders the fixed-width output can pick it up after the step; nothing about
- * the account posting depends on that.
+ * <p>The group's account rewrite is durable as soon as the service returns, because one closed group
+ * owns one transaction. Synthesized transactions are returned rather than inserted into the live
+ * transaction master: the job's guarded writer is the sole owner of the SYSTRAN generation, and
+ * COMBTRAN loads that generation later. The final group is additionally retained on this instance and
+ * published by {@link #finalAccruedGroup()}, so the job configuration can render its fixed-width
+ * records after end of file; nothing about the account posting depends on that.
  *
  * <h2>One deliberate re-ordering, recorded rather than hidden</h2>
  *
@@ -163,7 +165,9 @@ import org.springframework.batch.item.ItemProcessor;
  *       record, written to a new generation of a generation group. The record width is the contract
  *       this stage guards; the generation is the job configuration's staging concern.</li>
  *   <li>The fee paragraph at {@code app/cbl/CBACT04C.cbl:L518} to {@code L520} is <strong>empty and
- *       genuinely invoked</strong> at {@code L216}. See {@link #computeFees()}.</li>
+ *       genuinely invoked</strong> at {@code L216}. Its single Java owner and invocation are in
+ *       {@link InterestCalculationService}; this stage consumes that result and does not translate the
+ *       paragraph a second time.</li>
  *   <li>The job card at {@code app/jcl/INTCALC.jcl:L2} notifies the submitting user; there is no
  *       equivalent in a Spring Batch step and none is invented.</li>
  * </ul>
@@ -471,11 +475,8 @@ public class InterestCalculationProcessor
      * supplementary meters cannot be registered and the shared step template cannot be constructed, and
      * without the clock the batch timestamp has no instant to read.
      *
-     * <p>Nothing overridable is invoked here and {@code this} is not published, so a subclass observing
-     * the fee paragraph cannot see a partially built instance.
-     *
      * @param interestCalculationService the interest run's service, which owns every per-row behaviour,
-     *                                  the five repositories and the group transaction
+     *                                  its repositories and the group transaction
      * @param meterRegistry             the registry the supplementary meters are recorded on, and the
      *                                  registry the shared step template records whole-step timing on
      * @param clock                     the source of the batch timestamp's instant, injected so a test
@@ -618,11 +619,10 @@ public class InterestCalculationProcessor
      * The group the final control break closed, once the step has ended.
      *
      * <p>Published because the group closed after the last chunk cannot travel to the writer through
-     * the chunk path: there is no chunk left to carry it. Its business effects are already durable -
-     * the service saved the rewritten account and every synthesized transaction inside its own
-     * transaction before returning - so nothing about the posting depends on this accessor. It exists
-     * for a job configuration that renders the fixed-width output and therefore needs the last group's
-     * transactions as well as every earlier group's.
+     * the chunk path: there is no chunk left to carry it. Its account rewrite is already durable in the
+     * group's own transaction, while its synthesized transactions still belong exclusively to the
+     * SYSTRAN generation. This accessor lets the job configuration render that final group's records
+     * after end of file just as it renders every earlier group.
      *
      * @return the final group, or an empty result when the run read no row at all, when the step did not
      *         succeed, or when the step has not ended yet
@@ -774,14 +774,14 @@ public class InterestCalculationProcessor
     }
 
     /**
-     * Walks the group's per-row outcomes in the order the rows were presented, invoking the fee
-     * paragraph under the legacy's own gate and confirming each synthesized transaction.
+     * Walks the group's per-row outcomes in the order the rows were presented, preserving the service's
+     * gate decision and confirming each synthesized transaction.
      *
      * <p><strong>The gate at {@code app/cbl/CBACT04C.cbl:L214} encloses both {@code L215} and
      * {@code L216}</strong>, so a row whose rate was zero produces no interest, no transaction and
-     * <em>no fee invocation</em>. A row whose rate was not zero produces exactly one transaction, and
-     * the fee paragraph is invoked immediately after the computation - never hoisted out of the gate and
-     * never made unconditional.
+     * <em>no fee invocation</em>. A row whose rate was not zero produces exactly one transaction. The
+     * service has already invoked the one translated fee paragraph immediately after the computation;
+     * this processor records that gated fact without invoking or owning a duplicate no-op.
      *
      * <p>The identifier suffix is advanced only inside the gate, mirroring the increment at
      * {@code L474}, which is why a skipped row reports {@link #NO_TRAN_ID_SUFFIX}.
@@ -821,7 +821,6 @@ public class InterestCalculationProcessor
                 suffix++;                                                          // Line 474.
                 groupCardNumber = requireSynthesizedTransaction(row, rowKey, parameterDate, suffix,
                         groupCardNumber);
-                computeFees();                                                     // Line 216.
                 mintedSuffix = suffix;
             }
 
@@ -830,47 +829,6 @@ public class InterestCalculationProcessor
                     mintedSuffix, row.interestTransaction()));
         }
         return accrued;
-    }
-
-    /**
-     * Paragraph {@code 1400-COMPUTE-FEES} of {@code app/cbl/CBACT04C.cbl}, lines 518 to 520.
-     *
-     * <p><strong>The legacy body is empty.</strong> It is a single comment marking the paragraph as
-     * unimplemented followed by the exit statement, and nothing else. There is no fee calculation in the
-     * legacy program, in any copybook it includes, or anywhere else in the estate.
-     *
-     * <p><strong>The paragraph is nonetheless genuinely invoked</strong>, at line 216, from inside the
-     * non-zero rate gate - which is why it survives here as a named, invoked method rather than
-     * disappearing from the translation. A faithful translation therefore requires a no-op, and this is
-     * it:
-     *
-     * <ul>
-     *   <li><strong>No fee logic may be invented here.</strong> Adding any would be feature expansion,
-     *       and it would change what an interest run outputs - a byte-parity failure against the
-     *       documented baseline, not an improvement.</li>
-     *   <li>It does not throw, because the legacy invocation completes normally and the run continues.
-     *       A placeholder exception would turn a reproduced behaviour into a defect.</li>
-     *   <li>It publishes no event, mutates no state, touches no repository and logs nothing that would
-     *       imply a defect: a paragraph the program intends to invoke and that implements nothing is not
-     *       a runtime problem.</li>
-     *   <li>It is not deleted or inlined away, because it carries its own traceability row - recorded
-     *       honestly as a documented non-implementation rather than as a translation.</li>
-     *   <li>It is not deprecated, because nothing supersedes it.</li>
-     * </ul>
-     *
-     * <p>It is {@code protected} rather than private for one reason: the invocation is a behaviour worth
-     * asserting, and a test can observe it by subclassing and counting calls without the method
-     * acquiring any side effect of its own. The invocation flag on each emitted row reports the same
-     * fact to a writer, and is set by the gate rather than by this method - so overriding this method
-     * cannot change what the run posts, and adding fee logic by overriding it would be the same
-     * prohibited feature expansion by another route.
-     *
-     * <p>If fees are ever required, they belong in a change that states the requirement, not in a
-     * migration whose contract is to reproduce existing behaviour exactly.
-     */
-    protected void computeFees() {
-        // Intentionally empty: the legacy paragraph at lines 518 to 520 has no body. See the contract
-        // above - inventing fee logic here would be feature expansion and would change run output.
     }
 
     /* ======================================================================================== */
@@ -1573,9 +1531,8 @@ public class InterestCalculationProcessor
      *                            invocation were skipped
      * @param defaultGroupUsed    {@code true} when the first probe missed and the padded default group
      *                            supplied the rate, after exactly one fallback probe
-     * @param feeParagraphInvoked {@code true} when the fee paragraph was invoked for this row, which is
-     *                            exactly when the rate gate did not skip it. Set by the gate rather than
-     *                            by the fee method, which has no side effect of its own
+     * @param feeParagraphInvoked {@code true} when the service reached its single fee-paragraph
+     *                            invocation for this row, exactly when the rate gate did not skip it
      * @param tranIdSuffix        the six-digit suffix this row's identifier carries, or
      *                            {@link #NO_TRAN_ID_SUFFIX} when no identifier was minted
      * @param interestTransaction the transaction the row synthesized, or {@code null} when the rate gate

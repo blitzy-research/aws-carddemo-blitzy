@@ -34,24 +34,23 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.servlet.HandlerExceptionResolver;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * Exercises the web tier's single customisation hook, which deliberately customises nothing.
+ * Exercises the web tier's single customisation hook and its narrow security boundaries.
  *
  * <h2>What is under test</h2>
- * {@link WebMvcConfig} occupies the web-configuration seat and overrides no {@link WebMvcConfigurer}
- * callback at all, so that every adjustment which was considered and declined is recorded in one
- * reviewable place rather than left for the next reader to rediscover. The tests assert exactly that:
- * the class is a configurer the framework will collect, it is registered unproxied, it overrides no
- * callback, and the single bean it does contribute adds a request-binding rule without disturbing any
- * setting the configuration file already declares.
+ * {@link WebMvcConfig} occupies the web-configuration seat, preserves the auto-configured converter
+ * and exception machinery, and adds exact-origin CORS plus a generic request-body ceiling beside its
+ * scalar and locale rules.
  *
  * <h2>Why the absence of an override is asserted rather than assumed</h2>
  * Two of the declined adjustments would be actively harmful if a later change introduced them here.
@@ -112,45 +111,62 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("the hook declares exactly two factory methods and neither takes a collaborator, so "
-            + "there is nothing either could have closed over and nothing to substitute in a test")
-    void theHookDeclaresExactlyTwoFactoryMethods() {
+    @DisplayName("the public surface is the four bean contributions plus the CORS callback")
+    void theHookDeclaresOnlyItsFiveFrameworkContributions() {
         List<Method> declared = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .filter(method -> Modifier.isPublic(method.getModifiers()))
                 .toList();
 
-        // TWO, and the second one is the validator. The count is asserted rather than left open
-        // because the property being protected is that nothing here is injected and nothing is
-        // stateful - a third method appearing silently is exactly what would erode that.
-        assertThat(declared).hasSize(2);
+        assertThat(declared).hasSize(5);
         assertThat(declared).extracting(Method::getName)
-                .containsExactlyInAnyOrder("strictScalarCoercionCustomizer", "defaultValidator");
-        assertThat(declared).allSatisfy(method -> assertThat(method.getParameterCount())
-                .as("%s must inject nothing: a factory here that injected something would make the "
-                        + "request-binding rules depend on resolution order", method.getName())
-                .isZero());
+                .containsExactlyInAnyOrder(
+                        "addCorsMappings",
+                        "corsConfigurationSource",
+                        "requestBodyLimitFilter",
+                        "strictScalarCoercionCustomizer",
+                        "defaultValidator");
+        assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings")
+                        || method.getName().equals("requestBodyLimitFilter"))
+                .hasSize(2)
+                .allSatisfy(method -> assertThat(method.getParameterCount()).isEqualTo(1));
+        assertThat(declared).filteredOn(method -> !method.getName().equals("addCorsMappings")
+                        && !method.getName().equals("requestBodyLimitFilter"))
+                .allSatisfy(method -> assertThat(method.getParameterCount()).isZero());
+        assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings"))
+                .singleElement()
+                .satisfies(method -> assertThat(method.getReturnType()).isEqualTo(void.class));
         assertThat(declared)
                 .as("each factory returns the type the framework resolves it by")
                 .extracting(Method::getReturnType)
-                .containsExactlyInAnyOrder(Jackson2ObjectMapperBuilderCustomizer.class,
+                .containsExactlyInAnyOrder(
+                        void.class,
+                        CorsConfigurationSource.class,
+                        FilterRegistrationBean.class,
+                        Jackson2ObjectMapperBuilderCustomizer.class,
                         LocalValidatorFactoryBean.class);
-        assertThat(WebMvcConfig.class.getDeclaredFields())
-                .as("no field means no state can be carried between two requests")
-                .isEmpty();
+        assertThat(Arrays.stream(WebMvcConfig.class.getDeclaredFields())
+                .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                .toList())
+                .as("only the immutable parsed CORS list may be retained by this configurer")
+                .hasSize(1)
+                .allSatisfy(field -> assertThat(Modifier.isFinal(field.getModifiers())).isTrue());
     }
 
     @Test
-    @DisplayName("both bean-producing methods are accounted for by annotation, so no third contribution "
-            + "was added alongside them")
-    void theAnnotatedBeanMethodsAreTheCoercionCustomiserAndTheValidator() {
+    @DisplayName("all four bean-producing methods are accounted for by annotation")
+    void theAnnotatedBeanMethodsAreTheFourDeclaredContributions() {
         List<Method> beanMethods = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Bean.class))
                 .toList();
 
-        assertThat(beanMethods).hasSize(2);
+        assertThat(beanMethods).hasSize(4);
         assertThat(beanMethods).extracting(Method::getName)
-                .containsExactlyInAnyOrder("strictScalarCoercionCustomizer", "defaultValidator");
+                .containsExactlyInAnyOrder(
+                        "corsConfigurationSource",
+                        "requestBodyLimitFilter",
+                        "strictScalarCoercionCustomizer",
+                        "defaultValidator");
     }
 
     @Test

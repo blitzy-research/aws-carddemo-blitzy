@@ -476,6 +476,89 @@ final class AccountProtectedDataAdapterTest {
         }
     }
 
+    @Nested
+    @DisplayName("the same gate applies to values that arrive already revealed, which is how the update "
+            + "transaction's own screen is gated")
+    final class TheGateAppliesToAlreadyRevealedValues {
+
+        /**
+         * The eight values as the update transaction composes them, in the clear.
+         *
+         * @return the composed values
+         */
+        private AccountUpdateProtectedValues composed() {
+            return new AccountUpdateProtectedValues("999", "88", "7777", "1985", "07", "04",
+                    GOVERNMENT_ID, EFT_ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("an authorized caller receives the same instance, because a reveal edits nothing")
+        void anAuthorizedCallerReceivesTheSameValues() {
+            final AccountUpdateProtectedValues composed = composed();
+
+            assertThat(subject.gateForUpdate(composed,
+                    RevealAuthorization.administrator(RevealPurpose.ACCOUNT_UPDATE)))
+                    .isSameAs(composed);
+        }
+
+        @Test
+        @DisplayName("an unauthorized caller receives exactly the masks the record-reading form produces, "
+                + "so the two entry points cannot come to disagree about a masked screen")
+        void anUnauthorizedCallerReceivesTheSameMasks() {
+            final AccountUpdateProtectedValues fromRecord = subject.revealForUpdate(storedCustomer(),
+                    RevealAuthorization.unprivileged(RevealPurpose.ACCOUNT_UPDATE, UserType.USER));
+            final AccountUpdateProtectedValues fromComposed = subject.gateForUpdate(composed(),
+                    RevealAuthorization.unprivileged(RevealPurpose.ACCOUNT_UPDATE, UserType.USER));
+
+            assertThat(fromComposed).isEqualTo(fromRecord);
+        }
+
+        @Test
+        @DisplayName("the masks carry no character of the values they replace, apart from the final four "
+                + "national-identifier digits the design retains")
+        void theMasksCarryNoCharacterOfTheValues() {
+            final AccountUpdateProtectedValues masked = subject.gateForUpdate(composed(),
+                    RevealAuthorization.unprivileged(RevealPurpose.ACCOUNT_UPDATE, UserType.USER));
+
+            assertThat(masked.ssnPart1()).isEqualTo("***");
+            assertThat(masked.ssnPart2()).isEqualTo("**");
+            assertThat(masked.ssnPart3()).isEqualTo("7777");
+            assertThat(masked.dateOfBirthYear()).isEqualTo("****").doesNotContain("1985");
+            assertThat(masked.dateOfBirthMonth()).isEqualTo("**");
+            assertThat(masked.dateOfBirthDay()).isEqualTo("**");
+            assertThat(masked.governmentIssuedId())
+                    .isEqualTo("*".repeat(GOVERNMENT_ID.length()))
+                    .doesNotContain("FICTIONAL");
+            assertThat(masked.eftAccountId()).isEqualTo("*".repeat(EFT_ACCOUNT_ID.length()));
+        }
+
+        @Test
+        @DisplayName("an absent component stays absent rather than becoming a mask, so an absence is not "
+                + "dressed up as a withheld value")
+        void anAbsentComponentStaysAbsent() {
+            final AccountUpdateProtectedValues masked = subject.gateForUpdate(
+                    new AccountUpdateProtectedValues(null, null, null, null, null, null, null, null),
+                    RevealAuthorization.unprivileged(RevealPurpose.ACCOUNT_UPDATE, UserType.USER));
+
+            assertThat(masked.ssnPart1()).isNull();
+            assertThat(masked.governmentIssuedId()).isNull();
+            assertThat(masked.eftAccountId()).isNull();
+        }
+
+        @Test
+        @DisplayName("both arguments are required, so neither an absent screen nor an absent authority "
+                + "can be read as permission")
+        void bothArgumentsAreRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.gateForUpdate(null,
+                            RevealAuthorization.administrator(RevealPurpose.ACCOUNT_UPDATE)))
+                    .withMessageContaining("cleartext");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> subject.gateForUpdate(composed(), null))
+                    .withMessageContaining("authorization");
+        }
+    }
+
     // ----------------------------------------------------------------------------------------
     // Inbound: sealing
     // ----------------------------------------------------------------------------------------
@@ -820,7 +903,7 @@ final class AccountProtectedDataAdapterTest {
 
     @Nested
     @DisplayName("no production source outside the named few reads a stored regulated value, and the "
-            + "one licensed assembler never publishes a sealed envelope")
+            + "declared assembly stages never publish a sealed envelope")
     final class NoOtherProductionSourceReadsAStoredRegulatedValue {
 
         /** The production source tree, relative to the module directory the build runs tests from. */
@@ -845,6 +928,9 @@ final class AccountProtectedDataAdapterTest {
          * <li>{@code CustomerRecordMapper.java} writes the five-hundred-byte fixed-width record image.
          *     That image <em>is</em> the legacy file format and genuinely carries the cleartext values;
          *     refusing to write them would break the byte-parity the batch tier is measured on.</li>
+         * <li>{@code CustomerRepository.java} consumes the complete held and replacement images for the
+         *     atomic compare-and-set that prevents a customer-only concurrent change from being
+         *     overwritten. The values are query parameters and are never published.</li>
          * <li>{@code AccountUpdateService.java} reproduces {@code app/cbl/COACTUPC.cbl}, which performs
          *     exactly two reads of the stored values and the service performs the same two: the
          *     before-image comparison that decides whether anything changed, at COBOL line 4171, and
@@ -855,9 +941,13 @@ final class AccountProtectedDataAdapterTest {
          *     cannot build a truthful {@code RevealAuthorization}; the echoed user type is not one, and
          *     using it would be the authorization-from-an-echoed-value that
          *     {@code ConversationStateAdapterTest} exists to prevent. Two properties bound the licence
-         *     and both are asserted below: the service is the only licensed assembler of a gated
-         *     response, and every sealed value it reads is unsealed under its own field binding rather
-         *     than published or cross-unsealed.</li>
+         *     and both are asserted below: every sealed value the service reads is unsealed under its own
+         *     field binding rather than published or cross-unsealed, which is guarded through
+         *     {@link #SEALED_READ_PUBLISHERS}; and the cleartext it produces reaches the wire through
+         *     exactly one assembler, which is guarded through {@link #RESPONSE_ASSEMBLER_BY_TYPE}. The
+         *     service was itself that assembler until the upward package edges were closed; it now hands
+         *     a service-owned outcome to {@code AccountUpdateContractAdapter}, so the licence to read is
+         *     recorded here and the licence to assemble is recorded there.</li>
          * </ul>
          */
         private static final List<String> ENTITLED_FILE_NAMES = List.of(
@@ -865,6 +955,7 @@ final class AccountProtectedDataAdapterTest {
                 "AccountProtectedDataAdapter.java",
                 "AccountConcurrencyTokenService.java",
                 "CustomerRecordMapper.java",
+                "CustomerRepository.java",
                 "AccountUpdateService.java");
 
         /** The two account screen responses whose regulated components this gate is the only source of. */
@@ -872,17 +963,29 @@ final class AccountProtectedDataAdapterTest {
                 List.of("AccountViewResponse", "AccountUpdateResponse");
 
         /**
-         * The one production source licensed to assemble each gated response, named per response type so
-         * that a second assembler of either one fails here rather than at the first request that leaks.
+         * The production sources licensed to assemble each gated response, named per response type so
+         * that an unlicensed assembler of either one fails here rather than at the first request that
+         * leaks.
          *
          * <p>Two entries, one per response, and each is a security decision recorded in
-         * {@code docs/decision-log.md} rather than a convenience:</p>
+         * {@code docs/decision-log.md} rather than a convenience. Both now sit at the API boundary, and
+         * neither of them reads a regulated accessor - which is why neither appears in
+         * {@code ENTITLED_FILE_NAMES}, and which is the whole point of the arrangement: an assembler
+         * that never touches a regulated accessor cannot leak one.</p>
          *
          * <ul>
-         *   <li><strong>The update screen</strong> is assembled by {@code AccountUpdateService} for the
-         *   parity reason recorded on the entitlement table above - it must read the stored values, and
-         *   it holds no authenticated principal to build a truthful authorization from, so it publishes
-         *   the cleartext the legacy screen published.</li>
+         *   <li><strong>The update screen</strong> is assembled by
+         *   {@code AccountUpdateContractAdapter}. It used to be assembled by {@code AccountUpdateService}
+         *   itself, and moved here when the upward package edges were closed: the service now returns the
+         *   service-owned {@code AccountUpdateOutcome} and the adapter copies it component for component
+         *   onto the transport record. That relocation narrowed this licence rather than widening it. The
+         *   parity reason recorded on the entitlement table above still belongs to the service - it must
+         *   read the stored values, and it holds no authenticated principal to build a truthful
+         *   authorization from, so the cleartext the legacy screen published still originates there - but
+         *   the file that now assembles the response reads none of the four accessors at all, so the two
+         *   properties that bound the arrangement are asserted against two different files: the assembler
+         *   licence against the adapter here, and the sealed-read binding against the service through
+         *   {@link #SEALED_READ_PUBLISHERS}.</li>
          *   <li><strong>The view screen</strong> is assembled by {@code AccountController}, which is the
          *   boundary the class documentation above anticipated: it reads none of the stored regulated
          *   values, obtains all four from the gate under
@@ -890,23 +993,73 @@ final class AccountProtectedDataAdapterTest {
          *   masked form. That it appears here and <em>not</em> in {@code ENTITLED_FILE_NAMES} is the
          *   whole point of the arrangement: an assembler that never touches a regulated accessor cannot
          *   leak one.</li>
+         *   <li><strong>The update screen</strong> is assembled by
+         *   {@code AccountUpdateContractAdapter} from the service-owned outcome, and
+         *   <strong>what it composes is not what is published</strong>: {@code AccountController} applies
+         *   {@code gateForUpdate} to the composed screen and replaces all eight regulated components
+         *   before answering, so an ordinary signed-on caller receives the masked form and only an
+         *   administrator receives the values. Publishing the composed screen unchanged was the leak this
+         *   nest exists to prevent, and it is now closed at the boundary rather than tolerated.</li>
+         *   <li><strong>{@code AccountUpdateResponse} itself</strong> is licensed for exactly one
+         *   construction: the copy factory
+         *   {@code withRegulatedValues(String, String, String, String, String, String, String, String)},
+         *   which is how the boundary substitutes the gated components without restating fifty-six of
+         *   them at the call site. It is the narrowest possible licence - the method takes the eight
+         *   gated values as parameters and cannot obtain a regulated value from anywhere else, because
+         *   the record has no repository, no cipher and no entity to read one from. It is enrolled here
+         *   rather than exempted by pattern, so a second construction inside that file would still have
+         *   to be justified.</li>
          * </ul>
          *
-         * <p>Adding a third entry is a security decision and belongs in the decision log before it
+         * <p>Adding a further entry is a security decision and belongs in the decision log before it
          * belongs here.</p>
          */
-        private static final Map<String, String> RESPONSE_ASSEMBLER_BY_TYPE = Map.of(
-                "AccountViewResponse", "AccountController.java",
-                "AccountUpdateResponse", "AccountUpdateService.java");
+        private static final Map<String, List<String>> RESPONSE_ASSEMBLER_BY_TYPE = Map.of(
+                "AccountViewResponse", List.of("AccountController.java"),
+                "AccountUpdateResponse",
+                        List.of("AccountUpdateContractAdapter.java", "AccountUpdateResponse.java"));
 
         /**
-         * The same licence flattened to the file names the two file-scoped guards below iterate.
+         * The same licence flattened to the distinct file names the two file-scoped guards below iterate.
          *
          * <p>Derived from the table above rather than restated, so a licence can never be granted in one
          * place and withheld in the other.
          */
         private static final List<String> ENTITLED_RESPONSE_ASSEMBLERS =
-                List.copyOf(RESPONSE_ASSEMBLER_BY_TYPE.values());
+                RESPONSE_ASSEMBLER_BY_TYPE.values().stream()
+                        .flatMap(List::stream)
+                        .distinct()
+                        .toList();
+
+        /**
+         * The source licensed to read a stored regulated value and publish a form of it, over and above
+         * the assemblers themselves.
+         *
+         * <p>One entry, and it exists because the account-update assembler moved to the API boundary
+         * when the upward package edges were closed. Before that move the sealed-read binding guard
+         * below covered {@code AccountUpdateService} for free, because the service was itself the
+         * licensed assembler; after it, the assembler reads no regulated accessor at all and the reads
+         * live in the service. Following the assembler licence alone would therefore have quietly
+         * stopped checking the only file that performs a sealed read - the guard would still have run,
+         * and would have found nothing to object to. Naming the service here keeps the coverage exactly
+         * where it was.
+         */
+        private static final List<String> SEALED_READ_PUBLISHERS_BEYOND_ASSEMBLERS =
+                List.of("AccountUpdateService.java");
+
+        /**
+         * Every source whose sealed reads must be bound to their own field constant: the licensed
+         * assemblers, so a future assembler that starts reading one is caught, and the licensed reader
+         * named above, which is where the reads actually are.
+         *
+         * <p>Derived from the two lists rather than restated, so the coverage cannot be granted in one
+         * place and withheld in the other.
+         */
+        private static final List<String> SEALED_READ_PUBLISHERS = Stream.concat(
+                        ENTITLED_RESPONSE_ASSEMBLERS.stream(),
+                        SEALED_READ_PUBLISHERS_BEYOND_ASSEMBLERS.stream())
+                .distinct()
+                .toList();
 
         /**
          * The two accessors that return a sealed envelope, each with the field binding it must be
@@ -1022,6 +1175,22 @@ final class AccountProtectedDataAdapterTest {
         }
 
         @Test
+        @DisplayName("every source whose sealed reads are guarded is a real file, so the binding guard "
+                + "cannot be emptied by a rename into a name that matches nothing")
+        void eachSealedReadPublisherIsARealFile() {
+            // The companion to the non-vacuity floor inside the binding guard. That floor proves the
+            // guard found reads; this proves it looked in the right places, so a file renamed out from
+            // under the list is a failure here rather than a quietly narrowed scope there.
+            final List<String> present = productionSources().stream()
+                    .map(source -> source.getKey().getFileName().toString())
+                    .filter(SEALED_READ_PUBLISHERS::contains)
+                    .distinct()
+                    .toList();
+
+            assertThat(present).containsExactlyInAnyOrderElementsOf(SEALED_READ_PUBLISHERS);
+        }
+
+        @Test
         @DisplayName("any production source that builds an account screen response must also name this "
                 + "gate, so a later controller cannot assemble one straight from the entity")
         void anySourceBuildingAGatedResponseMustNameThisGate() {
@@ -1052,17 +1221,17 @@ final class AccountProtectedDataAdapterTest {
             }
 
             assertThat(offenders)
-                    .as("the regulated components of these responses have one permitted source and one "
-                            + "licensed assembler, and a second assembler is a security decision that "
-                            + "belongs in the decision log before it belongs in "
+                    .as("the regulated components of these responses have one permitted stored-value "
+                            + "source and explicitly declared assembly stages; another assembler is a "
+                            + "security decision that belongs in the decision log before it belongs in "
                             + "ENTITLED_RESPONSE_ASSEMBLERS")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("the licensed assembler really does assemble one, so its licence is live rather "
-                + "than a dead entry that would hide the next assembler")
-        void theLicensedAssemblerReallyAssemblesAGatedResponse() {
+        @DisplayName("every declared assembly stage really assembles one, so no dead entry can hide "
+                + "the next assembler")
+        void everyDeclaredAssemblyStageReallyAssemblesAGatedResponse() {
             final List<String> assemblers = new ArrayList<>();
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
@@ -1080,20 +1249,24 @@ final class AccountProtectedDataAdapterTest {
         }
 
         @Test
-        @DisplayName("the licensed assembler never publishes a sealed envelope and never unseals one "
-                + "under the other field's binding, which is what keeps its licence narrow")
+        @DisplayName("no licensed reader or assembler publishes a sealed envelope or unseals one under "
+                + "the other field's binding, which is what keeps the licence narrow")
         void theLicensedAssemblerNeverPublishesASealedEnvelope() {
-            // The licence above lets this service read the stored values; it does not let it put what
-            // the column holds onto the wire. Both regulated columns hold an envelope, so a read that
-            // is not bound to its own field constant within the same statement either publishes
+            // The licence above lets the update service read the stored values; it does not let it put
+            // what the column holds onto the wire. Both regulated columns hold an envelope, so a read
+            // that is not bound to its own field constant within the same statement either publishes
             // ciphertext or unseals under the wrong binding - the field confusion the reveal path
             // refuses outright. Asserted on the statement window because a wrapped argument list
             // routinely splits the constant from the accessor across lines.
+            //
+            // Scoped to SEALED_READ_PUBLISHERS rather than to the assemblers, because the account-update
+            // assembler moved to the API boundary and reads nothing regulated: following the assembler
+            // licence alone would leave this guard running over files that hold no sealed read at all.
             final List<String> offenders = new ArrayList<>();
             int boundReads = 0;
             for (final Map.Entry<Path, String> source : productionSources()) {
                 final String fileName = source.getKey().getFileName().toString();
-                if (!ENTITLED_RESPONSE_ASSEMBLERS.contains(fileName)) {
+                if (!SEALED_READ_PUBLISHERS.contains(fileName)) {
                     continue;
                 }
                 final String[] lines = source.getValue().split("\n", -1);
@@ -1112,8 +1285,8 @@ final class AccountProtectedDataAdapterTest {
             }
 
             assertThat(boundReads)
-                    .as("the licensed assembler must really read the sealed columns, or this guard "
-                            + "would pass by finding nothing at all")
+                    .as("a licensed reader must really read the sealed columns, or this guard would "
+                            + "pass by finding nothing at all")
                     .isGreaterThanOrEqualTo(SEALED_ACCESSOR_BINDINGS.size());
             assertThat(offenders)
                     .as("every sealed read is unsealed under its own field binding, so no envelope "
@@ -1158,16 +1331,16 @@ final class AccountProtectedDataAdapterTest {
             // response, which is strictly stronger than asserting that one of them is built nowhere.
             // The needle is therefore proven against real production source twice over, and a second
             // assembler of either response fails here.
-            assertThat(RESPONSE_ASSEMBLER_BY_TYPE).allSatisfy((responseType, assembler) ->
+            assertThat(RESPONSE_ASSEMBLER_BY_TYPE).allSatisfy((responseType, assemblers) ->
                     assertThat(productionSources().stream()
                             .filter(source -> source.getValue()
                                     .contains("new " + responseType + "("))
                             .map(source -> source.getKey().getFileName().toString())
                             .toList())
                             .as("the needle matches real source rather than only this test's own "
-                                    + "text, and %s is built by exactly the one source licensed "
+                                    + "text, and %s is built by exactly the sources licensed "
                                     + "above", responseType)
-                            .containsExactly(assembler));
+                            .containsExactlyInAnyOrderElementsOf(assemblers));
         }
     }
 }

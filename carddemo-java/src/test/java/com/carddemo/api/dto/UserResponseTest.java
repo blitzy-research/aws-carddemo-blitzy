@@ -491,9 +491,9 @@ class UserResponseTest {
                     .as("no screen in the estate presents more rows than the widest one")
                     .isEqualTo(PageMetadata.LARGEST_SCREEN_PAGE_SIZE);
 
-            // The cap reads the paging contract's constant because no private copy exists to read. An
-            // earlier revision declared a duplicate depth constant on this body, and the duplication
-            // was the stated reason a later revision removed the cap altogether.
+            // The cap reads the paging contract's constant because no private copy exists to read: a depth
+            // constant published on this body would be a second place the screen depth could be changed,
+            // and the two copies would then be free to disagree.
             assertThat(Arrays.stream(UserResponse.class.getDeclaredFields())
                             .filter(field -> Modifier.isStatic(field.getModifiers()))
                             .filter(field -> !field.isSynthetic())

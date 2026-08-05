@@ -755,18 +755,17 @@ class UserResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares nineteen components, the list block, the detail block, the "
-                + "screen furniture, the outcome block and the two navigation components")
+        @DisplayName("the response declares twenty components including the protected page snapshot")
         void theResponseDeclaresNineteenComponents() {
             final List<String> declared = Arrays.stream(UserResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("rows", "pageMetadata", "userId", "firstName",
-                    "lastName", "userType", "transactionName", "title01", "currentDate",
-                    "programName", "title02", "currentTime", "message", "fieldErrors",
-                    "generalError", "actionSucceeded", "focusScreenFieldId", "nextRoute",
-                    "navigationContext");
-            assertThat(declared).hasSize(19);
+            assertThat(declared).containsExactly("rows", "pageMetadata", "rowSnapshotToken", "userId",
+                    "firstName", "lastName", "userType", "transactionName", "title01",
+                    "currentDate", "programName", "title02", "currentTime", "message",
+                    "fieldErrors", "generalError", "actionSucceeded", "focusScreenFieldId",
+                    "nextRoute", "navigationContext");
+            assertThat(declared).hasSize(20);
         }
 
         @Test
@@ -781,8 +780,8 @@ class UserResponseRuleComplianceTest {
             assertThat(bounded).containsExactly("userId", "firstName", "lastName", "userType",
                     "transactionName", "title01", "currentDate", "programName", "title02",
                     "currentTime", "message", "focusScreenFieldId");
-            assertThat(bounded).doesNotContain("rows", "pageMetadata", "fieldErrors", "nextRoute",
-                    "navigationContext");
+            assertThat(bounded).doesNotContain("rows", "pageMetadata", "rowSnapshotToken", "fieldErrors",
+                    "nextRoute", "navigationContext");
         }
 
         @Test

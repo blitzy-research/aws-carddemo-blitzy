@@ -17,7 +17,8 @@
 package com.carddemo.config;
 
 import com.carddemo.domain.enums.UserType;
-import com.carddemo.service.SessionTokenIssuer;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.util.SessionTokenIssuer;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.OctetSequenceKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
@@ -61,7 +62,9 @@ import org.springframework.stereotype.Component;
  * is the only place in the module that produces or checks that signature.
  *
  * <p><strong>The split: exactly two facts are signed, and the whole remainder is echoed by the
- * client.</strong> That area carried five groups, and only two of its fields are security facts:
+ * client.</strong> That area carried five groups, and only two of its fields are security facts. A
+ * third claim accompanies them which is not a fact of that area at all but a fingerprint of the record
+ * those two facts were read from - see the revocation section below:
  *
  * <ul>
  *   <li>{@code CDEMO-USER-ID}, {@code PIC X(08)} at {@code app/cpy/COCOM01Y.cpy} L25, becomes the
@@ -94,6 +97,28 @@ import org.springframework.stereotype.Component;
  * the client drives the next call. So no customer name, account identifier, card number,
  * social-security number or credit score is ever placed in a token, and neither is a route, a target
  * program name, a screen name nor any other selection.
+ *
+ * <p><strong>A signed fact is not a current fact, so a third claim carries a fingerprint of the
+ * record.</strong> The legacy system had nothing to revoke: every terminal turn re-entered a
+ * transaction that read the credential master again, so a record changed between two turns was simply
+ * read again on the next one. A signed claim has the opposite property - it stays true to its
+ * signature long after it has stopped being true about the record it describes - and without a remedy
+ * an administrator who demoted an operator, deleted an operator or reset an operator's credential
+ * would have changed nothing until the token already in that operator's hands expired. So a minted
+ * token additionally carries {@link #SECURITY_STATE_CLAIM}, the fingerprint
+ * {@link SignOnStateService} derives from the identifier, the raw type code and the stored credential
+ * digest of the user-security record; and {@link #namesCurrentState(Jwt)} recomputes that fingerprint
+ * from the record on every request and refuses a token that no longer matches. Demotion, promotion,
+ * credential reset and deletion each take effect on the next request rather than at the end of the
+ * token's lifetime. Nothing is stored for this: there is no revocation list, no session table and no
+ * version column, because the fingerprint is derived from the record each time it is needed - which is
+ * also why no future write path can forget to invalidate anything.
+ *
+ * <p>The fingerprint is not the stored credential digest and cannot be turned back into it; the
+ * disclosure analysis is stated once, on {@link SignOnStateService}, rather than repeated here. What
+ * matters at this boundary is that verifying a signature and establishing an identity are now two
+ * different questions: {@link #verify(String)} answers the first and is unchanged, and
+ * {@link #namesCurrentState(Jwt)} answers the second. The filter chain requires both.
  *
  * <p><strong>Routing tolerance is preserved, not tightened.</strong> Sign-on tests the administrator
  * condition and, when it holds, transfers to the administrative menu; the alternative is
@@ -174,6 +199,18 @@ public class JwtTokenProvider implements SessionTokenIssuer {
     public static final String USER_AUTHORITY = "ROLE_USER";
 
     /**
+     * Claim name under which a token carries the fingerprint of the record it was minted from.
+     *
+     * <p>Deliberately not named for a hash, a digest or a credential: it is none of those, it is a
+     * fingerprint of three record fields, and a claim named after the credential would invite the
+     * belief that the credential is in the token. Published for the same reason
+     * {@link #ROLE_CLAIM} is - the minting side, the currency check and any test naming the claim
+     * refer to one authority - and renaming it invalidates every token already issued, which is a
+     * contract change rather than a rename.</p>
+     */
+    public static final String SECURITY_STATE_CLAIM = "authstate";
+
+    /**
      * Logger. Receives the category of a verification failure and nothing else: never a token, never a
      * fragment of one, never signing material, and never a third-party failure message.
      */
@@ -223,6 +260,15 @@ public class JwtTokenProvider implements SessionTokenIssuer {
     private final String issuer;
 
     /**
+     * Reads the authoritative security state of an identity, and fingerprints it.
+     *
+     * <p>Held here rather than at the filter because minting and checking must agree exactly on what
+     * is covered and how, and the only way to guarantee that is for one collaborator to compose both.
+     * The dependency runs configuration-to-service, the direction the module's layering permits.</p>
+     */
+    private final SignOnStateService signOnStateService;
+
+    /**
      * Builds the minting and verifying sides from validated configuration.
      *
      * <p>The signing material arrives only through {@link JwtProperties}, which binds it from the
@@ -251,14 +297,20 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      *                   fixed algorithm
      * @param clock      time source for minting and for judging expiry, so that both come from one
      *                   source and a test can move it
+     * @param signOnStateService reader and fingerprinter of the authoritative user-security record, so
+     *                   that a minted token names the record it was minted from and a presented token
+     *                   can be checked against the record as it stands now
      * @throws IllegalStateException if the configured signing secret is absent, blank, or shorter than
      *                               the fixed algorithm permits. The message names the configuration key
      *                               and the required length, and discloses nothing about the value
-     * @throws NullPointerException  if either argument is {@code null}
+     * @throws NullPointerException  if any argument is {@code null}
      */
-    public JwtTokenProvider(final JwtProperties properties, final Clock clock) {
+    public JwtTokenProvider(final JwtProperties properties, final Clock clock,
+            final SignOnStateService signOnStateService) {
         Objects.requireNonNull(properties, "properties must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.signOnStateService = Objects.requireNonNull(signOnStateService,
+                "signOnStateService must not be null");
 
         if (!properties.hasSecret()) {
             throw new IllegalStateException(JwtProperties.PREFIX
@@ -297,9 +349,22 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * Mints a signed token establishing a signed-on identity and its user type.
      *
      * <p>The two facts placed in the token are exactly the two the legacy communication area carried
-     * forward out of the sign-on program, and nothing else is added. The issue instant comes from this
-     * class's clock and the expiry is that instant advanced by the configured lifetime, so a token's
-     * window is determined entirely by when it was minted and never by when it is presented.</p>
+     * forward out of the sign-on program. A third claim accompanies them, and it is not a fact of that
+     * area: it is the fingerprint of the user-security record these two facts were read from, which is
+     * what lets a later request find out whether they are still true. Nothing else is added. The issue
+     * instant comes from this class's clock and the expiry is that instant advanced by the configured
+     * lifetime, so a token's window is determined entirely by when it was minted and never by when it
+     * is presented.</p>
+     *
+     * <p><strong>Two conditions are re-checked here even though the caller has already established
+     * them.</strong> The record is read anyway, because the fingerprint can only come from it, so
+     * checking it costs nothing beyond the read. A record that has disappeared, and a record whose type
+     * code no longer matches the type being minted, both mean the record changed underneath the
+     * sign-on that is about to be answered; a session must not be issued in either case, and refusing
+     * is the only answer that cannot be mistaken for success. Both are raised rather than returned
+     * because both are unreachable through the delivered sign-on path - it resolves the type from this
+     * same record, in the same request, and admits nobody whose type does not resolve - so reaching
+     * either means a concurrent administrative change or a caller that invented its arguments.</p>
      *
      * @param userId   the signed-on user identifier, already upper-cased by the sign-on path as the
      *                 legacy program upper-cases it, and placed in the subject claim verbatim at the
@@ -307,12 +372,26 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * @param userType the signed-on user's type, whose raw one-character code becomes the role claim and
      *                 which decides the authority a verified token grants
      * @return the compact serialized token
+     * @throws IllegalStateException if no user-security record carries that identifier, or if the record
+     *                               carries a different type code from the one being minted
      * @throws NullPointerException if either argument is {@code null}
      */
     @Override
     public String issue(final String userId, final UserType userType) {
         Objects.requireNonNull(userId, "userId must not be null");
         Objects.requireNonNull(userType, "userType must not be null");
+
+        final SignOnStateService.SignOnState state = this.signOnStateService.currentStateOf(userId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "No user-security record carries the identifier a session was requested for; "
+                                + "no session is issued"));
+        if (!userType.getCode().equals(state.userTypeCode())) {
+            // The identifier is deliberately absent from the message: it is the subject of a credential
+            // being minted, and this text can reach a log or an error surface.
+            throw new IllegalStateException(
+                    "The user-security record no longer carries the user type a session was requested "
+                            + "for; no session is issued");
+        }
 
         final Instant issuedAt = this.clock.instant();
         final JwtClaimsSet claims = JwtClaimsSet.builder()
@@ -321,6 +400,7 @@ public class JwtTokenProvider implements SessionTokenIssuer {
                 .issuedAt(issuedAt)
                 .expiresAt(issuedAt.plus(this.expiration))
                 .claim(ROLE_CLAIM, userType.getCode())
+                .claim(SECURITY_STATE_CLAIM, state.fingerprint())
                 .build();
 
         return this.encoder.encode(JwtEncoderParameters.from(
@@ -372,6 +452,32 @@ public class JwtTokenProvider implements SessionTokenIssuer {
     public Optional<UserType> userTypeOf(final Jwt jwt) {
         Objects.requireNonNull(jwt, "jwt must not be null");
         return UserType.fromCode(jwt.getClaimAsString(ROLE_CLAIM));
+    }
+
+    /**
+     * Reports whether a verified token still names the record it was minted from.
+     *
+     * <p>A verified token proves only that this module minted it and that its window is open. It does
+     * not prove that the two facts it carries are still true, and the whole of what is asked here is
+     * whether they are: the record must still exist, its fingerprint must still match the one the token
+     * carries, and its type code must still be the one the token claims. A token minted before this
+     * claim existed carries none, and is refused rather than admitted, so the mechanism cannot be
+     * bypassed by presenting an older token.</p>
+     *
+     * <p>The composition of the fingerprint, the constant-time comparison, and the decision to refuse
+     * rather than raise when the record cannot be reached, all belong to {@link SignOnStateService};
+     * this method reads three claims and delegates, so that minting and checking cannot drift apart on
+     * what is covered. Like {@link #verify(String)}, it never reports which of the requirements failed
+     * - the caller's next action is identical in every case.</p>
+     *
+     * @param jwt a token already verified by {@link #verify(String)}
+     * @return {@code true} only when the record still exists and still matches the token's claims
+     * @throws NullPointerException if {@code jwt} is {@code null}
+     */
+    public boolean namesCurrentState(final Jwt jwt) {
+        Objects.requireNonNull(jwt, "jwt must not be null");
+        return this.signOnStateService.stillNames(jwt.getSubject(),
+                jwt.getClaimAsString(ROLE_CLAIM), jwt.getClaimAsString(SECURITY_STATE_CLAIM));
     }
 
     /**

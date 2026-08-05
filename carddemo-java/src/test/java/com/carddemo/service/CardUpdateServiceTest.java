@@ -39,14 +39,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.RecoverableDataAccessException;
 
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Card;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.support.RecordWriterDoubles;
 import com.carddemo.util.CobolStringUtils;
 
 import ch.qos.logback.classic.Level;
@@ -118,7 +118,8 @@ class CardUpdateServiceTest {
         this.cardRepository = Mockito.mock(CardRepository.class);
         this.abendService = Mockito.mock(AbendService.class);
         this.service = new CardUpdateService(this.cardRepository, this.abendService,
-                new MessageCatalogService(), new NavigationService(),
+                new MessageCatalogService(), new NavigationService(), new OnlineTransactionBoundary(),
+                RecordWriterDoubles.passthrough(),
                 Clock.fixed(Instant.parse("2024-03-14T15:09:26Z"), ZoneOffset.UTC));
 
         this.capturedLog = new ListAppender<>();
@@ -164,9 +165,9 @@ class CardUpdateServiceTest {
      *
      * @return the echoed state, never {@code null}
      */
-    private static NavigationContext reEntryContext() {
-        return new NavigationContext("CCUP", "COCRDUPC", null, null, "USER0001", "U",
-                NavigationContext.ProgramContext.REENTER, "000000001", "ANIYA", null, "VON",
+    private static ScreenNavigationState reEntryContext() {
+        return new ScreenNavigationState("CCUP", "COCRDUPC", null, null, "USER0001", "U",
+                ScreenNavigationState.ProgramContext.REENTER, "000000001", "ANIYA", null, "VON",
                 ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
     }
 
@@ -277,8 +278,8 @@ class CardUpdateServiceTest {
                     .thenReturn(Optional.of(stored));
 
             // Arrival from the card-list screen runs the fetch path at lines 482 to 496.
-            final NavigationContext fromCardList = new NavigationContext("CCLI", "COCRDLIC", null, null,
-                    "USER0001", "U", NavigationContext.ProgramContext.ENTER, "000000001", "ANIYA", null,
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI", "COCRDLIC", null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null,
                     "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDSLA", "COCRDLI");
             final CardUpdateService.CardUpdateResult fetched = CardUpdateServiceTest.this.service
                     .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
@@ -324,8 +325,8 @@ class CardUpdateServiceTest {
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(stored));
 
-            final NavigationContext fromCardList = new NavigationContext("CCLI", "COCRDLIC", null, null,
-                    "USER0001", "U", NavigationContext.ProgramContext.ENTER, "000000001", "RENEE", null,
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI", "COCRDLIC", null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001", "RENEE", null,
                     "WEISS", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDSLA", "COCRDLI");
             final CardUpdateService.CardUpdateResult fetched = CardUpdateServiceTest.this.service
                     .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
@@ -389,7 +390,7 @@ class CardUpdateServiceTest {
                     });
             assertThat(result.decoration().markedFields()).singleElement()
                     .satisfies(marked -> assertThat(marked.flagState())
-                            .isEqualTo(FieldErrorDecorator.FlagState.NOT_OK));
+                            .isEqualTo(FieldErrorMarks.FlagState.NOT_OK));
         }
 
         @Test
@@ -407,7 +408,7 @@ class CardUpdateServiceTest {
                             .isEqualTo(ValidationException.FieldState.MISSING));
             assertThat(result.decoration().markedFields()).singleElement()
                     .satisfies(marked -> assertThat(marked.flagState())
-                            .isEqualTo(FieldErrorDecorator.FlagState.BLANK));
+                            .isEqualTo(FieldErrorMarks.FlagState.BLANK));
             assertThat(result.screen().embossedName()).isEqualTo("*");
         }
 
@@ -736,8 +737,8 @@ class CardUpdateServiceTest {
         @DisplayName("(i) the exit arm propagates the dispatch graph's abend when the nominated program "
                 + "cannot be resolved, and nothing is written")
         void exitArmPropagatesAbend() {
-            final NavigationContext unresolvable = new NavigationContext("XXXX", "NOSUCHPG", null, null,
-                    "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000001", "ANIYA",
+            final ScreenNavigationState unresolvable = new ScreenNavigationState("XXXX", "NOSUCHPG", null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER, "000000001", "ANIYA",
                     null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
 
             assertThatExceptionOfType(AbendException.class)
@@ -838,11 +839,11 @@ class CardUpdateServiceTest {
                 + "line 254, and an absent row is the not-found outcome")
         void accountOnlyResolvesThroughTheAccountPath() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                            .findByCardAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
 
-            final NavigationContext fromCardList = new NavigationContext("CCLI", "COCRDLIC", null, null,
-                    "USER0001", "U", NavigationContext.ProgramContext.ENTER, "000000001", "ANIYA", null,
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI", "COCRDLIC", null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null,
                     "VON", ACCOUNT_ID, "Y", null, "CCRDSLA", "COCRDLI");
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
@@ -853,7 +854,7 @@ class CardUpdateServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.card()).isNull();
             Mockito.verify(CardUpdateServiceTest.this.cardRepository)
-                    .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID);
+                    .findByCardAcctId(ACCOUNT_ID);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
         }
@@ -888,23 +889,33 @@ class CardUpdateServiceTest {
         @DisplayName("every collaborator is mandatory")
         void everyCollaboratorIsMandatory() {
             final Clock clock = Clock.systemUTC();
+            final RecordWriter recordWriter = RecordWriterDoubles.passthrough();
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(null,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), clock));
+                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository, null, new MessageCatalogService(),
-                    new NavigationService(), clock));
+                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
-                    CardUpdateServiceTest.this.abendService, null, new NavigationService(), clock));
+                    CardUpdateServiceTest.this.abendService, null, new NavigationService(),
+                    new OnlineTransactionBoundary(), recordWriter, clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(), null,
-                    clock));
+                    new OnlineTransactionBoundary(), recordWriter, clock));
             assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
                     CardUpdateServiceTest.this.cardRepository,
                     CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
-                    new NavigationService(), null));
+                    new NavigationService(), null, recordWriter, clock));
+            assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
+                    CardUpdateServiceTest.this.cardRepository,
+                    CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
+                    new NavigationService(), new OnlineTransactionBoundary(), null, clock));
+            assertThatNullPointerException().isThrownBy(() -> new CardUpdateService(
+                    CardUpdateServiceTest.this.cardRepository,
+                    CardUpdateServiceTest.this.abendService, new MessageCatalogService(),
+                    new NavigationService(), new OnlineTransactionBoundary(), recordWriter, null));
         }
     }
 
@@ -971,9 +982,9 @@ class CardUpdateServiceTest {
             assertThat(CardUpdateService.EditFlag.NOT_OK.decorated()).isTrue();
 
             assertThat(CardUpdateService.EditFlag.BLANK.decorationFlag())
-                    .isEqualTo(FieldErrorDecorator.FlagState.BLANK);
+                    .isEqualTo(FieldErrorMarks.FlagState.BLANK);
             assertThat(CardUpdateService.EditFlag.NOT_OK.decorationFlag())
-                    .isEqualTo(FieldErrorDecorator.FlagState.NOT_OK);
+                    .isEqualTo(FieldErrorMarks.FlagState.NOT_OK);
             assertThat(CardUpdateService.EditFlag.BLANK.fieldState())
                     .isEqualTo(ValidationException.FieldState.MISSING);
             assertThat(CardUpdateService.EditFlag.NOT_OK.fieldState())
@@ -1071,11 +1082,11 @@ class CardUpdateServiceTest {
         @DisplayName("the result normalises an absent field-error list rather than exposing null")
         void resultNormalisesAnAbsentFieldErrorList() {
             final CardUpdateService.CardUpdateResult result = new CardUpdateService.CardUpdateResult(
-                    NavigationService.Route.CARD_UPDATE, NavigationContext.empty(), "CCUP", null,
+                    NavigationService.Route.CARD_UPDATE, ScreenNavigationState.empty(), "CCUP", null,
                     CardUpdateService.ChangeAction.SHOW_DETAILS, null,
                     CardUpdateService.CarriedCardImage.empty(), "", "", "accountId", false, false,
                     false, false, CardUpdateService.WriteOutcome.NOT_ATTEMPTED, null,
-                    FieldErrorDecorator.none(), null, null);
+                    FieldErrorMarks.none(), null, null);
 
             assertThat(result.fieldErrors()).isEmpty();
             assertThat(result.updateCommitted()).isFalse();
@@ -1199,9 +1210,9 @@ class CardUpdateServiceTest {
         @DisplayName("with neither key available the read is not attempted at all and the turn reports "
                 + "not-found")
         void withNoKeyAtAllTheReadIsNotAttempted() {
-            final NavigationContext fromCardListWithNoKeys = new NavigationContext("CCLI",
+            final ScreenNavigationState fromCardListWithNoKeys = new ScreenNavigationState("CCLI",
                     CardUpdateService.LEGACY_CARD_LIST_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
+                    ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
                     null, "Y", null, CardUpdateService.LEGACY_CARD_LIST_MAPSET, "COCRDLIC");
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
@@ -1299,15 +1310,15 @@ class CardUpdateServiceTest {
                 + "finder, whose name carries the take-the-first-row semantic")
         void theAccountPathResolvesThroughTheNonUniqueFinder() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+                            .findByCardAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(storedCard(STORED_NAME_FOLDED)));
 
             // Arrival from the card-list screen takes both keys from the echoed state without editing
             // them, per lines 490 to 491, so a state carrying an account and no card reaches the
             // alternate-index path the legacy declared at line 254 and left unwired.
-            final NavigationContext fromCardList = new NavigationContext("CCLI",
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI",
                     CardUpdateService.LEGACY_CARD_LIST_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
+                    ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
                     ACCOUNT_ID, "Y", null, CardUpdateService.LEGACY_CARD_LIST_MAPSET, "COCRDLIC");
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
@@ -1317,7 +1328,7 @@ class CardUpdateServiceTest {
                             CardUpdateService.CarriedCardImage.empty()));
 
             Mockito.verify(CardUpdateServiceTest.this.cardRepository)
-                    .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID);
+                    .findByCardAcctId(ACCOUNT_ID);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
             assertThat(result.card()).isNotNull();
@@ -1331,12 +1342,12 @@ class CardUpdateServiceTest {
                 + "file")
         void anAccountPathFailureNamesTheAccountPath() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
+                            .findByCardAcctId(ACCOUNT_ID))
                     .thenThrow(new RecoverableDataAccessException("alternate index unavailable"));
 
-            final NavigationContext fromCardList = new NavigationContext("CCLI",
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI",
                     CardUpdateService.LEGACY_CARD_LIST_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
+                    ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null, "VON",
                     ACCOUNT_ID, "Y", null, CardUpdateService.LEGACY_CARD_LIST_MAPSET, "COCRDLIC");
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
@@ -1402,14 +1413,64 @@ class CardUpdateServiceTest {
                             CardUpdateService.FIELD_EXPIRY_YEAR);
             // A blank field is marked, so the decorator carries the blank flag state for all three.
             assertThat(result.decoration().markedFields())
-                    .extracting(FieldErrorDecorator.MarkedField::flagState)
-                    .containsOnly(FieldErrorDecorator.FlagState.BLANK);
+                    .extracting(FieldErrorMarks.MarkedField::flagState)
+                    .containsOnly(FieldErrorMarks.FlagState.BLANK);
             // Clause order at lines 1211 to 1235: the status flag is the first decorated one.
             assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_ACTIVE_STATUS);
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_NOT_OK);
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.NOT_ATTEMPTED);
+        }
+
+        @Test
+        @DisplayName("tabs, line separators and Unicode spaces are supplied invalid characters rather than "
+                + "COBOL SPACES, so none is mislabeled MISSING")
+        void javaWhitespaceIsInvalidRatherThanMissing() {
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(reviewingTurnWithFields(
+                            "MARY ANN", "\t", "\n", "\u2003"));
+
+            assertThat(result.fieldErrors()).hasSize(3);
+            assertThat(result.fieldErrors())
+                    .extracting(ValidationException.FieldError::field)
+                    .containsExactly(CardUpdateService.FIELD_ACTIVE_STATUS,
+                            CardUpdateService.FIELD_EXPIRY_MONTH,
+                            CardUpdateService.FIELD_EXPIRY_YEAR);
+            assertThat(result.fieldErrors())
+                    .allMatch(error -> error.state() == ValidationException.FieldState.INVALID);
+            assertThat(result.decoration().markedFields())
+                    .extracting(FieldErrorMarks.MarkedField::flagState)
+                    .containsOnly(FieldErrorMarks.FlagState.NOT_OK);
+        }
+
+        @Test
+        @DisplayName("an all-low-values field is MISSING, but a field mixing spaces and low values is "
+                + "supplied and INVALID because neither exact figurative comparison holds")
+        void lowValuesAndMixedValuesAreDistinguished() {
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+            final String lowValue = String.valueOf('\0');
+
+            final CardUpdateService.CardUpdateResult allLowValues =
+                    CardUpdateServiceTest.this.service.processCardUpdate(reviewingTurnWithFields(
+                            "MARY ANN", lowValue, lowValue.repeat(2), lowValue.repeat(4)));
+            assertThat(allLowValues.fieldErrors()).hasSize(3);
+            assertThat(allLowValues.fieldErrors())
+                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
+
+            final String mixedMonth = new String(new char[] {' ', '\0'});
+            final CardUpdateService.CardUpdateResult mixed =
+                    CardUpdateServiceTest.this.service.processCardUpdate(reviewingTurnWithFields(
+                            "MARY ANN", "N", mixedMonth, "2028"));
+            assertThat(mixed.fieldErrors()).singleElement()
+                    .satisfies(error -> {
+                        assertThat(error.field()).isEqualTo(CardUpdateService.FIELD_EXPIRY_MONTH);
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.INVALID);
+                    });
         }
 
         @Test
@@ -1427,8 +1488,8 @@ class CardUpdateServiceTest {
             assertThat(result.fieldErrors().get(0).state())
                     .isEqualTo(ValidationException.FieldState.INVALID);
             assertThat(result.decoration().markedFields())
-                    .extracting(FieldErrorDecorator.MarkedField::flagState)
-                    .containsOnly(FieldErrorDecorator.FlagState.NOT_OK);
+                    .extracting(FieldErrorMarks.MarkedField::flagState)
+                    .containsOnly(FieldErrorMarks.FlagState.NOT_OK);
             assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_EXPIRY_MONTH);
         }
 
@@ -1514,8 +1575,8 @@ class CardUpdateServiceTest {
             // becomes a typed enum - which is what the lock-error test above pins down. The ordering is
             // still guaranteed structurally: the diagnostic is the statement before the delegation, with no
             // branch between them, and the delegate logs before it throws.
-            final NavigationContext unresolvableCaller = new NavigationContext("XXXX", "NOSUCHPG", null,
-                    null, "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000001",
+            final ScreenNavigationState unresolvableCaller = new ScreenNavigationState("XXXX", "NOSUCHPG", null,
+                    null, "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER, "000000001",
                     "ANIYA", null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
@@ -1589,8 +1650,8 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("an exit turn with no originating transaction re-arms the menu transaction")
         void anExitTurnWithNoCallerFallsBackToTheMenu() {
-            final NavigationContext noCaller = new NavigationContext(null, null, null, null,
-                    "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000001", "ANIYA",
+            final ScreenNavigationState noCaller = new ScreenNavigationState(null, null, null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER, "000000001", "ANIYA",
                     null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service

@@ -19,21 +19,26 @@ package com.carddemo.batch;
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
+import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.BatchJobCatalog;
+import com.carddemo.util.BatchCancellation;
+import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.TransactionRecordMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
 import java.time.Clock;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -47,9 +52,10 @@ import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -88,34 +94,33 @@ import org.springframework.transaction.PlatformTransactionManager;
  * transaction identifier and the same record width the mapping layer already declares, arrived at
  * from the dataset definition rather than from the data description.
  *
- * <h2>&#9733; The gate is "prior return code AT MOST 4", never "prior return code zero"</h2>
+ * <h2>&#9733; The gate is "prior return code zero", the same strict form as the other three</h2>
  *
- * <p>The gate measured on {@code app/jcl/TRANBKP.jcl:51} tests four against the accumulated return
- * code, and a condition-code test <em>bypasses</em> its step when the test is true. Four being less
- * than the return code is true exactly when the return code exceeds four, so the step is bypassed
- * then - which means the step <strong>executes whenever every earlier step returned a code of at
- * most four</strong>. A warning, and therefore a partial success, is <strong>deliberately
- * tolerated</strong>.
+ * <p>This job carries the fourth and last of the estate's four condition-code step gates, on
+ * {@code app/jcl/TRANBKP.jcl:51}. The migration plan is the frozen contract for how those four gates
+ * translate and it defines all four as the strict form: <strong>the guarded step executes only when
+ * every earlier step returned exactly zero</strong>. That is what
+ * {@link com.carddemo.config.BatchConfig.ConditionCodeGate#ALL_PRIOR_STEPS_ZERO} expresses, and
+ * selecting it here is what keeps this job and the statement job's three gates one rule rather than
+ * two.
  *
- * <p><strong>This is the only non-strict gate in the estate.</strong> The other three gates all
- * belong to the statement job and are the strict form that runs only on a zero return code. The
- * strict form must never be copied here.
+ * <p><strong>One measured divergence, recorded rather than implemented.</strong> The literal spelling
+ * of this member's gate differs from the three in {@code app/jcl/CREASTMT.JCL}, and read on its own it
+ * would admit a prior warning. The plan governs, so the strict form is implemented and the observation
+ * is carried as a recorded decision instead - {@code docs/decision-log.md} entry DL-145. It is metadata
+ * about the estate and is deliberately not expressed as behaviour, here or in any test.
  *
- * <p><strong>Why the tolerance exists, proven from both sides.</strong> The posting job reproduces a
- * measured legacy behaviour in which the posting program reports a return code of four whenever its
- * reject count is above zero - a partial success rather than a failure. This gate exists precisely
- * to accept that code. Narrowing it to zero-only would abort the archive-and-reset cycle on a
- * tolerated warning: a behavioural regression that would read like hardening. Neither side may drift
- * from the other, which is why the cross-reference is recorded here rather than left implicit.
+ * <p><strong>No second ceiling may be introduced for this job.</strong> A looser ceiling would run the
+ * reset behind a prior nonzero code, which is precisely what the plan holds this gate against. The
+ * posting job's own completion code of four for a nonzero reject count is a property of
+ * <em>that</em> job's run and is reported on its own step; it is not a code this job's steps produce,
+ * because a gate reads only the steps of the execution it sits inside.
  *
- * <p><strong>Both forms must remain expressible, and must never be conflated.</strong> The module
- * therefore keeps the two ceilings as two named policies - the strict zero-only ceiling for the
- * statement job and the at-most-four ceiling here - and this job selects the tolerant one by name.
- * A single helper implementing only the strict form would silently change this job's behaviour, and
- * a single helper implementing only the tolerant one would silently change the statement job's.
- * The gate is expressed as a flow transition that <em>proceeds</em> on a tolerated code and
- * <em>ends the job</em> above it, so a step that completed carrying a warning is distinguished from
- * a step that failed rather than being lumped in with it.
+ * <p>The gate is expressed as a flow transition that <em>proceeds</em> on a permitting verdict and
+ * <em>ends the job</em> on a refusing one, so a bypassed reset is distinguished from a failed one
+ * rather than being lumped in with it. Routing on the framework's failure status alone would not do:
+ * a step that <em>completed</em> while reporting a nonzero code of its own has not failed, and the
+ * decider is what refuses it.
  *
  * <h2>&#9733; The pipeline relationship this job is one half of</h2>
  *
@@ -187,6 +192,21 @@ import org.springframework.transaction.PlatformTransactionManager;
  * <p><strong>Retention stays where the platform put it.</strong> The generation limit becomes object
  * versioning on the pre-provisioned bucket, so this file implements no retention rule, no lifecycle
  * policy and no roll-off logic. Nor does it state any transport tuning value of any kind.
+ *
+ * <h2>&#9733; The archive's external byte contract, stated rather than implied</h2>
+ *
+ * <p>The archive is a <strong>fixed-width sequential dataset</strong> and its external bytes are a
+ * contract, because the pipeline reads them back: {@code app/jcl/TRANBKP.jcl:35} declares the output
+ * {@code DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)}, and {@code app/jcl/COMBTRAN.jcl:24} takes the current
+ * generation of that same base as the first of its two concatenated ordering inputs. The contract has
+ * one part: each record is exactly {@link #ARCHIVE_RECORD_LENGTH} bytes, produced whole by the
+ * mapping layer that owns every offset and width in it. Record-format-blocked data carries no line
+ * terminator, so the physical stride is the record length itself and the object size must be exactly
+ * {@code recordCount * 350}. The combine job consequently reads this generation with the module's
+ * fixed-unblocked transaction reader rather than its newline-delimited fixture reader.
+ *
+ * <p>The exact external bytes are pinned by a committed golden fixture, so the stride is an asserted
+ * contract rather than an incidental consequence of the write loop.
  *
  * <h2>&#9733; Two anomalies, recorded and never propagated</h2>
  *
@@ -297,8 +317,13 @@ public final class BackupTransactionJobConfig {
     /**
      * The stable name of the job, launched and queried by name through the registry and operator the
      * batch infrastructure configuration publishes.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = "backupTransactionJob";
+    public static final String JOB_NAME = BatchJobCatalog.BACKUP_TRANSACTION_JOB_NAME;
 
     /** The stable name of the unload step, which archives the master before anything is cleared. */
     public static final String ARCHIVE_STEP_NAME = "backupTransactionArchiveStep";
@@ -306,25 +331,28 @@ public final class BackupTransactionJobConfig {
     /** The stable name of the gated step, which clears the master once it has been archived. */
     public static final String RESET_STEP_NAME = "backupTransactionResetStep";
 
-    /**
-     * The name prefix every archive object carries, being the legacy backup generation base.
-     *
-     * <p>The generation base is a dataset name, which is carried across deliberately: an operator
-     * looking for the archive of a given run finds it under the same name the job stream wrote it
-     * under. What follows the separator is the run's batch timestamp and then, after
-     * {@link #ARCHIVE_GENERATION_INFIX}, its generation number - so successive archives land beside
-     * one another in name order and no two of them share a name.
-     */
-    public static final String ARCHIVE_OBJECT_KEY_PREFIX = "AWS.M2.CARDDEMO.TRANSACT.BKUP/";
+    /** Legacy generation-group base retained as the durable object-key prefix. */
+    public static final String ARCHIVE_DATASET_BASE = "AWS.M2.CARDDEMO.TRANSACT.BKUP";
+
+    /** The name prefix every archive object carries. */
+    public static final String ARCHIVE_OBJECT_KEY_PREFIX = ARCHIVE_DATASET_BASE + "/";
 
     /**
-     * What separates the batch timestamp from the generation number in an archive object's name.
+     * The width of one archived record, in encoded bytes, being the legacy declared record length.
      *
-     * <p>A hyphen, and the number is prefixed so that it reads as a generation rather than as a
-     * further time component. The timestamp ahead of it is a fixed 26 characters wide, so the name
-     * stays unambiguous to a reader and to a parser alike.
+     * <p>Read from the mapping layer rather than restated, so the two can never disagree. This is the
+     * <em>record</em> half of the external byte contract documented on this class: it is what
+     * {@code app/jcl/TRANBKP.jcl:35} declares as {@code LRECL=350}.
      */
-    public static final String ARCHIVE_GENERATION_INFIX = "-G";
+    public static final int ARCHIVE_RECORD_LENGTH = TransactionRecordMapper.RECORD_LENGTH;
+
+    /**
+     * The physical distance from the start of one archived record to the start of the next.
+     *
+     * <p>Exactly one fixed-unblocked record. Published so that a reader of the archive, and the test
+     * that pins its bytes, can state the stride instead of recomputing it.
+     */
+    public static final int ARCHIVE_RECORD_STRIDE = ARCHIVE_RECORD_LENGTH;
 
     /** This configuration's own diagnostic channel, replacing the legacy console display. */
     private static final Logger LOGGER = LoggerFactory.getLogger(BackupTransactionJobConfig.class);
@@ -365,25 +393,7 @@ public final class BackupTransactionJobConfig {
     /** Outcome tag value for a step that raised. */
     private static final String OUTCOME_FAILED = "FAILED";
 
-    /**
-     * The record separator written after each record image.
-     *
-     * <p>The legacy output was fixed-length blocked, so the dataset itself carried no separator. The
-     * sequential datasets this module reads and writes are newline-terminated - which is how the
-     * module's own fixed-width reader consumes one - so the archive is written the same way and can
-     * be read back by that reader without a second convention. The <em>record</em> is still exactly
-     * the contractual width; separation belongs to the writer, as the mapping layer states.
-     */
-    private static final int RECORD_SEPARATOR = '\n';
-
-    /**
-     * The order the master is archived in: ascending business key.
-     *
-     * <p>A sequential read of the legacy indexed cluster delivered its records in key order, and the
-     * key is the transaction identifier at offset 0. This ordering reproduces that exactly. The
-     * value is immutable, so declaring it once is not shared mutable state.
-     */
-    private static final Sort BUSINESS_KEY_ORDER = Sort.by(Sort.Direction.ASC, "tranId");
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
     /** The repository the framework records job and step executions in. */
     private final JobRepository jobRepository;
@@ -400,8 +410,11 @@ public final class BackupTransactionJobConfig {
     /** The transaction master, read by the archive step and cleared by the reset step. */
     private final TransactionRepository transactionRepository;
 
-    /** The object store the archive generation is written to. */
-    private final S3Operations objectStore;
+    /** Bounded sequential-read view kept separate from the frozen online repository surface. */
+    private final TransactionScanRepository transactionScanRepository;
+
+    /** Shared durable generation store, including measured retention enforcement. */
+    private final StagedGenerationStore generationStore;
 
     /** The settings bean the destination bucket and its region are read from. */
     private final AwsProperties awsProperties;
@@ -421,7 +434,8 @@ public final class BackupTransactionJobConfig {
      *                       which is what lets this job be resubmitted with an identical parameter
      *                       set exactly as the legacy member could be
      * @param transactionRepository the transaction master
-     * @param objectStore the object store the archive generation is written to
+     * @param transactionScanRepository bounded sequential-read view of the transaction master
+     * @param objectStore the object-store client used by the durable generation store
      * @param awsProperties the already-registered settings bean carrying the destination bucket and
      *                      the region; this class never registers it a second time
      * @param meterRegistry the registry both step timers are recorded on
@@ -429,9 +443,12 @@ public final class BackupTransactionJobConfig {
      */
     public BackupTransactionJobConfig(final JobRepository jobRepository,
             final PlatformTransactionManager transactionManager,
-            final JobExecutionListener jobBoundaryListener,
-            final JobParametersIncrementer runIncrementer,
+            @Qualifier("batchJobBoundaryListener")
+                    final JobExecutionListener jobBoundaryListener,
+            @Qualifier("batchJobRunIncrementer")
+                    final JobParametersIncrementer runIncrementer,
             final TransactionRepository transactionRepository,
+            final TransactionScanRepository transactionScanRepository,
             final S3Operations objectStore,
             final AwsProperties awsProperties,
             final MeterRegistry meterRegistry,
@@ -442,8 +459,12 @@ public final class BackupTransactionJobConfig {
         this.runIncrementer = Objects.requireNonNull(runIncrementer, "runIncrementer");
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository");
-        this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
+        this.transactionScanRepository = Objects.requireNonNull(
+                transactionScanRepository, "transactionScanRepository");
         this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
+        this.generationStore = new StagedGenerationStore(
+                Objects.requireNonNull(objectStore, "objectStore"),
+                this.awsProperties.s3().batchStagingBucket());
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -453,7 +474,7 @@ public final class BackupTransactionJobConfig {
     // ----------------------------------------------------------------------------------------
 
     /**
-     * The archive-and-reset job: unload the transaction master, then clear it behind the tolerant
+     * The archive-and-reset job: unload the transaction master, then clear it behind the strict
      * condition-code gate.
      *
      * <p><strong>The flow, and why it is shaped this way.</strong> The unload runs unconditionally,
@@ -464,10 +485,10 @@ public final class BackupTransactionJobConfig {
      * bypassed step is not a failed step - the legacy job stream reported a bypassed step and
      * completed.
      *
-     * <p><strong>The gate is the tolerant ceiling and must stay so.</strong> Selecting the strict
-     * ceiling here would abort the cycle on the very return code the posting job is measured to
-     * report for a partial success. The two ceilings are two named policies precisely so that this
-     * selection is visible in one place and cannot be changed by accident.
+     * <p><strong>The gate is the strict ceiling and must stay so.</strong> The plan defines every one
+     * of the estate's four condition-code step gates as the strict form, and the ceiling is a single
+     * named policy precisely so that this selection is visible in one place and cannot be loosened by
+     * accident.
      *
      * <p><strong>Why the steps are not published as beans.</strong> Nine job configurations share one
      * context, so publishing every step would put a couple of dozen same-typed beans in it and make
@@ -487,9 +508,9 @@ public final class BackupTransactionJobConfig {
                 .listener(this.jobBoundaryListener)
                 .incrementer(this.runIncrementer)
                 .start(archiveStep)
-                .next(ConditionCodeGate.WARNINGS_TOLERATED)
+                .next(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO)
                     .on(ConditionCodeGate.PERMITTED).to(resetStep)
-                .from(ConditionCodeGate.WARNINGS_TOLERATED)
+                .from(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO)
                     .on(ConditionCodeGate.REFUSED).end()
                 .end()
                 .build();
@@ -510,8 +531,8 @@ public final class BackupTransactionJobConfig {
      * @return the step, named {@link #ARCHIVE_STEP_NAME}
      */
     private Step archiveTransactionMasterStep() {
-        final Tasklet archive = new TransactionArchiveTasklet(this.transactionRepository,
-                this.objectStore, this.awsProperties, this.meterRegistry, this.clock);
+        final Tasklet archive = new TransactionArchiveTasklet(this.transactionScanRepository,
+                this.generationStore, this.awsProperties, this.meterRegistry, this.clock);
         return new StepBuilder(ARCHIVE_STEP_NAME, this.jobRepository)
                 .tasklet(timed(ARCHIVE_STEP_NAME, archive), this.transactionManager)
                 .build();
@@ -603,9 +624,9 @@ public final class BackupTransactionJobConfig {
      */
     private static final class TransactionArchiveTasklet implements Tasklet {
 
-        private final TransactionRepository transactionRepository;
+        private final TransactionScanRepository transactionScanRepository;
 
-        private final S3Operations objectStore;
+        private final StagedGenerationStore generationStore;
 
         private final AwsProperties awsProperties;
 
@@ -613,12 +634,12 @@ public final class BackupTransactionJobConfig {
 
         private final Clock clock;
 
-        TransactionArchiveTasklet(final TransactionRepository transactionRepository,
-                final S3Operations objectStore, final AwsProperties awsProperties,
+        TransactionArchiveTasklet(final TransactionScanRepository transactionScanRepository,
+                final StagedGenerationStore generationStore, final AwsProperties awsProperties,
                 final MeterRegistry meterRegistry, final Clock clock) {
-            this.transactionRepository =
-                    Objects.requireNonNull(transactionRepository, "transactionRepository");
-            this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
+            this.transactionScanRepository = Objects.requireNonNull(
+                    transactionScanRepository, "transactionScanRepository");
+            this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
             this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
             this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
             this.clock = Objects.requireNonNull(clock, "clock");
@@ -626,17 +647,22 @@ public final class BackupTransactionJobConfig {
 
         @Override
         public RepeatStatus execute(final StepContribution contribution,
-                final ChunkContext chunkContext) {
-            final String bucket = this.awsProperties.s3().batchStagingBucket();
+                final ChunkContext chunkContext) throws Exception {
             final TransactionArchiveProgram unload = new TransactionArchiveProgram(
-                    this.transactionRepository, this.objectStore, bucket,
+                    this.transactionScanRepository, this.generationStore,
                     generationNumberOf(chunkContext), this.meterRegistry, this.clock);
 
-            final AbstractCobolStep.ExecutionSummary summary = unload.run();
+            final AbstractCobolStep.ExecutionSummary summary;
+            try {
+                summary = unload.run(BatchCancellation.requestedBy(chunkContext));
+            } catch (final CancellationException stopped) {
+                throw BatchCancellation.interrupted(stopped);
+            }
 
             LOGGER.info("ARCHIVED {} TRANSACTION RECORD(S) ({} BYTE(S)) AS OBJECT {} IN BUCKET {}"
                     + " OF REGION {}", summary.recordsRead(), unload.archivedByteCount(),
-                    unload.objectKey(), bucket, this.awsProperties.region());
+                    unload.objectKey(), this.awsProperties.s3().batchStagingBucket(),
+                    this.awsProperties.region());
             return RepeatStatus.FINISHED;
         }
 
@@ -681,11 +707,9 @@ public final class BackupTransactionJobConfig {
      */
     private static final class TransactionArchiveProgram extends AbstractCobolStep<Transaction> {
 
-        private final TransactionRepository transactionRepository;
+        private final TransactionScanRepository transactionScanRepository;
 
-        private final S3Operations objectStore;
-
-        private final String bucket;
+        private final StagedGenerationStore generationStore;
 
         /** The generation number this execution's archive is named with. */
         private final long generationNumber;
@@ -699,14 +723,13 @@ public final class BackupTransactionJobConfig {
         /** The object name this execution writes, fixed when the output is opened. */
         private String objectKey;
 
-        TransactionArchiveProgram(final TransactionRepository transactionRepository,
-                final S3Operations objectStore, final String bucket, final long generationNumber,
+        TransactionArchiveProgram(final TransactionScanRepository transactionScanRepository,
+                final StagedGenerationStore generationStore, final long generationNumber,
                 final MeterRegistry meterRegistry, final Clock clock) {
             super(LEGACY_MEMBER_NAME, meterRegistry, clock);
-            this.transactionRepository =
-                    Objects.requireNonNull(transactionRepository, "transactionRepository");
-            this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
-            this.bucket = requireBucket(bucket);
+            this.transactionScanRepository = Objects.requireNonNull(
+                    transactionScanRepository, "transactionScanRepository");
+            this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
             this.generationNumber = generationNumber;
         }
 
@@ -722,14 +745,16 @@ public final class BackupTransactionJobConfig {
         @Override
         protected void openResources() {
             openResource(INPUT_DEFINITION_NAME, () -> {
-                final List<Transaction> master =
-                        this.transactionRepository.findAll(BUSINESS_KEY_ORDER);
-                this.readPosition = master.iterator();
+                this.readPosition = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.transactionScanRepository
+                                .findByTranIdGreaterThanOrderByTranIdAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Transaction::getTranId, Comparator.naturalOrder());
                 return FileStatus.SUCCESS.getCode();
             });
             openResource(OUTPUT_DEFINITION_NAME, () -> {
-                this.objectKey = ARCHIVE_OBJECT_KEY_PREFIX + currentBatchTimestamp()
-                        + ARCHIVE_GENERATION_INFIX + this.generationNumber;
+                this.objectKey =
+                        StagedGenerationStore.objectKey(ARCHIVE_DATASET_BASE, this.generationNumber);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -758,18 +783,20 @@ public final class BackupTransactionJobConfig {
          * width would be a different record format, and a silently short or long archive is an
          * archive that cannot be read back.
          *
+         * <p>The record is exactly {@link #ARCHIVE_RECORD_LENGTH} bytes and nothing on this path adds
+         * a separator, delimiter or padding byte to it.
+         *
          * @param record the record just read
          */
         @Override
         protected void processRecord(final Transaction record) {
             writeRecord(OUTPUT_DEFINITION_NAME, () -> {
                 final byte[] image = TransactionRecordMapper.toRecordBytes(record);
-                if (image.length != TransactionRecordMapper.RECORD_LENGTH) {
+                if (image.length != ARCHIVE_RECORD_LENGTH) {
                     throw new IllegalStateException("archive record encoded to " + image.length
-                            + " bytes, expected " + TransactionRecordMapper.RECORD_LENGTH);
+                            + " bytes, expected " + ARCHIVE_RECORD_LENGTH);
                 }
                 this.generation.writeBytes(image);
-                this.generation.write(RECORD_SEPARATOR);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -782,6 +809,11 @@ public final class BackupTransactionJobConfig {
          * object is diagnosed and abended exactly as a failure to close the output dataset was: the
          * raw status first, the abend second. The bucket already exists - it is provisioned by the
          * platform - so nothing here creates it, configures it or tests for it.
+         *
+         * <p>The composed bytes are checked against the stride before they are stored, so an archive
+         * whose external shape is not a whole number of records is never uploaded at all. A
+         * partial-record archive is unreadable by the ordering job that consumes it, and it is far cheaper
+         * to fail the step here than to discover the truncation a cycle later.
          */
         @Override
         protected void closeResources() {
@@ -791,11 +823,29 @@ public final class BackupTransactionJobConfig {
             });
             closeResource(OUTPUT_DEFINITION_NAME, () -> {
                 final byte[] content = this.generation.toByteArray();
-                try (InputStream body = new ByteArrayInputStream(content)) {
-                    this.objectStore.upload(this.bucket, this.objectKey, body);
-                }
+                requireWholeRecordStride(content.length);
+                this.generationStore.publishBytes(ARCHIVE_DATASET_BASE, this.generationNumber,
+                        content, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
                 return FileStatus.SUCCESS.getCode();
             });
+        }
+
+        /**
+         * Refuses a generation whose size is not an exact multiple of the fixed record stride.
+         *
+         * <p>A Java-only guard with no legacy antecedent, because a record-format-blocked dataset could
+         * not be written at a partial record length in the first place. It exists so that the external
+         * byte contract this class publishes is enforced at the boundary that publishes it.
+         *
+         * @param  composedLength        the size of the composed generation, in bytes
+         * @throws IllegalStateException if the size is not a whole number of records
+         */
+        private static void requireWholeRecordStride(final int composedLength) {
+            if (composedLength % ARCHIVE_RECORD_STRIDE != 0) {
+                throw new IllegalStateException("archive composed to " + composedLength
+                        + " bytes, which is not a whole number of " + ARCHIVE_RECORD_STRIDE
+                        + "-byte records");
+            }
         }
 
         /**
@@ -821,15 +871,14 @@ public final class BackupTransactionJobConfig {
             return this.generation.size();
         }
 
-        private static String requireBucket(final String bucket) {
-            Objects.requireNonNull(bucket, "bucket");
-            if (bucket.isBlank()) {
-                throw new IllegalArgumentException(
-                        "the archive destination bucket must be configured under "
-                                + AwsProperties.S3.BATCH_STAGING_BUCKET_PROPERTY);
-            }
-            return bucket;
+        /**
+         * @return how many fixed records the composed generation holds, being its size divided by
+         *         {@link #ARCHIVE_RECORD_STRIDE}
+         */
+        int archivedRecordCount() {
+            return this.generation.size() / ARCHIVE_RECORD_STRIDE;
         }
+
     }
 
     // ----------------------------------------------------------------------------------------
@@ -861,15 +910,22 @@ public final class BackupTransactionJobConfig {
 
         @Override
         public RepeatStatus execute(final StepContribution contribution,
-                final ChunkContext chunkContext) {
-            final long held = this.transactionRepository.count();
-            this.transactionRepository.deleteAllInBatch();
+                final ChunkContext chunkContext) throws Exception {
+            try {
+                if (chunkContext != null) {
+                    BatchCancellation.checkpoint(BatchCancellation.requestedBy(chunkContext));
+                }
+                final long held = this.transactionRepository.count();
+                this.transactionRepository.deleteAllInBatch();
 
-            if (held == 0L) {
-                LOGGER.info("TRANSACTION MASTER HELD NO RECORD TO CLEAR; NOTHING TO DELETE IS NOT AN"
-                        + " ERROR");
-            } else {
-                LOGGER.info("CLEARED {} RECORD(S) FROM THE TRANSACTION MASTER", held);
+                if (held == 0L) {
+                    LOGGER.info("TRANSACTION MASTER HELD NO RECORD TO CLEAR; NOTHING TO DELETE IS"
+                            + " NOT AN ERROR");
+                } else {
+                    LOGGER.info("CLEARED {} RECORD(S) FROM THE TRANSACTION MASTER", held);
+                }
+            } catch (final CancellationException stopped) {
+                throw BatchCancellation.interrupted(stopped);
             }
             return RepeatStatus.FINISHED;
         }

@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -33,7 +34,6 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
@@ -42,8 +42,10 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -427,6 +429,24 @@ public class BillPaymentService {
     private static final long TRANSACTION_ID_EOF_SEED = 0L;
 
     /**
+     * How many times the allocate-and-write span of lines 212 to 233 is performed before the duplicate
+     * arm reports: two, so the maximum is re-read under the allocation lock exactly once more.
+     *
+     * <p><strong>The bound belongs here and not in the repository</strong>, which states the obligation
+     * and explains why only the service that owns the transactional boundary can decide how many
+     * attempts are reasonable - see {@link TransactionRepository#lockIdentifierAllocation(long)}. Two is
+     * what that contract asks for: <em>re-read the maximum under the lock and try once more</em>.
+     *
+     * <p><strong>A retry is needed at all only against a writer that reached the transaction master
+     * without taking the allocation lock</strong> - a bulk load, a migration script, or a future caller
+     * that forgot. Two allocators that both take the lock are serialised by it and cannot collide, so
+     * between them the first attempt always succeeds and this bound is never consumed. Raising it would
+     * only lengthen a fight with a writer that is ignoring the lock, which is a defect to fix rather
+     * than a race to win.
+     */
+    private static final int IDENTIFIER_ALLOCATION_ATTEMPTS = 2;
+
+    /**
      * The browse-positioning key the move at line 212 writes: the high-value figurative constant across
      * the whole sixteen-character key.
      *
@@ -645,7 +665,7 @@ public class BillPaymentService {
     public record BillPaymentScreenInput(String accountId,
                                          String confirm,
                                          KeyAction keyAction,
-                                         NavigationContext navigationContext) {
+                                         ScreenNavigationState navigationContext) {
     }
 
     /**
@@ -809,7 +829,7 @@ public class BillPaymentService {
      * @param screen                  the three screen fields as the turn leaves them
      */
     public record BillPaymentResult(NavigationService.Route route,
-                                    NavigationContext navigationContext,
+                                    ScreenNavigationState navigationContext,
                                     String reArmedTransactionId,
                                     TransactionProjection transaction,
                                     AccountProjection account,
@@ -915,11 +935,18 @@ public class BillPaymentService {
      *
      * <p>The transactional boundary spans the entire turn because the legacy unit of work is the task,
      * and because the identifier rule requires it: the maximum existing key is read, incremented and
-     * inserted without any other writer being able to interleave a commit between the read and the
-     * insert. Splitting the read from the write - or caching the value read - would let two concurrent
-     * payments observe the same maximum and mint the same identifier. The boundary also covers the
+     * inserted inside one unit of work, and splitting the read from the write - or caching the value
+     * read - would let two concurrent payments mint the same identifier. The boundary also covers the
      * account rewrite, so a conflict on that rewrite rolls the inserted transaction back with it,
      * which is the behaviour the estate's single explicit rollback expresses on the online update path.
+     *
+     * <p><strong>The boundary alone is necessary and not sufficient, and the advisory lock is what
+     * completes it.</strong> Under the {@code READ COMMITTED} isolation this module runs at, a row
+     * another transaction has inserted but not yet committed is invisible, so a shared boundary does not
+     * by itself stop two concurrent payments from observing the same maximum. The payment stage
+     * therefore takes {@link TransactionRepository#lockIdentifierAllocation(long)} before the maximum is
+     * read; that lock is transaction-scoped, so this boundary is exactly what holds it across the
+     * increment, the insert and its flush, and releases it on commit and on rollback alike.
      *
      * <p>The turns that touch no data at all - a transfer, a cleared screen, an unmapped key - run
      * inside the same boundary and commit nothing, which costs a boundary and buys a single, uniform
@@ -1022,7 +1049,7 @@ public class BillPaymentService {
             // IF EIBCALEN = 0 at line 107, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 108. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written as a literal here.
-            state.context = withNominatedProgram(NavigationContext.empty(),
+            state.context = withNominatedProgram(ScreenNavigationState.empty(),
                     navigationService.resolveAbsentContextRoute().getLegacyProgramName());
             returnToPrevScreen(state);
             return;
@@ -1042,18 +1069,14 @@ public class BillPaymentService {
 
             // IF CDEMO-CB00-TRN-SELECTED NOT = SPACES AND LOW-VALUES at lines 116 and 117.
             //
-            // The program-local extension at lines 64 to 72 has no counterpart in the shared
-            // communication area, and the one field this member reads from it holds an account
-            // identifier: line 118 moves it straight into the account-id screen field. The navigation
-            // state's own account identifier is therefore its carrier, which keeps the nomination in
-            // client-echoed state rather than inventing server state for it. The extension's remaining
-            // fields drive a paging conversation this member does not have.
-            final String nominatedAccount = state.context.accountId();
-            if (isSupplied(nominatedAccount)) {
+            // The selected value is carried by the bounded screen input rather than trusted from the
+            // echoed navigation record. The latter retains conversation state but is not authority to
+            // select a persisted account.
+            state.accountIdInput = moveToField(input.accountId(), ACCOUNT_ID_WIDTH);
+            if (isSupplied(state.accountIdInput)) {
                 // MOVE CDEMO-CB00-TRN-SELECTED TO ACTIDINI at lines 118 and 119. The sending field is
                 // sixteen characters and the receiving field eleven, so the move truncates on the
                 // right.
-                state.accountIdInput = moveToField(nominatedAccount, ACCOUNT_ID_WIDTH);
                 processEnterKey(state);
             }
 
@@ -1248,8 +1271,18 @@ public class BillPaymentService {
      * line 488 writes zeros into the key, so an empty table seeds zero and the first identifier is one.
      *
      * <p><strong>The increment happens here, not in the repository.</strong> The repository supplies the
-     * maximum and nothing else, and the increment and the insert share this method's transaction, which
-     * is what prevents two concurrent payments from observing the same maximum.
+     * maximum and nothing else, and the increment and the insert share this method's transaction.
+     *
+     * <p><strong>What actually prevents two concurrent payments from observing the same maximum is the
+     * advisory lock, taken before the browse.</strong> Sharing a transaction is not enough on its own:
+     * under {@code READ COMMITTED} an uncommitted insert is invisible, so two allocators inside their own
+     * transactions can both read the same maximum, derive the same successor and collide on the primary
+     * key. The lock admits one allocator at a time and is transaction-scoped, so it is held from before
+     * the browse until this turn ends - which is the serialisation the legacy region obtained by holding
+     * its browse position across its own read, increment and write. Lines 212 to 233 are then performed
+     * up to {@link #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an identifier taken by a writer that
+     * reached the table <em>without</em> the lock is re-minted from a re-read maximum rather than
+     * refused.
      *
      * <p><strong>The first identifier on an empty table is the sixteen-character string
      * {@code 0000000000000001}, not {@code 1}</strong>, because the source moves a sixteen-digit numeric
@@ -1273,6 +1306,71 @@ public class BillPaymentService {
         // PERFORM READ-CXACAIX-FILE at line 211.
         readCxacaixFile(state);
 
+        // Take the advisory lock that serialises identifier allocation BEFORE the browse reads the
+        // maximum, which is the obligation the repository's own contract places on this service. The
+        // lock is transaction-scoped, so it is held for the rest of this turn - across the increment,
+        // the insert and every flush of it - and is released by commit and by rollback alike. Taking it
+        // once is enough: it is re-entrant within a session, so the retry below does not re-take it.
+        transactionRepository.lockIdentifierAllocation(
+                TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+
+        // Lines 212 to 233 are performed as one allocate-and-write span, and repeated only when the
+        // identifier the span minted turned out to be taken already - which the lock above makes
+        // impossible between two allocators that both take it, and which therefore reports a writer
+        // that reached the table without it. The last attempt lets the insert paragraph report the
+        // source's own duplicate arm instead of re-reading again, so the bound is observable.
+        for (int attempt = 1; attempt <= IDENTIFIER_ALLOCATION_ATTEMPTS; attempt++) {
+            state.finalAllocationAttempt = attempt == IDENTIFIER_ALLOCATION_ATTEMPTS;
+            state.identifierAlreadyTaken = false;
+
+            mintAndWriteTransaction(state);
+
+            if (!state.identifierAlreadyTaken) {
+                break;
+            }
+            // Neither the identifier nor the account is named: both are identifiers.
+            LOG.warn("The minted transaction identifier was already stored, which can only happen when"
+                            + " a writer reached the transaction master without the allocation lock;"
+                            + " re-reading the maximum under the lock: file=TRANSACT attempt={} of {}",
+                    attempt, IDENTIFIER_ALLOCATION_ATTEMPTS);
+        }
+
+        // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT at line 234.
+        //
+        // The operand order is the source's and is never rearranged: truncation makes the arithmetic
+        // non-associative, and because the estate contains no rounding clause anywhere, every store
+        // into a two-decimal field truncates toward zero. The scaling is delegated to the module's
+        // zoned-decimal codec, which is the only place a scale is imposed and which always truncates.
+        //
+        // Because the amount IS the full current balance, the result is exactly zero.
+        state.postPaymentBalance = ZonedDecimalCodec.toMonetaryScale(
+                currentBalanceOfRecord(state).subtract(state.transactionRecord.getTranAmt()));
+
+        // PERFORM UPDATE-ACCTDAT-FILE at line 235. Reached whether or not the write succeeded, because
+        // the source tests no flag between the two.
+        updateAcctdatFile(state);
+    }
+
+    /**
+     * The allocate-and-write span of lines 212 to 233: position the browse, read the maximum backward,
+     * end the browse, increment, assemble the record and insert it.
+     *
+     * <p><strong>Why this span is a method of its own, when no paragraph corresponds to it.</strong> The
+     * bounded re-allocation the repository's contract obliges this service to carry has to repeat exactly
+     * these statements and no others: re-reading the maximum means re-performing lines 213 to 215, and a
+     * new maximum means re-performing the increment at lines 216 and 217 and the assembly at lines 218 to
+     * 232 before the insert at line 233 is attempted again. Everything outside the span is performed once
+     * per turn - the cross-reference read at line 211 before it, the balance computation at line 234 and
+     * the account rewrite at line 235 after it - so extracting the span is what keeps the repetition
+     * honest. The paragraph map is unaffected: every paragraph this span performs keeps its own method.
+     *
+     * <p>The first statement is the move of the high-value sentinel at line 212, which is also what makes
+     * the span repeatable - the browse-start paragraph requires that sentinel, and a second attempt would
+     * otherwise be positioned at the identifier the first attempt minted.
+     *
+     * @param state the turn's working storage
+     */
+    private void mintAndWriteTransaction(final TurnState state) {
         // MOVE HIGH-VALUES TO TRAN-ID at line 212: position the browse past the last record.
         state.transactionKey = HIGH_VALUES_TRANSACTION_KEY;
 
@@ -1329,21 +1427,6 @@ public class BillPaymentService {
 
         // PERFORM WRITE-TRANSACT-FILE at line 233.
         writeTransactFile(state);
-
-        // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT at line 234.
-        //
-        // The operand order is the source's and is never rearranged: truncation makes the arithmetic
-        // non-associative, and because the estate contains no rounding clause anywhere, every store
-        // into a two-decimal field truncates toward zero. The scaling is delegated to the module's
-        // zoned-decimal codec, which is the only place a scale is imposed and which always truncates.
-        //
-        // Because the amount IS the full current balance, the result is exactly zero.
-        state.postPaymentBalance = ZonedDecimalCodec.toMonetaryScale(
-                currentBalanceOfRecord(state).subtract(state.transactionRecord.getTranAmt()));
-
-        // PERFORM UPDATE-ACCTDAT-FILE at line 235. Reached whether or not the write succeeded, because
-        // the source tests no flag between the two.
-        updateAcctdatFile(state);
     }
 
     // ==============================================================================================
@@ -1763,8 +1846,8 @@ public class BillPaymentService {
      * @param state the turn's working storage
      */
     private void readCxacaixFile(final TurnState state) {
-        final Optional<CardCrossReference> found = cardCrossReferenceRepository
-                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.xrefAcctIdKey);
+        final Optional<CardCrossReference> found = firstXrefByBaseKey(
+                cardCrossReferenceRepository.findByXrefAcctId(state.xrefAcctIdKey));
         final FileResponse response;
         if (found.isEmpty()) {
             response = FileResponse.NOT_FOUND;
@@ -1880,6 +1963,16 @@ public class BillPaymentService {
      * returns an optional rather than a bare value, and it is what gives this paragraph a defined seed
      * instead of an absent value to defend against.
      *
+     * <p><strong>The response to a concurrent allocator is this service's, and it is the legacy
+     * response.</strong> Under {@code READ COMMITTED} an insert another turn has not committed is
+     * invisible here, so two turns can read the same maximum and derive the same successor. The
+     * repository declares no lock for that - a lock belongs with whoever owns the transactional
+     * boundary, and the legacy program had no equivalent of one - so the collision is answered where the
+     * legacy answered it: the write paragraph's duplicate arm reports the source's own already-exists
+     * message and the operator retries. Adding a serialising lock or a retry loop here would make the
+     * losing turn succeed instead of being told, which is a better outcome and a different contract; see
+     * {@link com.carddemo.repository.TransactionRepository#findMaxId()} for the full derivation.
+     *
      * <p><strong>The catch-all arm verifies the precondition the textual maximum depends on.</strong> The
      * identifier column is character data, so the query's maximum is lexicographic. Lexicographic and
      * numeric maxima coincide only while every identifier is exactly sixteen zero-padded digits with no
@@ -1980,12 +2073,16 @@ public class BillPaymentService {
      * than by size, which takes the whole sixteen-character key because a well-formed identifier holds
      * no space.
      *
-     * <p><strong>The duplicate arm needs an explicit existence check, and that is not defensive
-     * padding.</strong> A persistence save of a new record whose key is assigned rather than generated
-     * resolves to an update when the key already exists, so without the check a duplicate identifier
-     * would silently overwrite an existing transaction instead of being refused. The legacy write
-     * returns a duplicate response, and reproducing that response is the only way this arm is reachable
-     * at all.
+     * <p><strong>The duplicate arm is driven by an insert-only flush.</strong> A generic persistence
+     * save of a record whose key is assigned may merge it and overwrite the existing row. This path
+     * instead uses the repository's persist-and-flush fragment, so the database reports a duplicate
+     * while this write paragraph is still executing and the existing transaction remains unchanged.
+     *
+     * <p><strong>The existence probe is also what makes the bounded re-allocation possible.</strong>
+     * Because it runs before the insert, nothing is pending when it finds the identifier taken, so the
+     * caller can re-read the maximum under the allocation lock it still holds and mint again. A duplicate
+     * discovered by the store instead would leave the transaction marked for rollback and no further
+     * attempt could succeed, which is exactly why the probe is not redundant with the constraint.
      *
      * <p>The catch-all arm fires when the assembled record cannot be inserted: no identifier was
      * resolved, or no card number was, which is the state the source reaches when the cross-reference
@@ -1999,13 +2096,30 @@ public class BillPaymentService {
     private void writeTransactFile(final TurnState state) {
         final Transaction record = state.transactionRecord;
         final WriteResponse response;
+        boolean takenBeforeTheInsert = false;
         if (record == null || record.getTranId() == null || !isSupplied(record.getTranCardNum())) {
             response = WriteResponse.OTHER;
         } else if (transactionRepository.existsById(record.getTranId())) {
+            takenBeforeTheInsert = true;
             response = WriteResponse.DUPLICATE;
         } else {
-            state.createdTransaction = transactionRepository.save(record);
-            response = WriteResponse.NORMAL;
+            WriteResponse insertResponse;
+            try {
+                state.createdTransaction = transactionRepository.insertAndFlush(record);
+                insertResponse = WriteResponse.NORMAL;
+            } catch (final RuntimeException writeFailure) {
+                if (isDuplicateKeyFailure(writeFailure)) {
+                    LOG.warn("The transaction master already holds the minted bill-payment identifier:"
+                                    + " failureChain={}",
+                            FailureDiagnostics.failureChainOf(writeFailure));
+                    insertResponse = WriteResponse.DUPLICATE;
+                } else {
+                    LOG.error("Writing the bill-payment transaction failed: failureChain={}",
+                            FailureDiagnostics.failureChainOf(writeFailure));
+                    insertResponse = WriteResponse.OTHER;
+                }
+            }
+            response = insertResponse;
         }
 
         // EVALUATE WS-RESP-CD at lines 522 to 547, clause order preserved, catch-all as the default arm.
@@ -2028,6 +2142,16 @@ public class BillPaymentService {
                 sendBillpayScreen(state);
             }
             case DUPLICATE -> {
+                if (takenBeforeTheInsert && !state.finalAllocationAttempt) {
+                    // The existence probe found the identifier taken and the insert was therefore never
+                    // attempted, so nothing is pending and the caller can mint again from a re-read
+                    // maximum under the lock it still holds. The source's arm below is what reports once
+                    // the attempts are exhausted, so this path defers the message rather than replacing
+                    // it.
+                    state.identifierAlreadyTaken = true;
+                    return;
+                }
+
                 // Lines 533 to 539, one arm for both duplicate responses.
                 state.errorFlag = ErrorFlag.ON;
                 state.setMessage(MSG_TRAN_ID_ALREADY_EXISTS);
@@ -2044,6 +2168,21 @@ public class BillPaymentService {
                 sendBillpayScreen(state);
             }
         }
+    }
+
+    /**
+     * Reports whether a persistence failure is the duplicate-key condition the source groups into one arm
+     * at lines 533 and 534.
+     *
+     * <p>The test walks the cause chain and matches on the persistence provider's and the framework's own
+     * duplicate types rather than on a message or a vendor error code, so it depends neither on the
+     * database in use nor on the locale a message is rendered in.
+     *
+     * @param failure the failure the insert raised
+     * @return {@code true} when the failure is a duplicate key
+     */
+    private static boolean isDuplicateKeyFailure(final RuntimeException failure) {
+        return RecordWriter.isDuplicateKey(failure);
     }
 
     /**
@@ -2362,9 +2501,9 @@ public class BillPaymentService {
      * @param programName the destination program name to nominate
      * @return a new state differing only in its nominated-destination program
      */
-    private static NavigationContext withNominatedProgram(final NavigationContext context,
+    private static ScreenNavigationState withNominatedProgram(final ScreenNavigationState context,
             final String programName) {
-        return new NavigationContext(context.fromTransactionId(),
+        return new ScreenNavigationState(context.fromTransactionId(),
                 context.fromProgram(),
                 context.toTransactionId(),
                 programName,
@@ -2389,8 +2528,8 @@ public class BillPaymentService {
      * @param context the state to copy
      * @return a new state differing only in its originating transaction and program
      */
-    private static NavigationContext withOriginatingProgram(final NavigationContext context) {
-        return new NavigationContext(WS_TRANID,
+    private static ScreenNavigationState withOriginatingProgram(final ScreenNavigationState context) {
+        return new ScreenNavigationState(WS_TRANID,
                 WS_PGMNAME,
                 context.toTransactionId(),
                 context.toProgram(),
@@ -2465,7 +2604,7 @@ public class BillPaymentService {
         private boolean messageHighlightedGreen;
 
         /** {@code CARDDEMO-COMMAREA}, adopted at line 111 and handed back by the return at line 148. */
-        private NavigationContext context = NavigationContext.empty();
+        private ScreenNavigationState context = ScreenNavigationState.empty();
 
         /**
          * The destination the turn leads to.
@@ -2528,6 +2667,27 @@ public class BillPaymentService {
 
         /** The record the insert actually stored, absent on every arm but the normal one. */
         private Transaction createdTransaction;
+
+        /**
+         * Whether the identifier the allocate-and-write span minted was found already stored, so the
+         * span is performed again from a re-read maximum.
+         *
+         * <p>Not a legacy field: the legacy browse held its position across the read, the increment and
+         * the write, so no legacy statement can observe this state. It exists because a relational store
+         * expresses that hold as an advisory lock plus an existence probe, and the probe needs somewhere
+         * to report from. Raised only while a further attempt remains, so the insert paragraph's own
+         * duplicate arm still reports on the last one.
+         */
+        private boolean identifierAlreadyTaken;
+
+        /**
+         * Whether the attempt now running is the last the allocation bound allows.
+         *
+         * <p>Also not a legacy field. It is what makes the bound observable from inside the insert
+         * paragraph, which is the only place that can tell a duplicate from a successful write, and it is
+         * what stops the deferral above from becoming an unbounded loop.
+         */
+        private boolean finalAllocationAttempt;
 
         /** The pre-payment balance the moves at lines 193 and 194 read; absent before they run. */
         private BigDecimal screenBalance;
@@ -2679,8 +2839,8 @@ public class BillPaymentService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -2695,7 +2855,7 @@ public class BillPaymentService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }
@@ -2707,5 +2867,27 @@ public class BillPaymentService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
+    }
+
+    /**
+     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
+     * with the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
+     * number. That is a property of the read being reproduced rather than of the index, so
+     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
+     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
+     *
+     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
+     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
+     * coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when the account has none
+     */
+    private static Optional<CardCrossReference> firstXrefByBaseKey(
+            final List<CardCrossReference> candidates) {
+        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

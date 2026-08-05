@@ -16,10 +16,7 @@
  */
 package com.carddemo.config;
 
-import io.micrometer.core.aop.TimedAspect;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.observation.ObservationRegistry;
-import io.micrometer.observation.aop.ObservedAspect;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,8 +27,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Wiring for the observability tier: the three cross-cutting collaborators the framework's own
- * auto-configuration does not supply, and the recorded reasons this class supplies nothing else.
+ * Wiring for the observability tier: the one registry customizer this module supplies, and the
+ * recorded reasons every other observability collaborator remains with framework auto-configuration
+ * or with the code path that owns the measurement.
  *
  * <h2>What it replaces</h2>
  *
@@ -64,8 +62,8 @@ import org.springframework.context.annotation.Configuration;
  * <p>That channel becomes structured logging over SLF4J &mdash; whose encoder and appenders are owned by
  * {@code logback-spring.xml} and configured nowhere else &mdash; together with Actuator, Micrometer and
  * OTLP trace export. Runtime-configurable levels replace the recompile, the meter registry replaces the
- * absent aggregation, and the trace and span identifiers this class keeps flowing replace the absent
- * correlation.
+ * absent aggregation, and the trace and span identifiers the framework tracing bridge keeps flowing
+ * replace the absent correlation.
  *
  * <h2>This class asserts nothing about performance, and that is a requirement</h2>
  *
@@ -138,13 +136,13 @@ import org.springframework.context.annotation.Configuration;
  *
  * <h2>What was considered and deliberately left out</h2>
  *
- * <p><strong>No counting aspect.</strong> The batch tier already builds its counters against the injected
- * registry directly &mdash; the reject-record and category tallies are constructed, named and tagged in the
- * components that own them &mdash; so an annotation-driven counter would have no consumer and would add no
- * capability the programmatic interface lacks. It is left out rather than registered unused, and it is the
- * one aspect of the three whose absence costs nothing to reverse: the framework carries a definition of it
- * beside the timing one, so switching on the annotation-support property those definitions share would
- * supply it without an edit here.
+ * <p><strong>No annotation-driven aspects.</strong> Production source carries no {@code @Timed},
+ * {@code @Observed} or {@code @Counted} method. Endpoint timers, batch counters and outbound AWS
+ * observations are all started explicitly by the boundary that owns the outcome vocabulary. Registering
+ * aspects with no matching method would therefore create inert beans and make the class claim a capability
+ * the application never uses. If annotations are introduced deliberately later, the framework can supply
+ * its own aspects when annotation support is enabled; this class does not pre-empt that decision.
+ * Decision-log entry DL-156 records the removal.
  *
  * <p><strong>No batch-step instrumentation from here.</strong> Step timing belongs to the tier that runs
  * the steps: {@code com.carddemo.batch.step} owns the shared step template and each processor and writer
@@ -172,8 +170,8 @@ import org.springframework.context.annotation.Configuration;
  * <h2>Thread safety and lifecycle</h2>
  *
  * <p>Final, with one field: a string read from configuration when the context is built and never
- * reassigned. There is no mutable static state, nothing is cached, and none of the three beans holds
- * per-request or per-job state, so one instance of each serves every caller without synchronisation.
+ * reassigned. There is no mutable static state, nothing is cached, and the customizer bean holds no
+ * per-request or per-job state, so one instance serves every registry without synchronisation.
  *
  * <p>Provenance: legacy estate checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
  * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Traceability to the estate is by
@@ -277,71 +275,4 @@ public final class ObservabilityConfig {
         return registry -> registry.config().commonTags(APPLICATION_TAG_KEY, tagValue);
     }
 
-    /**
-     * Makes Micrometer's {@code io.micrometer.core.annotation.Timed} annotation effective on the methods of
-     * managed beans.
-     *
-     * <p>Request timing does not depend on this: the auto-configured server metrics already time every
-     * endpoint by URI, method and outcome, with the percentile histogram enabled in {@code application.yml},
-     * and batch work is timed by the tier that runs it. What this aspect adds is the ability to time a
-     * <em>named method</em> &mdash; a translated paragraph whose cost is worth attributing on its own,
-     * inside a service the request timer sees only in aggregate &mdash; by annotating it, without threading a
-     * registry through the call site. The timer it creates is an ordinary meter that reaches the exposition
-     * by the same route as every other, and it declares no bound of any kind.</p>
-     *
-     * <p><strong>Why the framework does not already provide it.</strong> The framework carries a definition
-     * of this aspect, but gates it on an annotation-support property whose match-if-missing behaviour is off
-     * and which none of the shipped documents sets, so that definition does not apply. Leaving it at that
-     * would produce the worst outcome available: an annotated method would compile, read as instrumented,
-     * and silently produce no meter at all. Declaring the bean here makes the capability unconditional. It
-     * does not compete with the framework's definition either, because that definition stands down when the
-     * bean is already present &mdash; so switching the property on later changes nothing about this one.</p>
-     *
-     * <p><strong>The aspect weaving this relies on is present transitively, not declared.</strong> The
-     * build file names no aspect-oriented starter; the two artefacts that matter arrive with other starters
-     * &mdash; the framework's proxying support with the security starter and the weaver with the aspect
-     * library the persistence starter brings &mdash; and the framework's own auto-configuration switches
-     * proxying on precisely because the weaver is on the class path. That was verified against the resolved
-     * dependency tree rather than assumed, and the build file is deliberately left unchanged. The
-     * consequence to know: were either starter dropped, this bean would stop being applied, so a change
-     * there has to be made in the knowledge that annotation-driven timing depends on it.</p>
-     *
-     * @param meterRegistry the auto-configured registry the created timers are registered in, injected
-     *                      rather than looked up so that a test can supply a simple registry and read the
-     *                      timers back; never {@code null}
-     * @return the aspect that intercepts annotated methods; never {@code null}
-     */
-    @Bean
-    public TimedAspect timedAspect(final MeterRegistry meterRegistry) {
-        return new TimedAspect(meterRegistry);
-    }
-
-    /**
-     * Makes Micrometer's {@code io.micrometer.observation.annotation.Observed} annotation effective on the
-     * methods of managed beans.
-     *
-     * <p>This is the counterpart of the timing aspect and not a duplicate of it. An observation produces a
-     * timer <em>and</em> a span, so an annotated method both appears in the exposition and becomes a segment
-     * of the trace whose identifiers the correlation fields of every log line carry. That is the one thing
-     * the request timer cannot give: it measures a call, whereas a span explains where inside the call the
-     * time went, and it is the mechanism by which the trace crosses the boundary between the request tier
-     * and the batch tier through the tracing bridge.</p>
-     *
-     * <p>It is registered here for the same reason as the timing aspect, and the reason is the same one
-     * exactly: the observation registry is auto-configured unconditionally, whereas the aspect that consumes
-     * it is gated on the same annotation-support property that no shipped document sets, so the annotation
-     * would be silently inert without this bean. The framework's own definition likewise stands down when
-     * the bean already exists, so nothing here can collide with it. It costs nothing where the annotation is
-     * unused, since a bean whose methods match no pointcut is never proxied. Whether the resulting spans are
-     * exported is a separate matter settled by profile: the instrumentation runs either way, which is what
-     * keeps the identifiers flowing into the diagnostic context when no collector is reachable.</p>
-     *
-     * @param observationRegistry the auto-configured registry the observations are started against,
-     *                            carrying whichever handlers the active profile wires; never {@code null}
-     * @return the aspect that intercepts annotated methods; never {@code null}
-     */
-    @Bean
-    public ObservedAspect observedAspect(final ObservationRegistry observationRegistry) {
-        return new ObservedAspect(observationRegistry);
-    }
 }

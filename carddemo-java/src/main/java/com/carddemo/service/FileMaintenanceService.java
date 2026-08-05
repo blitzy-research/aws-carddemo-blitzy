@@ -16,29 +16,41 @@
  */
 package com.carddemo.service;
 
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Card;
+import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.AccountScanRepository;
+import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.CardCrossReferenceScanRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CardScanRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.util.BatchCancellation;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SensitiveLogRedactor;
 
 /**
  * The four sequential file readers of the batch tier, and the home of the two-level I/O status model
@@ -47,11 +59,17 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  * <p><strong>What is translated here.</strong> Four legacy members, twenty-one paragraphs, one service:
  * {@code app/cbl/CBACT01C.cbl} (six paragraphs, 193 lines) reads the account master,
  * {@code app/cbl/CBACT02C.cbl} (five paragraphs, 178 lines) reads the card master,
- * {@code app/cbl/CBACT03C.cbl} (five paragraphs, 178 lines) reads a fifty-byte indexed cluster under a
- * seventeen-byte composite key, and {@code app/cbl/CBCUS01C.cbl} (five paragraphs, 178 lines) reads the
- * customer master. Every one has the same shape - open, sequential read loop, status check, close, with
- * the abend path on the error branch - which is why one service carries all four rather than four
- * services carrying one apiece.
+ * {@code app/cbl/CBACT03C.cbl} (five paragraphs, 178 lines) reads the card cross-reference cluster, and
+ * {@code app/cbl/CBCUS01C.cbl} (five paragraphs, 178 lines) reads the customer master. Every one has the
+ * same shape - open, sequential read loop, status check, close, with the abend path on the error branch -
+ * which is why one service carries all four rather than four services carrying one apiece.
+ *
+ * <p>A fifth sequential pass lives here and translates <strong>no member at all</strong>: the ordered
+ * category-balance unload that {@code app/jcl/PRTCATBL.jcl} performs with a cataloged copy utility and an
+ * external sort. It is in this class because it needs exactly the discipline this class owns, and it is
+ * labelled as a job step rather than a program precisely so that it cannot be mistaken for a translated
+ * member. Section "The third reader reads the cross-reference cluster" below records why that separation
+ * had to be made.
  *
  * <p><strong>{@code CBACT01C} is the status-model exemplar</strong> and its structure is worth naming by
  * line, because nine further batch members repeat it verbatim. Lines 29-33 declare the file with
@@ -121,10 +139,10 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  *   <tr><td>CBACT02C</td><td>9999-ABEND-PROGRAM</td><td>154</td><td>abendProgram</td></tr>
  *   <tr><td>CBACT02C</td><td>9910-DISPLAY-IO-STATUS</td><td>161</td><td>displayIoStatus</td></tr>
  *   <tr><td>CBACT03C</td><td>(unnamed mainline)</td><td>70</td>
- *       <td>readTransactionCategoryBalanceFile</td></tr>
- *   <tr><td>CBACT03C</td><td>0000-XREFFILE-OPEN</td><td>118</td><td>openTranCatBalFile</td></tr>
- *   <tr><td>CBACT03C</td><td>1000-XREFFILE-GET-NEXT</td><td>92</td><td>tranCatBalFileGetNext</td></tr>
- *   <tr><td>CBACT03C</td><td>9000-XREFFILE-CLOSE</td><td>136</td><td>closeTranCatBalFile</td></tr>
+ *       <td>readCardCrossReferenceFile</td></tr>
+ *   <tr><td>CBACT03C</td><td>0000-XREFFILE-OPEN</td><td>118</td><td>openXrefFile</td></tr>
+ *   <tr><td>CBACT03C</td><td>1000-XREFFILE-GET-NEXT</td><td>92</td><td>xrefFileGetNext</td></tr>
+ *   <tr><td>CBACT03C</td><td>9000-XREFFILE-CLOSE</td><td>136</td><td>closeXrefFile</td></tr>
  *   <tr><td>CBACT03C</td><td>9999-ABEND-PROGRAM</td><td>154</td><td>abendProgram</td></tr>
  *   <tr><td>CBACT03C</td><td>9910-DISPLAY-IO-STATUS</td><td>161</td><td>displayIoStatus</td></tr>
  *   <tr><td>CBCUS01C</td><td>(unnamed mainline)</td><td>70</td><td>readCustomerFile</td></tr>
@@ -138,29 +156,55 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  * <p><strong>Source anomalies recorded rather than propagated.</strong> Four are relevant here and each
  * belongs in the decision log. First, {@code CBCUS01C} names its status-display paragraph
  * {@code Z-DISPLAY-IO-STATUS} at line 161 where the three {@code CBACT} members name theirs
- * {@code 9910-DISPLAY-IO-STATUS}; second, and unremarked by earlier analysis, the same member renames the
- * abend paragraph to {@code Z-ABEND-PROGRAM} at line 154. Both Java methods carry one name and the table
- * above records both spellings. Third, statuses {@code 22} and {@code 35} are asserted by earlier
- * specification text and compared in no source member, so nothing in this class references them or
- * depends on them. Fourth, the account display paragraph labels the expiration date with a letter
- * missing; the operator-facing label is reproduced exactly as the member emits it, because an operator
- * matching on that line would not find a corrected one, while the corresponding Java property on the
- * entity is spelled correctly.
+ * {@code 9910-DISPLAY-IO-STATUS}; second, the same member names its abend paragraph
+ * {@code Z-ABEND-PROGRAM} at line 154 rather than {@code 9999-ABEND-PROGRAM}. Both Java methods carry one
+ * name and the traceability matrix records both spellings. Third, statuses {@code 22} and {@code 35} are
+ * compared in no source member, so nothing in this class references them or depends on them. Fourth, the
+ * account display paragraph labels the expiration date with a letter missing; the operator-facing label is
+ * reproduced exactly as the member emits it, because an operator matching on that line would not find a
+ * corrected one, while the corresponding Java property on the entity is spelled correctly.
  *
- * <p><strong>A fifth anomaly changes which dataset the third reader serves, and it must be read before
- * this class is compared against its source.</strong> {@code CBACT03C} declares its own file against the
- * {@code XREFFILE} DD with {@code RECORD KEY IS FD-XREF-CARD-NUM}, includes the card cross-reference
- * copybook, and is invoked by {@code app/jcl/READXREF.jcl} step {@code STEP05} against
- * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}; its own failure literals name {@code XREFFILE}. The
- * migration plan nevertheless assigns this reader group to the transaction category balance cluster - a
- * fifty-byte record under a composite key, which is what the third reader below therefore serves, using
- * the {@code TCATBALF} DD named by {@code app/jcl/POSTTRAN.jcl} line 41 and {@code app/jcl/INTCALC.jcl}
- * line 27 and the cluster {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS} defined by
- * {@code app/jcl/TCATBALF.jcl} with a seventeen-byte key at offset zero and a record size of fifty. The
- * cross-reference reader is served elsewhere in the module. Both facts are stated so that neither is
- * lost, and the failure literals for this reader follow the estate's own {@code ERROR <gerund> <DD>}
- * phrasing on the {@code TCATBALF} name rather than borrowing a literal that would name the wrong
- * dataset in an operator's log.
+ * <h2>The third reader reads the cross-reference cluster</h2>
+ *
+ * <p><strong>{@code CBACT03C} reads the card cross-reference file, and this class now translates it as
+ * such.</strong> Six facts about the member settle it, each read directly from it: its header states that
+ * its function is to read and print the account cross-reference data file; line 29 selects the
+ * {@code XREFFILE} DD; line 32 declares {@code RECORD KEY IS FD-XREF-CARD-NUM}; lines 38-40 split a
+ * fifty-byte record into a sixteen-character card-number key plus thirty-four bytes of remainder; line 45
+ * includes the card cross-reference copybook; and its three failure literals at lines 110, 129 and 147 all
+ * name {@code XREFFILE}. Exactly one job member invokes it - {@code app/jcl/READXREF.jcl} step
+ * {@code STEP05}, against {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}.
+ *
+ * <p><strong>An earlier revision of this class bound that reader group to the transaction category balance
+ * cluster instead, on the strength of planning material that described the member as a category-balance
+ * listing driver.</strong> That description is a documentation error, not a design decision, and the
+ * binding it produced was a parity defect of the worst kind: it compiled, it passed tests written under the
+ * same misunderstanding, and it would have reported a healthy file while never opening the one the member
+ * names. The error was plausible only because of a width coincidence - the cross-reference record and the
+ * category-balance record are both fifty bytes - which is exactly why it had to be settled by reading the
+ * member rather than by reading about it. The binding is corrected here: the third reader group serves the
+ * cross-reference cluster, under the member's own DD name, its own record key and its own three failure
+ * literals, reproduced verbatim rather than composed.
+ *
+ * <p><strong>The category balance still needs an ordered sequential pass, and it gets one that cites a job
+ * stream rather than a member.</strong> A census across all ten legacy batch programs finds the category
+ * balance cluster referenced by two of them, the posting run and the accrual run, and both reach it
+ * transactionally by key; no application program lists it sequentially. The only sequential pass over it in
+ * the estate is {@code app/jcl/PRTCATBL.jcl}, whose three steps invoke the no-op allocation utility, the
+ * cataloged copy wrapper {@code app/proc/REPROC.prc} with control member {@code app/ctl/REPROCT.ctl}, and
+ * the external sort - not one of them an application program. The pass below therefore carries no program
+ * name, emits no {@code START OF EXECUTION OF PROGRAM} banner, and appears in no row of the traceability
+ * table above, because it translates no paragraph. Its failure literals follow the estate's own
+ * {@code ERROR <gerund> <DD>} phrasing on the {@code TCATBALF} DD - named by {@code app/jcl/POSTTRAN.jcl}
+ * line 41, {@code app/jcl/INTCALC.jcl} line 27 and the unload step of {@code app/jcl/PRTCATBL.jcl}, over
+ * the cluster {@code app/jcl/TCATBALF.jcl} defines with a seventeen-byte key at offset zero and a record
+ * size of fifty - because there is no member literal to reproduce and borrowing {@code CBACT03C}'s would
+ * name the wrong dataset in an operator's log.
+ *
+ * <p>Both corrections belong in {@code docs/decision-log.md}, and one consequence is worth stating plainly:
+ * a paragraph of a member has exactly one Java owner in this module. The cross-reference read is owned
+ * here, and the batch tier's probe job delegates to it rather than carrying a second translation of the
+ * same five paragraphs.
  *
  * <p><strong>The composite key must not be confused with its namesake.</strong> Two copybooks in the
  * estate name a key group identically while describing different things: the category balance key is
@@ -169,12 +213,12 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  * class applies names the three identity attributes of the balance record in key order.
  *
  * <p><strong>Diagnostics.</strong> The estate's display statements become SLF4J calls. Operator-relevant
- * labels, failure literals and status context are retained verbatim; cardholder personal data and card
- * credentials are not. The account reader emits the eleven labelled fields its display paragraph emits;
- * the card reader emits neither the primary account number nor the verification code; the customer reader
- * emits the record count and the customer identifier and no name, address, telephone number, date of
- * birth, government identifier, credit score or social security number. That withholding is the one
- * deliberate reduction of the legacy diagnostic stream and is recorded as such.
+ * failure literals, counts and status context are retained; record content is not. Every whole-record
+ * display becomes a non-sensitive record-type label plus a process-scoped HMAC correlation token. The
+ * account display paragraph likewise emits only that token and the account-status label: identifiers,
+ * balances, limits, dates and group values are withheld at every log level. The reduction is deliberate,
+ * applies uniformly to account, card, cross-reference, category-balance and customer records, and prevents
+ * a debug-level change from reopening a sensitive-data channel.
  *
  * <p><strong>Shape of the implementation.</strong> Stateless singleton: counts, cursors and statuses live
  * in a per-invocation cursor object or in locals, never in an instance or static field. Each reader's
@@ -182,7 +226,8 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
  * the legacy had a distinct paragraph, and the skeleton they share is factored into private helpers of
  * this class rather than into a new type. The batch step template of the {@code batch.step} package hosts
  * a similar skeleton for the chunk-oriented steps; the two coexist deliberately and neither imports the
- * other, and this service is the one the traceability matrix cites for these four members.
+ * other, and this service is the one the traceability matrix cites for these four members. The category
+ * balance pass keeps the same shape without appearing in the matrix, because a job step is not a paragraph.
  *
  * <p>Migrated from the AWS CardDemo mainframe estate at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
@@ -204,7 +249,7 @@ public final class FileMaintenanceService {
     /** Legacy member name of the card reader. */
     private static final String PROGRAM_CBACT02C = "CBACT02C";
 
-    /** Legacy member name of the reader whose paragraphs the category balance group is translated from. */
+    /** Legacy member name of the card cross-reference reader. */
     private static final String PROGRAM_CBACT03C = "CBACT03C";
 
     /** Legacy member name of the customer reader. */
@@ -223,8 +268,18 @@ public final class FileMaintenanceService {
     private static final String DD_CARDFILE = "CARDFILE";
 
     /**
+     * DD name of the card cross-reference cluster, {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}, whose key is
+     * 16 bytes wide at offset 0. This is the DD {@code CBACT03C} itself selects, at its line 29.
+     */
+    private static final String DD_XREFFILE = "XREFFILE";
+
+    /**
      * DD name of the category balance cluster, {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}, whose composite
      * key is 17 bytes wide at offset 0.
+     *
+     * <p>Named by {@code app/jcl/POSTTRAN.jcl} line 41 and {@code app/jcl/INTCALC.jcl} line 27, and by the
+     * unload step of {@code app/jcl/PRTCATBL.jcl}. No application program reads this cluster sequentially,
+     * which is why the pass below that serves it cites a job stream rather than a member.
      */
     private static final String DD_TCATBALF = "TCATBALF";
 
@@ -249,6 +304,27 @@ public final class FileMaintenanceService {
     /** Closing banner each member displays after its close paragraph returns. */
     private static final String END_OF_EXECUTION = "END OF EXECUTION OF PROGRAM {}";
 
+    /**
+     * Legacy step name of the only sequential pass the estate makes over the category balance cluster.
+     *
+     * <p>A step name and not a member name, because {@code app/jcl/PRTCATBL.jcl} step {@code STEP05R} invokes
+     * a cataloged copy wrapper rather than an application program. Naming a program here would assert an
+     * antecedent that does not exist.
+     */
+    private static final String LEGACY_UNLOAD_STEP = "STEP05R";
+
+    /**
+     * Opening banner of the category balance pass, naming the job step and the DD rather than a program.
+     *
+     * <p>Deliberately not the {@code START OF EXECUTION OF PROGRAM} banner every member displays: no program
+     * executes here, and reusing that banner would put a member's own diagnostic into a log line no member
+     * produced.
+     */
+    private static final String START_OF_UNLOAD = "{} BEGINNING SEQUENTIAL UNLOAD OF {}";
+
+    /** Closing banner of the category balance pass. */
+    private static final String END_OF_UNLOAD = "{} COMPLETED SEQUENTIAL UNLOAD OF {}";
+
     /** Failure literal of the account open paragraph, {@code CBACT01C} line 144. */
     private static final String FAILURE_OPENING_ACCTFILE = "ERROR OPENING ACCTFILE";
 
@@ -267,20 +343,30 @@ public final class FileMaintenanceService {
     /** Failure literal of the card close paragraph, {@code CBACT02C} line 147. */
     private static final String FAILURE_CLOSING_CARDFILE = "ERROR CLOSING CARDFILE";
 
+    /** Failure literal of the cross-reference open paragraph, {@code CBACT03C} line 129. */
+    private static final String FAILURE_OPENING_XREFFILE = "ERROR OPENING XREFFILE";
+
+    /** Failure literal of the cross-reference read paragraph, {@code CBACT03C} line 110. */
+    private static final String FAILURE_READING_XREFFILE = "ERROR READING XREFFILE";
+
+    /** Failure literal of the cross-reference close paragraph, {@code CBACT03C} line 147. */
+    private static final String FAILURE_CLOSING_XREFFILE = "ERROR CLOSING XREFFILE";
+
     /**
-     * Failure literal of the category balance open arm. {@code CBACT03C} line 129 names the
-     * {@code XREFFILE} DD; this reader serves the {@code TCATBALF} cluster, so the estate's own phrasing
-     * is applied to that DD name rather than reproducing a literal that would name the wrong dataset.
+     * Failure literal of the category balance open arm.
+     *
+     * <p>No application program reads this cluster sequentially, so there is no member whose literal could
+     * be reproduced. The estate's own {@code ERROR <gerund> <DD>} phrasing is applied to the {@code TCATBALF}
+     * DD instead, which is what an operator reading the log would recognise. It is deliberately <em>not</em>
+     * borrowed from {@code CBACT03C}: that member names {@code XREFFILE}, and a literal naming the wrong
+     * dataset is worse than one composed to the estate's pattern.
      */
     private static final String FAILURE_OPENING_TCATBALF = "ERROR OPENING TCATBALF";
 
-    /** Failure literal of the category balance read arm; {@code CBACT03C} line 110 names {@code XREFFILE}. */
+    /** Failure literal of the category balance read arm, composed to the estate's phrasing. */
     private static final String FAILURE_READING_TCATBALF = "ERROR READING TCATBALF";
 
-    /**
-     * Failure literal of the category balance close arm; {@code CBACT03C} line 147 names
-     * {@code XREFFILE}.
-     */
+    /** Failure literal of the category balance close arm, composed to the estate's phrasing. */
     private static final String FAILURE_CLOSING_TCATBALF = "ERROR CLOSING TCATBALF";
 
     /** Failure literal of the customer open paragraph, {@code CBCUS01C} line 129. */
@@ -293,28 +379,9 @@ public final class FileMaintenanceService {
     private static final String FAILURE_CLOSING_CUSTFILE = "ERROR CLOSING CUSTOMER FILE";
 
     /**
-     * Ascending key order of the account cluster. Supplied explicitly because no repository declares an
-     * ordering and key order is the observable ordering of a sequential read over an indexed cluster.
-     */
-    private static final Sort ACCOUNT_KEY_ORDER = Sort.by(Sort.Direction.ASC, "acctId");
-
-    /** Ascending key order of the card cluster. */
-    private static final Sort CARD_KEY_ORDER = Sort.by(Sort.Direction.ASC, "cardNum");
-
-    /**
-     * Ascending key order of the category balance cluster: the three identity attributes in key order,
-     * account identifier then type code then category code, matching the seventeen-byte composite key.
-     */
-    private static final Sort TRAN_CAT_BAL_KEY_ORDER =
-            Sort.by(Sort.Direction.ASC, "trancatAcctId", "trancatTypeCd", "trancatCd");
-
-    /** Ascending key order of the customer cluster. */
-    private static final Sort CUSTOMER_KEY_ORDER = Sort.by(Sort.Direction.ASC, "custId");
-
-    /**
      * Raw status this class reports when a repository operation fails: the permanent-error code, one of
-     * the nine statuses the estate actually compares. No path here references either of the two statuses
-     * that earlier specification text asserts and the source never compares.
+     * the nine statuses the estate actually compares. No path here references a status the source never
+     * compares.
      */
     private static final String DATA_ACCESS_FAILURE_STATUS = FileStatus.PERMANENT_ERROR.getCode();
 
@@ -346,56 +413,25 @@ public final class FileMaintenanceService {
     /** Marker standing in for a status outside the declared raw vocabulary, which is a legitimate outcome. */
     private static final String OUTSIDE_VOCABULARY = "(outside declared vocabulary)";
 
-    /** Separator line the account display paragraph emits after each record, forty-nine characters wide. */
-    private static final String ACCT_RECORD_SEPARATOR =
-            "-------------------------------------------------";
+    /**
+     * Security-preserving replacement for a legacy whole-record display. The record type is a
+     * non-sensitive label and the reference is a process-scoped HMAC token.
+     */
+    private static final String RECORD_IMAGE = "recordType={} recordRef={}";
 
     /**
-     * The eleven labels the account display paragraph emits, in its own order and at its own width of
-     * twenty-four characters plus a colon. The expiration-date label is missing a letter in the source and
-     * is reproduced exactly, because an operator matching on that line would not find a corrected one; the
-     * corresponding entity property is spelled correctly. The postal field is absent from this list because
-     * the paragraph does not display it.
+     * Security-preserving account-display replacement. The status is a non-sensitive state label; every
+     * identifier, balance, limit, date and group value is withheld.
      */
-    private static final List<String> ACCT_RECORD_LABELS = List.of(
-            "ACCT-ID                 :",
-            "ACCT-ACTIVE-STATUS      :",
-            "ACCT-CURR-BAL           :",
-            "ACCT-CREDIT-LIMIT       :",
-            "ACCT-CASH-CREDIT-LIMIT  :",
-            "ACCT-OPEN-DATE          :",
-            "ACCT-EXPIRAION-DATE     :",
-            "ACCT-REISSUE-DATE       :",
-            "ACCT-CURR-CYC-CREDIT    :",
-            "ACCT-CURR-CYC-DEBIT     :",
-            "ACCT-GROUP-ID           :");
-
-    /** Template of one labelled line of the account display paragraph. */
-    private static final String LABELLED_FIELD = "{}{}";
-
-    /**
-     * Template of the record image each mainline emits after a successful read. The rendering of the record
-     * is the entity's own, and the three entities whose readers use this template render only
-     * non-confidential attributes - the card entity redacts its own number.
-     */
-    private static final String RECORD_IMAGE = "record={}";
-
-    /**
-     * Template the customer mainline uses in place of the record image. The legacy member displays the whole
-     * five-hundred-byte customer record; that record carries names, addresses, telephone numbers, a date of
-     * birth, a government identifier, a credit score and a social security number, so the identifier alone
-     * is emitted and the withholding is stated in the line itself.
-     */
-    private static final String CUSTOMER_RECORD_IMAGE =
-            "custId={} recordImage=withheld:cardholder-personal-data";
+    private static final String ACCOUNT_RECORD_DETAIL = "recordType=account recordRef={} status={}";
 
     /** Template of the open diagnostic, reporting how many records the cluster holds when it is opened. */
     private static final String OPENED_RESOURCE =
             "opened program={} resource={} recordsAvailable={}";
 
-    /** Template of the diagnostic that carries the underlying data-access failure and its stack trace. */
+    /** Template carrying a bounded failure-type chain and none of the exception's messages or frames. */
     private static final String DATA_ACCESS_FAILED =
-            "data access failed program={} operation={} resource={} fileStatus={}";
+            "data access failed program={} operation={} resource={} fileStatus={} failureChain={}";
 
     /** Template of the coarse-variable arming trace emitted before every open, read and close. */
     private static final String ARMED_APPL_RESULT =
@@ -413,9 +449,23 @@ public final class FileMaintenanceService {
     private static final String READER_COMPLETED =
             "completed program={} resource={} recordsRead={} terminalFileStatus={}";
 
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
+
+    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
+
+    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
+
     private final AccountRepository accountRepository;
 
+    private final AccountScanRepository accountScanRepository;
+
     private final CardRepository cardRepository;
+
+    private final CardScanRepository cardScanRepository;
+
+    private final CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    private final CardCrossReferenceScanRepository cardCrossReferenceScanRepository;
 
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
@@ -424,24 +474,43 @@ public final class FileMaintenanceService {
     private final AbendService abendService;
 
     /**
-     * Constructor injection only: the four repositories that replace the four indexed clusters, and the
-     * abend service that owns the estate's single terminal path. Every collaborator is required, because a
-     * reader with a missing repository could not fail in any way an operator would recognise.
+     * Constructor injection only: the four repositories that replace the four indexed clusters the members
+     * read, the fifth that serves the job stream's category-balance unload, and the abend service that owns
+     * the estate's single terminal path. Every collaborator is required, because a reader with a missing
+     * repository could not fail in any way an operator would recognise.
      *
      * @param accountRepository                    persistence entry point for the account cluster
+     * @param accountScanRepository                bounded sequential-read view of the account cluster
      * @param cardRepository                       persistence entry point for the card cluster
-     * @param transactionCategoryBalanceRepository persistence entry point for the category balance cluster
+     * @param cardScanRepository                   bounded sequential-read view of the card cluster
+     * @param cardCrossReferenceRepository         persistence entry point for the cross-reference cluster,
+     *                                             which is the cluster {@code CBACT03C} reads
+     * @param cardCrossReferenceScanRepository     bounded sequential-read view of that cluster
+     * @param transactionCategoryBalanceRepository persistence entry point for the category balance cluster,
+     *                                             read by a job stream's unload rather than by any member
      * @param customerRepository                   persistence entry point for the customer cluster
      * @param abendService                         the estate's abend path, which logs and then raises
      * @throws NullPointerException if any collaborator is {@code null}, which is a wiring error
      */
     public FileMaintenanceService(final AccountRepository accountRepository,
+            final AccountScanRepository accountScanRepository,
             final CardRepository cardRepository,
+            final CardScanRepository cardScanRepository,
+            final CardCrossReferenceRepository cardCrossReferenceRepository,
+            final CardCrossReferenceScanRepository cardCrossReferenceScanRepository,
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final CustomerRepository customerRepository,
             final AbendService abendService) {
         this.accountRepository = Objects.requireNonNull(accountRepository, "accountRepository");
+        this.accountScanRepository = Objects.requireNonNull(
+                accountScanRepository, "accountScanRepository");
         this.cardRepository = Objects.requireNonNull(cardRepository, "cardRepository");
+        this.cardScanRepository =
+                Objects.requireNonNull(cardScanRepository, "cardScanRepository");
+        this.cardCrossReferenceRepository = Objects.requireNonNull(
+                cardCrossReferenceRepository, "cardCrossReferenceRepository");
+        this.cardCrossReferenceScanRepository = Objects.requireNonNull(
+                cardCrossReferenceScanRepository, "cardCrossReferenceScanRepository");
         this.transactionCategoryBalanceRepository = Objects.requireNonNull(
                 transactionCategoryBalanceRepository, "transactionCategoryBalanceRepository");
         this.customerRepository = Objects.requireNonNull(customerRepository, "customerRepository");
@@ -467,12 +536,24 @@ public final class FileMaintenanceService {
      * @throws AbendException if the open, a read or the close reports a status the member treats as an error
      */
     public FileReadSummary readAccountFile() {
+        return readAccountFile(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Reads the account cluster while observing cooperative cancellation between records.
+     *
+     * @param stopRequested live cancellation probe
+     * @return the completed read summary
+     */
+    public FileReadSummary readAccountFile(final BooleanSupplier stopRequested) {
+        BatchCancellation.checkpoint(stopRequested);
         LOGGER.info(START_OF_EXECUTION, PROGRAM_CBACT01C);
         SequentialCursor<Account> cursor = openAcctFile();
         while (!cursor.atEndOfFile()) {
+            BatchCancellation.checkpoint(stopRequested);
             acctFileGetNext(cursor);
             if (!cursor.atEndOfFile()) {
-                LOGGER.debug(RECORD_IMAGE, cursor.currentRecord());
+                logRecordImage("account", cursor.currentRecord().getAcctId());
             }
         }
         closeAcctFile(cursor);
@@ -491,7 +572,11 @@ public final class FileMaintenanceService {
     private SequentialCursor<Account> openAcctFile() {
         return openSequentialCursor(PROGRAM_CBACT01C, DD_ACCTFILE, FAILURE_OPENING_ACCTFILE,
                 this.accountRepository::count,
-                () -> this.accountRepository.findAll(ACCOUNT_KEY_ORDER));
+                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.accountScanRepository
+                                .findByAcctIdGreaterThanOrderByAcctIdAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Account::getAcctId, Comparator.naturalOrder()));
     }
 
     /**
@@ -512,10 +597,12 @@ public final class FileMaintenanceService {
     }
 
     /**
-     * Emits the eleven labelled account fields and the separator line. Translates
-     * {@code 1100-DISPLAY-ACCT-RECORD} at line 118, preserving the field order, the labels including the
-     * one whose spelling the source drops a letter from, and the omission of the postal field the paragraph
-     * never displays.
+     * Security-preserving translation of {@code 1100-DISPLAY-ACCT-RECORD} at line 118.
+     *
+     * <p>The source emits eleven labelled values, including identifiers, three balances, two limits and
+     * three dates. None may enter a centralized log. The paragraph remains a distinct method for
+     * traceability and emits only a process-scoped account correlation token plus the non-sensitive
+     * active-status label.
      *
      * @param account the record just read
      */
@@ -523,22 +610,15 @@ public final class FileMaintenanceService {
         if (!LOGGER.isDebugEnabled()) {
             return;
         }
-        List<String> values = List.of(
-                String.valueOf(account.getAcctId()),
-                String.valueOf(account.getAcctActiveStatus()),
-                String.valueOf(account.getAcctCurrBal()),
-                String.valueOf(account.getAcctCreditLimit()),
-                String.valueOf(account.getAcctCashCreditLimit()),
-                String.valueOf(account.getAcctOpenDate()),
-                String.valueOf(account.getAcctExpirationDate()),
-                String.valueOf(account.getAcctReissueDate()),
-                String.valueOf(account.getAcctCurrCycCredit()),
-                String.valueOf(account.getAcctCurrCycDebit()),
-                String.valueOf(account.getAcctGroupId()));
-        for (int field = 0; field < ACCT_RECORD_LABELS.size(); field++) {
-            LOGGER.debug(LABELLED_FIELD, ACCT_RECORD_LABELS.get(field), values.get(field));
+        LOGGER.debug(ACCOUNT_RECORD_DETAIL, SensitiveLogRedactor.redact(account.getAcctId()),
+                account.getAcctActiveStatus());
+    }
+
+    private static void logRecordImage(final String recordType, final String sensitiveRecordKey) {
+        if (!LOGGER.isDebugEnabled()) {
+            return;
         }
-        LOGGER.debug(ACCT_RECORD_SEPARATOR);
+        LOGGER.debug(RECORD_IMAGE, recordType, SensitiveLogRedactor.redact(sensitiveRecordKey));
     }
 
     /**
@@ -570,12 +650,24 @@ public final class FileMaintenanceService {
      * @throws AbendException if the open, a read or the close reports a status the member treats as an error
      */
     public FileReadSummary readCardFile() {
+        return readCardFile(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Reads the card cluster while observing cooperative cancellation between records.
+     *
+     * @param stopRequested live cancellation probe
+     * @return the completed read summary
+     */
+    public FileReadSummary readCardFile(final BooleanSupplier stopRequested) {
+        BatchCancellation.checkpoint(stopRequested);
         LOGGER.info(START_OF_EXECUTION, PROGRAM_CBACT02C);
         SequentialCursor<Card> cursor = openCardFile();
         while (!cursor.atEndOfFile()) {
+            BatchCancellation.checkpoint(stopRequested);
             cardFileGetNext(cursor);
             if (!cursor.atEndOfFile()) {
-                LOGGER.debug(RECORD_IMAGE, cursor.currentRecord());
+                logRecordImage("card", cursor.currentRecord().getCardNum());
             }
         }
         closeCardFile(cursor);
@@ -592,7 +684,11 @@ public final class FileMaintenanceService {
     private SequentialCursor<Card> openCardFile() {
         return openSequentialCursor(PROGRAM_CBACT02C, DD_CARDFILE, FAILURE_OPENING_CARDFILE,
                 this.cardRepository::count,
-                () -> this.cardRepository.findAll(CARD_KEY_ORDER));
+                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.cardScanRepository
+                                .findByCardNumGreaterThanOrderByCardNumAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Card::getCardNum, Comparator.naturalOrder()));
     }
 
     /**
@@ -617,52 +713,207 @@ public final class FileMaintenanceService {
     }
 
     // ------------------------------------------------------------------------------------------------
-    // CBACT03C - fifty-byte composite-key cluster reader, five paragraphs
+    // CBACT03C - card cross-reference reader, five paragraphs
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * Reads the transaction category balance cluster in ascending composite-key order and reports what it
-     * read. Translates the unnamed mainline of {@code app/cbl/CBACT03C.cbl} at lines 70-87, whose read
-     * paragraph displays the record at line 96 and whose mainline displays it again at line 78 - both are
-     * reproduced, because removing the duplication would change the diagnostic stream.
+     * Reads the card cross-reference cluster in ascending key order and reports what it read. Translates
+     * the unnamed mainline of {@code app/cbl/CBACT03C.cbl} at lines 70-87.
      *
-     * <p>The member's own file declaration names a different DD and a different copybook; the class
-     * documentation records that discrepancy in full. What this reader serves is the fifty-byte cluster whose
-     * seventeen-byte composite key sits at offset zero, ordered by account identifier, then type code, then
-     * category code.
+     * <p><strong>This is the file the member actually reads, and the attribution matters.</strong> Line 29
+     * selects the {@code XREFFILE} DD, line 32 declares the record key as the cross-reference card number,
+     * lines 38-40 split a fifty-byte record into a sixteen-character key plus thirty-four bytes of
+     * remainder, line 45 includes the card cross-reference copybook, and every failure literal in the
+     * member names {@code XREFFILE}. One job member invokes it, {@code app/jcl/READXREF.jcl} step
+     * {@code STEP05}, against {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}. Earlier planning material
+     * described this member as a category-balance listing driver; that is a documentation error rather than
+     * a design choice, and binding this reader to the category balance would compile, would pass a test
+     * written under the same misunderstanding, and would report a healthy file while never opening the one
+     * the member names. The width coincidence that made the error plausible - both records are fifty bytes -
+     * is exactly why it had to be settled by reading the member rather than by reading about it.
+     *
+     * <p>The record reaches the diagnostic channel <strong>twice</strong> per successful read, once from the
+     * read paragraph's own emission at line 96 and once from the mainline's at line 78. The duplication is
+     * in the source and is reproduced rather than tidied away; the sibling card reader has that same inner
+     * emission commented out at its line 96, which is precisely why one member displays twice and the other
+     * once.
      *
      * @return the member name, the DD name, the number of records read and the status that ended the loop
      * @throws AbendException if the open, a read or the close reports a status the member treats as an error
      */
-    public FileReadSummary readTransactionCategoryBalanceFile() {
+    public FileReadSummary readCardCrossReferenceFile() {
+        return readCardCrossReferenceFile(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Reads the cross-reference cluster while observing cooperative cancellation between records.
+     *
+     * @param stopRequested live cancellation probe
+     * @return the completed read summary
+     */
+    public FileReadSummary readCardCrossReferenceFile(final BooleanSupplier stopRequested) {
+        BatchCancellation.checkpoint(stopRequested);
         LOGGER.info(START_OF_EXECUTION, PROGRAM_CBACT03C);
-        SequentialCursor<TransactionCategoryBalance> cursor = openTranCatBalFile();
+        SequentialCursor<CardCrossReference> cursor = openXrefFile();
         while (!cursor.atEndOfFile()) {
-            tranCatBalFileGetNext(cursor);
+            BatchCancellation.checkpoint(stopRequested);
+            xrefFileGetNext(cursor);
             if (!cursor.atEndOfFile()) {
-                LOGGER.debug(RECORD_IMAGE, cursor.currentRecord());
+                logRecordImage("card-cross-reference", cursor.currentRecord().getXrefCardNum());
             }
         }
-        closeTranCatBalFile(cursor);
+        closeXrefFile(cursor);
         LOGGER.info(END_OF_EXECUTION, PROGRAM_CBACT03C);
         return completed(cursor);
     }
 
     /**
-     * Opens the category balance cluster. Translates {@code 0000-XREFFILE-OPEN} at line 118.
+     * Opens the cross-reference cluster. Translates {@code 0000-XREFFILE-OPEN} at line 118.
+     *
+     * @return an open cursor positioned before the first record
+     * @throws AbendException if the open reports anything other than success
+     */
+    private SequentialCursor<CardCrossReference> openXrefFile() {
+        return openSequentialCursor(PROGRAM_CBACT03C, DD_XREFFILE, FAILURE_OPENING_XREFFILE,
+                this.cardCrossReferenceRepository::count,
+                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.cardCrossReferenceScanRepository
+                                .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        CardCrossReference::getXrefCardNum, Comparator.naturalOrder()));
+    }
+
+    /**
+     * Reads the next cross-reference record. Translates {@code 1000-XREFFILE-GET-NEXT} at line 92,
+     * including the record display its success arm performs at line 96.
+     *
+     * @param cursor the open cursor to advance
+     * @throws AbendException if the read reports a status that is neither success nor end of file
+     */
+    private void xrefFileGetNext(final SequentialCursor<CardCrossReference> cursor) {
+        advance(cursor, FAILURE_READING_XREFFILE);
+        if (cursor.hasCurrentRecord()) {
+            logRecordImage("card-cross-reference", cursor.currentRecord().getXrefCardNum());
+        }
+    }
+
+    /**
+     * Closes the cross-reference cluster. Translates {@code 9000-XREFFILE-CLOSE} at line 136.
+     *
+     * @param cursor the cursor to release
+     * @throws AbendException if the close reports anything other than success
+     */
+    private void closeXrefFile(final SequentialCursor<CardCrossReference> cursor) {
+        closeSequentialCursor(cursor, FAILURE_CLOSING_XREFFILE);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // The category balance pass - a job stream's unload, with no program antecedent
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * Reads the transaction category balance cluster in ascending composite-key order and reports what it
+     * read.
+     *
+     * <p><strong>This pass translates no COBOL member, and saying so is the point.</strong> A census across
+     * all ten legacy batch programs finds the category balance cluster referenced by exactly two of them -
+     * the posting run and the accrual run - and both reach it transactionally, by key, rather than listing
+     * it. The only sequential pass over it in the whole estate is a job stream's: {@code app/jcl/PRTCATBL.jcl}
+     * step {@code STEP05R} invokes the cataloged copy wrapper {@code app/proc/REPROC.prc} with its control
+     * member {@code app/ctl/REPROCT.ctl}, and step {@code STEP10R} invokes the external sort. So this method
+     * exists because a job stream needs an ordered sequential pass over the cluster, and it is deliberately
+     * <em>not</em> attributed to a paragraph of any member - not to {@code CBACT03C}, which reads the
+     * cross-reference cluster above, and not to anything else.
+     *
+     * <p>What it does borrow, and legitimately, is this class's discipline: the same open, read-to-end and
+     * close shape, the same two-level status model in which end of file is a normal outcome and never an
+     * error, and the same emit-then-abend ordering on a failure. That discipline is a property of the
+     * estate's sequential I/O rather than of any one member, which is why it applies here without a member
+     * to cite.
+     *
+     * <p>Because there is no member, there is no execution banner naming one: a banner reading
+     * "start of execution of program" would name a program that never ran. The pass reports the job step it
+     * serves instead, and the summary it returns carries that step name in place of a member name.
+     *
+     * <p>Ordering is the cluster's own composite key - account identifier, then type code, then category
+     * code - which is both the sequential order of an indexed read and the order the job's sort
+     * specification declares.
+     *
+     * @return the legacy step name, the DD name, the number of records read and the status that ended the
+     *         loop
+     * @throws AbendException if the open, a read or the close reports a status treated as an error
+     */
+    public FileReadSummary readTransactionCategoryBalanceFile() {
+        return readTransactionCategoryBalanceFile(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Reads the category-balance cluster while observing cooperative cancellation between records.
+     *
+     * @param stopRequested live cancellation probe
+     * @return the completed read summary
+     */
+    public FileReadSummary readTransactionCategoryBalanceFile(
+            final BooleanSupplier stopRequested) {
+        BatchCancellation.checkpoint(stopRequested);
+        LOGGER.info(START_OF_UNLOAD, LEGACY_UNLOAD_STEP, DD_TCATBALF);
+        SequentialCursor<TransactionCategoryBalance> cursor = openTranCatBalFile();
+        while (!cursor.atEndOfFile()) {
+            BatchCancellation.checkpoint(stopRequested);
+            tranCatBalFileGetNext(cursor);
+        }
+        closeTranCatBalFile(cursor);
+        LOGGER.info(END_OF_UNLOAD, LEGACY_UNLOAD_STEP, DD_TCATBALF);
+        return completed(cursor);
+    }
+
+    /**
+     * Opens the category balance cluster for the job stream's unload.
      *
      * @return an open cursor positioned before the first record
      * @throws AbendException if the open reports anything other than success
      */
     private SequentialCursor<TransactionCategoryBalance> openTranCatBalFile() {
-        return openSequentialCursor(PROGRAM_CBACT03C, DD_TCATBALF, FAILURE_OPENING_TCATBALF,
+        return openSequentialCursor(LEGACY_UNLOAD_STEP, DD_TCATBALF, FAILURE_OPENING_TCATBALF,
                 this.transactionCategoryBalanceRepository::count,
-                () -> this.transactionCategoryBalanceRepository.findAll(TRAN_CAT_BAL_KEY_ORDER));
+                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        this::loadCategoryBalancePage,
+                        FileMaintenanceService::categoryBalanceKey,
+                        Comparator.naturalOrder()));
+    }
+
+    private List<TransactionCategoryBalance> loadCategoryBalancePage(
+            final String cursor, final Integer pageSize) {
+        final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
+        final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
+        final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
+        final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
+        final String categoryCode = cursor.length() <= categoryOffset
+                ? ""
+                : cursor.substring(categoryOffset);
+        return this.transactionCategoryBalanceRepository.findAfterKey(
+                accountId, typeCode, categoryCode,
+                PageRequest.of(0, pageSize.intValue()));
+    }
+
+    private static String keyPart(final String key, final int offset, final int width) {
+        if (key.length() <= offset) {
+            return "";
+        }
+        return key.substring(offset, Math.min(key.length(), offset + width));
+    }
+
+    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
+        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 
     /**
-     * Reads the next category balance record. Translates {@code 1000-XREFFILE-GET-NEXT} at line 92,
-     * including the record display its success arm performs at line 96.
+     * Reads the next category balance record.
+     *
+     * <p>Emits the record image once, not twice. The double emission of the cross-reference reader above is
+     * a property of {@code CBACT03C}'s own paragraph structure; a copy utility emits no record image at all,
+     * so one diagnostic line per record is already more than the step it stands for produced and a second
+     * would be an invention.
      *
      * @param cursor the open cursor to advance
      * @throws AbendException if the read reports a status that is neither success nor end of file
@@ -670,12 +921,15 @@ public final class FileMaintenanceService {
     private void tranCatBalFileGetNext(final SequentialCursor<TransactionCategoryBalance> cursor) {
         advance(cursor, FAILURE_READING_TCATBALF);
         if (cursor.hasCurrentRecord()) {
-            LOGGER.debug(RECORD_IMAGE, cursor.currentRecord());
+            final TransactionCategoryBalance record = cursor.currentRecord();
+            logRecordImage("transaction-category-balance",
+                    record.getTrancatAcctId() + "|" + record.getTrancatTypeCd() + "|"
+                            + record.getTrancatCd());
         }
     }
 
     /**
-     * Closes the category balance cluster. Translates {@code 9000-XREFFILE-CLOSE} at line 136.
+     * Closes the category balance cluster.
      *
      * @param cursor the cursor to release
      * @throws AbendException if the close reports anything other than success
@@ -693,21 +947,31 @@ public final class FileMaintenanceService {
      * mainline of {@code app/cbl/CBCUS01C.cbl} at lines 70-87, whose read paragraph displays the record at
      * line 96 and whose mainline displays it again at line 78.
      *
-     * <p>Both displays are reproduced as diagnostics carrying the customer identifier and nothing else. The
-     * legacy displayed the whole five-hundred-byte record; reproducing that would write cardholder personal
-     * data to the log, which the migration does not do. This is the one deliberate reduction of the legacy
-     * diagnostic stream in this class.
+     * <p>Both displays are reproduced as diagnostics carrying one process-scoped customer correlation
+     * token. The identifier itself and every personal field remain withheld.
      *
      * @return the member name, the DD name, the number of records read and the status that ended the loop
      * @throws AbendException if the open, a read or the close reports a status the member treats as an error
      */
     public FileReadSummary readCustomerFile() {
+        return readCustomerFile(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Reads the customer cluster while observing cooperative cancellation between records.
+     *
+     * @param stopRequested live cancellation probe
+     * @return the completed read summary
+     */
+    public FileReadSummary readCustomerFile(final BooleanSupplier stopRequested) {
+        BatchCancellation.checkpoint(stopRequested);
         LOGGER.info(START_OF_EXECUTION, PROGRAM_CBCUS01C);
         SequentialCursor<Customer> cursor = openCustFile();
         while (!cursor.atEndOfFile()) {
+            BatchCancellation.checkpoint(stopRequested);
             custFileGetNext(cursor);
             if (!cursor.atEndOfFile()) {
-                LOGGER.debug(CUSTOMER_RECORD_IMAGE, cursor.currentRecord().getCustId());
+                logRecordImage("customer", cursor.currentRecord().getCustId());
             }
         }
         closeCustFile(cursor);
@@ -724,12 +988,16 @@ public final class FileMaintenanceService {
     private SequentialCursor<Customer> openCustFile() {
         return openSequentialCursor(PROGRAM_CBCUS01C, DD_CUSTFILE, FAILURE_OPENING_CUSTFILE,
                 this.customerRepository::count,
-                () -> this.customerRepository.findAll(CUSTOMER_KEY_ORDER));
+                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.customerRepository
+                                .findByCustIdGreaterThanOrderByCustIdAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Customer::getCustId, Comparator.naturalOrder()));
     }
 
     /**
      * Reads the next customer record. Translates {@code 1000-CUSTFILE-GET-NEXT} at line 92, including the
-     * record display its success arm performs at line 96, reduced to the customer identifier.
+     * record display its success arm performs at line 96, reduced to a correlation token.
      *
      * @param cursor the open cursor to advance
      * @throws AbendException if the read reports a status that is neither success nor end of file
@@ -737,7 +1005,7 @@ public final class FileMaintenanceService {
     private void custFileGetNext(final SequentialCursor<Customer> cursor) {
         advance(cursor, FAILURE_READING_CUSTFILE);
         if (cursor.hasCurrentRecord()) {
-            LOGGER.debug(CUSTOMER_RECORD_IMAGE, cursor.currentRecord().getCustId());
+            logRecordImage("customer", cursor.currentRecord().getCustId());
         }
     }
 
@@ -793,7 +1061,7 @@ public final class FileMaintenanceService {
      * Abends the run. This one method is the Java home of {@code 9999-ABEND-PROGRAM} in {@code CBACT01C} at
      * line 169, in {@code CBACT02C} at line 154 and in {@code CBACT03C} at line 154, and of
      * {@code Z-ABEND-PROGRAM} in {@code CBCUS01C} at line 154 - the same paragraph under a different name,
-     * a second naming anomaly in that member and one earlier analysis did not record.
+     * which is the second of that member's two naming anomalies.
      *
      * <p>The paragraph displays its banner, zeroes a timing value, moves the batch abend code and issues the
      * Language Environment abort. The banner, the code and the raise all belong to the injected abend
@@ -840,7 +1108,7 @@ public final class FileMaintenanceService {
      */
     private <T> SequentialCursor<T> openSequentialCursor(final String programName,
             final String resourceName, final String failureLiteral,
-            final LongSupplier reachabilityProbe, final Supplier<List<T>> keyOrderedRead) {
+            final LongSupplier reachabilityProbe, final Supplier<Iterator<T>> keyOrderedRead) {
         SequentialCursor<T> cursor = new SequentialCursor<>(programName, resourceName, keyOrderedRead);
         cursor.arm(OPERATION_OPEN);
         String rawFileStatus = FileStatusException.STATUS_SUCCESS;
@@ -1055,9 +1323,9 @@ public final class FileMaintenanceService {
     }
 
     /**
-     * Emits the underlying data-access failure and its stack trace. The mainframe had no equivalent - a
-     * failing I/O produced a status and a dump - so this record is an addition, kept separate from the
-     * member's own failure literal so that the legacy diagnostic remains recognisable on its own line.
+     * Emits a bounded chain of failure type names. The mainframe had no throwable, and exception
+     * messages can carry rejected values, connection details or SQL text, so neither the failure object
+     * nor any of its messages or frames is handed to the appender.
      *
      * @param cursor    the cursor whose operation failed
      * @param operation the legacy gerund naming that operation
@@ -1066,7 +1334,7 @@ public final class FileMaintenanceService {
     private static void logDataAccessFailure(final SequentialCursor<?> cursor, final String operation,
             final DataAccessException failure) {
         LOGGER.error(DATA_ACCESS_FAILED, cursor.programName(), operation, cursor.resourceName(),
-                DATA_ACCESS_FAILURE_STATUS, failure);
+                DATA_ACCESS_FAILURE_STATUS, FailureDiagnostics.failureChainOf(failure));
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -1186,7 +1454,7 @@ public final class FileMaintenanceService {
 
         private final String resourceName;
 
-        private final Supplier<List<T>> keyOrderedRead;
+        private final Supplier<Iterator<T>> keyOrderedRead;
 
         private Iterator<T> records;
 
@@ -1203,7 +1471,7 @@ public final class FileMaintenanceService {
         private T currentRecord;
 
         SequentialCursor(final String legacyProgramName, final String legacyResourceName,
-                final Supplier<List<T>> orderedRead) {
+                final Supplier<Iterator<T>> orderedRead) {
             this.programName = Objects.requireNonNull(legacyProgramName, "legacyProgramName");
             this.resourceName = Objects.requireNonNull(legacyResourceName, "legacyResourceName");
             this.keyOrderedRead = Objects.requireNonNull(orderedRead, "orderedRead");
@@ -1286,7 +1554,7 @@ public final class FileMaintenanceService {
          */
         T nextRecord() {
             if (this.records == null) {
-                this.records = this.keyOrderedRead.get().iterator();
+                this.records = this.keyOrderedRead.get();
             }
             if (!this.records.hasNext()) {
                 return null;

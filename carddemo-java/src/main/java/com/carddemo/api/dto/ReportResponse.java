@@ -98,10 +98,10 @@ public record ReportResponse(
     /**
      * Width in characters of a screen field identifier: 7.
      *
-     * <p>The widest identifier the BMS macro generator can emit for a field name, and therefore the
-     * widest value {@link #focusScreenFieldId()} can legitimately carry. The component was previously
-     * unbounded, which let a value of arbitrary length reach a client that uses it to position a
-     * cursor; the bound closes that without constraining which identifier is chosen.
+     * <p>The widest identifier the BMS macro generator can emit for a field name, taken from the
+     * generated symbolic maps under {@code app/cpy-bms}, and therefore the widest value
+     * {@link #focusScreenFieldId()} can legitimately carry. The bound keeps a value of arbitrary length
+     * from reaching a client that uses it to position a cursor, and constrains no choice of identifier.
      */
     public static final int SCREEN_FIELD_ID_LENGTH = 7;
 

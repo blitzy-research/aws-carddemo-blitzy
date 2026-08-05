@@ -48,15 +48,14 @@ import org.springframework.batch.item.ItemProcessor;
  * <h2>What this class is, and what it deliberately is not</h2>
  *
  * <p>This is the batch <em>adapter</em> for the posting program's read loop, not a second
- * implementation of it. The cascade itself - the cross-reference lookup, the account lookup, the
- * overlimit test, the expiration test, the three persistence stages and the timestamp regeneration -
- * lives in {@link TransactionPostingService}, which is the module's translation of the whole legacy
- * member and which holds the per-record commit boundary. That service exposes one aggregate
- * per-record entry point, and this processor calls it once per record and does nothing that the
- * service already does. No lookup, no limit test, no balance arithmetic, no persistence and no
- * ordering rule is restated here: a second copy of any of them is how the two copies eventually
- * disagree, and a business rule that exists twice is a business rule that is enforced once and
- * audited nowhere.
+ * implementation of it. The cascade itself - the cross-reference and account lookups, the overlimit
+ * and expiration tests, the three persistence stages, the reject-code precedence and the timestamp
+ * regeneration - lives in {@link TransactionPostingService}, which is the module's translation of the
+ * whole legacy member, holds the per-record commit boundary and documents every parity rule that
+ * governs it. No lookup, no limit test, no balance arithmetic, no persistence and no ordering rule is
+ * restated here: a business rule that exists twice is a business rule that is enforced once and
+ * audited nowhere. The paragraph-level inventory for the member is in
+ * {@code docs/traceability-matrix.md}.
  *
  * <p>What is genuinely this class's own, and is therefore all it contains: calling the service on
  * exactly the record the reader produced, converting a refusal into the reject-dataset item, filtering
@@ -65,46 +64,43 @@ import org.springframework.batch.item.ItemProcessor;
  * verdicts for the metrics endpoint, and contributing the legacy completion code once the step has
  * finished.
  *
- * <h2>Which legacy units this class stands in for</h2>
+ * <h2>Why a posted record returns {@code null}</h2>
  *
- * <p>The legacy mainline is a read loop, and a chunk-oriented step splits that loop across three
- * collaborators: the reader supplies records, this processor renders the verdict, and the reject
- * writer emits the refused ones. The units this class stands in for are therefore the loop's own
- * decision points rather than any paragraph of the cascade:
+ * <p>The legacy mainline branches once per record: it posts when the fail reason is zero, and
+ * otherwise counts a reject and writes a reject record. A chunk-oriented step splits that branch
+ * across collaborators - the reader supplies records, this processor renders the verdict, the reject
+ * writer emits the refused ones - so the branch becomes the return value of
+ * {@link #process(DailyTransaction)}: the reject item on the refusing arm, and {@code null} on the
+ * posting arm. Returning {@code null} is the framework's filter contract, and filtering is the only
+ * translation that keeps a posted record out of the reject dataset without inventing a second
+ * destination for it.
  *
- * <ul>
- *   <li>the per-record reset that clears the fail reason and its description before anything is
- *       looked at - held here as method locals, and in the service as method locals, and nowhere as
- *       state;</li>
- *   <li>the branch that posts when the fail reason is zero and otherwise counts a reject and writes a
- *       reject record - which becomes the return value of {@link #process(DailyTransaction)}: the
- *       reject item on the refusing arm, and {@code null} on the posting arm;</li>
- *   <li>the reject counter, incremented once immediately before each reject record is written;</li>
- *   <li>the transaction counter, incremented once per record read;</li>
- *   <li>the completion-code rule that raises the run's return code to
- *       {@code TransactionPostingService#RETURN_CODE_REJECTS_PRESENT} when the reject count exceeds
- *       zero, reached only after every file has been closed and both counters reported - that is,
- *       only on a normal end of run.</li>
- * </ul>
+ * <p>The routing question is therefore <strong>whether the record was posted</strong>, never whether
+ * it carries a reason code. Reject 109 is set after the mainline has already committed to posting and
+ * never produces a reject record; a posted record carrying it returns {@code null} like any other
+ * posted record. Why that reason code is inert, and why it keeps its own identity, is documented on
+ * {@link TransactionPostingService}; this class must simply not second-guess the verdict it is given.
  *
- * <h2>A reject is a partial success, never a failure and never an exception</h2>
+ * <h2>A reject is a partial success: no exception, no skip, and a warning completion code</h2>
  *
- * <p>The legacy program refuses a record, writes it to the reject dataset, and <strong>carries on
- * reading</strong>. It does not stop, does not roll the run back, and does not treat the refusal as an
+ * <p>The legacy program refuses a record, writes it to the reject dataset and <strong>carries on
+ * reading</strong>. It does not stop, does not roll the run back and does not treat the refusal as an
  * error; at the very end, having closed every file and reported both counters, it raises its
  * completion code to the warning level to say that something was refused. Every part of that is
  * preserved:
  *
  * <ul>
- *   <li>{@link #process(DailyTransaction)} <strong>never throws for a business reject</strong>. Reject
- *       codes 100, 101, 102 and 103 are verdicts on a record's content, and a verdict is a return
- *       value. Throwing for one would fail the chunk, and a failed chunk is not a reject dataset.</li>
+ *   <li>{@link #process(DailyTransaction)} <strong>never throws for a business reject</strong>. A
+ *       reject code is a verdict on a record's content, and a verdict is a return value. Throwing for
+ *       one would fail the chunk, and a failed chunk is not a reject dataset.</li>
  *   <li>No skip policy, retry policy, retry budget, backoff or skip limit is declared here or implied
  *       by anything here. A skip is the framework's way of tolerating a <em>failure</em>, and a reject
  *       is not a failure; routing rejects through a skip policy would silently make the tolerated
  *       count depend on a limit the legacy program never had.</li>
- *   <li>{@link #afterStep(StepExecution)} contributes the warning-level completion code when anything
- *       was refused, so the step completes and still says so.</li>
+ *   <li>{@link #afterStep(StepExecution)} contributes
+ *       {@code TransactionPostingService#RETURN_CODE_REJECTS_PRESENT} when the reject count exceeds
+ *       zero, and only on a normal end of run - the legacy program reaches that rule after every file
+ *       has been closed and both counters reported - so the step completes and still says so.</li>
  * </ul>
  *
  * <p>A <em>technical</em> failure is the opposite and is left entirely alone. The service diagnoses it
@@ -114,123 +110,26 @@ import org.springframework.batch.item.ItemProcessor;
  * catches it, downgrades it, converts it into a reject or absorbs it, because a technical fault that
  * arrives at the reject dataset is a fault that has been disguised as a business verdict.
  *
- * <h2>Reject code 109 is inert, and that is preserved rather than repaired</h2>
- *
- * <p>This is the single most counterintuitive behaviour on the posting path, so it is stated here in
- * full. The account-rewrite stage runs <em>after</em> the mainline has already decided to post the
- * record and <em>after</em> the category balance has already been written. When that rewrite finds no
- * account row, the legacy paragraph sets fail reason 109 and does nothing else whatsoever: it checks
- * no status, displays no diagnostic, raises no abend, and exits normally - alone among the member's
- * write paragraphs. The caller then goes straight on to write the transaction.
- *
- * <p>The consequence is that <strong>109 never produces a reject record</strong>. The mainline's
- * post-or-reject branch was taken long before 109 could be set and is never reconsidered, so the
- * record is counted as posted, the transaction is still written, and the reject dataset never hears
- * about it. This processor reproduces that exactly: it routes on whether the record was
- * <em>posted</em>, never on whether it carries a reason code, so a posted record carrying 109 returns
- * {@code null} like any other posted record. Turning 109 into a reject item, an exception, a rollback
- * or a skip would each be more idiomatic and each would change what the run produces. The reason is
- * still recorded - on the metrics endpoint and in a diagnostic - because a traceability row and an
- * operator both need to know it happened.
- *
- * <p>Reject 109 also keeps its own identity even though its description text is byte-identical to
- * reject 101's. The two arise from different operations at different points - 101 from the account
- * <em>read</em> during validation, 109 from the account <em>rewrite</em> after posting - and collapsing
- * them would compile, would pass a naive test, and would stop emitting one of the five codes the
- * reject dataset's trailer is contractually required to carry.
- *
- * <h2>Ordering rules this class must not defeat</h2>
- *
- * <p>Every ordering rule of the cascade is the service's to keep, and each was verified against the
- * legacy member before delegation was chosen rather than assumed. They are named here because this
- * processor's contract is meaningless without them, and because anyone tempted to move a check up into
- * this class would break one of them:
- *
- * <ol>
- *   <li>a cross-reference miss sets reject 100 and <strong>short-circuits the account lookup
- *       entirely</strong> - the cascade tests the fail reason before it looks the account up, so no
- *       account read is attempted for an unknown card;</li>
- *   <li>an account miss sets reject 101;</li>
- *   <li>on an account hit the overlimit test sets reject 102, measuring the credit limit against
- *       current-cycle credit <em>minus</em> current-cycle debit <em>plus</em> the incoming amount,
- *       evaluated strictly left to right into a two-decimal field. Truncating arithmetic is not
- *       associative, so an algebraically identical rearrangement changes which records are refused;</li>
- *   <li>the expiration test then runs <strong>immediately afterwards and unguarded</strong>, so a
- *       record that is both over limit and past expiry has 102 written first and then
- *       <strong>overwritten by 103</strong>. The two tests are consecutive unguarded blocks with no
- *       {@code else} and no early exit between them; making them mutually exclusive, swapping them, or
- *       moving either into a rule collection or a sorted registry whose order can drift would emit 102
- *       for such a record and break the byte comparison against the expected reject dataset;</li>
- *   <li>the expiration test compares <strong>characters, not dates</strong>: the account's
- *       ten-character expiration field against the first ten characters of the record's origination
- *       timestamp. Both operands are zero-padded year-month-day text, so their character order and
- *       their calendar order are the same order, and no date is parsed, no calendar type is constructed
- *       and no time zone can intrude;</li>
- *   <li>on a posted record the persistence stages run in one order and one order only - <strong>category
- *       balance, then account, then transaction</strong> - which is the opposite of the online
- *       bill-payment order, and the two are deliberately not unified. Nothing here may reorder them for
- *       a writer's convenience or to batch them together;</li>
- *   <li>a missing category-balance row is a <strong>create, not an error</strong>: the legacy status
- *       test accepts the record-not-found status alongside success, so only some third status reaches
- *       the diagnose-and-abend arm;</li>
- *   <li>a negative amount is added to the current-cycle debit accumulator <strong>unchanged</strong>,
- *       driving that total negative. It is never negated, never made absolute, and never redirected to
- *       the credit accumulator.</li>
- * </ol>
- *
- * <h2>Decimal and timestamp fidelity</h2>
- *
- * <p>Every monetary value on this path is a {@link BigDecimal}. No binary floating-point type appears
- * anywhere in this class, because an approximation cannot reproduce a cent-exact comparison and a cent
- * decides whether a record is refused as over limit.
- *
- * <p>Scaling happens in exactly one place in the module - {@link ZonedDecimalCodec}, which truncates
- * toward zero because the {@code ROUNDED} phrase occurs nowhere in the legacy estate and a COBOL
- * arithmetic store without it truncates. <strong>This class never scales anything.</strong> It calls
- * the codec only to express what the source amount must still be worth after posting, never to change
- * a value.
- *
- * <p>The two timestamps are treated differently and must stay that way. The origination timestamp
- * records when the transaction happened, which posting does not change, so it is
- * <strong>copied verbatim</strong> and is neither normalised nor parsed anywhere on this path. The
- * processing timestamp records when posting happened, so it is <strong>regenerated</strong>, and it is
- * regenerated only through the batch timestamp helper this package already owns. Its form is checked
- * rather than assumed, because the online tier builds a twenty-six character timestamp too and it is a
- * different format - a space where this one has its third separator, colons where this one has dots,
- * and a six-digit fraction where this one has two digits and a fixed tail. Emitting the online form
- * would produce a value of exactly the right width that fails a byte comparison, which is the hardest
- * kind of defect to find after the fact.
- *
  * <h2>What this class does not own</h2>
  *
- * <p>Two record widths matter on this path and <strong>neither belongs here</strong>. The reject
- * record's four-hundred-and-thirty bytes - the source image, the four-digit reason and the
- * seventy-six-character description - are assembled and width-checked by {@link RejectRecordWriter},
- * so this processor pads nothing, truncates nothing and slices nothing; it hands over the record and
- * the typed reason and lets the writer own the bytes. The posted transaction's three-hundred-and-fifty
- * bytes belong to the transaction record mapper, which is this module's single authority for that
- * layout and is deliberately not a collaborator of this class. <strong>No offset, no field width and
- * no padding rule is stated anywhere in this file.</strong>
- *
- * <p>Also not owned here: the reader and its ordering, the reject destination, the chunk size, the
- * transaction manager, the step's own timer, and any condition-code gate. All of those belong to the
- * owning job configuration, and none of them is stated as a constant in this file. Nor is any sort or
- * comparator: the legacy posting job declares no sort of any kind, and a comparator shared between
- * jobs would hand one job another's key semantics without failing to compile.
+ * <p>Neither record width on this path is assembled here. The reject record's four-hundred-and-thirty
+ * bytes belong to {@link RejectRecordWriter} and the posted transaction's three-hundred-and-fifty
+ * bytes to the transaction record mapper, so <strong>no offset, no field width and no padding rule is
+ * stated anywhere in this file</strong>. The reader and its ordering, the reject destination, the chunk
+ * size, the transaction manager, the step's timer and any condition-code gate all belong to the owning
+ * job configuration, and none of them is declared here. Nor is any sort or comparator: the legacy
+ * posting job declares no sort of any kind.
  *
  * <h2>Order, state and concurrency</h2>
  *
- * <p>Arrival order is observable and is preserved by construction. The overlimit test measures a cycle
- * total that earlier records of the same run have already moved, so a different arrival order refuses
- * a different set of records. A chunk-oriented step presents items to a processor one at a time in the
- * order its reader produced them, so calling the service once per record in place is all that is
- * required - and it is all that is done. Nothing here sorts, re-sorts, groups, re-keys, batches or
- * defers a record.
- *
- * <p>Execution is strictly sequential and must stay so. No task executor, partitioning, parallel
- * stream or asynchronous stage may be introduced on this path, because every one of them interleaves
- * records and an interleaved run makes the cycle totals - and therefore the refusals - depend on
- * timing.
+ * <p>Arrival order is observable, and execution must stay strictly sequential. The overlimit test
+ * measures a cycle total that earlier records of the same run have already moved, so a different
+ * arrival order refuses a different set of records. A chunk-oriented step presents items to a
+ * processor one at a time in the order its reader produced them, so calling the service once per
+ * record in place is all that is required, and it is all that is done. No task executor, partitioning,
+ * parallel stream or asynchronous stage may be introduced on this path, because every one of them
+ * interleaves records and an interleaved run makes the cycle totals - and therefore the refusals -
+ * depend on timing. Nothing here sorts, re-sorts, groups, re-keys, batches or defers a record.
  *
  * <p>The class holds no mutable business state whatever. Its only fields are the injected service, the
  * meter registry, and meters registered once at construction; the fail reason, the description and
@@ -317,10 +216,11 @@ public final class TransactionValidationProcessor
      *
      * <p>Writing the completion code into the exit code is the convention the batch tier of this module
      * already uses: a condition-code gate reads a step's exit code and, when it is a short run of ASCII
-     * digits, reads it as the completion code that step contributed. A gate that tolerates warnings
-     * therefore admits a run that refused records, and a strict gate bypasses what follows it - which is
-     * exactly how the legacy job entry system behaved. The legacy posting job carries no gate of its own,
-     * so nothing inside it is bypassed; the code exists for the benefit of whatever runs afterwards.
+     * digits, reads it as the completion code that step contributed. Every gate in this module is the one
+     * strict form, so a step carrying this code is refused by any gate that follows it inside the same
+     * execution - which is exactly how the legacy job entry system behaved. The legacy posting job carries
+     * no gate of its own, so nothing inside it is bypassed; the code exists so that an operator, and the
+     * job's own recorded outcome, can tell a run that refused records from one that refused none.
      *
      * <p>The digits deliberately do not spell a framework status name. An exit code that matches none of
      * the framework's own names ranks above all of them when exit statuses are combined, which is what

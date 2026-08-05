@@ -16,6 +16,7 @@
  */
 package com.carddemo.batch;
 
+import com.carddemo.service.BatchJobCatalog;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -24,12 +25,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -43,6 +42,7 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
@@ -55,17 +55,22 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.PathResource;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.FileMaintenanceService;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FixedWidthFieldReader;
+import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TranCatBalRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
 
@@ -95,25 +100,32 @@ import com.carddemo.util.ZonedDecimalCodec;
  * sequential access and a record key of the cross-reference card number; its record description
  * splits a fifty-byte record into a sixteen-character card-number key plus thirty-four bytes of
  * remainder; and it includes the card cross-reference copybook. Exactly one job member invokes it -
- * the cross-reference verification job - so it belongs to the file-probe job configuration and not
- * here. The mislabel was plausible only because of a width coincidence: the cross-reference record
- * and the transaction-category-balance record are <em>both</em> fifty bytes, yet they are different
- * files with different keys. A census across the ten legacy batch programs confirms the point from
- * the other direction: only the interest program and the posting program reference the
- * category-balance resource at all, and both do so transactionally rather than as a listing driver.
- * No application program lists the category balance sequentially. Both corrections are raised for
- * {@code docs/decision-log.md}; no file outside this one is edited to record them, and in particular
- * the service layer is not "fixed".
+ * the cross-reference verification job. The mislabel was plausible only because of a width
+ * coincidence: the cross-reference record and the transaction-category-balance record are
+ * <em>both</em> fifty bytes, yet they are different files with different keys. A census across the ten
+ * legacy batch programs confirms the point from the other direction: only the interest program and the
+ * posting program reference the category-balance resource at all, and both do so transactionally rather
+ * than as a listing driver. No application program lists the category balance sequentially.
  *
- * <p><strong>How {@link FileMaintenanceService} is nonetheless used.</strong> It owns the shared
- * sequential-read and two-level file-status discipline that every sequential listing in this estate
- * follows, and this job is a sequential listing. Only its generic entry points are used: the
- * category-balance sequential read, which performs the whole open, read-to-end and close pass and
- * reports the terminal status and the record count, and the operator-facing status display, which
- * emits and returns without raising so that a caller which has not yet decided to abend may use it.
- * No cross-reference-oriented method of that service is called from here. The service's own
- * execution banner names the legacy member it was built around, which is the very mislabel recorded
- * above; this job's banners name its own legacy steps instead.
+ * <p><strong>Both corrections have since been made at their source, and an earlier revision of this
+ * paragraph said they would not be.</strong> It recorded the findings and then declined to act on them -
+ * "no file outside this one is edited to record them, and in particular the service layer is not
+ * 'fixed'" - which left the module holding a documented untruth: a service method whose execution banner
+ * named a member that reads a different file. Documenting a defect is not a substitute for correcting it
+ * when the correction is inside the same migration. {@link FileMaintenanceService} now translates
+ * {@code CBACT03C} as the cross-reference reader it is, and the category-balance pass it exposes cites
+ * this job stream's own unload step instead of a program. Both corrections are recorded in
+ * {@code docs/decision-log.md} as well.
+ *
+ * <p><strong>How {@link FileMaintenanceService} is used.</strong> It owns the shared sequential-read and
+ * two-level file-status discipline that every sequential listing in this estate follows, and this job is
+ * a sequential listing. Two entry points are used: the category-balance sequential read, which performs
+ * the whole open, read-to-end and close pass and reports the terminal status and the record count, and
+ * the operator-facing status display, which emits and returns without raising so that a caller which has
+ * not yet decided to abend may use it. No cross-reference method of that service is called from here, and
+ * the read this job uses now announces the legacy unload step rather than a program - so a log line from
+ * that pass and a log line from this job name the same step and no longer disagree about which member
+ * ran.
  *
  * <h2>The measured job stream: three steps, zero condition-code gates</h2>
  *
@@ -290,8 +302,15 @@ public final class CategoryBalanceReportJobConfig {
     // to resolve.
     // -----------------------------------------------------------------------------------------------
 
-    /** Name of the job, and of the bean that publishes it. */
-    public static final String JOB_NAME = "categoryBalanceReportJob";
+    /**
+     * Name of the job, and of the bean that publishes it.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
+     */
+    public static final String JOB_NAME = BatchJobCatalog.CATEGORY_BALANCE_REPORT_JOB_NAME;
 
     /** Name of the step standing in for the legacy {@code DELDEF} step, and of its bean. */
     public static final String CLEAR_PRIOR_REPORT_STEP_NAME =
@@ -461,31 +480,16 @@ public final class CategoryBalanceReportJobConfig {
     private static final String FIELD_TRAN_CAT_BAL = "TRAN-CAT-BAL";
 
     /**
-     * Modulus of a legacy absolute generation number, whose names run from the first generation to the
-     * nine-thousand-nine-hundred-and-ninety-ninth and then wrap. The wrap is reproduced rather than
-     * avoided so that a generation name stays the shape an operator recognises; retention, which is a
-     * property of the generation group rather than of the job that writes a generation, is deliberately
-     * outside this job's remit.
-     */
-    private static final int GENERATION_NUMBER_MODULUS = 10_000;
-
-    /** Format of a legacy absolute generation name: the base, the generation number, the version. */
-    private static final String GENERATION_NAME_FORMAT = "%s.G%04dV00";
-
-    /**
      * Zero scale, used when a zoned-decimal sort key is decoded. The key fields carry no implied
      * decimal positions; only the balance does, and the balance is not a key.
      */
     private static final int KEY_SCALE = 0;
 
-    /**
-     * Key sequence of the category-balance cluster, which is the order a sequential unload of a
-     * key-sequenced cluster emits. Applied to the unload so that the second step reproduces the
-     * utility's output order; the sort specification is applied separately by the third step, exactly
-     * as the legacy stream sorts an already key-ordered unload.
-     */
-    private static final Sort UNLOAD_KEY_SEQUENCE =
-            Sort.by(Sort.Direction.ASC, "trancatAcctId", "trancatTypeCd", "trancatCd");
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
+
+    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
+
+    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
 
     // -----------------------------------------------------------------------------------------------
     // The fourth sort specification. PRIVATE to this class by necessity - see the class documentation.
@@ -583,15 +587,18 @@ public final class CategoryBalanceReportJobConfig {
     public CategoryBalanceReportJobConfig(
             final JobRepository jobRepository,
             final PlatformTransactionManager transactionManager,
-            final JobExecutionListener jobBoundaryListener,
-            final JobParametersIncrementer jobRunIncrementer,
+            @Qualifier("batchJobBoundaryListener")
+                    final JobExecutionListener jobBoundaryListener,
+            @Qualifier("batchJobRunIncrementer")
+                    final JobParametersIncrementer jobRunIncrementer,
             final FileMaintenanceService fileMaintenanceService,
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final FixedWidthFlatFileReaderFactory readerFactory,
             final MeterRegistry meterRegistry,
             final Clock clock,
-            @Value("${carddemo.batch.category-balance-report.staging-directory:"
-                    + "${java.io.tmpdir}}") final String stagingDirectory,
+            @Value("${carddemo.batch.category-balance-report.staging-directory:${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}") final String stagingDirectory,
             @Value("${carddemo.batch.category-balance-report.backup-dataset-base:"
                     + "AWS.M2.CARDDEMO.TCATBALF.BKUP}") final String backupDatasetBase,
             @Value("${carddemo.batch.category-balance-report.report-dataset:"
@@ -609,8 +616,9 @@ public final class CategoryBalanceReportJobConfig {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stagingDirectory = requireResourceName(stagingDirectory, "stagingDirectory");
-        this.backupDatasetBase = requireResourceName(backupDatasetBase, "backupDatasetBase");
-        this.reportDataset = requireResourceName(reportDataset, "reportDataset");
+        this.backupDatasetBase =
+                StagedResourceNames.requireSimpleName(backupDatasetBase, "backupDatasetBase");
+        this.reportDataset = StagedResourceNames.requireSimpleName(reportDataset, "reportDataset");
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -672,12 +680,18 @@ public final class CategoryBalanceReportJobConfig {
      * bytes per record, standing in for the legacy second step's cataloged copy wrapper. One ordinary
      * read-and-write step: no shell-out, no process spawn, no external tool.
      *
+     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@link #UNLOAD_STEP_NAME}
      */
     @Bean
-    public Step categoryBalanceReportUnloadStep() {
+    public Step categoryBalanceReportUnloadStep(final BatchStagingArea stagingArea) {
         return new StepBuilder(UNLOAD_STEP_NAME, this.jobRepository)
-                .tasklet(this::unloadToBackupGeneration, this.transactionManager)
+                .tasklet((contribution, chunkContext) -> {
+                    final RepeatStatus result =
+                            unloadToBackupGeneration(contribution, chunkContext);
+                    stagingArea.publish(backupGeneration(jobExecutionIdOf(chunkContext)));
+                    return result;
+                }, this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -687,12 +701,17 @@ public final class CategoryBalanceReportJobConfig {
      * report at {@link #REPORT_RECORD_LENGTH} bytes per record, standing in for the legacy third step's
      * external sort.
      *
+     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@link #SORT_AND_REPROJECT_STEP_NAME}
      */
     @Bean
-    public Step categoryBalanceReportSortAndReprojectStep() {
+    public Step categoryBalanceReportSortAndReprojectStep(final BatchStagingArea stagingArea) {
         return new StepBuilder(SORT_AND_REPROJECT_STEP_NAME, this.jobRepository)
-                .tasklet(this::sortAndReproject, this.transactionManager)
+                .tasklet((contribution, chunkContext) -> {
+                    final RepeatStatus result = sortAndReproject(contribution, chunkContext);
+                    stagingArea.publish(reportResource());
+                    return result;
+                }, this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -730,9 +749,14 @@ public final class CategoryBalanceReportJobConfig {
     private RepeatStatus unloadToBackupGeneration(final StepContribution contribution,
             final ChunkContext chunkContext) {
 
-        final Path generation = backupGeneration(jobExecutionIdOf(chunkContext));
+        final long executionId = jobExecutionIdOf(chunkContext);
+        final Path generation = backupGeneration(executionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
         new UnloadStep(this.meterRegistry, this.clock, this.fileMaintenanceService,
-                this.transactionCategoryBalanceRepository, generation).run();
+                this.transactionCategoryBalanceRepository, working).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecutionOf(chunkContext), this.backupDatasetBase,
+                generation, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
         return RepeatStatus.FINISHED;
     }
 
@@ -747,9 +771,14 @@ public final class CategoryBalanceReportJobConfig {
     private RepeatStatus sortAndReproject(final StepContribution contribution,
             final ChunkContext chunkContext) {
 
-        final Path generation = backupGeneration(jobExecutionIdOf(chunkContext));
-        new SortAndReprojectStep(this.meterRegistry, this.clock, this.readerFactory, generation,
-                reportResource()).run();
+        final long executionId = jobExecutionIdOf(chunkContext);
+        final Path generation = reportGeneration(executionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
+        new SortAndReprojectStep(this.meterRegistry, this.clock, this.readerFactory,
+                backupGeneration(executionId), working).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecutionOf(chunkContext), this.reportDataset,
+                generation, StagedGenerationStore.STANDARD_RETENTION_LIMIT, reportResource());
         return RepeatStatus.FINISHED;
     }
 
@@ -761,12 +790,17 @@ public final class CategoryBalanceReportJobConfig {
      * @return the job execution identifier
      */
     private static long jobExecutionIdOf(final ChunkContext chunkContext) {
-        Objects.requireNonNull(chunkContext, "chunkContext");
-        final Long identifier =
-                chunkContext.getStepContext().getStepExecution().getJobExecutionId();
+        final Long identifier = stepExecutionOf(chunkContext).getJobExecutionId();
         return Objects.requireNonNull(identifier,
                 "the framework must have assigned a job execution identifier before a step runs")
                 .longValue();
+    }
+
+    /** Returns the current step execution, which owns every staged-resource registration. */
+    private static StepExecution stepExecutionOf(final ChunkContext chunkContext) {
+        Objects.requireNonNull(chunkContext, "chunkContext");
+        return Objects.requireNonNull(chunkContext.getStepContext().getStepExecution(),
+                "the framework must have opened a step execution before its tasklet runs");
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -790,14 +824,30 @@ public final class CategoryBalanceReportJobConfig {
      * @return the resolved generation resource
      */
     private Path backupGeneration(final long jobExecutionId) {
-        final String generationName = String.format(Locale.ROOT, GENERATION_NAME_FORMAT,
-                this.backupDatasetBase, Math.floorMod(jobExecutionId, GENERATION_NUMBER_MODULUS));
-        return Path.of(this.stagingDirectory).resolve(generationName);
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.backupDatasetBase, jobExecutionId);
+    }
+
+    /**
+     * The execution-scoped report generation durably published before the fixed logical alias changes.
+     *
+     * @param jobExecutionId owning job execution
+     * @return completed report generation
+     */
+    private Path reportGeneration(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.reportDataset, jobExecutionId);
     }
 
     /**
      * Validates a configured logical name, because an absent or blank name would resolve to the staging
      * directory itself and a job would then clear or overwrite a directory rather than a dataset.
+     *
+     * <p><strong>This governs the staging root only.</strong> A dataset name resolved against that root
+     * is screened by {@link StagedResourceNames#requireSimpleName(String, String)}, which additionally
+     * refuses an absolute value, a path separator and a directory reference - none of which a blank
+     * check catches, and each of which would resolve outside the root. The root itself is legitimately
+     * a multi-segment path and may be absolute, so the stricter rule cannot be applied to it.
      *
      * @param value the configured value
      * @param name the property's role, for the diagnostic
@@ -1178,9 +1228,10 @@ public final class CategoryBalanceReportJobConfig {
 
         @Override
         protected void openResources() {
-            // The shared discipline owns the input-side pass. Its own execution banner names the legacy
-            // member it was built around, which is the mislabel this configuration's documentation
-            // records; the banner is left as the service emits it rather than worked around here.
+            // The shared discipline owns the input-side pass. It announces this job's own unload step
+            // rather than a program, because no application program reads this cluster sequentially - so
+            // the service's line and this step's lines name the same step and cannot disagree about which
+            // member ran.
             this.inputSummary = this.fileMaintenanceService.readTransactionCategoryBalanceFile();
 
             if (!this.inputSummary.endedAtEndOfFile()) {
@@ -1194,7 +1245,10 @@ public final class CategoryBalanceReportJobConfig {
             }
 
             openResource(DD_COPY_INPUT, () -> {
-                this.unloadCursor = this.repository.findAll(UNLOAD_KEY_SEQUENCE).iterator();
+                this.unloadCursor = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        this::loadCategoryBalancePage,
+                        CategoryBalanceReportJobConfig::categoryBalanceKey,
+                        Comparator.naturalOrder());
                 return FileStatus.SUCCESS.getCode();
             });
 
@@ -1253,6 +1307,19 @@ public final class CategoryBalanceReportJobConfig {
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_COPY_OUTPUT);
         }
+
+        private List<TransactionCategoryBalance> loadCategoryBalancePage(
+                final String cursor, final Integer pageSize) {
+            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
+            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
+            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
+            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
+            final String categoryCode = cursor.length() <= categoryOffset
+                    ? ""
+                    : cursor.substring(categoryOffset);
+            return this.repository.findAfterKey(accountId, typeCode, categoryCode,
+                    PageRequest.of(0, pageSize.intValue()));
+        }
     }
 
     /**
@@ -1273,11 +1340,14 @@ public final class CategoryBalanceReportJobConfig {
         /** The report dataset being written. */
         private final Path reportResource;
 
-        /** The sort work area, standing in for the sort's own work file. */
-        private final List<TransactionCategoryBalance> sortWorkArea = new ArrayList<>();
+        /** Disk-backed bounded sort work area, standing in for the external sort's work files. */
+        private ExternalStringSorter sorter;
 
         /** Handle on the report being written. */
         private BufferedWriter writer;
+
+        /** Records ordered and written. */
+        private long recordsWritten;
 
         /**
          * @param meterRegistry the metric registry; must not be {@code null}
@@ -1308,6 +1378,9 @@ public final class CategoryBalanceReportJobConfig {
 
             openResource(DD_SORT_OUTPUT, () -> {
                 this.writer = openForWriting(this.reportResource);
+                this.sorter = new ExternalStringSorter(
+                        SortAndReprojectStep::compareRecordImages,
+                        ExternalStringSorter.DEFAULT_RECORDS_PER_RUN);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -1325,8 +1398,7 @@ public final class CategoryBalanceReportJobConfig {
 
         @Override
         protected void processRecord(final TransactionCategoryBalance record) {
-            // Accumulate only: an external sort cannot emit its first record until it has read its last.
-            this.sortWorkArea.add(record);
+            this.sorter.add(TranCatBalRecordMapper.toRecord(record));
         }
 
         @Override
@@ -1336,17 +1408,7 @@ public final class CategoryBalanceReportJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
 
-            this.sortWorkArea.sort(SORT_SPECIFICATION);
-
-            for (final TransactionCategoryBalance ordered : this.sortWorkArea) {
-                writeRecord(DD_SORT_OUTPUT, () -> {
-                    final String line = reportLine(ordered);
-                    requireEncodedWidth(line, REPORT_RECORD_LENGTH, DD_SORT_OUTPUT);
-                    this.writer.write(line);
-                    this.writer.write(RECORD_SEPARATOR);
-                    return FileStatus.SUCCESS.getCode();
-                });
-            }
+            this.recordsWritten = this.sorter.writeTo(this::writeOrderedRecord);
 
             closeResource(DD_SORT_OUTPUT, () -> {
                 this.writer.flush();
@@ -1355,15 +1417,43 @@ public final class CategoryBalanceReportJobConfig {
             });
 
             LOGGER.info("{} ORDERED AND REPROJECTED {} RECORD(S) OF {} BYTE(S) TO {}",
-                    LEGACY_STEP_SORT, this.sortWorkArea.size(), REPORT_RECORD_LENGTH, DD_SORT_OUTPUT);
+                    LEGACY_STEP_SORT, this.recordsWritten, REPORT_RECORD_LENGTH, DD_SORT_OUTPUT);
         }
 
         @Override
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_SORT_OUTPUT);
+            releaseQuietly(this.sorter, "SORTWK");
             // The item stream contract declares its own close rather than the standard one, so the
             // release is handed the close itself.
             releaseQuietly(this.reader::close, DD_SORT_INPUT);
         }
+
+        private void writeOrderedRecord(final String recordImage) {
+            writeRecord(DD_SORT_OUTPUT, () -> {
+                final String line = reportLine(TranCatBalRecordMapper.fromRecord(recordImage));
+                requireEncodedWidth(line, REPORT_RECORD_LENGTH, DD_SORT_OUTPUT);
+                this.writer.write(line);
+                this.writer.write(RECORD_SEPARATOR);
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
+
+        private static int compareRecordImages(final String left, final String right) {
+            return SORT_SPECIFICATION.compare(
+                    TranCatBalRecordMapper.fromRecord(left),
+                    TranCatBalRecordMapper.fromRecord(right));
+        }
+    }
+
+    private static String keyPart(final String key, final int offset, final int width) {
+        if (key.length() <= offset) {
+            return "";
+        }
+        return key.substring(offset, Math.min(key.length(), offset + width));
+    }
+
+    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
+        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 }

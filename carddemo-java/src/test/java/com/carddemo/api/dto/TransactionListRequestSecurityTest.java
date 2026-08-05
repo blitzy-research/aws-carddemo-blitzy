@@ -89,11 +89,10 @@ import com.carddemo.domain.enums.KeyAction;
 @DisplayName("TransactionListRequest - the CT00 inbound contract")
 class TransactionListRequestSecurityTest {
 
-    /** The six components in declaration order. A change here is a change to the REST contract. */
+    /** The five components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
-            "transactionIdFilter", "displayedPageNumber", "rowSelectors", "keyAction",
-            "navigationContext",
-            "pageMetadata");
+            "transactionIdFilter", "rowSelectors", "keyAction", "navigationContext",
+            "continuation");
 
     /** The fixed stand-in the rendering must emit in place of a withheld value. */
     private static final String REDACTION_PLACEHOLDER_TEXT = "***REDACTED***";
@@ -147,15 +146,18 @@ class TransactionListRequestSecurityTest {
      *
      * @return a forward-paging cursor request at the declared widths
      */
-    private static PageMetadata.PageCursorRequest populatedPage() {
-        return new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR,
-                PageMetadata.PagingDirection.FORWARD);
+    private static TransactionListRequest.ScreenContinuation populatedContinuation() {
+        return new TransactionListRequest.ScreenContinuation(
+                PREVIOUS_CURSOR, NEXT_CURSOR, PageMetadata.PagingDirection.FORWARD,
+                DISPLAYED_PAGE_NUMBER, true,
+                List.of("0000000000000001", "0000000000000002"));
     }
 
     /** A realistic forward-page submission with every component populated. */
     private static TransactionListRequest populated() {
-        return new TransactionListRequest(TRANSACTION_ID, DISPLAYED_PAGE_NUMBER, TEN_SELECTORS,
-                KeyAction.PFK08, NavigationContext.empty().withReEntry(), populatedPage());
+        return new TransactionListRequest(TRANSACTION_ID, TEN_SELECTORS,
+                KeyAction.PFK08, NavigationContext.empty().withReEntry(),
+                populatedContinuation());
     }
 
     private static Set<ConstraintViolation<TransactionListRequest>> violationsOf(
@@ -171,13 +173,13 @@ class TransactionListRequestSecurityTest {
     class TheComponentSetIsTheBrowseMap {
 
         @Test
-        @DisplayName("six components are declared in order")
+        @DisplayName("five components are declared in order")
         void sixComponentsAreDeclaredInOrder() {
             List<String> declared = Arrays.stream(TransactionListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(6);
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(5);
         }
 
         @Test
@@ -221,8 +223,8 @@ class TransactionListRequestSecurityTest {
                     case "keyAction" -> assertThat(component.getType()).isEqualTo(KeyAction.class);
                     case "navigationContext" ->
                             assertThat(component.getType()).isEqualTo(NavigationContext.class);
-                    case "pageMetadata" -> assertThat(component.getType())
-                            .isEqualTo(PageMetadata.PageCursorRequest.class);
+                    case "continuation" -> assertThat(component.getType())
+                            .isEqualTo(TransactionListRequest.ScreenContinuation.class);
                     default -> assertThat(component.getType())
                             .as("component %s", component.getName())
                             .isEqualTo(String.class);
@@ -236,12 +238,13 @@ class TransactionListRequestSecurityTest {
             TransactionListRequest request = populated();
 
             assertThat(request.transactionIdFilter()).isEqualTo(TRANSACTION_ID);
-            assertThat(request.displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_NUMBER);
             assertThat(request.rowSelectors()).containsExactlyElementsOf(TEN_SELECTORS);
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(request.navigationContext().programContext())
                     .isEqualTo(NavigationContext.ProgramContext.REENTER);
-            assertThat(request.pageMetadata().nextCursorKey()).isEqualTo(NEXT_CURSOR);
+            assertThat(request.continuation().displayedPageNumber())
+                    .isEqualTo(DISPLAYED_PAGE_NUMBER);
+            assertThat(request.continuation().nextCursorKey()).isEqualTo(NEXT_CURSOR);
         }
     }
 
@@ -250,15 +253,14 @@ class TransactionListRequestSecurityTest {
     class TheRenderingDisclosesNothingWhileTheWireCarriesEverything {
 
         @Test
-        @DisplayName("the rendering is exactly the four retained values plus two placeholders")
+        @DisplayName("the rendering is exactly the retained values plus two placeholders")
         void theRenderingIsExactlyTheFourRetainedValuesPlusTwoPlaceholders() {
             assertThat(populated()).hasToString("TransactionListRequest["
                     + "transactionIdFilter=" + REDACTION_PLACEHOLDER_TEXT
-                    + ", displayedPageNumber=" + DISPLAYED_PAGE_NUMBER
                     + ", rowSelectors=" + TEN_SELECTORS
                     + ", keyAction=" + KeyAction.PFK08
                     + ", navigationContext=" + NavigationContext.empty().withReEntry()
-                    + ", pageMetadata=" + REDACTION_PLACEHOLDER_TEXT
+                    + ", continuation=" + REDACTION_PLACEHOLDER_TEXT
                     + "]");
         }
 
@@ -286,8 +288,8 @@ class TransactionListRequestSecurityTest {
         void thePagingComponentIsWithheldWholeRatherThanByDelegation() {
             String rendered = populated().toString();
 
-            assertThat(rendered).contains("pageMetadata=" + REDACTION_PLACEHOLDER_TEXT);
-            assertThat(rendered).doesNotContain("PageMetadata[").doesNotContain("PageCursorRequest[");
+            assertThat(rendered).contains("continuation=" + REDACTION_PLACEHOLDER_TEXT);
+            assertThat(rendered).doesNotContain("ScreenContinuation[");
             assertThat(rendered).doesNotContain(PREVIOUS_CURSOR);
             assertThat(rendered).doesNotContain(NEXT_CURSOR);
         }
@@ -297,11 +299,12 @@ class TransactionListRequestSecurityTest {
                 + "placeholders are constants rather than transformations")
         void twoInstancesDifferingOnlyInTheWithheldValuesRenderIdentically() {
             TransactionListRequest first = new TransactionListRequest("1111111111111111",
-                    DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08, null, populatedPage());
+                    TEN_SELECTORS, KeyAction.PFK08, null, populatedContinuation());
             TransactionListRequest second = new TransactionListRequest("9999999999999999",
-                    DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08, null,
-                    new PageMetadata.PageCursorRequest("OTHER", "DIFFERENT",
-                            PageMetadata.PagingDirection.BACKWARD));
+                    TEN_SELECTORS, KeyAction.PFK08, null,
+                    new TransactionListRequest.ScreenContinuation(
+                            "OTHER", "DIFFERENT", PageMetadata.PagingDirection.BACKWARD,
+                            DISPLAYED_PAGE_NUMBER, true, List.of("0000000000000099")));
 
             assertThat(first).hasToString(second.toString());
         }
@@ -310,14 +313,14 @@ class TransactionListRequestSecurityTest {
         @DisplayName("an absent withheld value still renders as the placeholder, so absence and presence "
                 + "are indistinguishable in a diagnostic")
         void anAbsentWithheldValueStillRendersAsThePlaceholder() {
-            TransactionListRequest sparse = new TransactionListRequest(null, null, null, null, null,
-                    null);
+            TransactionListRequest sparse =
+                    new TransactionListRequest(null, null, null, null, null);
 
             assertThat(sparse.toString())
                     .contains("transactionIdFilter=" + REDACTION_PLACEHOLDER_TEXT)
-                    .contains("pageMetadata=" + REDACTION_PLACEHOLDER_TEXT)
+                    .contains("continuation=" + REDACTION_PLACEHOLDER_TEXT)
                     .doesNotContain("transactionIdFilter=null")
-                    .doesNotContain("pageMetadata=null");
+                    .doesNotContain("continuation=null");
         }
 
         @Test
@@ -326,7 +329,6 @@ class TransactionListRequestSecurityTest {
         void theRetainedValuesAreRetained() {
             String rendered = populated().toString();
 
-            assertThat(rendered).contains("displayedPageNumber=" + DISPLAYED_PAGE_NUMBER);
             assertThat(rendered).contains("keyAction=" + KeyAction.PFK08);
             assertThat(rendered).contains("rowSelectors=");
         }
@@ -338,8 +340,8 @@ class TransactionListRequestSecurityTest {
             NavigationContext identifying = new NavigationContext(null, null, null, null, "USER0001",
                     "U", NavigationContext.ProgramContext.REENTER, "000000007", "GRACE", null,
                     "HOPPER", "00000000099", "Y", "4111111111111111", null, null);
-            TransactionListRequest request = new TransactionListRequest(TRANSACTION_ID, null, null,
-                    null, identifying, null);
+            TransactionListRequest request =
+                    new TransactionListRequest(TRANSACTION_ID, null, null, identifying, null);
 
             String rendered = request.toString();
 
@@ -353,8 +355,8 @@ class TransactionListRequestSecurityTest {
         @Test
         @DisplayName("the rendering is safe when every component is absent")
         void theRenderingIsSafeWhenEveryComponentIsAbsent() {
-            TransactionListRequest empty = new TransactionListRequest(null, null, null, null, null,
-                    null);
+            TransactionListRequest empty =
+                    new TransactionListRequest(null, null, null, null, null);
 
             assertThatCode(empty::toString).doesNotThrowAnyException();
         }
@@ -368,7 +370,7 @@ class TransactionListRequestSecurityTest {
             JsonNode payload = mapper.readTree(mapper.writeValueAsString(populated()));
 
             assertThat(payload.get("transactionIdFilter").asText()).isEqualTo(TRANSACTION_ID);
-            assertThat(payload.get("pageMetadata").get("nextCursorKey").asText())
+            assertThat(payload.get("continuation").get("nextCursorKey").asText())
                     .isEqualTo(NEXT_CURSOR);
         }
     }
@@ -395,7 +397,8 @@ class TransactionListRequestSecurityTest {
         @DisplayName("the page label carries the screen field's own width and, beyond the binding that "
                 + "makes it publish-only, nothing else")
         void thePageLabelCarriesTheScreenFieldsOwnWidth() throws NoSuchFieldException {
-            Field field = TransactionListRequest.class.getDeclaredField("displayedPageNumber");
+            Field field = TransactionListRequest.ScreenContinuation.class
+                    .getDeclaredField("displayedPageNumber");
 
             Size size = field.getAnnotation(Size.class);
 
@@ -407,8 +410,7 @@ class TransactionListRequestSecurityTest {
                     .map(annotation -> annotation.annotationType().getSimpleName())
                     .sorted()
                     .toList())
-                    .as("the width bound plus the publish-only binding, and no validation rule")
-                    .containsExactly("JsonProperty", "Size");
+                    .containsExactly("Pattern", "Size");
         }
 
         @Test
@@ -451,8 +453,8 @@ class TransactionListRequestSecurityTest {
         @DisplayName("a sequence of exactly ten selectors draws no violation, so the bound admits a full "
                 + "page")
         void aSequenceOfExactlyTenSelectorsDrawsNoViolation() {
-            TransactionListRequest fullPage = new TransactionListRequest(null, null, TEN_SELECTORS,
-                    null, null, null);
+            TransactionListRequest fullPage =
+                    new TransactionListRequest(null, TEN_SELECTORS, null, null, null);
 
             assertThat(violationsOf(fullPage)).isEmpty();
             assertThat(fullPage.rowSelectors()).hasSize(10);
@@ -470,7 +472,7 @@ class TransactionListRequestSecurityTest {
             // request still carries. The declared width bound stays on the component so that the
             // published contract states the same limit the constructor enforces.
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new TransactionListRequest(null, null, eleven, null, null, null))
+                    .isThrownBy(() -> new TransactionListRequest(null, eleven, null, null, null))
                     .withMessageContaining("at most " + TransactionListRequest.ROW_COUNT)
                     .withMessageContaining("11");
         }
@@ -483,7 +485,7 @@ class TransactionListRequestSecurityTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() ->
-                            new TransactionListRequest(null, null, farTooMany, null, null, null))
+                            new TransactionListRequest(null, farTooMany, null, null, null))
                     .withMessageContaining("4096");
         }
 
@@ -503,8 +505,8 @@ class TransactionListRequestSecurityTest {
         @DisplayName("an over-long selector element is still reported, so the container and element "
                 + "bounds are independent")
         void anOverLongSelectorElementIsStillReported() {
-            TransactionListRequest badElement = new TransactionListRequest(null, null, List.of("SS"),
-                    null, null, null);
+            TransactionListRequest badElement =
+                    new TransactionListRequest(null, List.of("SS"), null, null, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(badElement);
 
@@ -516,10 +518,10 @@ class TransactionListRequestSecurityTest {
         @Test
         @DisplayName("an empty sequence and an absent one are both accepted")
         void anEmptyAndAnAbsentSequenceAreBothAccepted() {
-            TransactionListRequest absent = new TransactionListRequest(null, null, null, null, null,
-                    null);
-            TransactionListRequest empty = new TransactionListRequest(null, null, List.of(), null,
-                    null, null);
+            TransactionListRequest absent =
+                    new TransactionListRequest(null, null, null, null, null);
+            TransactionListRequest empty =
+                    new TransactionListRequest(null, List.of(), null, null, null);
 
             assertThat(violationsOf(absent)).isEmpty();
             assertThat(violationsOf(empty)).isEmpty();
@@ -532,8 +534,8 @@ class TransactionListRequestSecurityTest {
         @DisplayName("a blank filter is transported rather than rejected, because a blank filter means "
                 + "browse from the beginning rather than an invalid submission")
         void aBlankFilterIsTransportedRatherThanRejected(String blank) {
-            TransactionListRequest request = new TransactionListRequest(blank, blank, List.of(blank),
-                    null, null, null);
+            TransactionListRequest request =
+                    new TransactionListRequest(blank, List.of(blank), null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.transactionIdFilter()).isEqualTo(blank);
@@ -544,7 +546,9 @@ class TransactionListRequestSecurityTest {
                 + "is the shape a blank browse screen transmits")
         void aSpaceFilledSubmissionDrawsNoViolation() {
             TransactionListRequest spaceFilled = new TransactionListRequest(" ".repeat(16),
-                    " ".repeat(8), TEN_SELECTORS, null, null, null);
+                    TEN_SELECTORS, null, null,
+                    new TransactionListRequest.ScreenContinuation(
+                            null, null, null, " ".repeat(8), false, List.of()));
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
             assertThat(spaceFilled.transactionIdFilter()).hasSize(16).isBlank();
@@ -553,8 +557,8 @@ class TransactionListRequestSecurityTest {
         @Test
         @DisplayName("a filter one character over its width is reported and never trimmed")
         void aFilterOneCharacterOverItsWidthIsReported() {
-            TransactionListRequest tooWide = new TransactionListRequest("1".repeat(17), null, null,
-                    null, null, null);
+            TransactionListRequest tooWide =
+                    new TransactionListRequest("1".repeat(17), null, null, null, null);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(tooWide);
 
@@ -580,7 +584,7 @@ class TransactionListRequestSecurityTest {
         @Test
         @DisplayName("the paging component declares the cascade")
         void thePagingComponentDeclaresTheCascade() throws NoSuchFieldException {
-            Field field = TransactionListRequest.class.getDeclaredField("pageMetadata");
+            Field field = TransactionListRequest.class.getDeclaredField("continuation");
 
             assertThat(field.getAnnotation(Valid.class)).isNotNull();
         }
@@ -607,34 +611,36 @@ class TransactionListRequestSecurityTest {
         @DisplayName("a violation inside the echoed paging state is reported under a nested property "
                 + "path, which is the observable proof the second cascade reaches it")
         void aViolationInsideTheEchoedPagingStateIsReported() {
-            PageMetadata.PageCursorRequest overWidth = new PageMetadata.PageCursorRequest(
-                    "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1), null,
-                    PageMetadata.PagingDirection.FORWARD);
-            TransactionListRequest request = new TransactionListRequest(null, null, null, null, null,
-                    overWidth);
+            TransactionListRequest.ScreenContinuation overWidth =
+                    new TransactionListRequest.ScreenContinuation(
+                            "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1), null,
+                            PageMetadata.PagingDirection.FORWARD, null, false, List.of());
+            TransactionListRequest request =
+                    new TransactionListRequest(null, null, null, null, overWidth);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
 
             assertThat(violations).hasSize(1);
             assertThat(violations.iterator().next().getPropertyPath())
-                    .hasToString("pageMetadata.previousCursorKey");
+                    .hasToString("continuation.previousCursorKey");
         }
 
         @Test
         @DisplayName("the forward cursor is cascaded into as well, so the second cascade covers every "
                 + "nested component rather than only the first one declared")
         void aViolationInTheForwardCursorIsReportedToo() {
-            PageMetadata.PageCursorRequest overWidth = new PageMetadata.PageCursorRequest(null,
-                    "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1),
-                    PageMetadata.PagingDirection.BACKWARD);
-            TransactionListRequest request = new TransactionListRequest(null, null, null, null, null,
-                    overWidth);
+            TransactionListRequest.ScreenContinuation overWidth =
+                    new TransactionListRequest.ScreenContinuation(
+                            null, "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1),
+                            PageMetadata.PagingDirection.BACKWARD, null, false, List.of());
+            TransactionListRequest request =
+                    new TransactionListRequest(null, null, null, null, overWidth);
 
             Set<ConstraintViolation<TransactionListRequest>> violations = violationsOf(request);
 
             assertThat(violations).hasSize(1);
             assertThat(violations.iterator().next().getPropertyPath())
-                    .hasToString("pageMetadata.nextCursorKey");
+                    .hasToString("continuation.nextCursorKey");
         }
 
         @Test
@@ -657,12 +663,12 @@ class TransactionListRequestSecurityTest {
         @DisplayName("both absent nested components are not violations, because a first entry carries "
                 + "neither")
         void bothAbsentNestedComponentsAreNotViolations() {
-            TransactionListRequest request = new TransactionListRequest(TRANSACTION_ID, null, null,
-                    null, null, null);
+            TransactionListRequest request =
+                    new TransactionListRequest(TRANSACTION_ID, null, null, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.navigationContext()).isNull();
-            assertThat(request.pageMetadata()).isNull();
+            assertThat(request.continuation()).isNull();
         }
 
         @Test
@@ -732,8 +738,8 @@ class TransactionListRequestSecurityTest {
             TransactionListRequest first = populated();
             TransactionListRequest same = populated();
             TransactionListRequest differentFilter = new TransactionListRequest("0000000000000099",
-                    DISPLAYED_PAGE_NUMBER, TEN_SELECTORS, KeyAction.PFK08,
-                    NavigationContext.empty().withReEntry(), populatedPage());
+                    TEN_SELECTORS, KeyAction.PFK08,
+                    NavigationContext.empty().withReEntry(), populatedContinuation());
 
             assertThat(first).isEqualTo(same).hasSameHashCodeAs(same);
             assertThat(first).isNotEqualTo(differentFilter);
@@ -744,18 +750,17 @@ class TransactionListRequestSecurityTest {
                 + "replaced rendering did not disturb the wire contract")
         void aDocumentNamingEveryComponentDeserializesIntact() throws JsonProcessingException {
             String document = "{\"transactionIdFilter\":\"" + TRANSACTION_ID + "\","
-                    + "\"displayedPageNumber\":\"" + DISPLAYED_PAGE_NUMBER + "\","
                     + "\"rowSelectors\":[\" \",\"S\"],"
-                    + "\"keyAction\":\"PFK07\"}";
+                    + "\"keyAction\":\"PFK07\","
+                    + "\"continuation\":{\"displayedPageNumber\":\""
+                    + DISPLAYED_PAGE_NUMBER + "\"}}";
 
             TransactionListRequest request =
                     moduleEquivalentMapper().readValue(document, TransactionListRequest.class);
 
             assertThat(request.transactionIdFilter()).isEqualTo(TRANSACTION_ID);
-            assertThat(request.displayedPageNumber())
-                    .as("the page label is published by the service rather than accepted from a caller, "
-                            + "so a document naming it binds nothing")
-                    .isNull();
+            assertThat(request.continuation().displayedPageNumber())
+                    .isEqualTo(DISPLAYED_PAGE_NUMBER);
             assertThat(request.rowSelectors()).containsExactly(" ", "S");
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK07);
         }

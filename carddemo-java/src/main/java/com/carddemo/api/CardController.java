@@ -16,6 +16,7 @@
  */
 package com.carddemo.api;
 
+import com.carddemo.api.dto.CardDetailRequest;
 import com.carddemo.api.dto.CardDetailResponse;
 import com.carddemo.api.dto.CardListRequest;
 import com.carddemo.api.dto.CardListResponse;
@@ -31,6 +32,7 @@ import com.carddemo.service.CardDetailService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.util.PfKeyTranslator;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -48,7 +50,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -96,13 +97,13 @@ import org.springframework.web.bind.annotation.RestController;
  * declarative validation before the method body runs, which {@link GlobalExceptionHandler} shapes into a
  * {@code 400}.
  *
- * <p><strong>Authentication.</strong> All three routes sit under {@link #CARDS_BASE_PATH}, which is
- * neither the one anonymous path nor beneath the administrative prefix, so the catch-all rule in
- * {@code config/SecurityConfig} requires an authenticated caller for each of them. That matches the
- * transaction table, which classifies all three as reachable by any signed-on caller and reserves
- * administrative entitlement for the menu and the sign-on-record maintenance screens. Nothing here
- * shadows or reroutes the management endpoints or the generated interface description; the OpenAPI
- * document remains the sole responsibility of {@code config/OpenApiConfig}.
+ * <p><strong>Authorization.</strong> All three routes sit under {@link #CARDS_BASE_PATH}, which the
+ * filter chain names as an online-data operator surface. Both user types the estate declares keep access,
+ * matching the three ordinary transaction definitions, while an unrelated authenticated principal does
+ * not inherit card-wide access from the catch-all. No ownership relation is inferred from a caller-supplied
+ * account or card number because the sign-on record declares none. Nothing here shadows or reroutes the
+ * management endpoints or the generated interface description; the OpenAPI document remains the sole
+ * responsibility of {@code config/OpenApiConfig}.
  *
  * <p><strong>The page size of seven is a contract, not a tuning parameter.</strong>
  * {@code app/cbl/COCRDLIC.cbl} fixes it three separate ways - the screen-line constant at lines 177 to
@@ -232,6 +233,9 @@ public class CardController {
      */
     private static final String OUTCOME_UNRESOLVED = "unresolved";
 
+    /** Tag value used when a turn raises before settling on a destination. */
+    private static final String OUTCOME_FAILED = "failed";
+
     /**
      * Stand-in supplied to a service when the caller pressed a key that resolved to nothing.
      *
@@ -280,6 +284,19 @@ public class CardController {
     /** The card-update screen, legacy transaction {@code CCUP}. */
     private final CardUpdateService cardUpdateService;
 
+    /**
+     * The only permitted converter between the wire screen carriers and the service-owned ones.
+     *
+     * <p>All three screens take the echoed navigation record, and return it, in the form the service layer
+     * owns; the list and detail screens additionally hand over the work area in that form, the list screen
+     * hands over the inbound cursor pair and publishes the assembled browse window, and the update screen
+     * publishes its field marks through the same seam. None of that may travel as an {@code api.dto} type,
+     * because nothing may depend upward. This collaborator is where every crossing happens, and it converts
+     * positionally: no blank-significant member, boundary cursor or leading-zero page indicator is trimmed,
+     * padded, defaulted or reconciled on the way through.
+     */
+    private final ScreenStateAdapter screenStateAdapter;
+
     /** Registry the three turn timers are registered against. */
     private final MeterRegistry meterRegistry;
 
@@ -292,11 +309,13 @@ public class CardController {
      * @param cardListService the card-list screen
      * @param cardDetailService the card-detail screen
      * @param cardUpdateService the card-update screen
+     * @param screenStateAdapter the converter between the wire screen carriers and the service-owned ones
      * @param meterRegistry the metrics registry the turn timers are registered against
      */
     public CardController(final CardListService cardListService,
                           final CardDetailService cardDetailService,
                           final CardUpdateService cardUpdateService,
+                          final ScreenStateAdapter screenStateAdapter,
                           final MeterRegistry meterRegistry) {
         this.cardListService = Objects.requireNonNull(cardListService,
                 "cardListService must not be null");
@@ -304,6 +323,8 @@ public class CardController {
                 "cardDetailService must not be null");
         this.cardUpdateService = Objects.requireNonNull(cardUpdateService,
                 "cardUpdateService must not be null");
+        this.screenStateAdapter = Objects.requireNonNull(screenStateAdapter,
+                "screenStateAdapter must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -352,29 +373,35 @@ public class CardController {
         @ApiResponse(responseCode = "400",
                 description = "The request carried a value that could not have occupied its legacy "
                         + "screen field."),
-        @ApiResponse(responseCode = "401", description = "No authenticated caller.")})
+        @ApiResponse(responseCode = "401", description = "No authenticated caller."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<CardListResponse> listCards(
             @Valid @RequestBody final CardListRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final CardListService.CardListScreenInput input = new CardListService.CardListScreenInput(
+                    terminalIdentifierFor(request.keyAction()),
+                    this.screenStateAdapter.toInputState(screenWorkAreaOf(request)),
+                    request.selectionsInRowOrder(),
+                    this.screenStateAdapter.toCursorRequest(request.pageMetadata()),
+                    FIRST_PAGE_NUMBER,
+                    false,
+                    false,
+                    this.screenStateAdapter.toNavigationState(request.navigationContext()));
 
-        final CardListService.CardListScreenInput input = new CardListService.CardListScreenInput(
-                terminalIdentifierFor(request.keyAction()),
-                screenWorkAreaOf(request),
-                request.selectionsInRowOrder(),
-                request.pageMetadata(),
-                FIRST_PAGE_NUMBER,
-                false,
-                false,
-                request.navigationContext());
+            final CardListService.CardListResult result = this.cardListService.processCardList(input);
+            final CardListResponse response = toListResponse(request, result);
 
-        final CardListService.CardListResult result = this.cardListService.processCardList(input);
-
-        recordTurn(sample, METRIC_CARD_LIST_TURN,
-                "Elapsed time of one CardDemo card-list turn, transaction CCLI", result.route());
-        LOG.debug("Card-list turn complete: route={} rows={} error={}",
-                outcomeOf(result.route()), result.rows().size(), result.errorFlag());
-
-        return ResponseEntity.ok(toListResponse(request, result));
+            outcome = outcomeOf(result.route());
+            LOG.debug("Card-list turn complete: route={} rows={} error={}",
+                    outcome, result.rows().size(), result.errorFlag());
+            return ResponseEntity.ok(response);
+        } finally {
+            recordTurn(sample, METRIC_CARD_LIST_TURN,
+                    "Elapsed time of one CardDemo card-list turn, transaction CCLI", outcome);
+        }
     }
 
     // ==================================================================================================
@@ -410,7 +437,22 @@ public class CardController {
      * @return the screen the turn produces, carrying the card when one was found and the screen message
      *         in every case
      */
-    @GetMapping(path = CARD_DETAIL_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    @PostMapping(path = CARD_DETAIL_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "View one card's details",
+            description = "One turn of legacy transaction " + TRANSACTION_CARD_DETAIL + ". Both search "
+                    + "keys are optional, because the legacy screen answers an absent account, an absent "
+                    + "card and no input at all with three different messages.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200",
+                description = "The turn completed and carries the card details when one was found.")})
+    public ResponseEntity<CardDetailResponse> viewCardDetail(
+            @Valid @RequestBody(required = false) final CardDetailRequest request) {
+        final CardDetailRequest bounded = request == null ? CardDetailRequest.empty() : request;
+        return viewCardDetail(bounded.accountIdFilter(), bounded.cardNumberFilter(),
+                bounded.keyAction(), bounded.navigationContext());
+    }
+
     @Operation(summary = "View one card's details",
             description = "One turn of legacy transaction " + TRANSACTION_CARD_DETAIL + ". Both search "
                     + "keys are optional, because "
@@ -426,30 +468,36 @@ public class CardController {
         @ApiResponse(responseCode = "400",
                 description = "A parameter carried a value that could not have occupied its legacy "
                         + "screen field."),
-        @ApiResponse(responseCode = "401", description = "No authenticated caller.")})
+        @ApiResponse(responseCode = "401", description = "No authenticated caller."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<CardDetailResponse> viewCardDetail(
             @RequestParam(name = "accountIdFilter", required = false) final String accountIdFilter,
             @RequestParam(name = "cardNumberFilter", required = false) final String cardNumberFilter,
             @RequestParam(name = "keyAction", required = false) final KeyAction keyAction,
             @Valid @ModelAttribute final NavigationContext navigationContext) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final CardDetailService.CardDetailScreenInput input =
+                    new CardDetailService.CardDetailScreenInput(
+                            accountIdFilter,
+                            cardNumberFilter,
+                            terminalIdentifierFor(keyAction),
+                            this.screenStateAdapter.toNavigationState(navigationContext));
 
-        final CardDetailService.CardDetailScreenInput input =
-                new CardDetailService.CardDetailScreenInput(
-                        accountIdFilter,
-                        cardNumberFilter,
-                        terminalIdentifierFor(keyAction),
-                        navigationContext);
+            final CardDetailService.CardDetailResult result =
+                    this.cardDetailService.processCardDetail(input);
+            final CardDetailResponse response = toDetailResponse(result);
 
-        final CardDetailService.CardDetailResult result =
-                this.cardDetailService.processCardDetail(input);
-
-        recordTurn(sample, METRIC_CARD_DETAIL_TURN,
-                "Elapsed time of one CardDemo card-detail turn, transaction CCDL", result.route());
-        LOG.debug("Card-detail turn complete: route={} cardPresented={} error={}",
-                outcomeOf(result.route()), result.cardPresented(), result.errorFlag());
-
-        return ResponseEntity.ok(toDetailResponse(result));
+            outcome = outcomeOf(result.route());
+            LOG.debug("Card-detail turn complete: route={} cardPresented={} error={}",
+                    outcome, result.cardPresented(), result.errorFlag());
+            return ResponseEntity.ok(response);
+        } finally {
+            recordTurn(sample, METRIC_CARD_DETAIL_TURN,
+                    "Elapsed time of one CardDemo card-detail turn, transaction CCDL", outcome);
+        }
     }
 
     // ==================================================================================================
@@ -503,35 +551,41 @@ public class CardController {
         @ApiResponse(responseCode = "400",
                 description = "The request carried a value that could not have occupied its legacy "
                         + "screen field, or supplied a value the confirming turn protects."),
-        @ApiResponse(responseCode = "401", description = "No authenticated caller.")})
+        @ApiResponse(responseCode = "401", description = "No authenticated caller."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<CardUpdateResponse> updateCard(
             @Valid @RequestBody final CardUpdateRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final CardUpdateService.CardUpdateScreenInput input =
+                    new CardUpdateService.CardUpdateScreenInput(
+                            request.accountId(),
+                            request.cardNumber(),
+                            request.embossedName(),
+                            request.activeStatus(),
+                            request.expiryMonth(),
+                            request.expiryYear(),
+                            request.expiryDay(),
+                            terminalIdentifierFor(request.keyAction()),
+                            carriedUpdateState(request.navigationContext()),
+                            null,
+                            null);
 
-        final CardUpdateService.CardUpdateScreenInput input =
-                new CardUpdateService.CardUpdateScreenInput(
-                        request.accountId(),
-                        request.cardNumber(),
-                        request.embossedName(),
-                        request.activeStatus(),
-                        request.expiryMonth(),
-                        request.expiryYear(),
-                        request.expiryDay(),
-                        terminalIdentifierFor(request.keyAction()),
-                        request.navigationContext(),
-                        null,
-                        null);
+            final CardUpdateService.CardUpdateResult result =
+                    this.cardUpdateService.processCardUpdate(input);
+            final CardUpdateResponse response = toUpdateResponse(request, result);
 
-        final CardUpdateService.CardUpdateResult result =
-                this.cardUpdateService.processCardUpdate(input);
-
-        recordTurn(sample, METRIC_CARD_UPDATE_TURN,
-                "Elapsed time of one CardDemo card-update turn, transaction CCUP", result.route());
-        LOG.debug("Card-update turn complete: route={} committed={} error={} fieldErrors={}",
-                outcomeOf(result.route()), result.updateCommitted(), result.errorFlag(),
-                result.fieldErrors().size());
-
-        return ResponseEntity.ok(toUpdateResponse(request, result));
+            outcome = outcomeOf(result.route());
+            LOG.debug("Card-update turn complete: route={} committed={} error={} fieldErrors={}",
+                    outcome, result.updateCommitted(), result.errorFlag(),
+                    result.fieldErrors().size());
+            return ResponseEntity.ok(response);
+        } finally {
+            recordTurn(sample, METRIC_CARD_UPDATE_TURN,
+                    "Elapsed time of one CardDemo card-update turn, transaction CCUP", outcome);
+        }
     }
 
     // ==================================================================================================
@@ -562,6 +616,25 @@ public class CardController {
                 request.accountIdFilter(),
                 request.cardNumberFilter(),
                 null);
+    }
+
+    /**
+     * Converts the echoed navigation record for the card-update screen, preserving a wholly absent one.
+     *
+     * <p>The conversion itself is the shared positional one. What is deliberate here is the guard in front
+     * of it. The list and detail screens ask only whether the state they were handed is absent <em>or</em>
+     * all-blank and treat the two identically, so handing them the empty carrier in place of nothing changes
+     * no outcome. The update screen does not: its reset condition is the analogue of {@code EIBCALEN IS
+     * EQUAL TO 0}, which asks whether a communication area arrived at all, and it answers differently for a
+     * turn that echoed nothing than for one that echoed an all-blank record. Filling the absence in would
+     * turn the first turn of a conversation into a continuation of one, losing the first-entry gate the
+     * reset raises and with it the fetch the screen performs on entry.
+     *
+     * @param context the record the client echoed, which may be {@code null}
+     * @return the service-owned state, or {@code null} when the client echoed no record at all
+     */
+    private ScreenNavigationState carriedUpdateState(final NavigationContext context) {
+        return (context == null) ? null : this.screenStateAdapter.toNavigationState(context);
     }
 
     /**
@@ -631,9 +704,9 @@ public class CardController {
      * @param result the settled turn
      * @return the published screen, never {@code null}
      */
-    private static CardListResponse toListResponse(final CardListRequest request,
+    private CardListResponse toListResponse(final CardListRequest request,
             final CardListService.CardListResult result) {
-        final PageMetadata paging = result.pageMetadata();
+        final PageMetadata paging = this.screenStateAdapter.toPageMetadata(result.pageMetadata());
         return new CardListResponse(
                 TRANSACTION_CARD_LIST,
                 null,
@@ -652,7 +725,7 @@ public class CardController {
                 paging,
                 result.focusField(),
                 routeValueOf(result.route()),
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**
@@ -713,7 +786,7 @@ public class CardController {
      * @param result the settled turn
      * @return the published screen, never {@code null}
      */
-    private static CardDetailResponse toDetailResponse(
+    private CardDetailResponse toDetailResponse(
             final CardDetailService.CardDetailResult result) {
         final CardDetailService.ScreenHeader header = result.header();
         final CardDetailService.ScreenFields screen = result.screen();
@@ -735,7 +808,7 @@ public class CardController {
                 result.errorFlag(),
                 result.focusField(),
                 routeValueOf(result.route()),
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**
@@ -754,7 +827,7 @@ public class CardController {
      * @param result the settled turn
      * @return the published screen, never {@code null}
      */
-    private static CardUpdateResponse toUpdateResponse(final CardUpdateRequest request,
+    private CardUpdateResponse toUpdateResponse(final CardUpdateRequest request,
             final CardUpdateService.CardUpdateResult result) {
         final CardUpdateService.ScreenHeader header = result.header();
         final CardUpdateService.ScreenFields screen = result.screen();
@@ -778,7 +851,7 @@ public class CardController {
                 toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 routeValueOf(result.route()),
-                result.navigationContext(),
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()),
                 request.concurrencyToken());
     }
 
@@ -882,10 +955,10 @@ public class CardController {
      * @param route the destination the turn settled on
      */
     private void recordTurn(final Timer.Sample sample, final String metricName,
-            final String description, final NavigationService.Route route) {
+            final String description, final String outcome) {
         sample.stop(Timer.builder(metricName)
                 .description(description)
-                .tag(TAG_OUTCOME, outcomeOf(route))
+                .tag(TAG_OUTCOME, outcome)
                 .register(this.meterRegistry));
     }
 }

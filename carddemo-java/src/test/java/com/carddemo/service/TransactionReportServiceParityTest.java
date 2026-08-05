@@ -16,20 +16,25 @@
  */
 package com.carddemo.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
-import org.springframework.data.domain.SliceImpl;
+import org.slf4j.LoggerFactory;
 
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
@@ -39,7 +44,6 @@ import com.carddemo.domain.id.TransactionCategoryId;
 import com.carddemo.exception.AbendException;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
-import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.util.ReportLineFormatter;
 
@@ -50,10 +54,15 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Verifies {@link TransactionReportService}, the translation of the transaction detail report program
@@ -79,10 +88,10 @@ import static org.mockito.Mockito.when;
  * reproduced deliberately, so both are pinned here: a future "fix" to either would be a parity
  * regression, not an improvement.
  *
- * <p>The repositories are mocked because the subject under test is the report's ordering, counting,
- * accumulation and break logic. The range predicate and the ordering belong to the repository and
- * are verified against a real database elsewhere; what is verified here is that this service calls
- * the finder exactly once and then leaves the result alone.
+ * <p>The three lookup repositories are mocked because the subject under test is the report's
+ * counting, accumulation and break logic. The ordered transaction input is supplied through a
+ * service-owned frozen source, which lets the suite prove that this service consumes the snapshot in
+ * positional order without querying or re-sorting live master data.
  */
 class TransactionReportServiceParityTest {
 
@@ -96,8 +105,6 @@ class TransactionReportServiceParityTest {
 
     private static final int RECORD_WIDTH = 133;
 
-    private final TransactionRepository transactions = mock(TransactionRepository.class);
-
     private final CardCrossReferenceRepository crossReferences =
             mock(CardCrossReferenceRepository.class);
 
@@ -108,8 +115,39 @@ class TransactionReportServiceParityTest {
 
     private final AbendService abendService = mock(AbendService.class);
 
-    private final TransactionReportService service = new TransactionReportService(
-            transactions, crossReferences, types, categories, abendService);
+    private final TransactionReportService reportService = new TransactionReportService(
+            crossReferences, types, categories, abendService);
+
+    private ReportTransactionSource transactionSource = sourceOf(List.of());
+
+    private final ReportHarness service = new ReportHarness();
+
+    private Logger serviceLogger;
+
+    private Level previousLogLevel;
+
+    private ListAppender<ILoggingEvent> logCapture;
+
+    @BeforeEach
+    void attachLogCapture() {
+        serviceLogger = (Logger) LoggerFactory.getLogger(TransactionReportService.class);
+        previousLogLevel = serviceLogger.getLevel();
+        serviceLogger.setLevel(Level.TRACE);
+        logCapture = new ListAppender<>();
+        logCapture.start();
+        serviceLogger.addAppender(logCapture);
+    }
+
+    @AfterEach
+    void detachLogCapture() {
+        serviceLogger.detachAppender(logCapture);
+        serviceLogger.setLevel(previousLogLevel);
+        logCapture.stop();
+    }
+
+    private List<String> loggedMessages() {
+        return logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+    }
 
     /**
      * Builds one transaction at the widths the 350-byte record layout of
@@ -141,14 +179,36 @@ class TransactionReportServiceParityTest {
                 Optional.of(new TransactionCategory("01", "0005", "RESTAURANT")));
     }
 
-    /**
-     * Stubs the range finder to return the supplied content as a single complete slice, which is
-     * what an unpaged request yields.
-     */
+    /** Replaces the report's frozen ordered source with the supplied sequence. */
     private void stubRange(List<Transaction> content) {
-        Slice<Transaction> slice = new SliceImpl<>(content, Pageable.unpaged(), false);
-        when(transactions.findByProcessingDateRange(eq(START), eq(END), any(Pageable.class)))
-                .thenReturn(slice);
+        this.transactionSource = sourceOf(content);
+    }
+
+    /** Creates a detached positional source over the supplied ordered transactions. */
+    private static ReportTransactionSource sourceOf(final List<Transaction> content) {
+        final List<Transaction> snapshot = List.copyOf(content);
+        return position -> {
+            if (position < 0) {
+                throw new IllegalArgumentException("position must not be negative: " + position);
+            }
+            return position < snapshot.size()
+                    ? Optional.of(snapshot.get(position))
+                    : Optional.empty();
+        };
+    }
+
+    /** Keeps existing parity assertions focused on report semantics while supplying the frozen input. */
+    private final class ReportHarness {
+
+        TransactionReportService.TransactionReportResult generateReport(
+                final String startDate, final String endDate) {
+            return reportService.generateReport(transactionSource, startDate, endDate);
+        }
+
+        TransactionReportService.TransactionReportResult generateReportFromDateParameterCard(
+                final String card) {
+            return reportService.generateReportFromDateParameterCard(transactionSource, card);
+        }
     }
 
     /** Twenty transactions of one currency unit each, ten on each of two cards. */
@@ -163,12 +223,57 @@ class TransactionReportServiceParityTest {
         return all;
     }
 
+    @Test
+    @DisplayName("transaction, card, amount, merchant and date values never enter report diagnostics")
+    void sensitiveReportValuesAreRedacted() {
+        final String transactionId = identifier(1);
+        final String amount = "91.23";
+        stubLookups();
+        stubRange(List.of(transaction(transactionId, CARD_A, amount, START)));
+
+        service.generateReport(START, END);
+
+        assertThat(loggedMessages())
+                .anyMatch(message -> message.matches(
+                        "Reporting transaction transactionRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                + "type=01 category=0005"))
+                .anyMatch(message -> message.matches(
+                        "Reporting range accepted rangeRef=\\[REDACTED] ref=[0-9a-f]{24}"))
+                .noneMatch(message -> message.contains(transactionId))
+                .noneMatch(message -> message.contains(CARD_A))
+                .noneMatch(message -> message.contains(amount))
+                .noneMatch(message -> message.contains("MERCHANT"))
+                .noneMatch(message -> message.contains(START))
+                .noneMatch(message -> message.contains(END));
+    }
+
     /** Reads the fifteen-character masked amount back out of an emitted line. */
     private static BigDecimal amountOn(String line) {
         String masked = line.substring(ReportLineFormatter.AMOUNT_OFFSET,
                 ReportLineFormatter.AMOUNT_OFFSET + ReportLineFormatter.AMOUNT_MASK_WIDTH);
         String digits = masked.replace(",", "").replace(" ", "").replace("+", "");
         return digits.isEmpty() ? BigDecimal.ZERO : new BigDecimal(digits);
+    }
+
+    @Test
+    @DisplayName("debug progress preserves the anomaly without transaction, card or amount values")
+    void debugProgressWithholdsProtectedTransactionData() {
+        final String transactionId = "9999999999999999";
+        final String amount = "12345678.99";
+        stubLookups();
+        stubRange(List.of(transaction(transactionId, CARD_A, amount, "2022-07-05")));
+
+        service.generateReport(START, END);
+
+        final List<String> messages =
+                this.logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(messages)
+                .contains(
+                        "Reporting next transaction record",
+                        "End of file: re-adding the stale transaction amount (legacy anomaly)")
+                .allSatisfy(message -> assertThat(message)
+                        .doesNotContain(transactionId, CARD_A, amount, "MERCHANT",
+                                "PURCHASE AT MERCHANT"));
     }
 
     @Nested
@@ -415,43 +520,46 @@ class TransactionReportServiceParityTest {
         @Test
         @DisplayName("an absent parameter card is end of file, so the report is empty")
         void absentParameterCardProducesAnEmptyReport() {
+            final ReportTransactionSource untouched = mock(ReportTransactionSource.class);
+
             TransactionReportService.TransactionReportResult result =
-                    service.generateReportFromDateParameterCard(null);
+                    reportService.generateReportFromDateParameterCard(untouched, null);
 
             assertThat(result.reportLines()).isEmpty();
             assertThat(result.lineCount()).isZero();
             assertThat(result.grandTotal()).isEqualByComparingTo(BigDecimal.ZERO);
-            verify(transactions, never()).findByProcessingDateRange(any(), any(), any());
+            verifyNoInteractions(untouched);
         }
     }
 
     @Nested
-    @DisplayName("the single repository call: one invocation, and the result is left alone")
-    class TheSingleRepositoryCall {
+    @DisplayName("the frozen ordered source: sequential reads only, with no live re-query")
+    class TheFrozenOrderedSource {
 
         @Test
-        @DisplayName("the finder is invoked once with two ten-character bounds")
-        void finderIsInvokedOnceWithTenCharacterBounds() {
+        @DisplayName("the source is read once at each sequential position through end of file")
+        void sourceIsReadSequentiallyThroughEndOfFile() {
             stubLookups();
-            stubRange(twentyAcrossTwoCards());
+            final ReportTransactionSource source = mock(ReportTransactionSource.class);
+            final Transaction first = transaction(identifier(1), CARD_A, "1.00", "2022-07-05");
+            when(source.readAt(0)).thenReturn(Optional.of(first));
+            when(source.readAt(1)).thenReturn(Optional.empty());
 
-            service.generateReport(START, END);
+            reportService.generateReport(source, START, END);
 
-            ArgumentCaptor<String> lower = ArgumentCaptor.forClass(String.class);
-            ArgumentCaptor<String> upper = ArgumentCaptor.forClass(String.class);
-            verify(transactions, times(1))
-                    .findByProcessingDateRange(lower.capture(), upper.capture(),
-                            any(Pageable.class));
-            assertThat(lower.getValue()).isEqualTo(START).hasSize(ReportLineFormatter.DATE_WIDTH);
-            assertThat(upper.getValue()).isEqualTo(END).hasSize(ReportLineFormatter.DATE_WIDTH);
+            InOrder reads = inOrder(source);
+            reads.verify(source).readAt(0);
+            reads.verify(source).readAt(1);
+            verify(source, times(1)).readAt(0);
+            verify(source, times(1)).readAt(1);
         }
 
         @Test
-        @DisplayName("the repository's ordering is not re-applied")
+        @DisplayName("the supplied generation ordering is not re-applied")
         void orderingIsNotReapplied() {
             stubLookups();
-            // Deliberately not in card order. The repository fixes the ordering; a service that
-            // re-sorted would emit these two the other way round.
+            // Deliberately not in card order. The preceding batch step owns ordering; a service that
+            // re-sorted the frozen generation would emit these two the other way round.
             stubRange(List.of(
                     transaction(identifier(9), CARD_B, "1.00", "2022-07-05"),
                     transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
@@ -470,18 +578,13 @@ class TransactionReportServiceParityTest {
         }
 
         @Test
-        @DisplayName("an incomplete slice is refused rather than silently truncating the report")
-        void incompleteSliceIsRefused() {
-            stubLookups();
-            Slice<Transaction> partial = new SliceImpl<>(
-                    List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")),
-                    Pageable.ofSize(1), true);
-            when(transactions.findByProcessingDateRange(eq(START), eq(END), any(Pageable.class)))
-                    .thenReturn(partial);
+        @DisplayName("a source that reports no Optional is refused rather than silently truncated")
+        void absentReadResultIsRefused() {
+            final ReportTransactionSource broken = position -> null;
 
-            assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> service.generateReport(START, END))
-                    .withMessageContaining("unpaged");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> reportService.generateReport(broken, START, END))
+                    .withMessageContaining("Optional");
         }
     }
 
@@ -597,10 +700,17 @@ class TransactionReportServiceParityTest {
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.generateReport(START, END));
 
+            assertThat(logCapture.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .allSatisfy(message -> assertThat(message).doesNotContain(CARD_A));
             InOrder order = inOrder(abendService);
             order.verify(abendService).displayIoStatus("23", "READ", "CARDXREF");
             order.verify(abendService).abendBatch(eq("CBTRN03C"), any(), eq("23"), eq("READ"),
                     eq("CARDXREF"));
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.matches(
+                            "INVALID CARD NUMBER cardRef=\\[REDACTED] ref=[0-9a-f]{24}"))
+                    .noneMatch(message -> message.contains(CARD_A));
         }
 
         @Test
@@ -673,19 +783,16 @@ class TransactionReportServiceParityTest {
         @DisplayName("every collaborator is required at construction")
         void everyCollaboratorIsRequired() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService(null, crossReferences, types, categories,
+                    new TransactionReportService(null, types, categories,
                             abendService));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService(transactions, null, types, categories,
+                    new TransactionReportService(crossReferences, null, categories,
                             abendService));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService(transactions, crossReferences, null, categories,
+                    new TransactionReportService(crossReferences, types, null,
                             abendService));
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService(transactions, crossReferences, types, null,
-                            abendService));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService(transactions, crossReferences, types, categories,
+                    new TransactionReportService(crossReferences, types, categories,
                             null));
         }
 

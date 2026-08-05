@@ -16,13 +16,47 @@
  */
 package com.carddemo.config;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletInputStream;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequestWrapper;
+import jakarta.servlet.http.HttpServletResponse;
+
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
 import com.fasterxml.jackson.databind.type.LogicalType;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.util.StringUtils;
+import org.springframework.util.unit.DataSize;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
@@ -106,6 +140,36 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @Configuration(proxyBeanMethods = false)
 public final class WebMvcConfig implements WebMvcConfigurer {
 
+    /** Every REST operation in the module is beneath this one prefix. */
+    public static final String API_PATH_PATTERN = "/api/**";
+
+    /** Exact-origin allow-list key. An empty value is the shipped deny-all policy. */
+    public static final String CORS_ALLOWED_ORIGINS_PROPERTY =
+            "carddemo.web.cors.allowed-origins";
+
+    /** Generic request-body ceiling enforced before a message converter receives the body. */
+    public static final String MAX_REQUEST_BODY_SIZE_PROPERTY =
+            "carddemo.web.max-request-body-size";
+
+    private static final int MAX_CONFIGURED_ORIGINS = 16;
+
+    private static final int MAX_ORIGIN_LENGTH = 2_048;
+
+    private static final long MAX_SUPPORTED_REQUEST_BODY_BYTES = 16L * 1_024L * 1_024L;
+
+    private static final long CORS_PREFLIGHT_MAX_AGE_SECONDS = 600L;
+
+    private static final List<String> CORS_ALLOWED_METHODS =
+            List.of(HttpMethod.GET.name(), HttpMethod.POST.name());
+
+    private static final List<String> CORS_ALLOWED_HEADERS =
+            List.of(HttpHeaders.ACCEPT, HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE);
+
+    private static final List<String> CORS_EXPOSED_HEADERS =
+            List.of(HttpHeaders.AUTHORIZATION);
+
+    private final List<String> allowedOrigins;
+
     /**
      * Creates the configurer singleton.
      *
@@ -113,6 +177,64 @@ public final class WebMvcConfig implements WebMvcConfigurer {
      * injected, so nothing can be reconfigured from elsewhere.</p>
      */
     public WebMvcConfig() {
+        this("");
+    }
+
+    /**
+     * Creates the configurer from a comma-separated exact-origin allow-list.
+     *
+     * @param configuredAllowedOrigins exact HTTP or HTTPS origins; empty means deny all
+     */
+    @Autowired
+    public WebMvcConfig(
+            @Value("${" + CORS_ALLOWED_ORIGINS_PROPERTY + ":}")
+            final String configuredAllowedOrigins) {
+        this.allowedOrigins = parseAllowedOrigins(configuredAllowedOrigins);
+    }
+
+    /**
+     * Registers the one cross-origin policy for every application endpoint.
+     */
+    @Override
+    public void addCorsMappings(final CorsRegistry registry) {
+        Objects.requireNonNull(registry, "registry").addMapping(API_PATH_PATTERN)
+                .allowedOrigins(this.allowedOrigins.toArray(String[]::new))
+                .allowedMethods(CORS_ALLOWED_METHODS.toArray(String[]::new))
+                .allowedHeaders(CORS_ALLOWED_HEADERS.toArray(String[]::new))
+                .exposedHeaders(CORS_EXPOSED_HEADERS.toArray(String[]::new))
+                .allowCredentials(false)
+                .maxAge(CORS_PREFLIGHT_MAX_AGE_SECONDS);
+    }
+
+    /**
+     * Supplies the same exact-origin policy to Spring Security.
+     *
+     * @return a path-scoped policy source
+     */
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        final UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration(API_PATH_PATTERN, corsConfiguration());
+        return source;
+    }
+
+    /**
+     * Registers the bounded request-body reader before security and MVC consume a request.
+     *
+     * @param configuredMaxRequestBodySize the positive bounded size from configuration
+     * @return the ordered and path-scoped filter registration
+     */
+    @Bean
+    public FilterRegistrationBean<RequestBodyLimitFilter> requestBodyLimitFilter(
+            @Value("${" + MAX_REQUEST_BODY_SIZE_PROPERTY + ":64KB}")
+            final String configuredMaxRequestBodySize) {
+        final FilterRegistrationBean<RequestBodyLimitFilter> registration =
+                new FilterRegistrationBean<>();
+        registration.setFilter(new RequestBodyLimitFilter(configuredMaxRequestBodySize));
+        registration.setName("requestBodyLimitFilter");
+        registration.addUrlPatterns("/api/*");
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        return registration;
     }
 
     /**
@@ -192,5 +314,214 @@ public final class WebMvcConfig implements WebMvcConfigurer {
         LocalValidatorFactoryBean validator = new LocalValidatorFactoryBean();
         validator.setMessageInterpolator(new FixedLocaleMessageInterpolator());
         return validator;
+    }
+
+    private CorsConfiguration corsConfiguration() {
+        final CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(this.allowedOrigins);
+        configuration.setAllowedMethods(CORS_ALLOWED_METHODS);
+        configuration.setAllowedHeaders(CORS_ALLOWED_HEADERS);
+        configuration.setExposedHeaders(CORS_EXPOSED_HEADERS);
+        configuration.setAllowCredentials(false);
+        configuration.setMaxAge(CORS_PREFLIGHT_MAX_AGE_SECONDS);
+        return configuration;
+    }
+
+    private static List<String> parseAllowedOrigins(final String configuredAllowedOrigins) {
+        Objects.requireNonNull(configuredAllowedOrigins, "configuredAllowedOrigins");
+        final Set<String> distinctOrigins = new LinkedHashSet<>();
+        for (final String candidate : StringUtils.commaDelimitedListToStringArray(
+                configuredAllowedOrigins)) {
+            final String origin = candidate.trim();
+            if (origin.isEmpty()) {
+                continue;
+            }
+            if (distinctOrigins.size() >= MAX_CONFIGURED_ORIGINS) {
+                throw new IllegalArgumentException(
+                        "At most " + MAX_CONFIGURED_ORIGINS + " CORS origins may be configured");
+            }
+            distinctOrigins.add(requireExactHttpOrigin(origin));
+        }
+        return List.copyOf(distinctOrigins);
+    }
+
+    private static String requireExactHttpOrigin(final String origin) {
+        if (origin.length() > MAX_ORIGIN_LENGTH) {
+            throw new IllegalArgumentException(
+                    "A CORS origin may contain at most " + MAX_ORIGIN_LENGTH + " characters");
+        }
+        if ("*".equals(origin) || "null".equalsIgnoreCase(origin)) {
+            throw new IllegalArgumentException("CORS origins must be exact HTTP or HTTPS origins");
+        }
+
+        final URI parsed;
+        try {
+            parsed = new URI(origin);
+        } catch (URISyntaxException exception) {
+            throw new IllegalArgumentException(
+                    "CORS origins must be syntactically valid HTTP or HTTPS origins", exception);
+        }
+
+        final String scheme = parsed.getScheme();
+        final boolean httpScheme = "http".equalsIgnoreCase(scheme)
+                || "https".equalsIgnoreCase(scheme);
+        final int port = parsed.getPort();
+        if (!httpScheme
+                || !StringUtils.hasText(parsed.getHost())
+                || port == 0
+                || port > 65_535
+                || parsed.getUserInfo() != null
+                || StringUtils.hasText(parsed.getRawPath())
+                || parsed.getRawQuery() != null
+                || parsed.getRawFragment() != null) {
+            throw new IllegalArgumentException(
+                    "CORS origins must contain only an HTTP or HTTPS scheme, host, and optional port");
+        }
+        return origin;
+    }
+
+    private static int requireRequestBodyBytes(final String configuredSize) {
+        Objects.requireNonNull(configuredSize, "maxRequestBodySize");
+        final long bytes;
+        try {
+            bytes = DataSize.parse(configuredSize.trim()).toBytes();
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException(
+                    "Request body size must be a valid data-size value", exception);
+        }
+        if (bytes <= 0 || bytes > MAX_SUPPORTED_REQUEST_BODY_BYTES) {
+            throw new IllegalArgumentException(
+                    "Request body size must be between 1 byte and "
+                            + MAX_SUPPORTED_REQUEST_BODY_BYTES + " bytes");
+        }
+        return Math.toIntExact(bytes);
+    }
+
+    /**
+     * Filter that rejects both declared-length and chunked bodies above the same finite limit.
+     */
+    static final class RequestBodyLimitFilter extends OncePerRequestFilter {
+
+        private final int maxRequestBodyBytes;
+
+        RequestBodyLimitFilter(final String configuredMaxRequestBodySize) {
+            this.maxRequestBodyBytes = requireRequestBodyBytes(configuredMaxRequestBodySize);
+        }
+
+        @Override
+        protected boolean shouldNotFilter(final HttpServletRequest request) {
+            final String apiPrefix = request.getContextPath() + "/api/";
+            return !request.getRequestURI().startsWith(apiPrefix);
+        }
+
+        @Override
+        protected void doFilterInternal(final HttpServletRequest request,
+                final HttpServletResponse response, final FilterChain filterChain)
+                throws ServletException, IOException {
+            final long declaredLength = request.getContentLengthLong();
+            if (declaredLength > this.maxRequestBodyBytes) {
+                reject(response);
+                return;
+            }
+
+            final byte[] body = request.getInputStream().readNBytes(this.maxRequestBodyBytes + 1);
+            if (body.length > this.maxRequestBodyBytes) {
+                reject(response);
+                return;
+            }
+            filterChain.doFilter(new BufferedHttpServletRequest(request, body), response);
+        }
+
+        private static void reject(final HttpServletResponse response) throws IOException {
+            response.setStatus(HttpStatus.PAYLOAD_TOO_LARGE.value());
+            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+            response.getWriter().write(
+                    "{\"message\":\"Request could not be processed\",\"fieldErrors\":[]}");
+        }
+    }
+
+    /**
+     * Repeatable servlet request over the one bounded copy read by {@link RequestBodyLimitFilter}.
+     */
+    private static final class BufferedHttpServletRequest extends HttpServletRequestWrapper {
+
+        private final byte[] body;
+
+        private BufferedHttpServletRequest(final HttpServletRequest request, final byte[] body) {
+            super(request);
+            this.body = body;
+        }
+
+        @Override
+        public int getContentLength() {
+            return this.body.length;
+        }
+
+        @Override
+        public long getContentLengthLong() {
+            return this.body.length;
+        }
+
+        @Override
+        public ServletInputStream getInputStream() {
+            return new BufferedServletInputStream(this.body);
+        }
+
+        @Override
+        public BufferedReader getReader() {
+            final String encoding = getCharacterEncoding();
+            final java.nio.charset.Charset charset = encoding == null
+                    ? StandardCharsets.UTF_8
+                    : java.nio.charset.Charset.forName(encoding);
+            return new BufferedReader(new InputStreamReader(getInputStream(), charset));
+        }
+    }
+
+    /**
+     * Servlet input stream over a private bounded byte array.
+     */
+    private static final class BufferedServletInputStream extends ServletInputStream {
+
+        private final java.io.ByteArrayInputStream delegate;
+
+        private BufferedServletInputStream(final byte[] body) {
+            this.delegate = new java.io.ByteArrayInputStream(body);
+        }
+
+        @Override
+        public int read() {
+            return this.delegate.read();
+        }
+
+        @Override
+        public int read(final byte[] buffer, final int offset, final int length) {
+            return this.delegate.read(buffer, offset, length);
+        }
+
+        @Override
+        public boolean isFinished() {
+            return this.delegate.available() == 0;
+        }
+
+        @Override
+        public boolean isReady() {
+            return true;
+        }
+
+        @Override
+        public void setReadListener(final ReadListener readListener) {
+            Objects.requireNonNull(readListener, "readListener");
+            try {
+                if (!isFinished()) {
+                    readListener.onDataAvailable();
+                }
+                if (isFinished()) {
+                    readListener.onAllDataRead();
+                }
+            } catch (IOException exception) {
+                readListener.onError(exception);
+            }
+        }
     }
 }

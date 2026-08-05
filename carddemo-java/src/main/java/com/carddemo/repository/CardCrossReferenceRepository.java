@@ -18,15 +18,13 @@ package com.carddemo.repository;
 
 import com.carddemo.domain.CardCrossReference;
 import java.util.List;
-import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
  * Persistence gateway for the {@code card_cross_reference} table, replacing the {@code CARDXREF}
- * VSAM base cluster and - through
- * {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} and
- * {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String)} - the {@code CXACAIX} alternate index
- * defined over its account-identifier field.
+ * VSAM base cluster and - through {@link #findByXrefAcctId(String)} - the {@code CXACAIX} alternate
+ * index defined over its account-identifier field, key length 11 at offset 25 per
+ * {@code app/jcl/XREFFILE.jcl} lines 72-77.
  *
  * <p>The record declared by {@code app/cpy/CVACT03Y.cpy} is 50 bytes wide and carries information
  * in 36 of them: a 16-byte card number at offset 0, a 9-byte customer identifier at offset 16 and
@@ -43,56 +41,45 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * leading zeros are contractual. Values are matched and returned exactly as supplied - nothing here
  * trims, pads or folds - and fixed-width layout knowledge belongs to the record mapper.
  *
+ * <p><strong>One declared finder, and no more.</strong> Keyed access to the base cluster is the
+ * inherited {@code findById}; a rewrite is the inherited {@code save}. The single finder below is the
+ * whole of the alternate-index surface this table needs.
+ *
  * @see CardCrossReference
  */
 public interface CardCrossReferenceRepository extends JpaRepository<CardCrossReference, String> {
     /**
-     * The <em>first</em> cross-reference row of one account in ascending card-number order: the
-     * {@code CXACAIX} alternate-index access path as its legacy consumers actually use it.
-     *
-     * <p><strong>One row by intent, and the name says so.</strong> Both verified legacy consumers issue
-     * a single keyed read of that path rather than a browse, and a keyed read of a duplicate-bearing
-     * alternate index returns the first record in ascending base-key order - the base key here being the
-     * card number, which is why the ordering term states the legacy behaviour rather than refining it.
-     * The decision is recorded as {@code DL-121} in {@code docs/decision-log.md}. A single-valued derived
-     * query <em>without</em> the first-match qualifier would instead have raised an incorrect-result-size
-     * failure the moment two rows shared an account identifier, which is a failure the legacy read
-     * cannot produce.
-     *
-     * <p>An empty result is the analogue of the legacy not-found response, which the service turns into
-     * a screen message.
-     *
-     * <p><strong>Use {@link #findByXrefAcctIdOrderByXrefCardNumAsc(String)} when every row of the
-     * account is wanted</strong>, because this method discards the remaining rows silently.
-     *
-     * <p>The reference seed is one-to-one across 50 accounts, 50 cards and 50 cross-reference rows, so
-     * it exercises this method without stressing it: demonstrating multi-row retrieval or first-match
-     * ordering requires a purpose-built fixture holding two rows that share an account identifier.
-     *
-     * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
-     *                   leading zeros are significant and it is never trimmed
-     * @return the first matching row in ascending card-number order, or {@link Optional#empty()} when the
-     *         account has no cross-reference row
-     */
-    Optional<CardCrossReference> findFirstByXrefAcctIdOrderByXrefCardNumAsc(String xrefAcctId);
-
-    /**
-     * Every cross-reference row of one account, in ascending card-number order: the multi-row form of
-     * the {@code CXACAIX} alternate-index access path.
+     * Every cross-reference row of one account: the {@code CXACAIX} alternate-index access path.
      *
      * <p>The return type is a list because the alternate key is non-unique and an account may carry
-     * several cards. The ordering is declared rather than left to the engine so that two calls over
-     * unchanged data return the same sequence, and it is the base-cluster order - the order the
-     * alternate index itself yields within one duplicate group - so the first element of this list is
-     * always the row {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} returns. That
-     * correspondence is what lets a caller move between the two forms without changing which row it
-     * treats as primary.
+     * several cards. A single-valued derived query would raise an incorrect-result-size failure the
+     * moment two rows shared an account identifier, which is a failure the legacy read of a
+     * duplicate-bearing path cannot produce.
      *
-     * <p>An empty list is the analogue of the legacy not-found response and is not an error here.
+     * <p><strong>The legacy first-match rule is the service's to apply, not this method's.</strong>
+     * Both verified legacy consumers issue a single keyed READ of this path rather than a browse, and a
+     * keyed read of a duplicate-bearing alternate index returns the first record in ascending base-key
+     * order - the base key here being the card number. That is a property of the READ being reproduced
+     * rather than of this index, so the services that reproduce it select the row with the lowest card
+     * number themselves and say so where they do it. Declaring {@code findFirstBy...} here would move a
+     * single-row decision into the persistence contract and conceal from every caller that the account
+     * may carry more than one row - which is exactly what the non-unique index exists to represent. The
+     * decision is recorded as {@code DL-121} in {@code docs/decision-log.md}.
+     *
+     * <p>No ordering term is declared for the same reason: a caller that depends on sequence sorts what
+     * it receives, so the sort is visible at the site whose behaviour depends on it.
+     *
+     * <p>An empty list is the analogue of the legacy not-found response and is not an error here; the
+     * service turns absence into a screen message.
+     *
+     * <p>The reference seed is one-to-one across 50 accounts, 50 cards and 50 cross-reference rows, so
+     * it exercises this method without stressing it: demonstrating multi-row retrieval or the
+     * first-match rule requires a purpose-built fixture holding two rows that share an account
+     * identifier.
      *
      * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
      *                   leading zeros are significant and it is never trimmed
-     * @return the matching rows in ascending card-number order, possibly empty, never {@code null}
+     * @return the matching rows, possibly empty, never {@code null}
      */
-    List<CardCrossReference> findByXrefAcctIdOrderByXrefCardNumAsc(String xrefAcctId);
+    List<CardCrossReference> findByXrefAcctId(String xrefAcctId);
 }

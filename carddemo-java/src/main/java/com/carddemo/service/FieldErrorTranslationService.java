@@ -16,7 +16,6 @@
  */
 package com.carddemo.service;
 
-import com.carddemo.api.dto.FieldErrorDecorator;
 import com.carddemo.exception.ValidationException;
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +30,7 @@ import org.springframework.stereotype.Service;
  * {@code app/cpy/CSSETATY.cpy} turn those flags into screen edits at {@code app/cbl/COACTUPC.cbl}
  * lines 3208 to 3432, and the program then simply re-sends the map instead of writing. A REST
  * service cannot re-send a map: it has to fail, and its failure has to carry the same per-field
- * detail. {@link FieldErrorDecorator} accumulates that detail in the legacy's own terms, and this
+ * detail. {@link FieldErrorMarks} accumulates that detail in the legacy's own terms, and this
  * class is what turns the accumulation into {@link ValidationException} so the service does not
  * have to.
  *
@@ -44,7 +43,14 @@ import org.springframework.stereotype.Service;
  * a service that has just decorated; {@code api.GlobalExceptionHandler} is the outbound one,
  * reached when the failure becomes a response. Neither direction is duplicated at a call site,
  * which is what stops the two models drifting apart. Decision log entry DL-080 records the
- * arrangement and why the decorator itself does not perform this conversion.
+ * arrangement and why the accumulation itself does not perform this conversion.
+ *
+ * <p><strong>Which accumulation this reads.</strong> {@link FieldErrorMarks}, the service-owned
+ * accumulation, not the transport record {@code api/dto/FieldErrorDecorator} it is twinned with.
+ * The two carry the same marks in the same sequence and {@code api.ScreenStateAdapter} converts
+ * between them at the boundary; this class stays below that boundary, so the strict downward
+ * package direction holds and a validation failure can be built without the service layer naming a
+ * transport type.
  *
  * <p><strong>What is preserved.</strong> Marking sequence, exactly: the legacy expansions ran in
  * source sequence and that sequence is irregular, so no entry is re-ordered, de-duplicated or
@@ -79,7 +85,7 @@ public class FieldErrorTranslationService {
      * case would put the choice at every call site instead of here.
      *
      * @param decoration     the fields marked by the validation cascade, in marking sequence.
-     *                       Mandatory; use {@link FieldErrorDecorator#none()} for a failure that
+     *                       Mandatory; use {@link FieldErrorMarks#none()} for a failure that
      *                       names no field.
      * @param summaryMessage the operator-facing summary the service or message catalogue owns,
      *                       passed through unchanged. May be {@code null}, which the carrier
@@ -87,7 +93,7 @@ public class FieldErrorTranslationService {
      * @return the failure to throw, carrying one entry per marked field in the same sequence
      * @throws NullPointerException if {@code decoration} is {@code null}
      */
-    public ValidationException toValidationException(FieldErrorDecorator decoration,
+    public ValidationException toValidationException(FieldErrorMarks decoration,
             String summaryMessage) {
         Objects.requireNonNull(decoration, "decoration must not be null");
 
@@ -103,12 +109,12 @@ public class FieldErrorTranslationService {
      *         marked. The list is unmodifiable and built fresh on each call.
      * @throws NullPointerException if {@code decoration} is {@code null}
      */
-    public List<ValidationException.FieldError> toFieldErrors(FieldErrorDecorator decoration) {
+    public List<ValidationException.FieldError> toFieldErrors(FieldErrorMarks decoration) {
         Objects.requireNonNull(decoration, "decoration must not be null");
 
-        List<FieldErrorDecorator.MarkedField> marked = decoration.markedFields();
+        List<FieldErrorMarks.MarkedField> marked = decoration.markedFields();
         List<ValidationException.FieldError> translated = new ArrayList<>(marked.size());
-        for (FieldErrorDecorator.MarkedField field : marked) {
+        for (FieldErrorMarks.MarkedField field : marked) {
             translated.add(new ValidationException.FieldError(field.field(), field.bmsFieldId(),
                     fieldStateOf(field.flagState()), null));
         }
@@ -127,7 +133,7 @@ public class FieldErrorTranslationService {
      * @return the corresponding carrier state
      */
     private static ValidationException.FieldState fieldStateOf(
-            FieldErrorDecorator.FlagState flagState) {
+            FieldErrorMarks.FlagState flagState) {
         return switch (flagState) {
             case BLANK -> ValidationException.FieldState.MISSING;
             case NOT_OK -> ValidationException.FieldState.INVALID;

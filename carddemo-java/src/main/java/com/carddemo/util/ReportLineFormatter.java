@@ -46,43 +46,13 @@ import java.util.Objects;
  * rejected outright if it contains a control character, so a terminator cannot enter through caller
  * data either.
  *
- * <p><strong>Group 1 - report name header. Native width 115, padded with 18 spaces.</strong>
- * <pre>
- * offset  width  content
- * ------  -----  ---------------------------------------------------------------
- *      0     38  literal 'DALYREPT' (8 characters) then 30 spaces
- *     38     41  literal 'Daily Transaction Report' (24 characters) then 17 spaces
- *     79     12  literal 'Date Range: ' - 12 characters including the trailing space
- *     91     10  start date, substituted
- *    101      4  literal ' to ' - a leading space, 'to', a trailing space
- *    105     10  end date, substituted
- *
- * 38 + 41 + 12 + 10 + 4 + 10 = 115, then 115 + 18 = 133
- * </pre>
- *
- * <p><strong>Group 2 - transaction detail line. Native width 114, padded with 19 spaces.</strong>
- * <pre>
- * offset  width  content
- * ------  -----  ---------------------------------------------------------------
- *      0     16  transaction id, X(16)
- *     16      1  filler, space
- *     17     11  account id, X(11)
- *     28      1  filler, space
- *     29      2  transaction type code, X(02)
- *     31      1  FILLER with a literal value of '-'
- *     32     15  transaction type description, X(15), truncated from X(50)
- *     47      1  filler, space
- *     48      4  transaction category code, PIC 9(04), left zero-filled
- *     52      1  FILLER with a literal value of '-'
- *     53     29  transaction category description, X(29), truncated from X(50)
- *     82      1  filler, space
- *     83     10  transaction source, X(10)
- *     93      4  filler, spaces
- *     97     15  amount, PIC -ZZZ,ZZZ,ZZZ.ZZ
- *    112      2  filler, spaces
- *
- * 16+1+11+1+2+1+15+1+4+1+29+1+10+4+15+2 = 114, then 114 + 19 = 133
- * </pre>
+ * <p><strong>The per-group field layout is declared by the named offset and width constants below,
+ * and each builder method states its own group, native width and substituted positions.</strong> The
+ * groups are: the report name header at 115 native bytes; the transaction detail line at 114; the
+ * column header line at 114; the rule line at 133; and the three total lines at 112 each.
+ * {@code app/cpy/CVTRA07Y.cpy} is the authority for every offset and every literal, and
+ * {@code docs/traceability-matrix.md} carries the group-by-group mapping. What follows is not the
+ * layout but the handful of places where a plausible implementation of it goes wrong.
  *
  * <p><strong>The two hyphen separators at offsets 31 and 52 always survive.</strong> The driver's
  * detail-writing paragraph initialises the group before moving field values into it
@@ -104,22 +74,6 @@ import java.util.Objects;
  * of exactly 29 characters, 'Sales draft credit adjustment', which sits precisely on the boundary, so
  * an off-by-one in the 29-byte field is immediately visible.
  *
- * <p><strong>Group 3 - column header line. Native width 114, padded with 19 spaces.</strong>
- * <pre>
- * offset  width  content
- * ------  -----  ---------------------------------------------------------------
- *      0     17  literal 'Transaction ID' (14 characters) then 3 spaces
- *     17     12  literal 'Account ID' (10 characters) then 2 spaces
- *     29     19  literal 'Transaction Type' (16 characters) then 3 spaces
- *     48     35  literal 'Tran Category' (13 characters) then 22 spaces
- *     83     14  literal 'Tran Source' (11 characters) then 3 spaces
- *     97      1  filler, space - declared as a bare PIC X, which is ONE byte
- *     98     16  literal with EIGHT leading spaces then 'Amount', 14 characters,
- *                then 2 trailing spaces
- *
- * 17 + 12 + 19 + 35 + 14 + 1 + 16 = 114, then 114 + 19 = 133
- * </pre>
- *
  * <p><strong>The bare {@code PIC X} at offset 97 is one byte</strong> [app/cpy/CVTRA07Y.cpy:L44], not
  * the default width of some wider field; widening it would shift the whole Amount column by the error
  * and break alignment with the detail line. The eight leading spaces inside the Amount header literal
@@ -133,18 +87,6 @@ import java.util.Objects;
  * of 80 hyphens each, held in the statement text templates, while the report carries one of 133
  * hyphens. Four rule lines exist across the two output formats at two different widths and they are
  * not interchangeable.
- *
- * <p><strong>Groups 5, 6 and 7 - the three total lines. Native width 112 each, padded with 21
- * spaces.</strong>
- * <pre>
- * group           source                     label field          dot fill  amount field
- * --------------  -------------------------  -------------------  --------  ----------------------
- * page totals     CVTRA07Y.cpy L50-L54       X(11) 'Page Total'         86  X(15) +ZZZ,ZZZ,ZZZ.ZZ
- * account totals  CVTRA07Y.cpy L56-L60       X(13) 'Account Total'      84  X(15) +ZZZ,ZZZ,ZZZ.ZZ
- * grand totals    CVTRA07Y.cpy L62-L66       X(11) 'Grand Total'        86  X(15) +ZZZ,ZZZ,ZZZ.ZZ
- *
- * 11 + 86 + 15 = 112,  13 + 84 + 15 = 112,  11 + 86 + 15 = 112, each then + 21 = 133
- * </pre>
  *
  * <p><strong>The dot-fill widths differ - 86, 84, 86 - and the difference is deliberate.</strong> The
  * three label fields are 11, 13 and 11 bytes wide and the dot fill compensates so that all three

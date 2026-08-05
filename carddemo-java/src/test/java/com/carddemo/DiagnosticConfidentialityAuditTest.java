@@ -1,0 +1,683 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Audits every diagnostic call site in the delivered application for the two things a log record must
+ * never carry: a raw throwable, and a primary account number.
+ *
+ * <h2>Why an audit over the sources rather than a test per call site</h2>
+ *
+ * <p>Both defects are properties of a <em>call site</em>, not of a behaviour, and both are introduced by
+ * writing one ordinary-looking line. A review found twenty-two sites passing a caught throwable straight
+ * to a logger and four writing a card number into one; a suite of behavioural tests had not caught any of
+ * them, and could not have, because every one of those lines executes only on a failure path that a test
+ * asserting the failure's <em>outcome</em> never inspects the log of. The only instrument that closes a
+ * defect of that shape is one that reads the sources and counts.
+ *
+ * <p>So this file scans {@code src/main/java} and requires the count to be zero. A future edit that
+ * reintroduces either pattern fails here, at the point it is written, rather than being discovered by the
+ * next review.
+ *
+ * <h2>What is wrong with a raw throwable</h2>
+ *
+ * <p>Handing a logger a throwable renders its message and its stack frames. The message is where a data
+ * layer puts the connection string it failed on - user and password included - and where a driver puts the
+ * statement text and the bound parameters; the frames disclose the internal structure of the deployment.
+ * The shipped appender bounds how much of a trace is rendered, which limits the volume and not the
+ * category: the first line, which is the message, is always rendered.
+ *
+ * <p>The module's sanctioned alternative is {@code util.FailureDiagnostics}, which composes the chain of
+ * failure <em>types</em> and reads no message, no frame and no suppressed throwable. Every diagnostic in
+ * the module reports {@code failureChain=} instead of the throwable, which keeps a failure classifiable
+ * without making it quotable.
+ *
+ * <h2>What is wrong with a card number</h2>
+ *
+ * <p>It is a primary account number. The legacy programs write it to the console freely, and that was
+ * defensible on a mainframe where the console was an operator-only surface inside the same security
+ * boundary as the data; an aggregated log is read, forwarded and retained outside that boundary. The
+ * module's answer is a fixed stand-in - never a partial mask, because a fragment of a sixteen-character
+ * numeric key is recoverable by enumeration - applied while the diagnostic keeps its wording and its field
+ * set, so nothing about the shape of the legacy output is lost.
+ *
+ * <h2>How each detector is kept honest</h2>
+ *
+ * <p>Every rule below is paired with a self-check that runs the same detector over a planted snippet and
+ * requires it to fire. Without those, a detector broken by a later edit would report zero findings and the
+ * audit would pass while measuring nothing - which is the failure mode of every source-scanning test.
+ *
+ * <p>Provenance: this audit has no legacy antecedent - the estate carries no test harness of any kind.
+ * Checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ */
+@DisplayName("Diagnostics carry no raw throwable and no primary account number")
+class DiagnosticConfidentialityAuditTest {
+
+    /** Root of the delivered application sources, which is the whole of what this audit governs. */
+    private static final Path PRODUCTION_SOURCE_ROOT =
+            Path.of("src", "main", "java", "com", "carddemo");
+
+    /** Start of a logging call at any level, on either of the two logger field names in use. */
+    private static final Pattern LOGGER_CALL =
+            Pattern.compile("\\b(LOG|LOGGER)\\.(trace|debug|info|warn|error)\\s*\\(");
+
+    /** A catch clause and the opening brace of its block, capturing the caught variable's name. */
+    private static final Pattern CATCH_CLAUSE = Pattern.compile(
+            "catch\\s*\\(\\s*(?:final\\s+)?[\\w.]+(?:\\s*\\|\\s*(?:final\\s+)?[\\w.]+)*\\s+(\\w+)\\s*\\)"
+                    + "\\s*\\{");
+
+    /**
+     * Marks an argument as possibly carrying a card number.
+     *
+     * <p>Deliberately without word boundaries, so that the camel-cased accessors -
+     * {@code getCardNum}, {@code getXrefCardNum}, {@code getDalytranCardNum},
+     * {@code xrefCardNumberKey} - are all caught along with a plain {@code cardNumber} local.
+     */
+    private static final Pattern CARD_NUMBER_BEARING = Pattern.compile("card_?num", Pattern.CASE_INSENSITIVE);
+
+    /** A reference whose final segment is an upper-snake-case name, which in this module is a constant. */
+    private static final Pattern CONSTANT_REFERENCE =
+            Pattern.compile("(?:[A-Za-z_$][\\w$]*\\.)*[A-Z][A-Z0-9_]*");
+
+    /** A string literal, escapes included, so one can be removed from an argument without truncating it. */
+    private static final Pattern STRING_LITERAL = Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"");
+
+    /**
+     * Accessors that read a throwable's own narrative, which is the part that quotes a connection string,
+     * a statement or a bound parameter. None may appear in a diagnostic anywhere.
+     */
+    private static final List<String> NARRATIVE_ACCESSORS =
+            List.of("getStackTrace(", "printStackTrace(", "getLocalizedMessage(", "getSuppressed(");
+
+    /**
+     * Arguments that name a card field without carrying its value, enrolled by exact text.
+     *
+     * <p>Enrolment is by exact argument text and each entry carries its reason here, so that adding a
+     * <em>different</em> card-bearing argument still fails. This is the deliberate alternative to
+     * loosening {@link #CARD_NUMBER_BEARING}: a detector narrowed to keep one honest call site quiet stops
+     * being able to see the dishonest ones.
+     *
+     * <ul>
+     *   <li>{@code !isBlankScreenField(state.ridCardNumber)} - the card-list browse reports
+     *       <em>whether</em> a start key was supplied. The argument is a negated presence predicate whose
+     *       value is a boolean; the key itself never reaches the record.</li>
+     * </ul>
+     */
+    private static final Set<String> ENROLLED_CARD_FIELD_ARGUMENTS = Set.of(
+            "!isBlankScreenField(state.ridCardNumber)",
+            "redactedCardNumber(cardNumber, REDACTED_CARD_NUMBER)",
+            "redactedCardNumber(resolved.getXrefCardNum(), REDACTED_CARD_NUMBER)",
+            "redactedCardNumber(dailyTransaction.getDalytranCardNum(), REDACTED_CARD_NUMBER)",
+            "redactedCardNumber(run.xrefCardNumberKey(), REDACTED_CARD_NUMBER)");
+
+    /**
+     * Fewest diagnostics that must report a failure chain.
+     *
+     * <p>The two rules above are satisfied trivially by a module with no failure diagnostics at all, so
+     * this floor asserts that the sanctioned form is genuinely in use and that a future edit cannot satisfy
+     * the audit by deleting the reporting rather than sanitising it. The figure is a count of call sites and
+     * not a coverage, a threshold or a service level.
+     */
+    private static final int MINIMUM_FAILURE_CHAIN_SITES = 30;
+
+    /** One diagnostic call site: where it is, and the whole of the call. */
+    private record Diagnostic(Path file, int line, String text) {
+
+        /** @return a short description naming the file and line, for a failure message */
+        String location() {
+            return this.file.getFileName() + ":" + this.line;
+        }
+    }
+
+    /**
+     * Every delivered application source.
+     *
+     * @return the file paths, ordered arbitrarily
+     */
+    private static List<Path> productionSources() {
+        try (Stream<Path> tree = Files.walk(PRODUCTION_SOURCE_ROOT)) {
+            return tree.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .toList();
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("the production source tree could not be read", unreadable);
+        }
+    }
+
+    /**
+     * Reads one source file.
+     *
+     * @param file the file to read
+     * @return its text
+     */
+    private static String textOf(final Path file) {
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("source could not be read: " + file, unreadable);
+        }
+    }
+
+    /**
+     * Finds the index one past the closing parenthesis that matches the one at {@code openIndex}.
+     *
+     * <p>String and character literals are tracked, including escapes, so a parenthesis or a comma inside
+     * a message literal is never mistaken for structure. That is what makes the argument split below
+     * reliable on this module's multi-line, concatenated message literals.
+     *
+     * @param source    the file text
+     * @param openIndex index of the opening parenthesis
+     * @return the index just past the matching close, or the source length when unbalanced
+     */
+    private static int endOfCall(final String source, final int openIndex) {
+        int depth = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        for (int index = openIndex; index < source.length(); index++) {
+            final char current = source.charAt(index);
+            if ((inString || inChar) && current == '\\') {
+                index++;
+                continue;
+            }
+            if (inString) {
+                inString = current != '"';
+                continue;
+            }
+            if (inChar) {
+                inChar = current != '\'';
+                continue;
+            }
+            switch (current) {
+                case '"' -> inString = true;
+                case '\'' -> inChar = true;
+                case '(' -> depth++;
+                case ')' -> {
+                    depth--;
+                    if (depth == 0) {
+                        return index + 1;
+                    }
+                }
+                default -> {
+                    // Any other character is content and carries no structure.
+                }
+            }
+        }
+        return source.length();
+    }
+
+    /**
+     * Collects every diagnostic call in one source.
+     *
+     * @param file   the file the source came from
+     * @param source the file text
+     * @return the calls it contains, in source order
+     */
+    private static List<Diagnostic> diagnosticsIn(final Path file, final String source) {
+        final List<Diagnostic> found = new ArrayList<>();
+        final Matcher call = LOGGER_CALL.matcher(source);
+        while (call.find()) {
+            final int open = call.end() - 1;
+            final int end = endOfCall(source, open);
+            found.add(new Diagnostic(file, lineOf(source, call.start()), source.substring(call.start(), end)));
+        }
+        return found;
+    }
+
+    /**
+     * Counts lines up to an offset, so a finding can name a line.
+     *
+     * @param source the file text
+     * @param offset the offset to locate
+     * @return the one-based line number
+     */
+    private static int lineOf(final String source, final int offset) {
+        int line = 1;
+        for (int index = 0; index < offset; index++) {
+            if (source.charAt(index) == '\n') {
+                line++;
+            }
+        }
+        return line;
+    }
+
+    /**
+     * Splits a call's arguments at the commas that separate them.
+     *
+     * @param call the whole call text, from the logger name to its closing parenthesis
+     * @return the arguments, each trimmed and with its internal line breaks collapsed
+     */
+    private static List<String> argumentsOf(final String call) {
+        final int open = call.indexOf('(');
+        final String inside = call.substring(open + 1, call.length() - 1);
+        final List<String> arguments = new ArrayList<>();
+        final StringBuilder current = new StringBuilder();
+        int depth = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        for (int index = 0; index < inside.length(); index++) {
+            final char character = inside.charAt(index);
+            if ((inString || inChar) && character == '\\') {
+                current.append(character).append(index + 1 < inside.length() ? inside.charAt(index + 1) : ' ');
+                index++;
+                continue;
+            }
+            if (inString) {
+                inString = character != '"';
+                current.append(character);
+                continue;
+            }
+            if (inChar) {
+                inChar = character != '\'';
+                current.append(character);
+                continue;
+            }
+            switch (character) {
+                case '"' -> {
+                    inString = true;
+                    current.append(character);
+                }
+                case '\'' -> {
+                    inChar = true;
+                    current.append(character);
+                }
+                case '(', '[', '{' -> {
+                    depth++;
+                    current.append(character);
+                }
+                case ')', ']', '}' -> {
+                    depth--;
+                    current.append(character);
+                }
+                case ',' -> {
+                    if (depth == 0) {
+                        arguments.add(collapse(current.toString()));
+                        current.setLength(0);
+                    } else {
+                        current.append(character);
+                    }
+                }
+                default -> current.append(character);
+            }
+        }
+        if (!current.toString().isBlank()) {
+            arguments.add(collapse(current.toString()));
+        }
+        return arguments;
+    }
+
+    /**
+     * Collapses the whitespace a wrapped argument carries, so an argument reads as one token sequence.
+     *
+     * @param argument the raw argument text
+     * @return the collapsed text
+     */
+    private static String collapse(final String argument) {
+        return argument.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
+     * Finds every diagnostic that passes a caught throwable, or reads its narrative, inside the block that
+     * caught it.
+     *
+     * @param file   the file the source came from
+     * @param source the file text
+     * @return the offending call sites
+     */
+    private static List<String> rawThrowableFindings(final Path file, final String source) {
+        final List<String> findings = new ArrayList<>();
+        final Matcher caught = CATCH_CLAUSE.matcher(source);
+        while (caught.find()) {
+            final String variable = caught.group(1);
+            final int blockStart = source.indexOf('{', caught.start());
+            final int blockEnd = endOfBlock(source, blockStart);
+            for (final Diagnostic diagnostic : diagnosticsIn(file, source.substring(blockStart, blockEnd))) {
+                final int line = lineOf(source, blockStart) + diagnostic.line() - 1;
+                final String at = file.getFileName() + ":" + line;
+                if (argumentsOf(diagnostic.text()).stream().anyMatch(variable::equals)) {
+                    findings.add(at + " passes the caught throwable [" + variable + "] to a logger");
+                }
+                if (diagnostic.text().contains(variable + ".getMessage(")) {
+                    findings.add(at + " logs the narrative of the caught throwable [" + variable + "]");
+                }
+            }
+        }
+        return findings;
+    }
+
+    /**
+     * Finds the index one past the brace that matches the one at {@code openIndex}.
+     *
+     * @param source    the file text
+     * @param openIndex index of the opening brace
+     * @return the index just past the matching close, or the source length when unbalanced
+     */
+    private static int endOfBlock(final String source, final int openIndex) {
+        int depth = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        for (int index = openIndex; index < source.length(); index++) {
+            final char current = source.charAt(index);
+            if ((inString || inChar) && current == '\\') {
+                index++;
+                continue;
+            }
+            if (inString) {
+                inString = current != '"';
+                continue;
+            }
+            if (inChar) {
+                inChar = current != '\'';
+                continue;
+            }
+            switch (current) {
+                case '"' -> inString = true;
+                case '\'' -> inChar = true;
+                case '{' -> depth++;
+                case '}' -> {
+                    depth--;
+                    if (depth == 0) {
+                        return index + 1;
+                    }
+                }
+                default -> {
+                    // Content.
+                }
+            }
+        }
+        return source.length();
+    }
+
+    /**
+     * Reports whether an argument is built entirely from literal text.
+     *
+     * <p>A message template is the one place a card field's <em>name</em> legitimately appears - the
+     * thirteen-field rejected-record event names {@code cardNum={}} and supplies the stand-in at that
+     * position - and a literal cannot hold a runtime value, so it is never a disclosure. The check strips
+     * every string literal and the concatenation operators between them and asks whether anything
+     * substantive is left; an argument that mixes a literal with an expression therefore still reports as
+     * value-bearing and is still examined.
+     *
+     * @param argument the argument text
+     * @return {@code true} when the argument is literal text and nothing else
+     */
+    private static boolean carriesNoRuntimeValue(final String argument) {
+        return STRING_LITERAL.matcher(argument).replaceAll("").replace("+", "").isBlank();
+    }
+
+    /**
+     * Finds every diagnostic argument that could carry a card number.
+     *
+     * <p>Three kinds of argument are not findings, each for a reason that holds by construction rather
+     * than by convention. An argument built only from literal text names a field and cannot hold its value
+     * ({@link #carriesNoRuntimeValue}). An argument whose final segment is upper-snake-case is a constant
+     * reference in this module - a legacy field name, a sort position, a width, a label, or the redaction
+     * stand-in itself - and so is fixed at compile time. Everything else that names a card number is a
+     * finding, unless it is enrolled by exact text in {@link #ENROLLED_CARD_FIELD_ARGUMENTS}.
+     *
+     * @param file   the file the source came from
+     * @param source the file text
+     * @return the offending call sites
+     */
+    private static List<String> cardNumberFindings(final Path file, final String source) {
+        final List<String> findings = new ArrayList<>();
+        for (final Diagnostic diagnostic : diagnosticsIn(file, source)) {
+            for (final String argument : argumentsOf(diagnostic.text())) {
+                if (!CARD_NUMBER_BEARING.matcher(argument).find()
+                        || carriesNoRuntimeValue(argument)
+                        || CONSTANT_REFERENCE.matcher(argument).matches()
+                        || ENROLLED_CARD_FIELD_ARGUMENTS.contains(argument)) {
+                    continue;
+                }
+                findings.add(diagnostic.location() + " logs a card-bearing argument [" + argument + "]");
+            }
+        }
+        return findings;
+    }
+
+    @Nested
+    @DisplayName("the detectors themselves are sound, so a misread cannot pass as compliance")
+    class TheDetectorsAreSound {
+
+        /** A planted source carrying both defects, used to prove each detector fires. */
+        private static final String PLANTED = """
+                class Planted {
+                    void read() {
+                        try {
+                            probe();
+                        } catch (final RuntimeException unreadable) {
+                            LOG.error("read failed", unreadable);
+                            LOG.warn("read failed: {}", unreadable.getMessage());
+                        }
+                        LOG.info("card={}", record.getXrefCardNum());
+                        LOG.info("card={}", cardNumber);
+                        LOG.info("cardNum={}", REDACTED_CARD_NUMBER);
+                        LOG.info("cardNum=" + record.getCardNum());
+                    }
+                }
+                """;
+
+        @Test
+        @DisplayName("the raw-throwable detector fires on a planted throwable and on a planted narrative")
+        void theRawThrowableDetectorFires() {
+            final List<String> findings = rawThrowableFindings(Path.of("Planted.java"), PLANTED);
+
+            assertThat(findings).hasSize(2);
+            assertThat(findings.get(0)).contains("passes the caught throwable [unreadable]");
+            assertThat(findings.get(1)).contains("logs the narrative of the caught throwable");
+        }
+
+        @Test
+        @DisplayName("the card-number detector fires on a planted accessor, a planted local and a planted "
+                + "concatenation")
+        void theCardNumberDetectorFires() {
+            final List<String> findings = cardNumberFindings(Path.of("Planted.java"), PLANTED);
+
+            assertThat(findings).hasSize(3);
+            assertThat(findings.get(0)).contains("record.getXrefCardNum()");
+            assertThat(findings.get(1)).contains("cardNumber");
+            assertThat(findings.get(2)).contains("\"cardNum=\" + record.getCardNum()");
+        }
+
+        @Test
+        @DisplayName("and stays silent on the planted template that names the field and supplies the "
+                + "stand-in, which is the shape the fixed diagnostics take")
+        void andStaysSilentOnATemplateThatNamesTheField() {
+            assertThat(carriesNoRuntimeValue("\"DALYTRAN cardNum={} procTs={}\"")).isTrue();
+            assertThat(carriesNoRuntimeValue("\"cardNum={}\" + \" origTs={}\"")).isTrue();
+            assertThat(carriesNoRuntimeValue("\"cardNum=\" + cardNumber")).isFalse();
+            assertThat(carriesNoRuntimeValue("cardNumber")).isFalse();
+            assertThat(cardNumberFindings(Path.of("Planted.java"), PLANTED))
+                    .noneMatch(finding -> finding.contains("REDACTED_CARD_NUMBER"));
+        }
+
+        @Test
+        @DisplayName("the call reader keeps a message literal whole, so a comma inside one is not read as "
+                + "an argument boundary")
+        void theCallReaderKeepsALiteralWhole() {
+            final String call = "LOG.warn(\"a, b, c {}\", value)";
+
+            assertThat(argumentsOf(call)).containsExactly("\"a, b, c {}\"", "value");
+        }
+
+        @Test
+        @DisplayName("the call reader follows a concatenated multi-line literal to its real end")
+        void theCallReaderFollowsAConcatenatedLiteral() {
+            final String call = "LOG.warn(\"first {}\"\n        + \" second {}\", one,\n        two)";
+
+            assertThat(argumentsOf(call)).containsExactly("\"first {}\" + \" second {}\"", "one", "two");
+        }
+
+        @Test
+        @DisplayName("the constant rule recognises a qualified upper-snake reference and rejects a call")
+        void theConstantRuleRecognisesAConstant() {
+            assertThat(CONSTANT_REFERENCE.matcher("FIELD_TRAN_CARD_NUM").matches()).isTrue();
+            assertThat(CONSTANT_REFERENCE.matcher("Processor.FIELD_TRAN_CARD_NUM").matches()).isTrue();
+            assertThat(CONSTANT_REFERENCE.matcher("record.getXrefCardNum()").matches()).isFalse();
+            assertThat(CONSTANT_REFERENCE.matcher("cardNumber").matches()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the audit reads a non-trivial number of diagnostics, so an empty scan cannot pass")
+        void theAuditReadsTheSources() {
+            final long diagnostics = productionSources().stream()
+                    .mapToLong(file -> diagnosticsIn(file, textOf(file)).size())
+                    .sum();
+
+            assertThat(productionSources()).hasSizeGreaterThan(100);
+            assertThat(diagnostics)
+                    .as("the estate's console diagnostics became structured events; a scan finding almost "
+                            + "none of them is a scan that is not working")
+                    .isGreaterThan(200L);
+        }
+    }
+
+    @Nested
+    @DisplayName("no diagnostic hands a logger a raw throwable")
+    class NoRawThrowableReachesALogger {
+
+        @Test
+        @DisplayName("nowhere in the delivered application, because a throwable's message is where a "
+                + "connection string and a statement appear")
+        void noRawThrowableAnywhereInTheDeliveredApplication() {
+            final List<String> findings = new ArrayList<>();
+            for (final Path file : productionSources()) {
+                findings.addAll(rawThrowableFindings(file, textOf(file)));
+            }
+
+            assertThat(findings)
+                    .as("report the classified failure through FailureDiagnostics.failureChainOf instead")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and no diagnostic reads a throwable's frames or its suppressed failures either")
+        void andNoDiagnosticReadsFramesOrSuppressed() {
+            final List<String> findings = new ArrayList<>();
+            for (final Path file : productionSources()) {
+                final String source = textOf(file);
+                for (final Diagnostic diagnostic : diagnosticsIn(file, source)) {
+                    for (final String accessor : NARRATIVE_ACCESSORS) {
+                        if (diagnostic.text().contains(accessor)) {
+                            findings.add(diagnostic.location() + " reads " + accessor + ')');
+                        }
+                    }
+                }
+            }
+
+            assertThat(findings).isEmpty();
+        }
+
+        @Test
+        @DisplayName("and the sanctioned form is genuinely in use, so the rule above is not satisfied by "
+                + "having stopped reporting failures")
+        void andTheSanctionedFormIsInUse() {
+            final long reportingSites = productionSources().stream()
+                    .mapToLong(file -> diagnosticsIn(file, textOf(file)).stream()
+                            .filter(diagnostic -> diagnostic.text().contains("failureChain="))
+                            .count())
+                    .sum();
+
+            assertThat(reportingSites).isGreaterThanOrEqualTo(MINIMUM_FAILURE_CHAIN_SITES);
+        }
+    }
+
+    @Nested
+    @DisplayName("no diagnostic carries a primary account number")
+    class NoCardNumberReachesALogger {
+
+        @Test
+        @DisplayName("nowhere in the delivered application, whether as an accessor, a local or a field")
+        void noCardNumberAnywhereInTheDeliveredApplication() {
+            final List<String> findings = new ArrayList<>();
+            for (final Path file : productionSources()) {
+                findings.addAll(cardNumberFindings(file, textOf(file)));
+            }
+
+            assertThat(findings)
+                    .as("emit the fixed stand-in instead; a partial mask is not an alternative, because a "
+                            + "fragment of a sixteen-character numeric key is recoverable by enumeration")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and the two batch programs that displayed one still write every diagnostic, now "
+                + "emitting the stand-in, so only the value is withheld and not the record")
+        void andTheStandInIsGenuinelyEmitted() {
+            assertThat(standInDiagnosticsIn("DailyTransactionReadService.java"))
+                    .as("the unverified-card warning, the resolved-card trace, and the thirteen-field "
+                            + "rejected-record event that the legacy program's DISPLAY statements write")
+                    .isEqualTo(3);
+            assertThat(standInDiagnosticsIn("TransactionReportService.java"))
+                    .as("the unresolvable-cross-reference diagnostic")
+                    .isEqualTo(1);
+        }
+
+        /**
+         * Counts the diagnostics in one service that emit the card-number stand-in.
+         *
+         * <p>Counts <em>call sites</em> rather than textual occurrences, so the constant's own declaration
+         * and the javadoc that cross-references it do not inflate the figure.
+         *
+         * @param fileName simple file name of the service, which lives under {@code service}
+         * @return how many of its diagnostics emit the stand-in
+         */
+        private static long standInDiagnosticsIn(final String fileName) {
+            final Path file = PRODUCTION_SOURCE_ROOT.resolve(Path.of("service", fileName));
+            return diagnosticsIn(file, textOf(file)).stream()
+                    .filter(diagnostic -> diagnostic.text().contains("REDACTED_CARD_NUMBER"))
+                    .count();
+        }
+
+        @Test
+        @DisplayName("and the stand-in is spelled exactly as the screen services already spell it, so one "
+                + "search finds every value the module withholds")
+        void andTheStandInIsSpelledIdentically() {
+            final Pattern declaration = Pattern.compile(
+                    "\\b(?:REDACTED_CARD_NUMBER|REDACTION_PLACEHOLDER)\\s*=\\s*\"([^\"]*)\"");
+            final List<String> spellings = new ArrayList<>();
+            for (final Path file : productionSources()) {
+                final Matcher declared = declaration.matcher(textOf(file));
+                while (declared.find()) {
+                    spellings.add(declared.group(1));
+                }
+            }
+
+            assertThat(spellings)
+                    .as("a second spelling would leave one of the two unsearchable")
+                    .hasSizeGreaterThan(20)
+                    .allSatisfy(spelling -> assertThat(spelling).isEqualTo("***REDACTED***"));
+        }
+    }
+}

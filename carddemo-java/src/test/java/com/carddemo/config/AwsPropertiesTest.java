@@ -167,7 +167,7 @@ class AwsPropertiesTest {
     private static final String BUCKET = "carddemo-batch-staging";
 
     /** The submission queue every shipped document names, uniform with the other three resources. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /** The single message group every shipped document names. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -513,7 +513,7 @@ class AwsPropertiesTest {
     class MandatoryFifoSuffix {
 
         @ParameterizedTest(name = "queue = {0}")
-        @ValueSource(strings = {"JOBS", "carddemo-jobs", "JOBS.fifo.bak", "fifo", "carddemo-jobs.fif"})
+        @ValueSource(strings = {"JOBS", "submission-queue", "JOBS.fifo.bak", "fifo", "JOBS.fif"})
         @DisplayName("stops start-up for a name the queue service would refuse, rather than letting a "
                 + "submission discover it")
         void stopsStartUpForANameTheQueueServiceWouldRefuse(final String queueName) {
@@ -536,7 +536,7 @@ class AwsPropertiesTest {
         }
 
         @ParameterizedTest(name = "queue = {0}")
-        @ValueSource(strings = {"carddemo-jobs.fifo", "JOBS.fifo", "a.fifo", "CardDemo-Jobs.fifo"})
+        @ValueSource(strings = {"JOBS.fifo", "submission-queue.fifo", "a.fifo", "CardDemo-Jobs.fifo"})
         @DisplayName("accepts any otherwise valid name that carries it, since the suffix and the queue "
                 + "service's own character rule are the only conditions this type imposes")
         void acceptsAnyOtherwiseValidNameThatCarriesIt(final String queueName) {
@@ -555,7 +555,7 @@ class AwsPropertiesTest {
         @DisplayName("is read exactly as written, so an upper-cased spelling of it is refused rather "
                 + "than quietly accepted as equivalent")
         void isReadExactlyAsWritten() {
-            final String upperCasedSuffix = "carddemo-jobs.FIFO";
+            final String upperCasedSuffix = "JOBS.FIFO";
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("the queue service compares the suffix byte for byte, so this type must too; "
@@ -603,6 +603,242 @@ class AwsPropertiesTest {
 
             assertThat(constructed.jobQueue()).isNull();
             assertThat(constructed.messageGroupId()).isEqualTo(MESSAGE_GROUP);
+        }
+    }
+
+    @Nested
+    @DisplayName("★ A hostile or malformed resource value, bound through the binder")
+    class HostileResourceValues {
+
+        @ParameterizedTest(name = "region = [{0}]")
+        @ValueSource(strings = {"US-EAST-1", "us_east_1", "useast1", "us-east", "us-east-x",
+            "us-east-1a", "us-east-123", "u-east-1", "region-that-is-far-too-long-to-be-one-1",
+            "us--1", "us-east-\u0661"})
+        @DisplayName("a region that is not shaped like a region stops start-up, rather than reaching "
+                + "three client builders that then fail on their first request")
+        void aMalformedRegionStopsStartUp(final String region) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_REGION, region))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("a region is resolved into an endpoint per client, so an unusable "
+                                        + "one is three deferred failures rather than one")
+                                .hasFailed();
+                        assertThat(rootCauseOf(context))
+                                .as("and the refusal names the key an operator has to correct")
+                                .hasMessageContaining(KEY_REGION);
+                    });
+        }
+
+        @ParameterizedTest(name = "region = {0}")
+        @ValueSource(strings = {"us-east-1", "us-east-2", "eu-west-2", "ap-southeast-3",
+            "us-gov-west-1", "cn-north-1", "il-central-1", "us-iso-east-1", "eusc-de-east-1"})
+        @DisplayName("every published region shape is accepted, including partitions and sovereign "
+                + "areas, because a rule that refused a future region would be worse than one that "
+                + "accepts an unused shape")
+        void everyPublishedRegionShapeIsAccepted(final String region) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_REGION, region))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(AwsProperties.class).region()).isEqualTo(region);
+                    });
+        }
+
+        @ParameterizedTest(name = "bucket = [{0}]")
+        @ValueSource(strings = {"Carddemo-Batch-Staging", "carddemo_batch_staging", "ab",
+            "-carddemo-batch-staging", "carddemo-batch-staging-", "carddemo..staging",
+            "192.168.5.4", "xn--carddemo", "carddemo-s3alias", ".carddemo", "carddemo staging",
+            "carddemo/staging",
+            "a-bucket-name-that-is-definitely-longer-than-sixty-three-characters-in-total"})
+        @DisplayName("a bucket name the object store could never create stops start-up, rather than "
+                + "letting a batch run finish its work and fail on the write that stores it")
+        void aMalformedBucketStopsStartUp(final String bucket) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_BUCKET, bucket))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("the object store refuses this name, so accepting it here only "
+                                        + "moves the refusal to the end of a completed run")
+                                .hasFailed();
+                        assertThat(rootCauseOf(context))
+                                .as("and the refusal names the key an operator has to correct")
+                                .hasMessageContaining(KEY_BUCKET);
+                    });
+        }
+
+        @ParameterizedTest(name = "bucket = {0}")
+        @ValueSource(strings = {"carddemo-batch-staging", "abc", "a.b.c", "carddemo.batch.staging",
+            "1carddemo2", "unit-test-staging-bucket"})
+        @DisplayName("every otherwise legal bucket name is accepted, dots included, since a dotted name "
+                + "is legal for a general-purpose bucket")
+        void everyLegalBucketNameIsAccepted(final String bucket) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_BUCKET, bucket))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(AwsProperties.class).s3().batchStagingBucket())
+                                .isEqualTo(bucket);
+                    });
+        }
+
+        @ParameterizedTest(name = "topic = [{0}]")
+        @ValueSource(strings = {"carddemo.job.notifications", "carddemo job notifications",
+            "carddemo/job-notifications", "carddemo:job-notifications",
+            "arn:aws:sqs:us-east-1:000000000000:carddemo-job-notifications",
+            "arn:aws:sns:us-east-1:00000000000:carddemo-job-notifications",
+            "arn:aws:sns:us-east-1:00000000000a:carddemo-job-notifications",
+            "arn:not-a-partition:sns:us-east-1:000000000000:carddemo-job-notifications",
+            "arn:aws:sns:not-a-region:000000000000:carddemo-job-notifications",
+            "arn:aws:sns:us-east-1:000000000000", "arn:aws:sns:us-east-1:000000000000:"})
+        @DisplayName("a notification destination the topic service could not resolve stops start-up, so "
+                + "a job that finished does not lose its completion notice to a name that names nothing")
+        void aMalformedTopicStopsStartUp(final String topic) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_TOPIC, topic))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("a standard topic name admits no dot and no separator, and an "
+                                        + "identifier must name this service in a real partition")
+                                .hasFailed();
+                        assertThat(rootCauseOf(context))
+                                .as("and the refusal names the key an operator has to correct")
+                                .hasMessageContaining(KEY_TOPIC);
+                    });
+        }
+
+        @ParameterizedTest(name = "topic = {0}")
+        @ValueSource(strings = {"carddemo-job-notifications", "CardDemo_Job_Notifications", "t",
+            "arn:aws:sns:us-east-1:000000000000:carddemo-job-notifications",
+            "arn:aws-us-gov:sns:us-gov-west-1:000000000000:carddemo-job-notifications"})
+        @DisplayName("both accepted forms bind unchanged: a bare name and an identifier naming this "
+                + "service, because the publishing template resolves either")
+        void bothAcceptedTopicFormsBindUnchanged(final String topic) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_TOPIC, topic))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(AwsProperties.class).sns().jobNotificationTopic())
+                                .as("the configured destination is bound unchanged, so recognising a "
+                                        + "form never rewrites it")
+                                .isEqualTo(topic);
+                    });
+        }
+
+        @ParameterizedTest(name = "endpoint = [{0}]")
+        @ValueSource(strings = {"ftp://localstack:4566", "file:///tmp/localstack",
+            "s3://carddemo-batch-staging", "jar:file:///tmp/a.jar!/", "classpath:/localstack",
+            "gopher://localstack:4566", "HTTP+SSL://localstack:4566"})
+        @DisplayName("an endpoint on a transport these clients cannot speak stops start-up, because the "
+                + "value is handed to three client builders and each would fail on its first request")
+        void anEndpointOnAnUnspeakableTransportStopsStartUp(final String endpoint) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, endpoint))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("only plain and secure transport reach these services")
+                                .hasFailed();
+                        assertThat(rootCauseOf(context))
+                                .as("and the refusal names the key an operator has to correct")
+                                .hasMessageContaining(KEY_ENDPOINT_OVERRIDE);
+                    });
+        }
+
+        @ParameterizedTest(name = "endpoint = [{0}]")
+        @ValueSource(strings = {"http://operator:hunter2@localstack:4566",
+            "https://token@localstack:4566"})
+        @DisplayName("★ an endpoint carrying credentials stops start-up, because that is a secret "
+                + "written into configuration in the one field of these settings that could hold one")
+        void anEndpointCarryingCredentialsStopsStartUp(final String endpoint) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, endpoint))
+                    .run(context -> {
+                        assertThat(context)
+                                .as("credentials belong in the credential chain, not in an address "
+                                        + "that every endpoint diagnostic would then carry")
+                                .hasFailed();
+                        assertThat(rootCauseOf(context))
+                                .as("the refusal names the key, and does not repeat the value it "
+                                        + "refused - which for this value would publish the secret")
+                                .hasMessageContaining(KEY_ENDPOINT_OVERRIDE);
+                        assertThat(rootCauseOf(context).getMessage())
+                                .doesNotContain("hunter2")
+                                .doesNotContain("token");
+                    });
+        }
+
+        @ParameterizedTest(name = "endpoint = [{0}]")
+        @ValueSource(strings = {"http://localstack:4566?x=1", "http://localstack:4566#fragment",
+            "http://localstack:4566/path?x=1"})
+        @DisplayName("an endpoint that is a request rather than a base address stops start-up, because a "
+                + "client builder composes every subsequent path onto whatever it is given")
+        void anEndpointThatIsARequestStopsStartUp(final String endpoint) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, endpoint))
+                    .run(context -> {
+                        assertThat(context).hasFailed();
+                        assertThat(rootCauseOf(context)).hasMessageContaining(KEY_ENDPOINT_OVERRIDE);
+                    });
+        }
+
+        @ParameterizedTest(name = "endpoint = {0}")
+        @ValueSource(strings = {"http://localhost:4566", "https://emulator.internal",
+            "HTTP://localstack:4566", "http://localstack:4566/edge"})
+        @DisplayName("a base address on either speakable transport is accepted, in any case and with a "
+                + "path prefix, because a deployment may legitimately front the emulator")
+        void aBaseAddressOnASpeakableTransportIsAccepted(final String endpoint) {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(completeConfigurationWith(KEY_ENDPOINT_OVERRIDE, endpoint))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context.getBean(AwsProperties.class).endpointOverrideUri())
+                                .contains(URI.create(endpoint));
+                    });
+        }
+
+        @ParameterizedTest(name = "padded value = [{0}]")
+        @ValueSource(strings = {"us-east-1 ", " us-east-1", "\tus-east-1"})
+        @DisplayName("\u2605 a padded resource name is refused at construction, because a service "
+                + "compares a name byte for byte and a padded name is a different name")
+        void aPaddedResourceNameIsRefusedAtConstruction(final String padded) {
+            // Asserted here rather than through the binder deliberately: the test property harness trims
+            // both ends of every value it applies - measured, not assumed - so a padded value cannot reach
+            // the binder from this suite at all. It can reach the record in production, where an
+            // environment variable carries exactly the bytes the deployment exported, which is why the
+            // rule refuses it and why the refusal is asserted at the boundary that can observe it.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a padded region names no region")
+                    .isThrownBy(() -> new AwsProperties(padded, ENDPOINT_OVERRIDE,
+                            new AwsProperties.S3(BUCKET), new AwsProperties.Sqs(QUEUE, MESSAGE_GROUP),
+                            new AwsProperties.Sns(TOPIC)))
+                    .withMessageContaining(KEY_REGION);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a padded bucket name names no bucket")
+                    .isThrownBy(() -> new AwsProperties.S3(padded.replace("us-east-1", BUCKET)))
+                    .withMessageContaining(KEY_BUCKET);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("a padded topic name names no topic")
+                    .isThrownBy(() -> new AwsProperties.Sns(padded.replace("us-east-1", TOPIC)))
+                    .withMessageContaining(KEY_TOPIC);
+        }
+
+        @Test
+        @DisplayName("every shipped document's own values pass every rule above, so the rules cannot "
+                + "have been written tighter than the configuration they govern")
+        void everyShippedValuePassesEveryRule() {
+            AwsPropertiesTest.this.validatingRunner
+                    .withPropertyValues(COMPLETE.entrySet().stream()
+                            .map(entry -> entry.getKey() + "=" + entry.getValue())
+                            .toArray(String[]::new))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+                        final AwsProperties bound = context.getBean(AwsProperties.class);
+                        assertThat(bound.region()).isEqualTo(REGION);
+                        assertThat(bound.s3().batchStagingBucket()).isEqualTo(BUCKET);
+                        assertThat(bound.sqs().jobQueue()).isEqualTo(QUEUE);
+                        assertThat(bound.sns().jobNotificationTopic()).isEqualTo(TOPIC);
+                        assertThat(bound.endpointOverride()).isEqualTo(ENDPOINT_OVERRIDE);
+                    });
         }
     }
 
@@ -826,10 +1062,9 @@ class AwsPropertiesTest {
                                 + "the container composition provision this exact name")
                         .isEqualTo(BUCKET);
                 assertThat(bound.sqs().jobQueue())
-                        .as("the queue carries the name the plan mandates plus the suffix the queue "
-                                + "service demands, uniform with the other three resource names; the "
-                                + "legacy queue name is carried by the operator-visible failure message "
-                                + "instead, which is the contract compared byte for byte "
+                        .as("the queue carries the name the plan prescribes for this one resource "
+                                + "plus the suffix the queue service demands; the other three names are "
+                                + "module-namespaced because the plan names no value for them "
                                 + "(docs/decision-log.md DL-092)")
                         .isEqualTo(QUEUE);
                 assertThat(bound.sqs().messageGroupId())

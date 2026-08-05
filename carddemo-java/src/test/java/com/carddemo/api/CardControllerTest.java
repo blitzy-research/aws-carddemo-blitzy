@@ -17,16 +17,17 @@
 package com.carddemo.api;
 
 import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.PageMetadata;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.BrowseWindow;
 import com.carddemo.service.CardDetailService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
+import com.carddemo.service.FieldErrorMarks;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.ScreenInputState;
+import com.carddemo.service.ScreenNavigationState;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
@@ -94,6 +95,9 @@ class CardControllerTest {
     /** The card-update screen, stubbed. */
     private CardUpdateService cardUpdateService;
 
+    /** The converter between the wire screen carriers and the service-owned ones. */
+    private ScreenStateAdapter screenStateAdapter;
+
     /** Registry the turn timers register against. */
     private MeterRegistry meterRegistry;
 
@@ -108,9 +112,12 @@ class CardControllerTest {
         cardListService = mock(CardListService.class);
         cardDetailService = mock(CardDetailService.class);
         cardUpdateService = mock(CardUpdateService.class);
+        // The real converter rather than a mock: it holds no state and performs a positional copy, so
+        // stubbing it would measure the stub instead of the crossing.
+        screenStateAdapter = new ScreenStateAdapter();
         meterRegistry = new SimpleMeterRegistry();
         controller = new CardController(cardListService, cardDetailService, cardUpdateService,
-                meterRegistry);
+                screenStateAdapter, meterRegistry);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -128,13 +135,15 @@ class CardControllerTest {
         @DisplayName("refuses every absent collaborator, so a half-built boundary cannot exist")
         void refusesAnAbsentCollaborator() {
             assertThatNullPointerException().isThrownBy(() -> new CardController(null,
-                    cardDetailService, cardUpdateService, meterRegistry));
+                    cardDetailService, cardUpdateService, screenStateAdapter, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    null, cardUpdateService, meterRegistry));
+                    null, cardUpdateService, screenStateAdapter, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    cardDetailService, null, meterRegistry));
+                    cardDetailService, null, screenStateAdapter, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    cardDetailService, cardUpdateService, null));
+                    cardDetailService, cardUpdateService, null, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
+                    cardDetailService, cardUpdateService, screenStateAdapter, null));
         }
 
         @Test
@@ -290,7 +299,7 @@ class CardControllerTest {
                     .andExpect(status().isOk());
 
             final CardListService.CardListScreenInput captured = capturedListInput();
-            final ScreenWorkArea workArea = captured.workArea();
+            final ScreenInputState workArea = captured.workArea();
             assertThat(workArea.accountId()).isEqualTo(" 0000000001");
             assertThat(workArea.cardNumber()).isEqualTo("0000000000000009");
             assertThat(workArea.keyAction()).isEqualTo(KeyAction.PFK08);
@@ -298,7 +307,7 @@ class CardControllerTest {
             assertThat(captured.currentPageNumber()).isEqualTo(1);
             assertThat(captured.lastPageAlreadyShown()).isFalse();
             assertThat(captured.nextPageIndicated()).isFalse();
-            assertThat(captured.selections()).hasSize(PageMetadata.CARD_LIST_PAGE_SIZE);
+            assertThat(captured.selections()).hasSize(BrowseWindow.CARD_LIST_PAGE_SIZE);
         }
 
         @Test
@@ -316,10 +325,10 @@ class CardControllerTest {
                                                      "direction":"FORWARD"}}"""))
                     .andExpect(status().isOk());
 
-            final PageMetadata.PageCursorRequest cursor = capturedListInput().pageCursor();
+            final BrowseWindow.CursorRequest cursor = capturedListInput().pageCursor();
             assertThat(cursor.previousCursorKey()).isEqualTo("0000000000000001");
             assertThat(cursor.nextCursorKey()).isEqualTo("0000000000000007");
-            assertThat(cursor.direction()).isEqualTo(PageMetadata.PagingDirection.FORWARD);
+            assertThat(cursor.direction()).isEqualTo(BrowseWindow.PagingDirection.FORWARD);
         }
 
         @Test
@@ -380,10 +389,9 @@ class CardControllerTest {
         void delegatesOnceAndPublishesTheCard() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE)
-                            .param("accountIdFilter", "00000000011")
-                            .param("cardNumberFilter", "0000000000000001")
-                            .param("keyAction", "ENTER"))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody("00000000011", "0000000000000001", "ENTER")))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionName").value("CCDL"))
                     .andExpect(jsonPath("$.programName").value("COCRDSLC"))
@@ -405,7 +413,9 @@ class CardControllerTest {
         void publishesNoPresentationState() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE).param("keyAction", "ENTER"))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody(null, null, "ENTER")))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.accountIdProtected").doesNotExist())
                     .andExpect(jsonPath("$.cardNumberProtected").doesNotExist())
@@ -419,7 +429,10 @@ class CardControllerTest {
         void acceptsBothSearchKeysAbsent() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE)).andExpect(status().isOk());
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andExpect(status().isOk());
 
             final CardDetailService.CardDetailScreenInput captured = capturedDetailInput();
             assertThat(captured.accountIdFilter()).isNull();
@@ -433,19 +446,22 @@ class CardControllerTest {
         void bindsTheEchoedNavigationState() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE)
-                            .param("accountIdFilter", "00000000011")
-                            .param("cardNumberFilter", "0000000000000001")
-                            .param("keyAction", "ENTER")
-                            .param("fromTransactionId", "CCLI")
-                            .param("fromProgram", "COCRDLIC")
-                            .param("programContext", "REENTER")
-                            .param("accountId", "00000000099")
-                            .param("cardNumber", "0000000000000099")
-                            .param("lastMapset", "COCRDLI"))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"accountIdFilter":"00000000011",
+                                     "cardNumberFilter":"0000000000000001",
+                                     "keyAction":"ENTER",
+                                     "navigationContext":{
+                                       "fromTransactionId":"CCLI",
+                                       "fromProgram":"COCRDLIC",
+                                       "programContext":"REENTER",
+                                       "accountId":"00000000099",
+                                       "cardNumber":"0000000000000099",
+                                       "lastMapset":"COCRDLI"}}"""))
                     .andExpect(status().isOk());
 
-            final NavigationContext bound = capturedDetailInput().navigationContext();
+            final ScreenNavigationState bound = capturedDetailInput().navigationContext();
             assertThat(bound).isNotNull();
             assertThat(bound.fromProgram()).isEqualTo("COCRDLIC");
             assertThat(bound.fromTransactionId()).isEqualTo("CCLI");
@@ -460,11 +476,13 @@ class CardControllerTest {
         void readsAnAbsentNavigationStateAsNoCarryOver() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE).param("keyAction", "ENTER"))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody(null, null, "ENTER")))
                     .andExpect(status().isOk());
 
             assertThat(capturedDetailInput().navigationContext())
-                    .isEqualTo(NavigationContext.empty());
+                    .isEqualTo(ScreenNavigationState.empty());
         }
 
         @Test
@@ -472,7 +490,9 @@ class CardControllerTest {
         void timesTheTurnOnce() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE).param("keyAction", "ENTER"))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody(null, null, "ENTER")))
                     .andExpect(status().isOk());
 
             assertThat(meterRegistry.find("carddemo.online.carddetail.turn")
@@ -556,6 +576,62 @@ class CardControllerTest {
             assertThat(captured.changeAction()).isNull();
             assertThat(captured.carriedImage()).isNull();
             assertThat(captured.attentionKeyIdentifier()).isEqualTo("DFHENTER");
+        }
+
+        @Test
+        @DisplayName("a submission echoing no navigation record reaches the transaction as no record at "
+                + "all rather than as an all-blank one, because this screen's reset condition asks "
+                + "whether a communication area arrived")
+        void anAbsentNavigationRecordReachesTheTransactionAsAbsent() throws Exception {
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("ENTER")))
+                    .andExpect(status().isOk());
+
+            // Null and not the empty carrier. The list and detail screens ask whether the state they were
+            // handed is absent OR all-blank and treat the two identically; this screen does not, and
+            // filling the absence in would turn the first turn of a conversation into a continuation of
+            // one, losing the first-entry gate the reset raises.
+            assertThat(capturedUpdateInput().navigationContext()).isNull();
+            assertThat(capturedUpdateInput().carriesNoNavigationState()).isTrue();
+        }
+
+        @Test
+        @DisplayName("an echoed navigation record crosses component for component")
+        void anEchoedNavigationRecordCrossesComponentForComponent() throws Exception {
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"cardNumber\":\"0000000000000001\","
+                                    + "\"embossedName\":\"MARY ANN\",\"activeStatus\":\"Y\","
+                                    + "\"expiryMonth\":\"07\",\"expiryYear\":\"2027\","
+                                    + "\"keyAction\":\"ENTER\","
+                                    + "\"concurrencyToken\":\"sealed-proof-as-presented\","
+                                    + "\"navigationContext\":{"
+                                    + "\"fromTransactionId\":\"CCLI\","
+                                    + "\"fromProgram\":\"COCRDLIC\","
+                                    + "\"toTransactionId\":\"CCUP\","
+                                    + "\"toProgram\":\"COCRDUPC\","
+                                    + "\"userId\":\"USER0001\",\"userType\":\"U\","
+                                    + "\"programContext\":\"REENTER\","
+                                    + "\"customerId\":\"000000123\","
+                                    + "\"customerFirstName\":\"MARY\","
+                                    + "\"customerMiddleName\":\"A\","
+                                    + "\"customerLastName\":\"SMITH\","
+                                    + "\"accountId\":\"00000000011\","
+                                    + "\"accountStatus\":\"Y\","
+                                    + "\"cardNumber\":\"0000000000000001\","
+                                    + "\"lastMap\":\"CCRDUPA\",\"lastMapset\":\"COCRDUP\"}}"))
+                    .andExpect(status().isOk());
+
+            assertThat(capturedUpdateInput().navigationContext())
+                    .isEqualTo(new ScreenNavigationState("CCLI", "COCRDLIC", "CCUP", "COCRDUPC",
+                            "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER,
+                            "000000123", "MARY", "A", "SMITH", "00000000011", "Y",
+                            "0000000000000001", "CCRDUPA", "COCRDUP"));
         }
 
         @Test
@@ -655,7 +731,10 @@ class CardControllerTest {
         void suppliesAnUnmatchedIdentifierForAnAbsentKey() throws Exception {
             when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
 
-            mockMvc.perform(get(DETAIL_ROUTE)).andExpect(status().isOk());
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andExpect(status().isOk());
 
             assertThat(capturedDetailInput().attentionKeyIdentifier()).isEmpty();
         }
@@ -668,7 +747,9 @@ class CardControllerTest {
          * @throws Exception if the request could not be performed
          */
         private String identifierFor(final String keyActionName) throws Exception {
-            mockMvc.perform(get(DETAIL_ROUTE).param("keyAction", keyActionName))
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody(null, null, keyActionName)))
                     .andExpect(status().isOk());
             final ArgumentCaptor<CardDetailService.CardDetailScreenInput> captor =
                     ArgumentCaptor.forClass(CardDetailService.CardDetailScreenInput.class);
@@ -681,6 +762,18 @@ class CardControllerTest {
     // ==================================================================================================
     // Fixtures
     // ==================================================================================================
+
+    private static String detailBody(final String accountFilter, final String cardFilter,
+            final String keyActionName) {
+        final StringBuilder body = new StringBuilder(128).append('{');
+        if (accountFilter != null) {
+            body.append("\"accountIdFilter\":\"").append(accountFilter).append("\",");
+        }
+        if (cardFilter != null) {
+            body.append("\"cardNumberFilter\":\"").append(cardFilter).append("\",");
+        }
+        return body.append("\"keyAction\":\"").append(keyActionName).append("\"}").toString();
+    }
 
     /**
      * Reads the input the card-list service was handed.
@@ -775,16 +868,16 @@ class CardControllerTest {
      */
     private static CardListService.CardListResult listResult(
             final List<CardListService.CardListRow> rows, final boolean markOddSlots) {
-        final Boolean[] flags = new Boolean[PageMetadata.CARD_LIST_PAGE_SIZE];
-        for (int slot = 1; slot <= PageMetadata.CARD_LIST_PAGE_SIZE; slot++) {
+        final Boolean[] flags = new Boolean[BrowseWindow.CARD_LIST_PAGE_SIZE];
+        for (int slot = 1; slot <= BrowseWindow.CARD_LIST_PAGE_SIZE; slot++) {
             flags[slot - 1] = markOddSlots && slot % 2 == 1;
         }
         return new CardListService.CardListResult(
                 NavigationService.Route.CARD_LIST,
-                NavigationContext.empty(),
+                ScreenNavigationState.empty(),
                 "CCLI",
                 rows,
-                PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE, "0000000000000001",
+                BrowseWindow.forward(BrowseWindow.CARD_LIST_PAGE_SIZE, "0000000000000001",
                         "0000000000000007", true, false, "1"),
                 "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD",
                 "",
@@ -804,8 +897,8 @@ class CardControllerTest {
     private static CardDetailService.CardDetailResult detailResult() {
         return new CardDetailService.CardDetailResult(
                 NavigationService.Route.CARD_DETAIL,
-                NavigationContext.empty(),
-                new ScreenWorkArea(KeyAction.ENTER, "COCRDSLC", "COCRDSL", "CCRDSLA", "", "",
+                ScreenNavigationState.empty(),
+                new ScreenInputState(KeyAction.ENTER, "COCRDSLC", "COCRDSL", "CCRDSLA", "", "",
                         "00000000011", "0000000000000001", ""),
                 "CCDL",
                 new CardDetailService.CardProjection("0000000000000001", "00000000011", "MARY ANN",
@@ -833,9 +926,9 @@ class CardControllerTest {
             final List<ValidationException.FieldError> fieldErrors) {
         return new CardUpdateService.CardUpdateResult(
                 NavigationService.Route.CARD_UPDATE,
-                NavigationContext.empty(),
+                ScreenNavigationState.empty(),
                 "CCUP",
-                new ScreenWorkArea(KeyAction.PFK05, "COCRDUPC", "COCRDUP", "CCRDUPA", "", "",
+                new ScreenInputState(KeyAction.PFK05, "COCRDUPC", "COCRDUP", "CCRDUPA", "", "",
                         "00000000011", "0000000000000001", ""),
                 CardUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE,
                 null,
@@ -849,7 +942,7 @@ class CardControllerTest {
                 false,
                 CardUpdateService.WriteOutcome.COMMITTED,
                 fieldErrors,
-                FieldErrorDecorator.none(),
+                FieldErrorMarks.none(),
                 new CardUpdateService.ScreenHeader("Card Update", "Update Card", "CCUP", "COCRDUPC",
                         "07/19/22", "23:12:33"),
                 new CardUpdateService.ScreenFields("00000000011", "0000000000000001", "MARY ANN", "Y",

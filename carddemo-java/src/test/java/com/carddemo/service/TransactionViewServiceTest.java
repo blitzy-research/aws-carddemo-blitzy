@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
@@ -189,9 +188,9 @@ class TransactionViewServiceTest {
      * @param fromProgram the originating-program field, which back-navigation reads
      * @return a re-entered navigation state
      */
-    private static NavigationContext reEnteredContext(final String fromProgram) {
-        return new NavigationContext(null, fromProgram, null, null, "USER0001", "U",
-                NavigationContext.ProgramContext.REENTER,
+    private static ScreenNavigationState reEnteredContext(final String fromProgram) {
+        return new ScreenNavigationState(null, fromProgram, null, null, "USER0001", "U",
+                ScreenNavigationState.ProgramContext.REENTER,
                 null, null, null, null, null, null, null, null, null);
     }
 
@@ -200,9 +199,9 @@ class TransactionViewServiceTest {
      *
      * @return a first-entry navigation state
      */
-    private static NavigationContext firstEntryContext() {
-        return new NavigationContext(null, null, null, null, "USER0001", "U",
-                NavigationContext.ProgramContext.ENTER,
+    private static ScreenNavigationState firstEntryContext() {
+        return new ScreenNavigationState(null, null, null, null, "USER0001", "U",
+                ScreenNavigationState.ProgramContext.ENTER,
                 null, null, null, null, null, null, null, null, null);
     }
 
@@ -274,7 +273,7 @@ class TransactionViewServiceTest {
         void routesEmptyStateToSignOn() {
             final TransactionViewService.TransactionViewResult result =
                     service.viewTransaction(new TransactionViewService.TransactionViewInput(
-                            PADDED_ID, PADDED_ID, KeyAction.ENTER, NavigationContext.empty()));
+                            PADDED_ID, PADDED_ID, KeyAction.ENTER, ScreenNavigationState.empty()));
 
             assertThat(result.route()).isEqualTo(NavigationService.Route.SIGN_ON);
             assertThat(result.reArmedTransactionId()).isEmpty();
@@ -919,7 +918,7 @@ class TransactionViewServiceTest {
         void absentFieldListIsNormalised() {
             final TransactionViewService.TransactionViewResult built =
                     new TransactionViewService.TransactionViewResult(
-                            NavigationService.Route.TRANSACTION_VIEW, NavigationContext.empty(),
+                            NavigationService.Route.TRANSACTION_VIEW, ScreenNavigationState.empty(),
                             "CT01", "", null, "", "", false, false, false, null, null);
 
             assertThat(built.fieldErrors()).isNotNull().isEmpty();
@@ -995,14 +994,13 @@ class TransactionViewServiceTest {
             Mockito.verify(repository, Mockito.never()).flush();
             Mockito.verify(repository, Mockito.never()).findMaxId();
             Mockito.verify(repository, Mockito.never()).findByProcessingDateRange(
-                    ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
-                    ArgumentMatchers.any());
+                    ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
         }
 
         @Test
         @DisplayName("the input record carries its four components verbatim")
         void inputCarriesItsComponents() {
-            final NavigationContext context = reEnteredContext("COTRN00C");
+            final ScreenNavigationState context = reEnteredContext("COTRN00C");
             final TransactionViewService.TransactionViewInput turn =
                     new TransactionViewService.TransactionViewInput(
                             PADDED_ID, OTHER_ID, KeyAction.PFK03, context);

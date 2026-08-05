@@ -25,14 +25,19 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.service.JobSubmissionCoordinator;
+import com.carddemo.service.JobSubmissionOutbox;
 import com.carddemo.service.JobSubmissionService;
 import io.awspring.cloud.autoconfigure.s3.S3ClientCustomizer;
 import io.awspring.cloud.autoconfigure.sns.SnsClientCustomizer;
 import io.awspring.cloud.autoconfigure.sqs.SqsAsyncClientCustomizer;
+import io.awspring.cloud.sns.core.TopicArnResolver;
+import io.awspring.cloud.sns.core.TopicNotFoundException;
 import io.awspring.cloud.sqs.annotation.SqsListenerAnnotationBeanPostProcessor;
 import io.awspring.cloud.sqs.config.MessageListenerContainerFactory;
 import io.awspring.cloud.sqs.listener.MessageListenerContainer;
 import io.awspring.cloud.sqs.operations.SqsOperations;
+import io.micrometer.observation.ObservationRegistry;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.stream.Stream;
@@ -54,6 +59,9 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3ClientBuilder;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.SnsClientBuilder;
+import software.amazon.awssdk.services.sns.model.CreateTopicRequest;
+import software.amazon.awssdk.services.sns.model.ListTopicsResponse;
+import software.amazon.awssdk.services.sns.model.Topic;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClientBuilder;
 import software.amazon.awssdk.services.sqs.batchmanager.SqsAsyncBatchManager;
@@ -127,12 +135,13 @@ import software.amazon.awssdk.services.sqs.batchmanager.SqsAsyncBatchManager;
  * <h2>Why absence is what several assertions look for</h2>
  *
  * <p>{@link AwsConfig} builds no client. It contributes three customizers that the cloud integration
- * applies to the builders it owns, so there is no batching switch to read back and no client instance
- * to interrogate for one. The faithful assertion is therefore a <em>closed world</em> over a doubled
- * builder: the customizer is applied, every expected call is verified, and
- * {@code verifyNoMoreInteractions} then requires that nothing else was touched at all. A batching
- * decorator, a deduplication switch, a credential provider or an interceptor added later cannot pass
- * that check, which is what makes an absence assertion here stronger than a property read-back.
+ * applies to the builders it owns and one topic resolver that lists pre-provisioned topics instead of
+ * creating one while resolving its name. The faithful client assertion is therefore a
+ * <em>closed world</em> over a doubled builder: the customizer is applied, every expected call is
+ * verified, and {@code verifyNoMoreInteractions} then requires that nothing else was touched at all.
+ * A batching decorator, a deduplication switch, a credential provider or an interceptor added later
+ * cannot pass that check, which is what makes an absence assertion here stronger than a property
+ * read-back.
  *
  * <p>The same reasoning settles how the no-resource-creation guarantee is proved. Reading the class's
  * annotations for an initialisation hook would need hand-rolled reflection, which this module
@@ -152,13 +161,16 @@ import software.amazon.awssdk.services.sqs.batchmanager.SqsAsyncBatchManager;
  * <p>The job image itself is not this file's subject. The seventeen cards and their order, the four
  * date substitution slots, the transmitted end-of-stream sentinel card, the eighty-character bodies,
  * the drain that counts what survived deduplication, and the log-and-continue behaviour of a refused
- * publish all belong to {@code AwsIntegrationIT} and {@code e2e/OnlineTransactionE2ETest}, which have a
- * real queue to observe. The key paths themselves, their canonical values, the first-in-first-out
- * suffix guard and the blank-tolerant endpoint redirection belong to {@code AwsPropertiesTest}; here
- * only the way this class <em>consumes</em> them is asserted. Provisioning belongs to the emulator
- * bootstrap script and its own tests. No expected value in this file is produced by calling the class
- * under test or any other production helper: every expectation is a literal declared here or a
- * read-back from the software development kit or the context.
+ * publish all belong to the integration tier, which has a real queue to observe:
+ * {@link com.carddemo.service.JobSubmissionServiceIT} and
+ * {@link com.carddemo.service.JobSubmissionQueueBridgeIT}. The key paths themselves, their canonical
+ * values, the first-in-first-out suffix guard and the blank-tolerant endpoint redirection belong to
+ * {@code AwsPropertiesTest}; here only the way this class <em>consumes</em> them is asserted.
+ * Provisioning belongs to the emulator bootstrap script and its own tests,
+ * {@code LocalStackBootstrapContractTest} and {@link com.carddemo.config.LocalStackBootstrapIT}. No
+ * expected value in this file is produced by calling the class under test or any other production
+ * helper: every expectation is a literal declared here or a read-back from the software development kit
+ * or the context.
  */
 @DisplayName("AWS configuration: the queue definition's five attributes, the deduplication hazard, "
         + "and where the three clients are aimed")
@@ -180,7 +192,7 @@ class AwsConfigTest {
     private static final String BUCKET = "carddemo-batch-staging";
 
     /** The job-submission queue the configuration documents declare. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /**
      * The queue named without the first-in-first-out suffix the queue service requires.
@@ -190,7 +202,7 @@ class AwsConfigTest {
      * the suffix, which is mandatory rather than decorative: append ordering - and therefore the order
      * a submitted job stream is read in - survives only on a first-in-first-out queue.</p>
      */
-    private static final String QUEUE_WITHOUT_FIFO_SUFFIX = "carddemo-jobs";
+    private static final String QUEUE_WITHOUT_FIFO_SUFFIX = "JOBS";
 
     /** The single message group the configuration documents declare. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -261,6 +273,9 @@ class AwsConfigTest {
         AwsProperties.Sns.JOB_NOTIFICATION_TOPIC_PROPERTY + "=" + TOPIC,
     };
 
+    /** Notification client supplied by the harness; AwsConfig customizes but never builds it. */
+    private final SnsClient notificationClient = mock(SnsClient.class);
+
     /**
      * Runner over the class under test, carrying the settings its registration binds.
      *
@@ -271,6 +286,7 @@ class AwsConfigTest {
      */
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(AwsConfig.class)
+            .withBean(SnsClient.class, () -> this.notificationClient)
             .withPropertyValues(REQUIRED_SETTINGS);
 
     /**
@@ -501,11 +517,9 @@ class AwsConfigTest {
         void createNoResourceWhileTheContextStarts() {
             final S3Client objectStore = mock(S3Client.class);
             final SqsAsyncClient queue = mock(SqsAsyncClient.class);
-            final SnsClient notifications = mock(SnsClient.class);
 
             runner.withBean(S3Client.class, () -> objectStore)
                     .withBean(SqsAsyncClient.class, () -> queue)
-                    .withBean(SnsClient.class, () -> notifications)
                     .run(context -> {
                         assertThat(context).hasNotFailed()
                                 .hasSingleBean(S3Client.class)
@@ -517,7 +531,7 @@ class AwsConfigTest {
                         // interactions across the whole refresh therefore covers every provisioning
                         // path at once, including one hidden behind an initialisation hook, and it
                         // covers calls this file never had to name.
-                        verifyNoInteractions(objectStore, queue, notifications);
+                        verifyNoInteractions(objectStore, queue, notificationClient);
 
                         assertThat(context.getBeanNamesForType(CommandLineRunner.class))
                                 .as("a runner would execute after refresh and could provision "
@@ -768,6 +782,55 @@ class AwsConfigTest {
     }
 
     @Nested
+    @DisplayName("Pre-provisioned topic resolution")
+    class PreProvisionedTopicResolution {
+
+        @Test
+        @DisplayName("finds an existing topic by listing and never issues a create request")
+        void findsAnExistingTopicWithoutCreatingIt() {
+            final SnsClient client = mock(SnsClient.class);
+            final String arn = "arn:aws:sns:" + REGION + ":000000000000:" + TOPIC;
+            when(client.listTopics()).thenReturn(ListTopicsResponse.builder()
+                    .topics(Topic.builder().topicArn(arn).build())
+                    .build());
+
+            final TopicArnResolver resolver =
+                    configuration().preProvisionedTopicArnResolver(client);
+
+            assertThat(resolver.resolveTopicArn(TOPIC).toString()).isEqualTo(arn);
+            verify(client).listTopics();
+            verify(client, never()).createTopic(any(CreateTopicRequest.class));
+        }
+
+        @Test
+        @DisplayName("refuses an absent topic instead of creating dead infrastructure")
+        void refusesAnAbsentTopicWithoutCreatingIt() {
+            final SnsClient client = mock(SnsClient.class);
+            when(client.listTopics()).thenReturn(ListTopicsResponse.builder().build());
+            final TopicArnResolver resolver =
+                    configuration().preProvisionedTopicArnResolver(client);
+
+            assertThat(org.assertj.core.api.Assertions.catchThrowable(
+                    () -> resolver.resolveTopicArn(TOPIC)))
+                    .isInstanceOf(TopicNotFoundException.class);
+            verify(client).listTopics();
+            verify(client, never()).createTopic(any(CreateTopicRequest.class));
+        }
+
+        @Test
+        @DisplayName("accepts an ARN directly without touching the client")
+        void acceptsAnArnWithoutAClientCall() {
+            final SnsClient client = mock(SnsClient.class);
+            final String arn = "arn:aws:sns:" + REGION + ":000000000000:" + TOPIC;
+
+            assertThat(configuration().preProvisionedTopicArnResolver(client)
+                    .resolveTopicArn(arn).toString()).isEqualTo(arn);
+
+            verifyNoInteractions(client);
+        }
+    }
+
+    @Nested
     @DisplayName("Container wiring")
     class ContainerWiring {
 
@@ -782,7 +845,8 @@ class AwsConfigTest {
                     .hasNotFailed()
                     .hasSingleBean(S3ClientCustomizer.class)
                     .hasSingleBean(SqsAsyncClientCustomizer.class)
-                    .hasSingleBean(SnsClientCustomizer.class));
+                    .hasSingleBean(SnsClientCustomizer.class)
+                    .hasSingleBean(TopicArnResolver.class));
         }
 
         @Test
@@ -797,11 +861,15 @@ class AwsConfigTest {
                                 + "addressing style from the integration's own settings, leaving two "
                                 + "sources of truth for one setting")
                         .isEmpty();
+                assertThat(context.getBean(SnsClient.class))
+                        .as("the resolver receives the harness client; AwsConfig builds none")
+                        .isSameAs(notificationClient);
                 assertThat(context.getBeanDefinitionNames())
-                        .as("three contributions, one per client, and nothing else has crept in")
+                        .as("three client customizers and the pre-provisioned topic resolver")
                         .containsOnlyOnce("batchStagingS3ClientCustomizer")
                         .containsOnlyOnce("singleAttemptSqsClientCustomizer")
-                        .containsOnlyOnce("jobNotificationSnsClientCustomizer");
+                        .containsOnlyOnce("jobNotificationSnsClientCustomizer")
+                        .containsOnlyOnce("preProvisionedTopicArnResolver");
             });
         }
     }
@@ -928,6 +996,9 @@ class AwsConfigTest {
             // any other path would receive an unresolved placeholder and refuse it at construction.
             runner.withUserConfiguration(JobSubmissionService.class)
                     .withBean(SqsOperations.class, () -> mock(SqsOperations.class))
+                    .withBean(JobSubmissionCoordinator.class, AwsConfigTest::passThroughCoordinator)
+                    .withBean(JobSubmissionOutbox.class, JobSubmissionOutbox::direct)
+                    .withBean(ObservationRegistry.class, () -> ObservationRegistry.NOOP)
                     .run(context -> {
                         assertThat(context)
                                 .as("the publisher must be satisfied by the very key paths the "
@@ -947,6 +1018,11 @@ class AwsConfigTest {
                 AwsProperties.Sqs.MESSAGE_GROUP_ID_PROPERTY, }) {
                 new ApplicationContextRunner().withUserConfiguration(JobSubmissionService.class)
                         .withBean(SqsOperations.class, () -> mock(SqsOperations.class))
+                        .withBean(
+                                JobSubmissionCoordinator.class,
+                                AwsConfigTest::passThroughCoordinator)
+                        .withBean(JobSubmissionOutbox.class, JobSubmissionOutbox::direct)
+                        .withBean(ObservationRegistry.class, () -> ObservationRegistry.NOOP)
                         .withPropertyValues(settingsWithPathRenamed(withheld))
                         .run(context -> assertThat(context)
                                 .as("supplying " + withheld + " under any other path must leave the "
@@ -971,5 +1047,9 @@ class AwsConfigTest {
                     Stream.of(renamedPath + "-renamed=" + QUEUE))
                     .toArray(String[]::new);
         }
+    }
+
+    private static JobSubmissionCoordinator passThroughCoordinator() {
+        return submission -> submission.get();
     }
 }

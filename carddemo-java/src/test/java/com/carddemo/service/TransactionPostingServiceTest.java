@@ -16,6 +16,10 @@
  */
 package com.carddemo.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -24,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -32,6 +37,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.data.domain.Sort;
 
@@ -47,6 +53,7 @@ import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.TransactionPostingService.PostingResult;
@@ -126,19 +133,90 @@ class TransactionPostingServiceTest {
 
     private TransactionCategoryBalanceRepository categoryBalanceRepository;
 
+    private RecordWriter recordWriter;
+
     private TransactionPostingService service;
+
+    private Logger serviceLogger;
+
+    private Level previousLogLevel;
+
+    private ListAppender<ILoggingEvent> logCapture;
 
     @BeforeEach
     void setUp() {
-        dailyTransactionRepository = Mockito.mock(DailyTransactionRepository.class);
+        dailyTransactionRepository = Mockito.mock(DailyTransactionRepository.class, invocation -> {
+            if (invocation.getMethod().getName()
+                    .equals("findByDalytranIdGreaterThanOrderByDalytranIdAsc")) {
+                final String cursor = invocation.getArgument(0);
+                final org.springframework.data.domain.Limit limit = invocation.getArgument(1);
+                return dailyTransactionRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "dalytranId"))
+                        .stream()
+                        .filter(record -> record.getDalytranId().compareTo(cursor) > 0)
+                        .limit(limit.max())
+                        .toList();
+            }
+            return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+        });
         transactionRepository = Mockito.mock(TransactionRepository.class);
         accountRepository = Mockito.mock(AccountRepository.class);
         cardCrossReferenceRepository = Mockito.mock(CardCrossReferenceRepository.class);
         categoryBalanceRepository = Mockito.mock(TransactionCategoryBalanceRepository.class);
+        recordWriter = Mockito.mock(RecordWriter.class, invocation -> {
+            if (invocation.getMethod().getName().equals("insert")) {
+                return invocation.getArgument(0);
+            }
+            return null;
+        });
         service = new TransactionPostingService(dailyTransactionRepository, transactionRepository,
                 accountRepository, cardCrossReferenceRepository, categoryBalanceRepository,
-                new AbendService(),
+                recordWriter, new AbendService(),
                 Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
+
+        serviceLogger = (Logger) LoggerFactory.getLogger(TransactionPostingService.class);
+        previousLogLevel = serviceLogger.getLevel();
+        serviceLogger.setLevel(Level.TRACE);
+        logCapture = new ListAppender<>();
+        logCapture.start();
+        serviceLogger.addAppender(logCapture);
+    }
+
+    @AfterEach
+    void tearDown() {
+        serviceLogger.detachAppender(logCapture);
+        serviceLogger.setLevel(previousLogLevel);
+        logCapture.stop();
+    }
+
+    private List<String> loggedMessages() {
+        return logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+    }
+
+    @Test
+    @DisplayName("rejected-record diagnostics use correlation tokens and publish no record content")
+    void rejectedRecordDiagnosticsAreRedacted() {
+        final String transactionId = "2022071900000001";
+        Mockito.when(cardCrossReferenceRepository.findById(UNKNOWN_CARD))
+                .thenReturn(Optional.empty());
+
+        service.postAll(List.of(recordOn(transactionId, "765.43", UNKNOWN_CARD)), ignored -> {
+            // The sink deliberately records nothing; this test observes only the service diagnostics.
+        });
+
+        assertThat(loggedMessages())
+                .anyMatch(message -> message.matches(
+                        "record rejected program=CBTRN02C "
+                                + "transactionRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                + "reasonCode=100 reason=INVALID CARD NUMBER FOUND"))
+                .anyMatch(message -> message.matches(
+                        "reject record queued program=CBTRN02C "
+                                + "transactionRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                + "reasonCode=100 reason=INVALID CARD NUMBER FOUND recordLength=430"))
+                .noneMatch(message -> message.contains(transactionId))
+                .noneMatch(message -> message.contains(UNKNOWN_CARD))
+                .noneMatch(message -> message.contains("765.43"))
+                .noneMatch(message -> message.contains("merchant"));
     }
 
     private static DailyTransaction record(final String id, final String amount) {
@@ -164,36 +242,54 @@ class TransactionPostingServiceTest {
         Mockito.when(cardCrossReferenceRepository.findById(CARD))
                 .thenReturn(Optional.of(new CardCrossReference(CARD, "000000001", ACCT)));
         Mockito.when(accountRepository.findById(ACCT)).thenReturn(Optional.of(acct));
-        Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.TRUE);
-        Mockito.when(accountRepository.save(ArgumentMatchers.any(Account.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.when(accountRepository.rewritePostingBalances(
+                        ArgumentMatchers.eq(ACCT),
+                        ArgumentMatchers.any(BigDecimal.class),
+                        ArgumentMatchers.any(BigDecimal.class),
+                        ArgumentMatchers.any(BigDecimal.class)))
+                .thenReturn(1);
         Mockito.when(categoryBalanceRepository
                         .findById(ArgumentMatchers.any(TransactionCategoryBalanceId.class)))
                 .thenReturn(Optional.of(new TransactionCategoryBalance(ACCT, TYPE, CAT,
                         new BigDecimal("0.00"))));
         Mockito.when(categoryBalanceRepository
-                        .save(ArgumentMatchers.any(TransactionCategoryBalance.class)))
+                        .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        Mockito.when(transactionRepository.save(ArgumentMatchers.any(Transaction.class)))
+        Mockito.when(recordWriter.insert(
+                        ArgumentMatchers.any(TransactionCategoryBalance.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.when(transactionRepository.insertAndFlush(ArgumentMatchers.any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     private Transaction capturePostedTransaction() {
         ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-        Mockito.verify(transactionRepository).save(captor.capture());
+        Mockito.verify(transactionRepository).insertAndFlush(captor.capture());
         return captor.getValue();
     }
 
     private Account captureSavedAccount() {
-        ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-        Mockito.verify(accountRepository).save(captor.capture());
-        return captor.getValue();
+        ArgumentCaptor<BigDecimal> currentBalance = ArgumentCaptor.forClass(BigDecimal.class);
+        ArgumentCaptor<BigDecimal> currentCycleCredit = ArgumentCaptor.forClass(BigDecimal.class);
+        ArgumentCaptor<BigDecimal> currentCycleDebit = ArgumentCaptor.forClass(BigDecimal.class);
+        Mockito.verify(accountRepository).rewritePostingBalances(ArgumentMatchers.eq(ACCT),
+                currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
+        return account(currentBalance.getValue().toPlainString(), "99999.00",
+                currentCycleCredit.getValue().toPlainString(),
+                currentCycleDebit.getValue().toPlainString(), "2099-01-01");
     }
 
     private TransactionCategoryBalance captureSavedCategoryBalance() {
         ArgumentCaptor<TransactionCategoryBalance> captor =
                 ArgumentCaptor.forClass(TransactionCategoryBalance.class);
-        Mockito.verify(categoryBalanceRepository).save(captor.capture());
+        Mockito.verify(categoryBalanceRepository).saveAndFlush(captor.capture());
+        return captor.getValue();
+    }
+
+    private TransactionCategoryBalance captureInsertedCategoryBalance() {
+        ArgumentCaptor<TransactionCategoryBalance> captor =
+                ArgumentCaptor.forClass(TransactionCategoryBalance.class);
+        Mockito.verify(recordWriter).insert(captor.capture());
         return captor.getValue();
     }
 
@@ -294,7 +390,12 @@ class TransactionPostingServiceTest {
         @DisplayName("the record still posts and the transaction is still written")
         void theTransactionIsStillWritten() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.FALSE);
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
 
             PostingResult result = service.post(record("T1", "10.00"));
 
@@ -305,18 +406,29 @@ class TransactionPostingServiceTest {
             assertThat(result.posted()).isTrue();
             assertThat(result.rejected()).isFalse();
             Mockito.verify(transactionRepository)
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
             Mockito.verify(categoryBalanceRepository)
-                    .save(ArgumentMatchers.any(TransactionCategoryBalance.class));
+                    .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
             Mockito.verify(accountRepository, Mockito.never())
                     .save(ArgumentMatchers.any(Account.class));
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.matches(
+                            "account rewrite found no row program=CBTRN02C "
+                                    + "accountRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                    + "reasonCode=109 reason=ACCOUNT RECORD NOT FOUND effect=none"))
+                    .noneMatch(message -> message.contains(ACCT));
         }
 
         @Test
         @DisplayName("a run containing one produces no reject record and returns zero")
         void aRunProducesNoRejectRecord() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.FALSE);
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
             List<PostingResult> sink = new ArrayList<>();
 
             PostingRunSummary summary = service.postAll(List.of(record("T1", "10.00")), sink::add);
@@ -464,9 +576,14 @@ class TransactionPostingServiceTest {
             InOrder ordered = Mockito.inOrder(categoryBalanceRepository, accountRepository,
                     transactionRepository);
             ordered.verify(categoryBalanceRepository)
-                    .save(ArgumentMatchers.any(TransactionCategoryBalance.class));
-            ordered.verify(accountRepository).save(ArgumentMatchers.any(Account.class));
-            ordered.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+                    .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
+            ordered.verify(accountRepository).rewritePostingBalances(
+                    ArgumentMatchers.eq(ACCT),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class));
+            ordered.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
             ordered.verifyNoMoreInteractions();
         }
     }
@@ -578,11 +695,16 @@ class TransactionPostingServiceTest {
 
             assertThat(result.posted()).isTrue();
             assertThat(result.reasonCode()).isZero();
-            TransactionCategoryBalance created = captureSavedCategoryBalance();
+            TransactionCategoryBalance created = captureInsertedCategoryBalance();
             assertThat(created.getTranCatBal()).isEqualByComparingTo(new BigDecimal("10.00"));
             assertThat(created.getTrancatAcctId()).isEqualTo(ACCT);
             assertThat(created.getTrancatTypeCd()).isEqualTo(TYPE);
             assertThat(created.getTrancatCd()).isEqualTo(CAT);
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.matches(
+                            "TCATBAL record not found for key : \\[REDACTED] "
+                                    + "ref=[0-9a-f]{24}\\.\\. Creating\\."))
+                    .noneMatch(message -> message.contains(ACCT));
         }
 
         @Test
@@ -828,7 +950,7 @@ class TransactionPostingServiceTest {
         @DisplayName("a failed transaction write abends carrying the legacy literal and status 31")
         void aFailedTransactionWriteAbends() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
-            Mockito.when(transactionRepository.save(ArgumentMatchers.any(Transaction.class)))
+            Mockito.when(transactionRepository.insertAndFlush(ArgumentMatchers.any(Transaction.class)))
                     .thenThrow(new DataAccessResourceFailureException("unreachable"));
 
             AbendException abend = catchThrowableOfType(AbendException.class,
@@ -857,7 +979,7 @@ class TransactionPostingServiceTest {
             assertThat(carried.operation()).isEqualTo("ERROR READING TRANSACTION BALANCE FILE");
             assertThat(carried.resourceName()).isEqualTo("TCATBALF");
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @Test
@@ -867,8 +989,8 @@ class TransactionPostingServiceTest {
             Mockito.when(categoryBalanceRepository
                             .findById(ArgumentMatchers.any(TransactionCategoryBalanceId.class)))
                     .thenReturn(Optional.empty());
-            Mockito.when(categoryBalanceRepository
-                            .save(ArgumentMatchers.any(TransactionCategoryBalance.class)))
+            Mockito.when(recordWriter
+                            .insert(ArgumentMatchers.any(TransactionCategoryBalance.class)))
                     .thenThrow(new DataAccessResourceFailureException("unreachable"));
 
             AbendException abend = catchThrowableOfType(AbendException.class,
@@ -883,7 +1005,7 @@ class TransactionPostingServiceTest {
         void aFailedCategoryBalanceRewriteAbends() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
             Mockito.when(categoryBalanceRepository
-                            .save(ArgumentMatchers.any(TransactionCategoryBalance.class)))
+                            .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class)))
                     .thenThrow(new DataAccessResourceFailureException("unreachable"));
 
             AbendException abend = catchThrowableOfType(AbendException.class,
@@ -925,7 +1047,7 @@ class TransactionPostingServiceTest {
             assertThat(summary.transactionsProcessed()).isEqualTo(1L);
             assertThat(summary.transactionsPosted()).isEqualTo(1L);
             Mockito.verify(transactionRepository, Mockito.times(1))
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @Test
@@ -1142,7 +1264,8 @@ class TransactionPostingServiceTest {
         void aFiveDigitYearIsRefused() {
             TransactionPostingService farFuture = new TransactionPostingService(
                     dailyTransactionRepository, transactionRepository, accountRepository,
-                    cardCrossReferenceRepository, categoryBalanceRepository, new AbendService(),
+                    cardCrossReferenceRepository, categoryBalanceRepository, recordWriter,
+                    new AbendService(),
                     Clock.fixed(Instant.parse("+10000-01-01T00:00:00Z"), ZoneOffset.UTC));
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
 
@@ -1156,7 +1279,7 @@ class TransactionPostingServiceTest {
     class Construction {
 
         @Test
-        @DisplayName("every one of the seven collaborators is mandatory")
+        @DisplayName("every one of the eight collaborators is mandatory")
         void everyCollaboratorIsMandatory() {
             Clock clock = Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC);
             AbendService abend = new AbendService();
@@ -1164,31 +1287,35 @@ class TransactionPostingServiceTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(null, transactionRepository,
                             accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             null, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, null, cardCrossReferenceRepository,
-                            categoryBalanceRepository, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, null,
-                            categoryBalanceRepository, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            null, abend, clock));
+                            null, recordWriter, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, null, clock));
+                            categoryBalanceRepository, null, abend, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, abend, null));
+                            categoryBalanceRepository, recordWriter, null, clock));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
+                            transactionRepository, accountRepository, cardCrossReferenceRepository,
+                            categoryBalanceRepository, recordWriter, abend, null));
         }
     }
 }

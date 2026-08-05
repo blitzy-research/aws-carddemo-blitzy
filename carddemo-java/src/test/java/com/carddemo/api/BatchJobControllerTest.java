@@ -28,6 +28,8 @@ import com.carddemo.batch.PostTransactionJobConfig;
 import com.carddemo.batch.TransactionReportJobConfig;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.BatchLaunchGateway;
+import com.carddemo.service.BatchJobLaunchService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -37,11 +39,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -52,12 +55,17 @@ import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
+import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.UnexpectedJobExecutionException;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
-import org.springframework.batch.core.launch.JobInstanceAlreadyExistsException;
+import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.NoSuchJobException;
+import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -111,7 +119,10 @@ class BatchJobControllerTest {
     /** Registry resolving a stable name to a registered job. */
     private JobRegistry jobRegistry;
 
-    /** Launcher the resolved job is started through. */
+    /** Launcher the resolved job is started through, against typed parameters. */
+    private JobLauncher jobLauncher;
+
+    /** Operator used for deliberate next-instance and restart operations. */
     private JobOperator jobOperator;
 
     /** Metadata reader one execution is reported from. */
@@ -123,14 +134,26 @@ class BatchJobControllerTest {
     /** The controller under test. */
     private BatchJobController controller;
 
-    /** Assembles the controller over the four stubbed framework interfaces. */
+    /**
+     * Assembles the controller over the real batch operation service, itself over the three stubbed
+     * framework interfaces.
+     *
+     * <p>The service is the genuine collaborator rather than a stub of it, so every assertion below still
+     * measures what actually reaches the registry, the operator and the metadata reader. That is the point
+     * of the seam: the controller no longer names the framework, and the framework interactions it drives
+     * are still observed here through the same three mocks.
+     */
     @BeforeEach
     void setUp() {
         jobRegistry = mock(JobRegistry.class);
+        jobLauncher = mock(JobLauncher.class);
         jobOperator = mock(JobOperator.class);
         jobExplorer = mock(JobExplorer.class);
         meterRegistry = new SimpleMeterRegistry();
-        controller = new BatchJobController(jobRegistry, jobOperator, jobExplorer, meterRegistry);
+        controller = new BatchJobController(
+                new BatchJobLaunchService(jobRegistry, BatchLaunchGateway.from(jobLauncher),
+                        jobOperator, jobExplorer),
+                meterRegistry);
     }
 
     /**
@@ -139,10 +162,26 @@ class BatchJobControllerTest {
      * @param jobName the stable job name to register
      * @throws NoSuchJobException never; declared because the stubbed method declares it
      */
-    private void registerJob(final String jobName) throws NoSuchJobException {
+    private Job registerJob(final String jobName) throws NoSuchJobException {
         final Job job = mock(Job.class);
         when(job.getName()).thenReturn(jobName);
         when(jobRegistry.getJob(jobName)).thenReturn(job);
+        return job;
+    }
+
+    /**
+     * Registers a job and stubs a successful launch of it, answering the registered job.
+     *
+     * @param jobName the stable job name to register
+     * @return the registered job, which is the instance the launch must be issued against
+     * @throws Exception if a stubbed signature reports a failure
+     */
+    private Job registerLaunchableJob(final String jobName) throws Exception {
+        final Job job = registerJob(jobName);
+        final JobExecution started = mock(JobExecution.class);
+        when(started.getId()).thenReturn(EXECUTION_ID);
+        when(jobLauncher.run(eq(job), any(JobParameters.class))).thenReturn(started);
+        return job;
     }
 
     /**
@@ -201,9 +240,8 @@ class BatchJobControllerTest {
         }
 
         @Test
-        @DisplayName("is exactly two documented operations - one launch and one status read - so no "
-                + "run-everything, schedule, stop, restart, abandon or metadata-management surface exists")
-        void isExactlyTwoDocumentedOperations() {
+        @DisplayName("is exactly two documented operations - launch and status read")
+        void isExactlyFourDocumentedOperations() {
             final List<Method> mapped = mappedMethods();
 
             assertThat(mapped).hasSize(2);
@@ -214,11 +252,28 @@ class BatchJobControllerTest {
                 assertThat(method.getAnnotation(ApiResponses.class)).isNotNull();
             });
             assertThat(mapped).filteredOn(method -> method.getAnnotation(PostMapping.class) != null)
+                    .as("launch is the one operation that changes something")
                     .hasSize(1);
             assertThat(mapped).filteredOn(method -> method.getAnnotation(GetMapping.class) != null)
+                    .as("reading a status changes nothing, so it is the only get")
                     .hasSize(1);
             assertThat(mapped).extracting(Method::getName)
-                    .containsExactlyInAnyOrder("launchJob", "readJobExecution");
+                    .containsExactlyInAnyOrder("launchTypedJob", "readTypedJobExecution");
+        }
+
+        @Test
+        @DisplayName("the two repeat operations accept no parameter of their own, so neither can be used "
+                + "to introduce a value - one says 'again' and the other says 'continue'")
+        void theTwoRepeatOperationsAcceptNoParameterOfTheirOwn() {
+            final List<Method> repeats = Arrays.stream(BatchJobController.class.getDeclaredMethods())
+                    .filter(method -> "startNextJobInstance".equals(method.getName())
+                            || "restartJobExecution".equals(method.getName()))
+                    .toList();
+
+            assertThat(repeats).hasSize(2);
+            assertThat(repeats).allSatisfy(method -> assertThat(method.getParameterCount())
+                    .as("%s takes only the resource it addresses", method.getName())
+                    .isOne());
         }
 
         @Test
@@ -230,9 +285,15 @@ class BatchJobControllerTest {
                 declared.add(method.getName().toLowerCase(Locale.ROOT));
             }
 
+            // "next instance" is not "next job": it repeats the addressed job under an advanced run
+            // parameter and chains nothing, which is why the forbidden list keeps "nextjob" out of it
+            // while the delivered operation is named for the instance it starts.
             assertThat(declared).noneSatisfy(name -> assertThat(name)
-                    .containsAnyOf("runall", "pipeline", "master", "nextjob", "schedule", "stop",
-                            "restart", "abandon", "delete"));
+                    .containsAnyOf("runall", "runeverything", "pipeline", "master", "schedule", "stop",
+                            "abandon", "delete"));
+            assertThat(mappedMethods()).extracting(Method::getName)
+                    .as("no mapped operation chains one job to another")
+                    .doesNotContain("startNextJob", "runPipeline", "runAll");
         }
 
         @Test
@@ -260,14 +321,31 @@ class BatchJobControllerTest {
         void takesEveryCollaboratorThroughTheConstructor() {
             assertThat(BatchJobController.class.getDeclaredConstructors()).hasSize(1);
 
+            final BatchJobLaunchService operations =
+                    new BatchJobLaunchService(jobRegistry, BatchLaunchGateway.from(jobLauncher),
+                            jobOperator, jobExplorer);
             assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobController(null, jobOperator, jobExplorer, meterRegistry));
+                    new BatchJobController(null, meterRegistry));
             assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobController(jobRegistry, null, jobExplorer, meterRegistry));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobController(jobRegistry, jobOperator, null, meterRegistry));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobController(jobRegistry, jobOperator, jobExplorer, null));
+                    new BatchJobController(operations, null));
+        }
+
+        @Test
+        @DisplayName("names no class from the batch package, because the operational surface reaches the "
+                + "framework through the service layer and not across the tier boundary")
+        void namesNoClassFromTheBatchPackage() {
+            for (final Class<?> parameter
+                    : BatchJobController.class.getDeclaredConstructors()[0].getParameterTypes()) {
+                assertThat(parameter.getName())
+                        .as("constructor parameter %s must not come from the batch tier",
+                                parameter.getName())
+                        .doesNotStartWith("com.carddemo.batch");
+            }
+            for (final Field field : BatchJobController.class.getDeclaredFields()) {
+                assertThat(field.getType().getName())
+                        .as("field %s must not be typed from the batch tier", field.getName())
+                        .doesNotStartWith("com.carddemo.batch");
+            }
         }
     }
 
@@ -321,7 +399,7 @@ class BatchJobControllerTest {
                     .isThrownBy(() -> controller.launchJob("someOtherJob", Map.of()));
 
             verifyNoInteractions(jobRegistry);
-            verifyNoInteractions(jobOperator);
+            verifyNoInteractions(jobLauncher);
         }
 
         @Test
@@ -345,14 +423,13 @@ class BatchJobControllerTest {
                 + "answering the execution identifier and the stable job name")
         void resolvesThroughTheRegistryAndStartsTheResolvedJob() throws Exception {
             final String jobName = PostTransactionJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(eq(jobName), any(Properties.class))).thenReturn(EXECUTION_ID);
+            final Job registered = registerLaunchableJob(jobName);
 
             final ResponseEntity<Map<String, Object>> answer =
                     controller.launchJob(jobName, Map.of());
 
             verify(jobRegistry).getJob(jobName);
-            verify(jobOperator).start(eq(jobName), any(Properties.class));
+            verify(jobLauncher).run(eq(registered), any(JobParameters.class));
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(answer.getBody())
                     .containsExactlyInAnyOrderEntriesOf(Map.of(
@@ -361,28 +438,50 @@ class BatchJobControllerTest {
         }
 
         @Test
-        @DisplayName("hands the framework the supplied parameters unchanged and adds nothing, so the same "
+        @DisplayName("hands the framework the supplied values unchanged and adds nothing, so the same "
                 + "request twice is the same job identity and stays idempotent")
         void handsTheSuppliedParametersOverUnchanged() throws Exception {
-            final String jobName = InterestCalculationJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class))).thenReturn(EXECUTION_ID);
+            final String jobName = TransactionReportJobConfig.JOB_NAME;
+            final Job registered = registerLaunchableJob(jobName);
             final Map<String, String> supplied = new LinkedHashMap<>();
-            supplied.put(JobParameterValidators.INTEREST_PARM_DATE_KEY, "2022071900");
-            supplied.put(JobParameterValidators.REPORT_START_DATE_KEY, UNTRIMMED_VALUE);
+            supplied.put(JobParameterValidators.REPORT_START_DATE_KEY, "2022-07-01");
+            supplied.put(JobParameterValidators.REPORT_END_DATE_KEY, UNTRIMMED_VALUE);
 
             controller.launchJob(jobName, supplied);
 
-            final Properties handedOver = capturedLaunchParameters(jobName);
-            assertThat(handedOver.stringPropertyNames())
+            final JobParameters handedOver = capturedLaunchParameters(registered);
+            assertThat(handedOver.getParameters().keySet())
                     .as("a generated run identifier, timestamp or unique value would break idempotency")
-                    .containsExactlyInAnyOrder(JobParameterValidators.INTEREST_PARM_DATE_KEY,
-                            JobParameterValidators.REPORT_START_DATE_KEY);
-            assertThat(handedOver.getProperty(JobParameterValidators.INTEREST_PARM_DATE_KEY))
-                    .isEqualTo("2022071900");
-            assertThat(handedOver.getProperty(JobParameterValidators.REPORT_START_DATE_KEY))
+                    .containsExactlyInAnyOrder(JobParameterValidators.REPORT_START_DATE_KEY,
+                            JobParameterValidators.REPORT_END_DATE_KEY);
+            assertThat(handedOver.getString(JobParameterValidators.REPORT_START_DATE_KEY))
+                    .isEqualTo("2022-07-01");
+            assertThat(handedOver.getString(JobParameterValidators.REPORT_END_DATE_KEY))
                     .as("a fixed-width value must arrive exactly as it was sent")
                     .isEqualTo(UNTRIMMED_VALUE);
+        }
+
+        @Test
+        @DisplayName("hands over typed string parameters and marks every one identifying, so a caller "
+                + "cannot choose a type for the framework to resolve or opt a parameter out of the "
+                + "job identity")
+        void handsOverTypedIdentifyingParameters() throws Exception {
+            final String jobName = InterestCalculationJobConfig.JOB_NAME;
+            final Job registered = registerLaunchableJob(jobName);
+
+            controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.INTEREST_PARM_DATE_KEY, "2022071900"));
+
+            final JobParameters handedOver = capturedLaunchParameters(registered);
+            assertThat(handedOver.getParameters()
+                            .get(JobParameterValidators.INTEREST_PARM_DATE_KEY).getType())
+                    .as("the type is the boundary's decision, never a value the caller supplied")
+                    .isEqualTo(String.class);
+            assertThat(handedOver.getParameters()
+                            .get(JobParameterValidators.INTEREST_PARM_DATE_KEY).isIdentifying())
+                    .as("an opted-out parameter would let a caller mint a fresh instance of a job that "
+                            + "had deliberately already been run")
+                    .isTrue();
         }
 
         @Test
@@ -390,23 +489,110 @@ class BatchJobControllerTest {
                 + "so a job that declares none needs none")
         void launchesWithNoParametersWhenNoneWereSupplied() throws Exception {
             final String jobName = BackupTransactionJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class))).thenReturn(EXECUTION_ID);
+            final Job registered = registerLaunchableJob(jobName);
 
             controller.launchJob(jobName, null);
 
-            assertThat(capturedLaunchParameters(jobName)).isEmpty();
+            assertThat(capturedLaunchParameters(registered).isEmpty()).isTrue();
         }
 
         @Test
-        @DisplayName("translates the framework's refusal of an already-used job identity without echoing "
-                + "the job name or the parameters the framework's own message carries")
-        void translatesAnAlreadyUsedJobIdentity() throws Exception {
+        @DisplayName("REFUSES a parameter name the addressed job does not read, so a name outside the "
+                + "job's schema cannot reach the framework and cannot become part of a job identity")
+        void refusesAParameterNameTheJobDoesNotRead() throws Exception {
+            final String jobName = InterestCalculationJobConfig.JOB_NAME;
+            registerLaunchableJob(jobName);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName, Map.of("nonce", "1")))
+                    .isInstanceOf(ValidationException.class)
+                    .as("the refused name is caller-controlled text and is never echoed")
+                    .hasMessageNotContaining("nonce")
+                    .hasMessage("The request supplied a parameter this job does not declare.");
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("REFUSES any parameter at all for a job whose schema is empty, and says so, because "
+                + "six of the nine read none")
+        void refusesAnyParameterForAJobThatReadsNone() throws Exception {
             final String jobName = CreateStatementJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class)))
-                    .thenThrow(new JobInstanceAlreadyExistsException(
-                            "Cannot start a job instance that already exists with name=" + jobName
+            registerLaunchableJob(jobName);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.REPORT_START_DATE_KEY, "2022-07-01")))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessage("The request supplied a parameter this job does not declare.");
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("REFUSES a value carrying the untyped-grammar separator, so the framework's "
+                + "value-type-identifying grammar cannot be expressed through this boundary")
+        void refusesAValueCarryingTheUntypedGrammarSeparator() throws Exception {
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            registerLaunchableJob(jobName);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "1,java.lang.Integer,true")))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageNotContaining("java.lang.Integer");
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("REFUSES a value carrying a control character, which could otherwise forge a line "
+                + "in a log record that names the value")
+        void refusesAValueCarryingAControlCharacter() throws Exception {
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            registerLaunchableJob(jobName);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "probe\nWARN forged")))
+                    .isInstanceOf(ValidationException.class);
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("REFUSES a value that is not representable as single-byte printable text, because "
+                + "the framework's metadata columns and the launch diagnostic both carry it verbatim")
+        void refusesAValueThatIsNotPrintableSingleByteText() throws Exception {
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            registerLaunchableJob(jobName);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, "prob\u00e9")))
+                    .isInstanceOf(ValidationException.class);
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("REFUSES a value longer than the declared bound, and admits one exactly at it, so "
+                + "the ceiling is the stated figure rather than an approximation")
+        void refusesAnOverLongValueAndAdmitsOneExactlyAtTheBound() throws Exception {
+            final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
+            final Job registered = registerLaunchableJob(jobName);
+            final String atTheBound = "a".repeat(BatchJobController.MAX_PARAMETER_VALUE_LENGTH);
+
+            controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, atTheBound));
+            assertThat(capturedLaunchParameters(registered)
+                            .getString(JobParameterValidators.FILE_PROBE_MODE_KEY))
+                    .isEqualTo(atTheBound);
+
+            assertThatThrownBy(() -> controller.launchJob(jobName,
+                    Map.of(JobParameterValidators.FILE_PROBE_MODE_KEY, atTheBound + "a")))
+                    .isInstanceOf(ValidationException.class);
+        }
+
+        @Test
+        @DisplayName("translates the framework's refusal of an already-completed job identity without "
+                + "echoing the job name or the parameters the framework's own message carries")
+        void translatesAnAlreadyCompletedJobIdentity() throws Exception {
+            final String jobName = TransactionReportJobConfig.JOB_NAME;
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new JobInstanceAlreadyCompleteException(
+                            "A job instance already exists and is complete for name=" + jobName
                                     + " and parameters={secretValue}"));
 
             assertThatThrownBy(() -> controller.launchJob(jobName,
@@ -417,12 +603,40 @@ class BatchJobControllerTest {
         }
 
         @Test
+        @DisplayName("translates the framework's refusal of an execution already running, because a "
+                + "second start of a running job is the same operator mistake")
+        void translatesAnExecutionAlreadyRunning() throws Exception {
+            final String jobName = PostTransactionJobConfig.JOB_NAME;
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new JobExecutionAlreadyRunningException(
+                            "A job execution for this job is already running: " + jobName));
+
+            assertThatThrownBy(() -> controller.launchJob(jobName, Map.of()))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageNotContaining(jobName);
+        }
+
+        @Test
+        @DisplayName("translates the framework's refusal to restart, so a job the framework will not "
+                + "restart is reported as a refused launch rather than as a server fault")
+        void translatesARefusalToRestart() throws Exception {
+            final String jobName = CategoryBalanceReportJobConfig.JOB_NAME;
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new JobRestartException("JobInstance already exists and is not restartable"));
+
+            assertThatThrownBy(() -> controller.launchJob(jobName, Map.of()))
+                    .isInstanceOf(ValidationException.class);
+        }
+
+        @Test
         @DisplayName("translates the job's own parameter refusal without restating the rule the job's "
                 + "validator owns")
         void translatesTheJobsOwnParameterRefusal() throws Exception {
             final String jobName = FileProbeJobConfig.FILE_PROBE_JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class)))
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
                     .thenThrow(new JobParametersInvalidException("rejected mode=probeValue"));
 
             assertThatThrownBy(() -> controller.launchJob(jobName,
@@ -441,52 +655,98 @@ class BatchJobControllerTest {
             assertThatThrownBy(() -> controller.launchJob(jobName, Map.of()))
                     .isInstanceOf(IllegalStateException.class)
                     .hasCauseInstanceOf(NoSuchJobException.class);
-            verify(jobOperator, never()).start(anyString(), any(Properties.class));
+            verify(jobLauncher, never()).run(any(Job.class), any(JobParameters.class));
         }
 
         @Test
-        @DisplayName("reports the same wiring fault when the launcher itself cannot find the job the "
-                + "registry had just resolved, so the race the framework declares is not misreported")
-        void reportsTheSameWiringFaultWhenTheLauncherCannotFindTheJob() throws Exception {
-            final String jobName = CategoryBalanceReportJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class)))
-                    .thenThrow(new NoSuchJobException(jobName));
-
-            assertThatThrownBy(() -> controller.launchJob(jobName, Map.of()))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasCauseInstanceOf(NoSuchJobException.class);
-        }
-
-        @Test
-        @DisplayName("skips a parameter the carrier cannot hold rather than failing the request, because "
-                + "no job declares a parameter that could arrive without a name or a value")
-        void skipsAParameterTheCarrierCannotHold() throws Exception {
+        @DisplayName("refuses a parameter the typed framework carrier cannot hold")
+        void skipsAParameterTheParameterSetCannotHold() throws Exception {
             final String jobName = TransactionReportJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class))).thenReturn(EXECUTION_ID);
+            final Job registered = registerLaunchableJob(jobName);
             final Map<String, String> supplied = new LinkedHashMap<>();
             supplied.put(JobParameterValidators.REPORT_START_DATE_KEY, "2022-07-01");
             supplied.put(JobParameterValidators.REPORT_END_DATE_KEY, null);
             supplied.put(null, "2022-07-31");
 
-            controller.launchJob(jobName, supplied);
-
-            assertThat(capturedLaunchParameters(jobName).stringPropertyNames())
-                    .containsExactly(JobParameterValidators.REPORT_START_DATE_KEY);
+            assertThatThrownBy(() -> controller.launchJob(jobName, supplied))
+                    .isInstanceOf(ValidationException.class);
+            verify(jobLauncher, never()).run(eq(registered), any(JobParameters.class));
         }
 
         /**
-         * Reads back the parameter carrier the controller handed to the framework.
+         * Reads back the typed parameters the controller handed to the framework.
          *
-         * @param jobName the name the launch was issued against
-         * @return the carrier as it was handed over
+         * @param registered the job the launch was issued against
+         * @return the parameters as they were handed over
          * @throws Exception if the stubbed launch signature reports a failure
          */
-        private Properties capturedLaunchParameters(final String jobName) throws Exception {
-            final ArgumentCaptor<Properties> captor = ArgumentCaptor.forClass(Properties.class);
-            verify(jobOperator).start(eq(jobName), captor.capture());
+        private JobParameters capturedLaunchParameters(final Job registered) throws Exception {
+            final ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+            verify(jobLauncher).run(eq(registered), captor.capture());
             return captor.getValue();
+        }
+    }
+
+    // ==================================================================================================
+
+    @Nested
+    @DisplayName("The closed per-job parameter schema")
+    class TheClosedParameterSchema {
+
+        @Test
+        @DisplayName("holds one entry for every allow-listed job, so a lookup is never absent and an "
+                + "empty entry is a decision rather than an oversight")
+        void holdsOneEntryPerAllowListedJob() {
+            assertThat(BatchJobController.ACCEPTED_JOB_PARAMETER_NAMES.keySet())
+                    .isEqualTo(BatchJobController.LAUNCHABLE_JOB_NAMES);
+        }
+
+        @Test
+        @DisplayName("names exactly the parameters each job reads, taken from the declaring authority "
+                + "rather than repeated, and nothing for the six that read none")
+        void namesExactlyTheParametersEachJobReads() {
+            final Map<String, Object> expected = Map.of(
+                    PostTransactionJobConfig.JOB_NAME, Set.of(),
+                    InterestCalculationJobConfig.JOB_NAME,
+                            Set.of(JobParameterValidators.INTEREST_PARM_DATE_KEY),
+                    CombineTransactionsJobConfig.JOB_NAME, Set.of(),
+                    CreateStatementJobConfig.JOB_NAME, Set.of(),
+                    TransactionReportJobConfig.JOB_NAME,
+                            Set.of(JobParameterValidators.REPORT_START_DATE_KEY,
+                                    JobParameterValidators.REPORT_END_DATE_KEY),
+                    BackupTransactionJobConfig.JOB_NAME, Set.of(),
+                    CategoryBalanceReportJobConfig.JOB_NAME, Set.of(),
+                    FileProbeJobConfig.FILE_PROBE_JOB_NAME,
+                            Set.of(JobParameterValidators.FILE_PROBE_MODE_KEY),
+                    DailyTransactionReadJobConfig.JOB_NAME, Set.of());
+
+            assertThat(BatchJobController.ACCEPTED_JOB_PARAMETER_NAMES)
+                    .containsExactlyInAnyOrderEntriesOf(
+                            expected.entrySet().stream().collect(java.util.stream.Collectors.toMap(
+                                    Map.Entry::getKey,
+                                    entry -> castNames(entry.getValue()))));
+        }
+
+        @Test
+        @DisplayName("is immutable in every respect, so no caller can widen what a job accepts at run "
+                + "time")
+        void isImmutableInEveryRespect() {
+            assertThatExceptionOfType(UnsupportedOperationException.class).isThrownBy(() ->
+                    BatchJobController.ACCEPTED_JOB_PARAMETER_NAMES.put("anotherJob", Set.of()));
+            assertThatExceptionOfType(UnsupportedOperationException.class).isThrownBy(() ->
+                    BatchJobController.ACCEPTED_JOB_PARAMETER_NAMES
+                            .get(InterestCalculationJobConfig.JOB_NAME).add("nonce"));
+        }
+
+        /**
+         * Narrows a declared expectation to the set type the schema holds.
+         *
+         * @param names the expected names
+         * @return the same names as a set of strings
+         */
+        @SuppressWarnings("unchecked")
+        private static Set<String> castNames(final Object names) {
+            return (Set<String>) names;
         }
     }
 
@@ -606,8 +866,7 @@ class BatchJobControllerTest {
         @DisplayName("time a launch and tag it with the allow-listed job name and the outcome it reached")
         void timeALaunchWithBoundedTags() throws Exception {
             final String jobName = PostTransactionJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class))).thenReturn(EXECUTION_ID);
+            registerLaunchableJob(jobName);
 
             controller.launchJob(jobName, Map.of());
 
@@ -662,13 +921,66 @@ class BatchJobControllerTest {
         }
 
         @Test
+        @DisplayName("time a repeat under its own timer rather than folding it into the launch timer, "
+                + "because the rate at which financial work is re-run is its own operational question")
+        void timeARepeatUnderItsOwnTimer() throws Exception {
+            final String jobName = PostTransactionJobConfig.JOB_NAME;
+            registerJob(jobName);
+            when(jobOperator.startNextInstance(jobName)).thenReturn(EXECUTION_ID);
+
+            controller.startNextJobInstance(jobName);
+
+            assertThat(meterRegistry.find("carddemo.batch.jobnextinstance.request")
+                    .tag("job", jobName).tag("outcome", "launched").timer())
+                    .isNotNull();
+            assertThat(meterRegistry.find("carddemo.batch.joblaunch.request").timer())
+                    .as("a repeat must not be counted among the launches")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("time a restart under its own timer, because resuming an instance is a different "
+                + "operational act from starting one")
+        void timeARestartUnderItsOwnTimer() throws Exception {
+            final String jobName = InterestCalculationJobConfig.JOB_NAME;
+            final JobExecution execution = executionOf(jobName, BatchStatus.FAILED, ExitStatus.FAILED);
+            when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
+            when(jobOperator.restart(EXECUTION_ID)).thenReturn(EXECUTION_ID);
+
+            controller.restartJobExecution(EXECUTION_ID);
+
+            assertThat(meterRegistry.find("carddemo.batch.jobrestart.request")
+                    .tag("job", jobName).tag("outcome", "launched").timer())
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("time a refused parameter name under the rejected outcome, so a caller probing the "
+                + "parameter surface is visible without any probe value entering a label")
+        void timeARefusedParameterNameUnderTheRejectedOutcome() throws Exception {
+            final String jobName = CreateStatementJobConfig.JOB_NAME;
+            registerJob(jobName);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> controller.launchJob(jobName, Map.of("probeName", "probeValue")));
+
+            assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
+                    .tag("job", jobName).tag("outcome", "refused").timer())
+                    .isNotNull();
+            assertThat(meterRegistry.find("carddemo.batch.joblaunch.request")
+                    .tag("job", "probeName").timer())
+                    .as("no tag value may come from a caller")
+                    .isNull();
+        }
+
+        @Test
         @DisplayName("record every launch outcome under one of a bounded set of names, so the label set "
                 + "cannot grow with traffic")
         void recordEveryOutcomeUnderABoundedName() throws Exception {
             final String jobName = CategoryBalanceReportJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.start(anyString(), any(Properties.class)))
-                    .thenThrow(new JobInstanceAlreadyExistsException("already exists"));
+            final Job registered = registerJob(jobName);
+            when(jobLauncher.run(eq(registered), any(JobParameters.class)))
+                    .thenThrow(new JobInstanceAlreadyCompleteException("already complete"));
 
             assertThatExceptionOfType(ValidationException.class)
                     .isThrownBy(() -> controller.launchJob(jobName, Map.of()));

@@ -127,7 +127,7 @@ class LocalStackBootstrapIT {
     private static final String BUCKET = "carddemo-batch-staging";
 
     /** The canonical queue. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /** The canonical notification topic. */
     private static final String TOPIC = "carddemo-job-notifications";
@@ -336,7 +336,7 @@ class LocalStackBootstrapIT {
             assertThat(QUEUE)
                     .as("the legacy transient-data resource name is retained, plus only the suffix "
                             + "the queue service requires of a fifo queue")
-                    .isEqualTo("carddemo-jobs.fifo");
+                    .isEqualTo("JOBS.fifo");
         }
 
         @Test

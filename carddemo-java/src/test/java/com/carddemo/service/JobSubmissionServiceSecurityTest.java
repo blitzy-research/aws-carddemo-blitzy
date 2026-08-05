@@ -123,10 +123,18 @@ class JobSubmissionServiceSecurityTest {
     // CONFIGURATION THE SERVICE IS CONSTRUCTED WITH
 
     /** A first-in-first-out queue name, whose suffix the service requires. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The single stable message group that carries a submission, which is what preserves order. */
     private static final String MESSAGE_GROUP_ID = "JOBS";
+
+    /**
+     * A submission identity for the outcome record's own value assertions.
+     *
+     * <p>Authored here rather than taken from the service: the outcome carries the identity so that a
+     * caller can retry the submission under it, and the record's own guards are what this file asserts.
+     */
+    private static final String RESULT_SUBMISSION_ID = "2024-01-01_2024-01-31_probe";
 
     // INDEPENDENTLY WRITTEN CONTRACT VALUES
 
@@ -420,19 +428,16 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("keeps the reporting period legible in the submission identity, so a queued submission can be read back to the period that asked for it")
-        void keepsTheReportingPeriodLegibleInTheSubmissionIdentity() {
-            // The dates are what the identity is made of, which is deliberate on two counts: it makes
-            // the derivation a pure function of the request, and it keeps the identity legible,
-            // because the identity appears in every diagnostic this class emits and an opaque one is
-            // worth less operationally than one that names its reporting period.
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+        @DisplayName("keeps the unique submission identity separate from the reporting-period payload")
+        void keepsTheSubmissionIdentitySeparateFromTheReportingPeriod() {
+            final JobSubmissionService.SubmissionResult result =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
 
             for (final String deduplicationId : deduplicationIds()) {
                 assertThat(deduplicationId)
-                        .as("the identity must carry both date slots")
-                        .contains(START_DATE)
-                        .contains(END_DATE);
+                        .startsWith(result.submissionId() + EXPECTED_ORDINAL_SEPARATOR)
+                        .contains(START_DATE, END_DATE)
+                        .doesNotContainAnyWhitespaces();
             }
         }
     }
@@ -468,18 +473,14 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("replaying one request reproduces every deduplication identifier, so the queue service completes the stream instead of doubling it")
+        @DisplayName("retrying with the returned identity reproduces every deduplication identifier")
         void replayingOneRequestReproducesEveryDeduplicationIdentifier() {
-            // This is the property a random identity would destroy. A caller whose first pass stopped
-            // part way - because a write was refused - repeats the request and reissues exactly the
-            // identifiers the first pass used, so the cards that already landed are collapsed and the
-            // ones that never did are added. With a per-call nonce every replay would look like new
-            // work and the queue would hold two partial streams.
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
             final List<String> firstPass = List.copyOf(deduplicationIds());
 
             attempts.clear();
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+            service.submitTransactionReportJob(first.submissionId(), START_DATE, END_DATE);
 
             assertThat(firstPass)
                     .as("the first pass's identifiers")
@@ -487,6 +488,22 @@ class JobSubmissionServiceSecurityTest {
             assertThat(deduplicationIds())
                     .as("the replay must reproduce the first pass card for card")
                     .containsExactlyElementsOf(firstPass);
+        }
+
+        @Test
+        @DisplayName("two requests for one period share NOT ONE deduplication identifier, so neither can be discarded behind the other's success")
+        void twoRequestsForOnePeriodShareNoDeduplicationIdentifier() {
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final List<String> firstPass = List.copyOf(deduplicationIds());
+
+            attempts.clear();
+            service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(deduplicationIds())
+                    .as("the appending legacy queue ran the job a second time; suppressing it is the "
+                            + "parity break, not permitting it")
+                    .hasSameSizeAs(firstPass)
+                    .doesNotContainAnyElementsOf(firstPass);
         }
 
         @Test
@@ -533,11 +550,8 @@ class JobSubmissionServiceSecurityTest {
         }
 
         @Test
-        @DisplayName("many repeated submissions of one request stay on one set of identifiers, because the derivation consults no clock and no random source")
-        void manyRepeatedSubmissionsStayOnOneSetOfIdentifiers() {
-            // A single repeat could pass by luck if the derivation varied on something coarse, such
-            // as a clock with second resolution. Twenty back-to-back submissions is what rules that
-            // out in the other direction: the identifiers must not drift at all.
+        @DisplayName("many legitimate repeats of one period each receive their own identifier set")
+        void manyRepeatedSubmissionsReceiveDistinctIdentifierSets() {
             final int repeats = 20;
 
             for (int repeat = 0; repeat < repeats; repeat++) {
@@ -546,8 +560,8 @@ class JobSubmissionServiceSecurityTest {
 
             assertThat(attempts).hasSize(repeats * EXPECTED_CARD_COUNT);
             assertThat(new LinkedHashSet<>(deduplicationIds()))
-                    .as("twenty repeats of one request must use exactly one set of identifiers")
-                    .hasSize(EXPECTED_CARD_COUNT);
+                    .as("no legitimate repeat may be hidden by the FIFO deduplication window")
+                    .hasSize(repeats * EXPECTED_CARD_COUNT);
         }
 
         @Test
@@ -930,9 +944,9 @@ class JobSubmissionServiceSecurityTest {
             // Every printable value the queue service itself accepts must still construct, so the
             // rule is a control-character rule and not an alphanumeric one: a queue URL and a queue
             // ARN both carry punctuation this guard has to let through.
-            for (final String legitimate : List.of("carddemo-jobs.fifo",
-                    "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs.fifo",
-                    "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo")) {
+            for (final String legitimate : List.of("JOBS.fifo",
+                    "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS.fifo",
+                    "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo")) {
                 assertThat(new JobSubmissionService(sqsOperations, legitimate, MESSAGE_GROUP_ID))
                         .as("the legitimate configured value [%s] must construct", legitimate)
                         .isNotNull();
@@ -1524,12 +1538,12 @@ class JobSubmissionServiceSecurityTest {
         void refusesANegativeCountOnEitherSide() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("a negative requested count must be refused")
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(-1, 0, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, -1, 0, false, ""))
                     .withMessageContaining("cardsRequested");
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .as("a negative published count must be refused")
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(1, -1, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 1, -1, false, ""))
                     .withMessageContaining("cardsPublished");
         }
 
@@ -1537,7 +1551,7 @@ class JobSubmissionServiceSecurityTest {
         @DisplayName("refuses more cards published than requested, which would be an accounting error rather than a queue outcome")
         void refusesMoreCardsPublishedThanRequested() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(1, 2, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 1, 2, false, ""))
                     .withMessageContaining("cardsPublished");
         }
 
@@ -1546,15 +1560,15 @@ class JobSubmissionServiceSecurityTest {
         void normalisesTheFailureText() {
             // A failed result must always be able to tell an operator what happened, and a clean
             // result must never carry text that suggests otherwise.
-            assertThat(new JobSubmissionService.SubmissionResult(17, 4, true, "").failureMessage())
+            assertThat(new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 17, 4, true, "").failureMessage())
                     .as("an empty text on a failed result is replaced by the frozen text")
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
 
-            assertThat(new JobSubmissionService.SubmissionResult(17, 4, true, null).failureMessage())
+            assertThat(new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 17, 4, true, null).failureMessage())
                     .as("a null text on a failed result is replaced by the frozen text")
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
 
-            assertThat(new JobSubmissionService.SubmissionResult(17, 17, false, "ignored")
+            assertThat(new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 17, 17, false, "ignored")
                     .failureMessage())
                     .as("text on a clean result is cleared")
                     .isEmpty();
@@ -1564,9 +1578,9 @@ class JobSubmissionServiceSecurityTest {
         @DisplayName("reports complete, partial and neither, so the three outcomes are distinguishable without inspecting the counts")
         void reportsCompletePartialAndNeither() {
             final JobSubmissionService.SubmissionResult complete =
-                    new JobSubmissionService.SubmissionResult(17, 17, false, "");
+                    new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 17, 17, false, "");
             final JobSubmissionService.SubmissionResult partial =
-                    new JobSubmissionService.SubmissionResult(17, 4, true, "");
+                    new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, 17, 4, true, "");
 
             assertThat(complete.complete()).isTrue();
             assertThat(complete.partial()).isFalse();

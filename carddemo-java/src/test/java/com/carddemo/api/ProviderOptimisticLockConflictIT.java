@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
@@ -235,6 +236,7 @@ final class ProviderOptimisticLockConflictIT extends AbstractPostgresIT {
     private static ApplicationContextRunner runner() {
         return new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class,
+                        JdbcTemplateAutoConfiguration.class,
                         HibernateJpaAutoConfiguration.class))
                 .withUserConfiguration(RepositoriesUnderTest.class)
                 .withPropertyValues(

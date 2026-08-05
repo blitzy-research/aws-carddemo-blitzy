@@ -378,7 +378,7 @@ class AbstractCobolStepBaselineTest {
 
         @Test
         @DisplayName("reports the same summary the tasklet entry point drives")
-        void tellsTheTaskletTheStepIsFinished() {
+        void tellsTheTaskletTheStepIsFinished() throws Exception {
             final RecordingStep step = step().withRecords("only");
 
             final RepeatStatus status = step.execute(null, null);

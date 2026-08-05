@@ -19,6 +19,7 @@ package com.carddemo.service;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -99,7 +100,7 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 @DisplayName("JobSubmissionService: the estate's only online-to-batch bridge, onto a FIFO queue")
 class JobSubmissionServiceTest {
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
 
@@ -645,18 +646,55 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("neither a delivery delay nor a message header is ever set, because neither has a legacy antecedent and a delay would add a timing characteristic the migration must not inherit")
-        void neitherADelayNorAHeaderIsEverSet() {
+        @DisplayName("no delivery delay is ever set, because a delay has no legacy antecedent and would add a timing characteristic the migration must not inherit")
+        void noDeliveryDelayIsEverSet() {
             queueAcceptsEveryCard();
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
 
             assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
+                    .allSatisfy(publish ->
+                            assertThat(publish.delaySettings).as("delivery delays set").isZero());
+        }
+
+        @Test
+        @DisplayName("the message attributes are set exactly once per card and hold exactly the three of the reassembly envelope, which is what lets a consumer undo an interleaving no process-local lock can prevent across instances")
+        void theOnlyMessageAttributesAreTheThreeOfTheEnvelope() {
+            // This nest used to assert that NO attribute was ever set, on the reasoning that the
+            // eighty-byte body was the whole of what crossed the bridge. The submission lock is a
+            // monitor in one heap, so two instances publishing at once interleave their cards in the one
+            // message group and a first-in-first-out queue preserves the interleaving; the envelope is
+            // the remedy that needs no coordination service, and it is enrolled here by name rather than
+            // the guard being dropped.
+            queueAcceptsEveryCard();
+
+            final JobSubmissionService.SubmissionResult result = JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(capturedPublishes(ORACLE_CARD_COUNT)).as("recorded publishes")
                     .allSatisfy(publish -> {
-                        assertThat(publish.delaySettings).as("delivery delays set").isZero();
-                        assertThat(publish.headerSettings).as("single headers set").isZero();
-                        assertThat(publish.headerMapSettings).as("header maps set").isZero();
+                        assertThat(publish.headerSettings)
+                                .as("no attribute is set one at a time")
+                                .isZero();
+                        assertThat(publish.headerMapSettings)
+                                .as("the envelope is set once, as one map")
+                                .isOne();
+                        assertThat(publish.headerValues)
+                                .as("exactly the three enrolled envelope attributes")
+                                .containsOnlyKeys(JobSubmissionService.SUBMISSION_ID_HEADER,
+                                        JobSubmissionService.CARD_ORDINAL_HEADER,
+                                        JobSubmissionService.CARD_COUNT_HEADER);
+                        assertThat(publish.headerValues
+                                        .get(JobSubmissionService.SUBMISSION_ID_HEADER))
+                                .as("every card names the submission the outcome reports")
+                                .isEqualTo(result.submissionId());
+                        assertThat(publish.headerValues.get(JobSubmissionService.CARD_COUNT_HEADER))
+                                .as("every card declares the whole stream's length")
+                                .isEqualTo(Integer.toString(ORACLE_CARD_COUNT));
                     });
+            assertThat(payloadsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("the body is still the bare card, so the envelope added nothing to the payload")
+                    .allSatisfy(card -> assertThat(encodedWidth(card)).isEqualTo(ORACLE_CARD_WIDTH));
         }
     }
 
@@ -1006,16 +1044,35 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("replaying the same request reproduces the identifiers exactly, because a random identity would defeat the idempotency the deduplication identifier exists to give")
-        void replayingTheSameRequestReproducesTheIdentifiers() {
-            // The derived identity is a pure function of the request. A caller that repeats an
-            // interrupted submission therefore reissues the identifiers the first pass used, so the
-            // queue collapses the cards that already landed and the stream is completed rather than
-            // doubled behind itself. A per-call nonce would make every replay look like new work.
+        @DisplayName("retrying with the returned identity reproduces the identifiers exactly")
+        void retryingWithTheReturnedIdentityReproducesTheIdentifiers() {
             queueAcceptsEveryCard();
 
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult first =
+                    JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service.submitTransactionReportJob(
+                    first.submissionId(), START_DATE, END_DATE);
+
+            final List<String> identifiers =
+                    deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
+            final List<String> firstPass = identifiers.subList(0, ORACLE_CARD_COUNT);
+            final List<String> second =
+                    identifiers.subList(ORACLE_CARD_COUNT, identifiers.size());
+
+            assertThat(second).as("a retry reproduces every identifier card for card")
+                    .containsExactlyElementsOf(firstPass);
+        }
+
+        @Test
+        @DisplayName("replaying under the identity the outcome reports reproduces the identifiers exactly, which is the idempotency the deduplication identifier exists to give")
+        void replayingUnderTheReportedIdentityReproducesTheIdentifiers() {
+            queueAcceptsEveryCard();
+
+            final JobSubmissionService.SubmissionResult outcome = JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(START_DATE, END_DATE);
+            JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(outcome.submissionId(), START_DATE, END_DATE);
 
             final List<String> identifiers =
                     deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT * 2));
@@ -1025,6 +1082,10 @@ class JobSubmissionServiceTest {
 
             assertThat(replay).as("the replay reproduces the first pass card for card")
                     .containsExactlyElementsOf(firstPass);
+            assertThat(outcome.submissionId())
+                    .as("the reported identity is what the identifiers are composed from")
+                    .isEqualTo(firstPass.get(0).substring(0,
+                            firstPass.get(0).lastIndexOf(ORACLE_ORDINAL_SEPARATOR)));
         }
 
         @Test
@@ -1049,12 +1110,12 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("a second submission of one period is distinguished by a caller-supplied identity, not by anything this class mints, so the append behaviour stays a caller decision")
-        void aSecondSubmissionOfOnePeriodIsDistinguishedByTheCaller() {
+        @DisplayName("a caller-supplied identity is also distinct from a minted one, so naming a submission apart still works alongside minting")
+        void aCallerSuppliedIdentityIsDistinctFromAMintedOne() {
             // The legacy queue appended unconditionally, so an operator who wanted the same period
-            // again got a second job. That remains reachable - but it is expressed by the caller
-            // naming the two submissions apart, which is a visible act, rather than by this class
-            // answering "always new" on the caller's behalf.
+            // again got a second job. Minting a nonce is what makes that the default; naming a
+            // submission apart remains available for a caller that wants to choose the identity, and
+            // the two must not collide.
             queueAcceptsEveryCard();
 
             JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
@@ -1073,19 +1134,21 @@ class JobSubmissionServiceTest {
         }
 
         @Test
-        @DisplayName("the derived identity reads back to the reporting period it submits, so a diagnostic naming an identity names the period too")
-        void theDerivedIdentityReadsBackToTheReportingPeriod() {
+        @DisplayName("the minted identity is carried in the result and does not collapse onto the period")
+        void theMintedIdentityIsCarriedSeparatelyFromThePeriod() {
             queueAcceptsEveryCard();
 
-            JobSubmissionServiceTest.this.service.submitTransactionReportJob(START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult result =
+                    JobSubmissionServiceTest.this.service
+                            .submitTransactionReportJob(START_DATE, END_DATE);
 
             final String first = deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT)).getFirst();
             final String identity = first.substring(0,
                     first.lastIndexOf(ORACLE_ORDINAL_SEPARATOR));
 
-            assertThat(identity).as("the derived identity")
-                    .contains(START_DATE)
-                    .contains(END_DATE)
+            assertThat(identity).as("the minted identity")
+                    .isEqualTo(result.submissionId())
+                    .startsWith(START_DATE + "_" + END_DATE + "_")
                     .doesNotContainAnyWhitespaces();
         }
 
@@ -1123,6 +1186,91 @@ class JobSubmissionServiceTest {
                     .withMessageContaining("submissionId");
 
             assertNothingWasPublished();
+        }
+
+        @Test
+        @DisplayName("the minting method itself is unique per call, which is the property the whole "
+                + "identity contract rests on and the one a date-only derivation lacked")
+        void theMintingMethodIsUniquePerCall() {
+            final int mintings = 200;
+            final List<String> minted = new ArrayList<>(mintings);
+            for (int minting = 0; minting < mintings; minting++) {
+                minted.add(JobSubmissionService.newSubmissionIdentity(START_DATE, END_DATE));
+            }
+
+            assertThat(minted)
+                    .as("two hundred mintings of one period, all distinct: a coarse source such as a "
+                            + "second-resolution clock would collide here")
+                    .doesNotHaveDuplicates()
+                    .allSatisfy(identity -> assertThat(identity)
+                            .startsWith(START_DATE + "_" + END_DATE + "_")
+                            .doesNotContainAnyWhitespaces());
+        }
+
+        @Test
+        @DisplayName("the minting method condenses the whitespace a fixed-width slot may carry, because "
+                + "a deduplication identifier may hold none")
+        void theMintingMethodCondensesSlotPadding() {
+            final String padded = JobSubmissionService.newSubmissionIdentity(
+                    "  " + START_DATE, END_DATE + "  ");
+
+            assertThat(padded)
+                    .doesNotContainAnyWhitespaces()
+                    .startsWith(START_DATE + "_" + END_DATE + "_");
+        }
+
+        @Test
+        @DisplayName("a minted identity still leaves room for the largest card ordinal inside the length "
+                + "the queue service accepts, and the bound is checked when it is minted")
+        void aMintedIdentityFitsTheDeduplicationBound() {
+            final String identity = JobSubmissionService.newSubmissionIdentity(START_DATE, END_DATE);
+
+            assertThat(identity.length() + ORACLE_ORDINAL_SEPARATOR.length()
+                    + String.valueOf(ORACLE_CARD_COUNT).length())
+                    .as("identity plus separator plus the largest ordinal")
+                    .isLessThanOrEqualTo(ORACLE_DEDUPLICATION_ID_MAX_LENGTH);
+        }
+
+        @Test
+        @DisplayName("the minting method refuses an absent date rather than composing an identity around "
+                + "a missing period")
+        void theMintingMethodRefusesAnAbsentDate() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionService.newSubmissionIdentity(null, END_DATE))
+                    .withMessageContaining("startDate");
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> JobSubmissionService.newSubmissionIdentity(START_DATE, null))
+                    .withMessageContaining("endDate");
+        }
+
+        @Test
+        @DisplayName("the outcome reports the identity it published under, which is the only way a "
+                + "caller that did not mint it can retry the submission")
+        void theOutcomeReportsTheIdentityItPublishedUnder() {
+            queueAcceptsEveryCard();
+
+            final JobSubmissionService.SubmissionResult minted = JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(minted.submissionId())
+                    .as("the minted identity travels back on the outcome")
+                    .startsWith(START_DATE + "_" + END_DATE + "_");
+            assertThat(deduplicationIdsOf(capturedPublishes(ORACLE_CARD_COUNT)))
+                    .as("every published identifier is that identity plus the card's ordinal")
+                    .allSatisfy(identifier -> assertThat(identifier)
+                            .startsWith(minted.submissionId() + ORACLE_ORDINAL_SEPARATOR));
+        }
+
+        @Test
+        @DisplayName("a caller-supplied identity is reported back verbatim, so the retry path is the "
+                + "same whether the caller minted the identity or the bridge did")
+        void aCallerSuppliedIdentityIsReportedBackVerbatim() {
+            queueAcceptsEveryCard();
+
+            assertThat(JobSubmissionServiceTest.this.service
+                    .submitTransactionReportJob(CALLER_SUBMISSION_ID, START_DATE, END_DATE)
+                    .submissionId())
+                    .isEqualTo(CALLER_SUBMISSION_ID);
         }
     }
 
@@ -1584,7 +1732,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a complete outcome is complete, is not partial and carries no failure text")
         void aCompleteOutcomeCarriesNoFailureText() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
+                    new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
                             false, EMPTY_TEXT);
 
             assertThat(result.complete()).as("complete indicator").isTrue();
@@ -1596,7 +1744,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a partial outcome is a failure that published something, so it is partial and not complete")
         void aPartialOutcomeIsAFailureThatPublishedSomething() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT,
+                    new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT,
                             MID_STREAM_FAILING_ORDINAL - FIRST_CARD_ORDINAL, true,
                             ORACLE_FAILURE_TEXT);
 
@@ -1609,7 +1757,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a failure that published nothing is neither complete nor partial, which is how a first-card refusal is distinguished from a mid-stream one")
         void aFailureThatPublishedNothingIsNeitherCompleteNorPartial() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true,
+                    new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT, 0, true,
                             ORACLE_FAILURE_TEXT);
 
             assertThat(result.complete()).as("complete indicator").isFalse();
@@ -1620,9 +1768,9 @@ class JobSubmissionServiceTest {
         @Test
         @DisplayName("a failed outcome given no text takes the frozen literal, so the operator-facing text can never be empty on a failure")
         void aFailedOutcomeGivenNoTextTakesTheFrozenLiteral() {
-            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true,
+            assertThat(new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT, 0, true,
                     EMPTY_TEXT).failureMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
-            assertThat(new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, 0, true, null)
+            assertThat(new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT, 0, true, null)
                     .failureMessage()).as("failure text").isEqualTo(ORACLE_FAILURE_TEXT);
         }
 
@@ -1630,7 +1778,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a successful outcome discards any text it was given, so a success can never be reported carrying a failure message")
         void aSuccessfulOutcomeDiscardsAnyTextItWasGiven() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
+                    new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT, ORACLE_CARD_COUNT,
                             false, ORACLE_FAILURE_TEXT);
 
             assertThat(result.failureMessage()).as("failure text").isEmpty();
@@ -1641,7 +1789,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a negative requested count is refused, because a submission cannot ask for fewer than no cards")
         void aNegativeRequestedCountIsRefused(final int requested) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(requested, 0, false,
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, requested, 0, false,
                             EMPTY_TEXT))
                     .withMessageContaining("cardsRequested");
         }
@@ -1650,7 +1798,7 @@ class JobSubmissionServiceTest {
         @DisplayName("a negative published count is refused, because a card cannot be un-published")
         void aNegativePublishedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(ORACLE_CARD_COUNT,
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, ORACLE_CARD_COUNT,
                             -1, false, EMPTY_TEXT))
                     .withMessageContaining("cardsPublished");
         }
@@ -1659,9 +1807,37 @@ class JobSubmissionServiceTest {
         @DisplayName("publishing more cards than were requested is refused, because the emitting loop cannot outrun its own stream")
         void publishingMoreThanWasRequestedIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(FIRST_CARD_ORDINAL,
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID, FIRST_CARD_ORDINAL,
                             ORACLE_CARD_COUNT, false, EMPTY_TEXT))
                     .withMessageContaining("must not");
+        }
+
+        @Test
+        @DisplayName("the outcome carries the identity it was built with, which is what a caller keeps in order to retry the submission")
+        void theOutcomeCarriesTheIdentityItWasBuiltWith() {
+            assertThat(new JobSubmissionService.SubmissionResult(CALLER_SUBMISSION_ID,
+                    ORACLE_CARD_COUNT, ORACLE_CARD_COUNT, false, EMPTY_TEXT).submissionId())
+                    .as("reported identity")
+                    .isEqualTo(CALLER_SUBMISSION_ID);
+        }
+
+        @ParameterizedTest(name = "identity [{0}]")
+        @ValueSource(strings = {EMPTY_TEXT, "   ", "SUB MISSION"})
+        @DisplayName("an outcome carrying an unusable identity is refused, because an identity a caller cannot retry under is not an identity")
+        void anOutcomeCarryingAnUnusableIdentityIsRefused(final String unusable) {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(unusable,
+                            ORACLE_CARD_COUNT, 0, true, ORACLE_FAILURE_TEXT))
+                    .withMessageContaining("submissionId");
+        }
+
+        @Test
+        @DisplayName("an outcome carrying no identity at all is refused rather than defaulted")
+        void anOutcomeCarryingNoIdentityIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(null,
+                            ORACLE_CARD_COUNT, 0, true, ORACLE_FAILURE_TEXT))
+                    .withMessageContaining("submissionId");
         }
     }
 
@@ -2047,6 +2223,8 @@ class JobSubmissionServiceTest {
 
         private int delaySettings;
 
+        private final Map<String, Object> headerValues = new LinkedHashMap<>();
+
         @Override
         public SqsSendOptions<String> queue(final String destination) {
             this.queue = destination;
@@ -2068,6 +2246,7 @@ class JobSubmissionServiceTest {
         @Override
         public SqsSendOptions<String> headers(final Map<String, Object> values) {
             this.headerMapSettings++;
+            this.headerValues.putAll(values);
             return this;
         }
 

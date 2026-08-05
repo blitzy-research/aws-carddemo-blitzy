@@ -18,10 +18,13 @@ package com.carddemo.batch;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.RejectRecordWriter;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.TransactionValidationProcessor;
 import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.enums.RejectReason;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.TransactionPostingService;
+import com.carddemo.util.StagedResourceNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.io.IOException;
@@ -32,7 +35,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.Locale;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -274,13 +276,14 @@ import org.springframework.transaction.PlatformTransactionManager;
  * which the step builder registers automatically because the processor implements the listener
  * interface. It is deliberately <strong>not</strong> registered a second time here.
  *
- * <p><strong>The linkage is proven from both sides.</strong> {@link BackupTransactionJobConfig}
- * reproduces a legacy step gate measured as "run only when every earlier completion code is at most
- * four", exposed as {@code BatchConfig.ConditionCodeGate.WARNINGS_TOLERATED}. That gate exists
- * precisely to tolerate the code this job raises. The cross-reference is stated here so neither side
- * drifts: if this job stopped raising four, the tolerant gate would be indistinguishable from the
- * strict one, and if that gate were tightened, a run that merely refused some records would bypass the
- * backup the estate performs.
+ * <p><strong>The code is this job's own, and it gates nothing outside this job.</strong> Every
+ * condition-code step gate in the estate is the one strict form,
+ * {@code BatchConfig.ConditionCodeGate.ALL_PRIOR_STEPS_ZERO}, and a gate reads only the steps of the
+ * execution it sits inside. So the tolerated code this job reports is an outcome the operator and the
+ * job entry system read on <em>this</em> job's own step; it is not a value another job's gate admits,
+ * and it must not be re-derived from any gate's ceiling. Its authority is the program itself, which
+ * sets it at {@code app/cbl/CBTRN02C.cbl} lines 229 to 230, and it is published once as
+ * {@link TransactionPostingService#RETURN_CODE_REJECTS_PRESENT}.
  *
  * <h2>Diagnostics and failure handling</h2>
  *
@@ -367,8 +370,13 @@ public final class PostTransactionJobConfig {
      * through the registry and operator the batch infrastructure exposes, so an unstable name would
      * break that surface rather than fail a compile. The value is fixed by the module and is not a free
      * choice.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = "postTransactionJob";
+    public static final String JOB_NAME = BatchJobCatalog.POST_TRANSACTION_JOB_NAME;
 
     /** Stable name of the single chunk-oriented step, which is the whole of the job. */
     public static final String STEP_NAME = "postDailyTransactionsStep";
@@ -403,10 +411,6 @@ public final class PostTransactionJobConfig {
     public static final String DALYREJS_DATASET_BASE_PROPERTY =
             RESOURCE_PROPERTY_PREFIX + "dalyrejs-dataset-base";
 
-    /** Key of the step's commit granularity, which the chunk-oriented API structurally requires. */
-    public static final String COMMIT_GRANULARITY_PROPERTY =
-            RESOURCE_PROPERTY_PREFIX + "commit-granularity";
-
     /**
      * Logical name of the sequential input, defaulted to the dataset name the job stream itself used.
      *
@@ -425,26 +429,12 @@ public final class PostTransactionJobConfig {
      * <p><strong>This is a legacy semantic and not a tuning figure.</strong> The migrated batch tier is
      * strictly sequential and record at a time, which is the granularity the legacy tier exhibited, and
      * a chunk-oriented step must state some granularity for the framework to commit on. Stating one
-     * record keeps the unit of work identical to the unit of processing, so a failure cannot leave part
-     * of a record's three persistence stages applied and part not. It is the default of
-     * {@value #COMMIT_GRANULARITY_PROPERTY} rather than a constant written into the step, and it is
-     * deliberately <em>not</em> presented as a throughput, latency or batching control: the estate
-     * documents no service level against which such a control could be set.
+     * record keeps the unit of work identical to the unit of processing, so a later row cannot roll back
+     * an earlier posting and its reject output. The value is deliberately written into the step rather
+     * than exposed as configuration: changing it would change the program's commit semantics, not tune
+     * throughput.
      */
     static final int RECORD_AT_A_TIME = 1;
-
-    /**
-     * Modulus of a legacy absolute generation number, whose names run from the first generation to the
-     * nine-thousand-nine-hundred-and-ninety-ninth and then wrap.
-     *
-     * <p>The wrap is reproduced rather than avoided so a generation name keeps the shape an operator
-     * recognises. Retention is a property of the generation group and is deliberately outside the remit
-     * of the job that writes one generation into it.
-     */
-    private static final int GENERATION_NUMBER_MODULUS = 10_000;
-
-    /** Format of a legacy absolute generation name: the base, the generation number, the version. */
-    private static final String GENERATION_NAME_FORMAT = "%s.G%04dV00";
 
     /** Timer name under which this job's step is recorded, shared with the rest of the batch tier. */
     private static final String STEP_TIMER_NAME = "carddemo.batch.job.step";
@@ -498,12 +488,9 @@ public final class PostTransactionJobConfig {
     /** Logical base of the reject generation group. */
     private final String dalyrejsDatasetBase;
 
-    /** Commit granularity the chunk-oriented step is built with. */
-    private final int commitGranularity;
-
     /**
      * Creates the configuration from the batch infrastructure it builds on, the collaborators the step
-     * needs, and the four configured values that resolve its two datasets and its commit granularity.
+     * needs, and the three configured values that resolve its two datasets.
      *
      * <p>Constructor injection only, every field final, and no field injection anywhere: the
      * configuration is fully formed once constructed and holds no mutable state that one job execution
@@ -514,7 +501,7 @@ public final class PostTransactionJobConfig {
      * configuration document naming a key. A default is a <em>logical name</em> or a directory and never
      * a path this class chose: the two dataset names default to the names the legacy job stream used, and
      * the directory defaults to the platform's own temporary location, so a deployment relocates either
-     * by configuration and never by a code change. None of the four is a secret and none of them is
+     * by configuration and never by a code change. None of the three is a secret and none of them is
      * credential-bearing.
      *
      * @param  jobRepository        the framework's job repository
@@ -526,10 +513,8 @@ public final class PostTransactionJobConfig {
      * @param  stagingDirectory     directory the two logical dataset names are resolved against
      * @param  dalytranDataset      logical name of the sequential daily-transaction input
      * @param  dalyrejsDatasetBase  logical base of the reject generation group
-     * @param  commitGranularity    records per unit of work, structurally required by the chunk API
      * @throws NullPointerException     if any collaborator or configured value is {@code null}
-     * @throws IllegalArgumentException if either logical name is blank, or if the granularity is below
-     *                                  one record
+     * @throws IllegalArgumentException if either logical name is blank
      */
     public PostTransactionJobConfig(
             final JobRepository jobRepository,
@@ -538,14 +523,14 @@ public final class PostTransactionJobConfig {
             final TransactionPostingService postingService,
             final MeterRegistry meterRegistry,
             final Clock clock,
-            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${java.io.tmpdir}}")
+            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
             @Value("${" + DALYTRAN_DATASET_PROPERTY + ":" + DEFAULT_DALYTRAN_DATASET + "}")
                     final String dalytranDataset,
             @Value("${" + DALYREJS_DATASET_BASE_PROPERTY + ":" + DEFAULT_DALYREJS_DATASET_BASE + "}")
-                    final String dalyrejsDatasetBase,
-            @Value("${" + COMMIT_GRANULARITY_PROPERTY + ":" + RECORD_AT_A_TIME + "}")
-                    final int commitGranularity) {
+                    final String dalyrejsDatasetBase) {
         this.jobRepository = Objects.requireNonNull(jobRepository, "jobRepository must not be null");
         this.transactionManager =
                 Objects.requireNonNull(transactionManager, "transactionManager must not be null");
@@ -554,10 +539,10 @@ public final class PostTransactionJobConfig {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.stagingDirectory = requireResourceName(stagingDirectory, STAGING_DIRECTORY_PROPERTY);
-        this.dalytranDataset = requireResourceName(dalytranDataset, DALYTRAN_DATASET_PROPERTY);
-        this.dalyrejsDatasetBase =
-                requireResourceName(dalyrejsDatasetBase, DALYREJS_DATASET_BASE_PROPERTY);
-        this.commitGranularity = requireCommitGranularity(commitGranularity);
+        this.dalytranDataset =
+                StagedResourceNames.requireSimpleName(dalytranDataset, DALYTRAN_DATASET_PROPERTY);
+        this.dalyrejsDatasetBase = StagedResourceNames.requireSimpleName(dalyrejsDatasetBase,
+                DALYREJS_DATASET_BASE_PROPERTY);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -639,8 +624,8 @@ public final class PostTransactionJobConfig {
      * earlier records of the same run have already moved, and fixed-width outputs of this estate are
      * compared byte for byte, so arrival order is part of the result.
      *
-     * <p>The commit granularity is supplied from configuration and is a structural parameter of the
-     * chunk-oriented API, not a tuning target; see {@link #RECORD_AT_A_TIME}.
+     * <p>The commit granularity is the semantic constant {@link #RECORD_AT_A_TIME}. It is not configurable:
+     * each source record and its posting or reject result is one independent unit of work.
      *
      * <p>The completion-code contribution is <strong>not</strong> registered here. The per-record stage
      * implements the step-execution listener interface, and the step builder registers a reader,
@@ -664,7 +649,7 @@ public final class PostTransactionJobConfig {
                             postTransactionRejectRecordWriter) {
         return new StepBuilder(STEP_NAME, this.jobRepository)
                 .<DailyTransaction, RejectRecordWriter.RejectedTransaction>chunk(
-                        this.commitGranularity, this.transactionManager)
+                        RECORD_AT_A_TIME, this.transactionManager)
                 .reader(postTransactionDailyTransactionReader)
                 .processor(postTransactionValidationProcessor)
                 .writer(postTransactionRejectRecordWriter)
@@ -715,8 +700,13 @@ public final class PostTransactionJobConfig {
      */
     @Bean(name = DAILY_TRANSACTION_READER_BEAN_NAME)
     @StepScope
-    public ItemStreamReader<DailyTransaction> postTransactionDailyTransactionReader() {
-        return this.readerFactory.dailyTransactionReader(new PathResource(dalytranInput()));
+    public ItemStreamReader<DailyTransaction> postTransactionDailyTransactionReader(
+            final BatchStagingArea stagingArea) {
+        final org.springframework.core.io.Resource input =
+                stagingArea.holds(this.dalytranDataset)
+                        ? stagingArea.stagedInput(this.dalytranDataset)
+                        : new PathResource(dalytranInput());
+        return this.readerFactory.dailyTransactionReader(input);
     }
 
     /**
@@ -738,6 +728,7 @@ public final class PostTransactionJobConfig {
      * and none of it is restated here.
      *
      * @param  jobExecutionId the execution the generation belongs to, supplied by the framework
+     * @param  stagingArea the shared object-store staging boundary
      * @return a writer over this execution's own generation, never {@code null}
      * @throws NullPointerException if the framework supplied no execution identifier
      * @throws UncheckedIOException if the containing directory cannot be created
@@ -745,12 +736,20 @@ public final class PostTransactionJobConfig {
     @Bean(name = REJECT_RECORD_WRITER_BEAN_NAME)
     @StepScope
     public ItemStreamWriter<RejectRecordWriter.RejectedTransaction> postTransactionRejectRecordWriter(
-            @Value("#{stepExecution.jobExecutionId}") final Long jobExecutionId) {
-        final Path generation = rejectGeneration(Objects.requireNonNull(jobExecutionId,
+            @Value("#{stepExecution.jobExecutionId}") final Long jobExecutionId,
+            @Value("#{stepExecution}") final StepExecution stepExecution) {
+        final long executionId = Objects.requireNonNull(jobExecutionId,
                 "the framework must have assigned a job execution identifier before a step runs")
-                .longValue());
+                .longValue();
+        final Path generation = rejectGeneration(executionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
         prepareStagingDirectory();
-        return new RejectRecordWriter(new PathResource(generation), this.meterRegistry);
+        final ItemStreamWriter<RejectRecordWriter.RejectedTransaction> writer =
+                new RejectRecordWriter(new PathResource(working), this.meterRegistry);
+        return StagedGenerationStore.completingWriter(writer,
+                Objects.requireNonNull(stepExecution, "stepExecution"),
+                this.dalyrejsDatasetBase, working, generation,
+                StagedGenerationStore.STANDARD_RETENTION_LIMIT);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -773,11 +772,10 @@ public final class PostTransactionJobConfig {
     /**
      * The reject generation one job execution owns, named in the legacy absolute-generation form.
      *
-     * <p>The generation number is the execution identifier reduced modulo the legacy numbering range, so
-     * the name keeps the shape an operator recognises and two consecutive runs land beside one another in
-     * name order. <strong>Retention is not implemented here</strong>: the depth of the generation group
-     * and the scratching of the generation that rolls off belong to the group, which the environment
-     * owns.
+     * <p>The framework execution identifier is rendered without a modulo, so no later execution can wrap
+     * onto and truncate an earlier generation. The shared durable store publishes the completed file and
+     * enforces the measured depth of {@link StagedGenerationStore#STANDARD_RETENTION_LIMIT} only after
+     * the whole job completes.
      *
      * <p>Package-visible and free of side effects for the same reason {@link #dalytranInput()} is.
      * Creating the staging directory is deliberately <em>not</em> part of resolving a name; that is done
@@ -787,9 +785,8 @@ public final class PostTransactionJobConfig {
      * @return the resolved generation resource
      */
     Path rejectGeneration(final long jobExecutionId) {
-        final String generationName = String.format(Locale.ROOT, GENERATION_NAME_FORMAT,
-                this.dalyrejsDatasetBase, Math.floorMod(jobExecutionId, GENERATION_NUMBER_MODULUS));
-        return Path.of(this.stagingDirectory).resolve(generationName);
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.dalyrejsDatasetBase, jobExecutionId);
     }
 
     /**
@@ -837,6 +834,12 @@ public final class PostTransactionJobConfig {
      * constructor's bindings, where they are visible, and a value that arrives blank is a configuration
      * defect rather than an absence to be filled in.
      *
+     * <p><strong>This governs the staging root only.</strong> A dataset name resolved against that root
+     * is screened by {@link StagedResourceNames#requireSimpleName(String, String)}, which additionally
+     * refuses an absolute value, a path separator and a directory reference - none of which a blank
+     * check catches, and each of which would resolve outside the root. The root itself is legitimately
+     * a multi-segment path and may be absolute, so the stricter rule cannot be applied to it.
+     *
      * @param  value the configured value
      * @param  key   the property the value was bound from, named in the diagnostic
      * @return the validated value
@@ -850,26 +853,6 @@ public final class PostTransactionJobConfig {
                     + " to the staging directory itself rather than to a dataset");
         }
         return value;
-    }
-
-    /**
-     * Validates the configured commit granularity.
-     *
-     * <p>A unit of work of fewer than one record is not a unit of work, and the framework would reject it
-     * later and less clearly. Validated here so a defect is reported when the configuration is bound
-     * rather than when a step runs.
-     *
-     * @param  granularity the configured value
-     * @return the validated value
-     * @throws IllegalArgumentException if the value is below one record
-     */
-    private static int requireCommitGranularity(final int granularity) {
-        if (granularity < RECORD_AT_A_TIME) {
-            throw new IllegalArgumentException(COMMIT_GRANULARITY_PROPERTY
-                    + " must be at least one record, because a unit of work holds at least one record;"
-                    + " received " + granularity);
-        }
-        return granularity;
     }
 
     // -----------------------------------------------------------------------------------------------

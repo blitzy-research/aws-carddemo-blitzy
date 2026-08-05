@@ -123,7 +123,7 @@ final class ProductionInfrastructureIsUntouchedTest {
             variables.put(setting.environmentVariable(),
                     "supplied-by-this-test-for-" + setting.environmentVariable());
         }
-        variables.put("CARDDEMO_SQS_QUEUE", "carddemo-jobs.fifo");
+        variables.put("CARDDEMO_SQS_QUEUE", "JOBS.fifo");
         variables.put("AWS_REGION", "eu-west-2");
         return variables;
     }

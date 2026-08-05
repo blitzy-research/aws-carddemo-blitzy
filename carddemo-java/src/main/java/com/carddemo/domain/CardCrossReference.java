@@ -33,11 +33,13 @@ import java.util.Objects;
  * {@code RECORDSIZE(50 50)} in {@code app/jcl/XREFFILE.jcl}, and by the offsets the schema migration
  * annotates on each column.
  *
- * <p>The {@code CXACAIX} alternate index over the account identifier becomes an index plus a finder,
+ * <p>The {@code CXACAIX} alternate index over the account identifier becomes an index plus one finder,
  * not a mapped structure: {@code V2__create_indexes.sql} creates
- * {@code idx_card_cross_reference_xref_acct_id} and
- * {@code CardCrossReferenceRepository.findByXrefAcctId} provides the access path. An index is
- * physical; this class declares a logical mapping only.
+ * {@code idx_card_cross_reference_xref_acct_id}, and
+ * {@code CardCrossReferenceRepository.findByXrefAcctId} provides the access path, returning every row of
+ * the account. The non-unique alternate index admits more than one row, so the single-row resolution the
+ * legacy positioned read performs is applied by the calling service on the returned list rather than by a
+ * second repository method. An index is physical; this class declares a logical mapping only.
  *
  * <p>{@code V2__create_indexes.sql} constrains all three columns with foreign keys to the card,
  * account and customer tables, making this the most heavily constrained table in the schema - and it
@@ -119,13 +121,11 @@ public class CardCrossReference {
      * either would invent or destroy an identity rather than report a defect.
      *
      * <p><strong>Width and digit class are enforced on the way to a row, by
-     * {@link #normalizeAndValidateBeforeWrite()}.</strong> An earlier version of this text argued that
-     * such a rule would reject data the legacy system stored, and that argument does not survive
-     * inspection: all three attributes are slices of a fixed-width record image, so every value the
-     * legacy system stored is exactly the declared width, and what a rule rejects is a value no image
-     * could have produced. Leaving it to a bounded column was not equivalent either - a bounded column
-     * states a maximum, and it is the <em>short</em> value that splits one record's identity between the
-     * relational key and the bytes it is written back into. {@code V1__create_schema.sql} carries the
+     * {@link #normalizeAndValidateBeforeWrite()}.</strong> All three attributes are slices of a
+     * fixed-width record image, so every value the legacy system stored is exactly the declared width and
+     * what that rule rejects is a value no image could have produced. A bounded column is not equivalent:
+     * it states a maximum, and it is the <em>short</em> value that splits one record's identity between
+     * the relational key and the bytes it is written back into. {@code V1__create_schema.sql} carries the
      * same rules as check constraints for a writer that never constructs an entity at all.
      *
      * <p><strong>Why a control character is the exception.</strong> It is not data in any legacy record:
@@ -267,14 +267,13 @@ public class CardCrossReference {
      * two numeric ones that carry a character outside the ASCII digits, immediately before the row is
      * inserted or updated.
      *
-     * <p><strong>This supersedes the reasoning the class documentation above once carried.</strong> That
-     * text argued against a width rule on the grounds that it would reject data the legacy system stored,
-     * and the argument does not survive inspection: all three fields are slices of a fixed-width record
-     * image, so every value the legacy system stored is exactly the declared width. What a width rule
-     * rejects is a value that no record image could have produced - and this is the record that resolves a
-     * card to an account, so a short identifier here mis-resolves an entire relationship rather than
-     * merely mis-keying one row. The control-character rule the constructor already applies stays where it
-     * is: it guards a value on its way in from anywhere, while this guards one on its way to a row.
+     * <p><strong>Why a width rule belongs here at all.</strong> All three fields are slices of a
+     * fixed-width record image, so every value the legacy system stored is exactly the declared width, and
+     * what a width rule rejects is a value that no record image could have produced. This is the record
+     * that resolves a card to an account, so a short identifier here mis-resolves an entire relationship
+     * rather than merely mis-keying one row. The control-character rule the constructor applies is a
+     * different guard and stays where it is: it screens a value on its way in from anywhere, while this one
+     * screens a value on its way to a row.
      *
      * <p><strong>Why a callback rather than the constructor or the setter.</strong> The persistence
      * provider hydrates a row by instantiating the entity and assigning its fields directly, so a
@@ -319,28 +318,26 @@ public class CardCrossReference {
      * <p><strong>All three are withheld, and the reason is the same for all three.</strong> A rendering
      * escapes far more easily than an author intends: an entity reaches a failed assertion message, a
      * provider diagnostic, an interpolated exception message or a structured log event without anybody
-     * choosing to disclose anything, so the only reliable place to withhold a value is here. That
-     * argument was always accepted for the card number, which is a primary account number. It applies
-     * unchanged to the other two, and this class previously printed both of them in full.
+     * choosing to disclose anything, so the only reliable place to withhold a value is here. The card
+     * number is a primary account number, and the other two are withheld on the same ground.
      *
      * <p><strong>Why the customer and account identifiers are not "internal keys that disclose
      * nothing".</strong> This row exists precisely to link them, so a rendering carrying both publishes
      * the association itself - and the association is what turns two opaque numbers into a statement
-     * about one cardholder's relationship to one account. The module had already settled the question
-     * elsewhere and in the opposite direction: {@code AccountViewResponse.toString()} renders both its
-     * account identifier and its customer identifier as this same placeholder. An entity that printed
-     * in full what the response DTO built from it withholds is not a considered difference, it is a hole
-     * in one contract, and it is the wider of the two because an entity is what reaches a provider
-     * diagnostic.
+     * about one cardholder's relationship to one account. The module settles the question the same way at
+     * the transport boundary: {@code AccountViewResponse.toString()} renders both its account identifier
+     * and its customer identifier as this same placeholder. An entity that printed in full what the
+     * response DTO built from it withholds would be a hole in one contract, and the wider of the two,
+     * because an entity is what reaches a provider diagnostic.
      *
      * <p><strong>What is reported instead, and why it is enough.</strong> Each attribute renders as the
      * placeholder when populated and as {@code null} when it is not. That distinction is the one a
      * diagnostic actually needs from this type - a partially populated instance is a real defect and
      * stays visible - and it carries no value, no fragment and no length, so nothing about it
-     * discriminates between candidate identifiers. A leading or trailing fragment was rejected as a
-     * compromise for every attribute, not just the card number: a fragment of an identifier is still
-     * that identifier's data, and a rendered length still narrows the candidate set. Code that
-     * genuinely needs a value calls the accessor, which returns it untouched.
+     * discriminates between candidate identifiers. A leading or trailing fragment is not an acceptable
+     * compromise for any of the three: a fragment of an identifier is still that identifier's data, and a
+     * rendered length still narrows the candidate set. Code that genuinely needs a value calls the
+     * accessor, which returns it untouched.
      *
      * <p>This is a rendering decision only and changes no stored, mapped or transmitted value. The
      * schema applies no field-level protection to the card number and the migration introduces none,

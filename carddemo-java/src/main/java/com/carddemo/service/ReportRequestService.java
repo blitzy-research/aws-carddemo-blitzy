@@ -16,12 +16,17 @@
  */
 package com.carddemo.service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -401,12 +406,15 @@ public final class ReportRequestService {
      * as one submission.
      */
 
-    /**
-     * Separator between the two date slots of a derived submission identity. An underscore keeps the
-     * identity legible in a diagnostic and cannot be confused with the hyphen the bridge appends the
-     * card slot with when it composes a deduplication identifier.
+    /*
+     * The separator between the two date slots of a submission identity used to be declared here, and it
+     * is gone rather than left unused: the identity is now minted by the bridge, which owns the queue's
+     * composition and length rules, and a constant restating half of a rule this class no longer applies
+     * is the shape a rule drifts out of agreement in. See newSubmissionIdentity.
      */
-    private static final String SUBMISSION_IDENTITY_SEPARATOR = "_";
+
+    /** Digest used to turn an opaque retry token into a bounded printable identity component. */
+    private static final String SUBMISSION_TOKEN_DIGEST_ALGORITHM = "SHA-256";
 
     /** Accepted affirmative confirmation, upper case, compared at line 478. */
     private static final String CONFIRM_YES_UPPER = "Y";
@@ -426,6 +434,9 @@ public final class ReportRequestService {
 
     /** The space character, the fill of every alphanumeric screen field. */
     private static final char SPACE = ' ';
+
+    /** Separator between the two date slots and the stable logical-request digest. */
+    private static final String SUBMISSION_IDENTITY_SEPARATOR = "_";
 
     /**
      * The low-value character. A 3270 field the terminal did not transmit arrives as low values
@@ -638,6 +649,9 @@ public final class ReportRequestService {
      *                                because the end-of-stream card is itself transmitted; fewer when
      *                                a publish failed; zero when the confirmation gate blocked the
      *                                submission or no submission was attempted
+     * @param submissionToken         the opaque logical-request token a caller repeats when retrying
+     *                                this submission. Minted when the caller supplied none and returned
+     *                                unchanged so a subsequent retry can reuse it
      * @param confirmationBlocked     {@code true} when the confirmation gate at lines 464 to 494
      *                                stopped the submission, whether because the field was blank,
      *                                because it declined, or because it held something else
@@ -671,6 +685,7 @@ public final class ReportRequestService {
                                       String startDate,
                                       String endDate,
                                       int cardsPublished,
+                                      String submissionToken,
                                       boolean confirmationBlocked,
                                       String message,
                                       boolean messageHighlightedGreen,
@@ -679,6 +694,34 @@ public final class ReportRequestService {
                                       List<ValidationException.FieldError> fieldErrors,
                                       ScreenHeader header,
                                       ScreenFields screen) {
+
+        /**
+         * Compatibility constructor for callers that describe a turn with no submission token.
+         *
+         * <p>Production turns use the canonical constructor and always carry a token. This overload keeps
+         * manually assembled non-submission results concise and makes the absence explicit rather than
+         * manufacturing a token outside the service.
+         */
+        public ReportRequestResult(final NavigationService.Route route,
+                final ConversationState navigationContext,
+                final String reArmedTransactionId,
+                final ReportPeriod reportPeriod,
+                final String reportName,
+                final String startDate,
+                final String endDate,
+                final int cardsPublished,
+                final boolean confirmationBlocked,
+                final String message,
+                final boolean messageHighlightedGreen,
+                final String focusField,
+                final boolean errorFlag,
+                final List<ValidationException.FieldError> fieldErrors,
+                final ScreenHeader header,
+                final ScreenFields screen) {
+            this(route, navigationContext, reArmedTransactionId, reportPeriod, reportName, startDate,
+                    endDate, cardsPublished, null, confirmationBlocked, message,
+                    messageHighlightedGreen, focusField, errorFlag, fieldErrors, header, screen);
+        }
 
         /**
          * Reports whether the turn published a complete card stream.
@@ -714,9 +757,27 @@ public final class ReportRequestService {
      * @throws NullPointerException if {@code input} is {@code null}
      */
     public ReportRequestResult processReportRequest(final ReportScreenInput input) {
+        return processReportRequest(input, null);
+    }
+
+    /**
+     * Runs one turn under an optional logical-request token.
+     *
+     * <p>A caller repeats the same token when retrying an interrupted submission. Supplying no token means
+     * this is a deliberate new logical request, so a fresh opaque token is minted and returned in the
+     * result. The token is not itself sent to the queue; the date range and a deterministic digest of the
+     * token form the bounded submission identity from which each card's deduplication id is derived.
+     *
+     * @param input the transmitted screen, decoded attention key and echoed navigation state
+     * @param retryToken token of an earlier attempt, or {@code null}/blank for a new submission
+     * @return the outcome of the turn, carrying the effective token
+     */
+    public ReportRequestResult processReportRequest(final ReportScreenInput input,
+            final String retryToken) {
         Objects.requireNonNull(input, "input must not be null");
 
         final TurnState state = new TurnState();
+        state.submissionToken = resolveSubmissionToken(retryToken);
         mainPara(state, input);
 
         // EXEC CICS RETURN TRANSID(WS-TRANID) at lines 199 to 202. The main paragraph's transfer
@@ -1286,8 +1347,8 @@ public final class ReportRequestService {
         // substitution slots. No card, no column frame and no slot is assembled here.
         final List<String> cardImages =
                 JclCardImageBuilder.build(state.parmStartDate, state.parmEndDate);
-        final String submissionIdentity =
-                newSubmissionIdentity(state.parmStartDate, state.parmEndDate);
+        final String submissionIdentity = newSubmissionIdentity(
+                state.parmStartDate, state.parmEndDate, state.submissionToken);
 
         // Lines 498 to 509, the emitting loop - published as ONE SUBMISSION rather than card by card.
         //
@@ -1877,38 +1938,68 @@ public final class ReportRequestService {
 
 
     /**
-     * Derives the identity of one submission from the two date slots it submits, deterministically.
+     * Derives the identity of one submission from its date slots and logical-request token.
      *
      * <p>The bridge composes each card's deduplication identifier from this identity plus the card's
      * one-based slot, and the bridge's own contract forbids a random value in the identity's place
-     * because a random identity defeats idempotency. So the identity is a pure function of the request:
-     * the same period always yields the same identity, and therefore the same seventeen deduplication
-     * identifiers. A caller that resubmits an interrupted request - one whose loop stopped part way
-     * because a write was refused at line 499 - reissues exactly the identifiers the first pass used,
-     * so the queue collapses the cards that already landed and the stream is completed rather than
-     * doubled behind itself.
+     * because a fresh identity on a retry defeats idempotency. The identity is therefore a pure function
+     * of the date range and the stable token: a caller that resubmits an interrupted request with the same
+     * token reissues exactly the identifiers the first pass used, so the queue collapses the cards that
+     * already landed and the stream is completed rather than doubled behind itself.
      *
      * <p>The legacy queue had no notion of identity at all: a second request for the same period was
-     * appended and the job ran again. That remains reachable, and it remains an explicit act rather
-     * than an accident of implementation - the two dates are the identity, so a genuinely new
-     * submission of one period is a decision for whatever owns the request to express, not something
-     * this screen manufactures on every pass. Minting a fresh value per call would have answered that
-     * question silently, and in the one direction that cannot be corrected afterwards: a suppressed
-     * submission can be reissued, a duplicated batch run cannot be un-run.
+     * appended and the job ran again. That remains reachable: a genuinely new submission of the same
+     * period receives a different token, while a retry repeats the earlier token. The distinction is now
+     * explicit instead of being guessed from the dates, which are identical in those two cases.
      *
      * <p>Whitespace is removed because the slots are fixed-width values that may be space-padded while
      * the bridge requires an identity free of whitespace. Only the identity is condensed; no card is,
      * because a card's padding is contractual. The two date slots have already been shaped and
-     * validated by the time they reach here, so the derived value is printable single-byte text, as
-     * the bridge requires.
+     * validated by the time they reach here, so the date part is printable single-byte text. The token is
+     * represented by a fixed hexadecimal digest, keeping arbitrary caller text out of diagnostics and
+     * keeping the composed identifier comfortably inside the queue service's bound.
      *
      * @param startDate the start-date slot the submission carries
      * @param endDate   the end-date slot the submission carries
-     * @return a whitespace-free identity, identical for every submission of the same period
+     * @param submissionToken the stable token of this logical submission
+     * @return a whitespace-free identity, identical only for the same dates and token
      */
-    private static String newSubmissionIdentity(final String startDate, final String endDate) {
+    private static String newSubmissionIdentity(final String startDate, final String endDate,
+            final String submissionToken) {
         return withoutWhitespace(startDate) + SUBMISSION_IDENTITY_SEPARATOR
-                + withoutWhitespace(endDate);
+                + withoutWhitespace(endDate) + SUBMISSION_IDENTITY_SEPARATOR
+                + digestSubmissionToken(submissionToken);
+    }
+
+    /**
+     * Uses the caller's stable retry token, or mints one for a deliberate new logical request.
+     *
+     * @param retryToken caller-supplied token, possibly absent or blank
+     * @return the effective token, never blank
+     */
+    private static String resolveSubmissionToken(final String retryToken) {
+        return retryToken == null || retryToken.isBlank()
+                ? UUID.randomUUID().toString()
+                : retryToken;
+    }
+
+    /**
+     * Produces the bounded printable token component used inside the queue deduplication identity.
+     *
+     * @param submissionToken the effective logical-request token
+     * @return a lower-case hexadecimal SHA-256 digest
+     */
+    private static String digestSubmissionToken(final String submissionToken) {
+        try {
+            final MessageDigest digest =
+                    MessageDigest.getInstance(SUBMISSION_TOKEN_DIGEST_ALGORITHM);
+            return HexFormat.of().formatHex(
+                    digest.digest(submissionToken.getBytes(StandardCharsets.UTF_8)));
+        } catch (final NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(
+                    SUBMISSION_TOKEN_DIGEST_ALGORITHM + " must be available in every Java runtime",
+                    unavailable);
+        }
     }
 
     /**
@@ -2065,6 +2156,9 @@ public final class ReportRequestService {
         /** How many cards the queue accepted. */
         private int cardsPublished;
 
+        /** Stable token that identifies this logical request across retries. */
+        private String submissionToken;
+
         /** The transaction identifier re-armed by a return, empty when control was transferred. */
         private String reArmedTransactionId = NO_MESSAGE;
 
@@ -2167,6 +2261,7 @@ public final class ReportRequestService {
                     this.startDate,
                     this.endDate,
                     this.cardsPublished,
+                    this.submissionToken,
                     this.confirmationBlocked,
                     this.message,
                     this.messageHighlightedGreen,

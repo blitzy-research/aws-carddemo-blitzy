@@ -1,0 +1,229 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.config;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Pins the local container stack's host boundary, immutable image inputs and least-privilege runtime
+ * settings.
+ *
+ * <p>The stack is operational configuration rather than Java code, so a compiler cannot protect it.
+ * These assertions parse the delivered Compose document and independently read the Dockerfile. They
+ * deliberately check resolved values rather than comments: removing a capability drop or changing a
+ * port bind must fail the build even if the surrounding explanation remains unchanged.</p>
+ */
+@DisplayName("container runtime contract: loopback, immutable inputs and least privilege")
+final class ContainerHardeningContractTest {
+
+    private static final Path COMPOSE_PATH = Path.of("docker-compose.yml");
+    private static final Path DOCKERFILE_PATH = Path.of("Dockerfile");
+    private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
+
+    private static final List<String> SERVICES =
+            List.of("postgres", "localstack", "jaeger", "app", "prometheus", "grafana");
+
+    private static final Map<String, String> IMMUTABLE_IMAGES = Map.of(
+            "postgres",
+            "postgres:16.14-bookworm@sha256:"
+                    + "92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55",
+            "localstack",
+            "localstack/localstack:4.14.0@sha256:"
+                    + "3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a",
+            "jaeger",
+            "jaegertracing/all-in-one:1.71.0@sha256:"
+                    + "beb31282a9c5d0d10cb78dd168945dab9887acebb42fcc0bd738b08c36b68bc0",
+            "prometheus",
+            "prom/prometheus:v3.5.0@sha256:"
+                    + "63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996",
+            "grafana",
+            "grafana/grafana:11.6.6@sha256:"
+                    + "f3b7b0bf02f79eca049a9463424f19fc600f70cabbc0d0e4946f810c5d165830");
+
+    private static final Map<String, String> EXPLICIT_USERS = Map.of(
+            "localstack", "1000:1000",
+            "jaeger", "10001:10001",
+            "app", "10001:10001",
+            "prometheus", "65534:65534",
+            "grafana", "472:0");
+
+    private static JsonNode compose() throws IOException {
+        assertThat(COMPOSE_PATH).isRegularFile();
+        return YAML.readTree(COMPOSE_PATH.toFile());
+    }
+
+    private static JsonNode service(final JsonNode root, final String name) {
+        final JsonNode service = root.path("services").path(name);
+        assertThat(service.isObject()).as("Compose service %s must exist", name).isTrue();
+        return service;
+    }
+
+    private static List<String> textValues(final JsonNode array) {
+        assertThat(array.isArray()).isTrue();
+        return java.util.stream.StreamSupport.stream(array.spliterator(), false)
+                .map(JsonNode::asText)
+                .toList();
+    }
+
+    @Test
+    @DisplayName("every published port is bound to the loopback interface")
+    void everyPublishedPortIsLoopbackOnly() throws IOException {
+        final JsonNode root = compose();
+        int publishedPorts = 0;
+        for (final String serviceName : SERVICES) {
+            final JsonNode ports = service(root, serviceName).path("ports");
+            if (!ports.isArray()) {
+                continue;
+            }
+            for (final JsonNode port : ports) {
+                publishedPorts++;
+                assertThat(port.asText())
+                        .as("%s must not publish a port on every host interface", serviceName)
+                        .matches("\\$\\{[A-Z_]+_BIND_ADDRESS:-127\\.0\\.0\\.1}:.*");
+            }
+        }
+        assertThat(publishedPorts).isEqualTo(8);
+    }
+
+    @Test
+    @DisplayName("every third-party service image is pinned by tag and digest")
+    void everyExternalImageIsImmutable() throws IOException {
+        final JsonNode root = compose();
+        IMMUTABLE_IMAGES.forEach((serviceName, expectedImage) ->
+                assertThat(service(root, serviceName).path("image").asText())
+                        .isEqualTo(expectedImage));
+        assertThat(service(root, "app").path("build").isObject()).isTrue();
+    }
+
+    @Test
+    @DisplayName("every service has an immutable root, no privilege escalation and no capabilities")
+    void everyServiceHasTheSharedHardeningFloor() throws IOException {
+        final JsonNode root = compose();
+        for (final String serviceName : SERVICES) {
+            final JsonNode candidate = service(root, serviceName);
+            assertThat(candidate.path("read_only").asBoolean()).as(serviceName).isTrue();
+            assertThat(textValues(candidate.path("security_opt")))
+                    .as(serviceName)
+                    .containsExactly("no-new-privileges:true");
+            assertThat(textValues(candidate.path("cap_drop")))
+                    .as(serviceName)
+                    .containsExactly("ALL");
+            assertThat(textValues(candidate.path("tmpfs")))
+                    .as("%s must name every writable root-filesystem exception", serviceName)
+                    .isNotEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("every image that supports direct non-root startup has an explicit runtime identity")
+    void supportedServicesHaveExplicitUsers() throws IOException {
+        final JsonNode root = compose();
+        EXPLICIT_USERS.forEach((serviceName, expectedUser) ->
+                assertThat(service(root, serviceName).path("user").asText())
+                        .isEqualTo(expectedUser));
+
+        final JsonNode postgres = service(root, "postgres");
+        assertThat(postgres.has("user"))
+                .as("the official entrypoint must initialise and chown a new named volume before it "
+                        + "drops to uid 999")
+                .isFalse();
+        assertThat(textValues(postgres.path("cap_add")))
+                .containsExactly("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID");
+    }
+
+    @Test
+    @DisplayName("Prometheus exposes no unauthenticated configuration-reload mutation")
+    void prometheusLifecycleMutationIsDisabled() throws IOException {
+        assertThat(textValues(service(compose(), "prometheus").path("command")))
+                .doesNotContain("--web.enable-lifecycle");
+    }
+
+    @Test
+    @DisplayName("only dedicated emulator variables may provide local AWS credentials")
+    void emulatorCredentialsCannotInheritAmbientAwsVariables() throws IOException {
+        final JsonNode root = compose();
+        final String accessReference =
+                "${LOCALSTACK_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}";
+        final String secretReference =
+                "${LOCALSTACK_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}";
+
+        for (final String serviceName : List.of("localstack", "app")) {
+            final JsonNode environment = service(root, serviceName).path("environment");
+            assertThat(environment.path("AWS_ACCESS_KEY_ID").asText()).isEqualTo(accessReference);
+            assertThat(environment.path("AWS_SECRET_ACCESS_KEY").asText()).isEqualTo(secretReference);
+        }
+
+        final String raw = Files.readString(COMPOSE_PATH, StandardCharsets.UTF_8);
+        assertThat(raw)
+                .doesNotContain("${AWS_ACCESS_KEY_ID")
+                .doesNotContain("${AWS_SECRET_ACCESS_KEY");
+    }
+
+    @Test
+    @DisplayName("the application receives five seconds beyond Spring's graceful-shutdown budget")
+    void applicationStopBudgetExceedsTheFrameworkBudget() throws IOException {
+        assertThat(service(compose(), "app").path("stop_grace_period").asText())
+                .isEqualTo("35s");
+    }
+
+    @Test
+    @DisplayName("Compose requires the source revision and Maven version for every application build")
+    void composeRequiresVerifiedBuildIdentity() throws IOException {
+        final JsonNode arguments = service(compose(), "app").path("build").path("args");
+        assertThat(arguments.path("APP_VERSION").asText()).startsWith("${APP_VERSION:?");
+        assertThat(arguments.path("SOURCE_REVISION").asText()).startsWith("${SOURCE_REVISION:?");
+        assertThat(arguments.path("SOURCE_DATE_EPOCH").asText())
+                .isEqualTo("${SOURCE_DATE_EPOCH:-1658188800}");
+    }
+
+    @Test
+    @DisplayName("the Dockerfile verifies build arguments against the packaged build identity")
+    void dockerfileVerifiesAndPublishesBuildIdentity() throws IOException {
+        assertThat(DOCKERFILE_PATH).isRegularFile();
+        final String dockerfile = Files.readString(DOCKERFILE_PATH, StandardCharsets.UTF_8);
+
+        assertThat(dockerfile)
+                .contains("ARG APP_VERSION")
+                .contains("ARG SOURCE_REVISION")
+                .contains("ARG SOURCE_DATE_EPOCH=1658188800")
+                .doesNotContain("ARG APP_VERSION=")
+                .doesNotContain("ARG SOURCE_REVISION=")
+                .contains("actual_version=\"$(sed -n 's/^build.version=//p' \"$info\")\"")
+                .contains("actual_revision=\"$(sed -n "
+                        + "'s/^build.source-revision=//p' \"$info\")\"")
+                .contains("expected_time=\"$(date -u -d \"@$SOURCE_DATE_EPOCH\" "
+                        + "'+%Y-%m-%dT%H:%M:%SZ')\"")
+                .contains("org.opencontainers.image.version=\"${APP_VERSION}\"")
+                .contains("org.opencontainers.image.revision=\"${SOURCE_REVISION}\"")
+                .contains("com.carddemo.legacy-estate.release="
+                        + "\"CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)\"");
+    }
+}

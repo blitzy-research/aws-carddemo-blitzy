@@ -40,8 +40,9 @@ import org.slf4j.LoggerFactory;
  * <h2>The gap this closes, which no configuration value can</h2>
  *
  * <p>{@link FlywayConfig} holds configuration controls that between them make a seed script
- * unreachable from a production deployment: the resolved location list must be exactly
- * {@value FlywayConfig#SCHEMA_LOCATION}, and the resolved version ceiling must be exactly
+ * unapplicable by a production deployment: the resolved location list must be exactly
+ * {@value FlywayConfig#MIGRATION_LOCATION} - the one flat location all four scripts share - and the
+ * resolved version ceiling must be exactly
  * {@value FlywayConfig#SCHEMA_ONLY_TARGET}, which is below every seed version. All of them act on
  * <em>this process's</em> configuration, and all of them are therefore blind to the one path that
  * matters most in practice: a database that was seeded <strong>before this process existed</strong>.

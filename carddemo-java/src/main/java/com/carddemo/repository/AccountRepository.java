@@ -17,13 +17,18 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Account;
+import java.math.BigDecimal;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Spring Data JPA repository for the {@code account} table, which replaces the {@code ACCTDAT}
  * key-sequenced VSAM base cluster of the legacy estate. It is the only persistence entry point for
- * {@link Account}, and it deliberately declares nothing of its own: every access the application needs
- * is already inherited.
+ * {@link Account}. Most access is inherited; the posting program additionally needs one explicit
+ * update-count operation to reproduce the legacy {@code REWRITE ... INVALID KEY} arm.
  *
  * <p><strong>Legacy provenance.</strong> The row shape derives from copybook
  * {@code app/cpy/CVACT01Y.cpy}, a 300-byte record whose 11-byte account identifier sits at offset 0,
@@ -96,13 +101,19 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * account-identifier column that reproduces the legacy alternate index; adding a counterpart here
  * would duplicate an existing access path.
  *
- * <p><strong>Inherited operations only.</strong> Keyed retrieval, existence checks, counting, saving
- * and both sorted and paged sequential traversal all arrive from {@code JpaRepository}, so the legacy
- * indexed and sequential access patterns are reproduced without declaring a single method. Record
- * absence is expressed as an empty {@code Optional} from the inherited keyed lookup, which the service
- * layer maps onto its own not-found handling together with the rest of the normalised file-status
- * model. The reference seed loads exactly fifty rows into this table under the local and test profiles
- * only, after the customer table and before the card table.
+ * <p><strong>The posting rewrite is deliberately explicit.</strong> {@code CBTRN02C} distinguishes a
+ * successful account rewrite from an invalid-key outcome by the operation's status. A preflight
+ * existence query followed by {@code save} cannot preserve that boundary: the row may disappear between
+ * the two calls, and a managed entity can defer its SQL until a later flush. The update below therefore
+ * writes exactly the three balances changed by paragraph {@code 2800-UPDATE-ACCOUNT-REC}, increments the
+ * provider-managed version explicitly, and returns the affected-row count. Clearing the persistence
+ * context after execution prevents the validation-time managed account from being flushed a second time.
+ * This is the one AAP-authorized exception to the module's general prohibition on modifying queries.
+ *
+ * <p>All other keyed retrieval, counting, saving and sorted or paged traversal remains inherited from
+ * {@code JpaRepository}. Record absence is expressed as an empty {@code Optional} from the inherited
+ * keyed lookup. The reference seed loads exactly fifty rows into this table under the local and test
+ * profiles only, after the customer table and before the card table.
  *
  * <p>Migrated from the AWS CardDemo mainframe estate at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
@@ -111,4 +122,29 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * @see Account
  */
 public interface AccountRepository extends JpaRepository<Account, String> {
+
+    /**
+     * Rewrites the three account balances changed by the posting program and advances the optimistic
+     * version in the same database statement.
+     *
+     * @param accountId          the eleven-character account business key
+     * @param currentBalance     the new current balance
+     * @param currentCycleCredit the new current-cycle credit total
+     * @param currentCycleDebit  the new current-cycle debit total, retaining a negative sign
+     * @return one when the row was rewritten, or zero for the legacy invalid-key outcome
+     */
+    @Modifying(clearAutomatically = true)
+    @Transactional
+    @Query("""
+            UPDATE Account a
+            SET a.acctCurrBal = :currentBalance,
+                a.acctCurrCycCredit = :currentCycleCredit,
+                a.acctCurrCycDebit = :currentCycleDebit,
+                a.version = a.version + 1
+            WHERE a.acctId = :accountId
+            """)
+    int rewritePostingBalances(@Param("accountId") String accountId,
+                               @Param("currentBalance") BigDecimal currentBalance,
+                               @Param("currentCycleCredit") BigDecimal currentCycleCredit,
+                               @Param("currentCycleDebit") BigDecimal currentCycleDebit);
 }

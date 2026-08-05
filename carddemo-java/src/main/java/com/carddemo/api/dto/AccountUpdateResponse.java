@@ -437,7 +437,18 @@ import jakarta.validation.constraints.Size;
  * {@code com.carddemo.api.AccountProtectedDataAdapter}, which reveals them only under an authorization
  * naming the account operation being served and either the administrator role or an established
  * ownership determination, and masks them otherwise. <em>That adapter is the only permitted source of
- * those eight values.</em> The distinction that matters is between a rendering and a payload: a
+ * those eight values on a published response.</em>
+ *
+ * <p><strong>How that holds when the transaction itself composes the screen.</strong> The account-update
+ * transaction fills the eight from the stored record because it must compare each against what was typed
+ * to decide whether a change occurred, and it may not name the adapter - a service does not depend on
+ * this package. The boundary therefore replaces all eight through
+ * {@link #withRegulatedValues(String, String, String, String, String, String, String, String)} before the
+ * screen is published, so a caller without the authority to see them receives masks at the same widths
+ * and never the stored values. A response that reached a client without passing through that call would
+ * publish them in the clear.
+ *
+ * <p>The distinction that matters is between a rendering and a payload: a
  * redacting {@code toString} protects a log line and nothing else, because Jackson serialises the
  * components rather than the rendering, so a value placed here in the clear crosses to the client in the
  * clear however thoroughly the rendering hides it. Populating any of the eight from an entity accessor
@@ -1046,6 +1057,65 @@ public record AccountUpdateResponse(
      */
     public boolean hasFieldErrors() {
         return !fieldErrors.isEmpty();
+    }
+
+    /**
+     * Returns a copy of this screen carrying the eight regulated components supplied in place of the
+     * eight it holds, and every other component unchanged.
+     *
+     * <p><strong>Why this exists.</strong> The three national-identifier positions, the three
+     * date-of-birth positions, the government-issued identifier and the electronic-funds account
+     * identifier are gated by {@code com.carddemo.api.AccountProtectedDataAdapter}, which is the only
+     * permitted source of them on a response. The transaction that composes this screen reproduces a
+     * CICS program paragraph for paragraph and legitimately holds those values in the clear, because it
+     * compares every typed field against the stored one to decide whether a change occurred - and the
+     * layering direction forbids it from naming the adapter. So the boundary applies the gate, and this
+     * method is how the gated values are put back onto an otherwise finished screen.
+     *
+     * <p>Nothing else is touched. The header, the account group, the customer's names and address, the
+     * telephone numbers, the credit score, the five monetary amounts, the messages, the per-field error
+     * states, the focus hint, the route and the conversation token are all carried across by value, and
+     * no value is trimmed, padded, re-cased or reformatted on the way - the components are fixed-width
+     * and space-significant, so a copy that normalised anything would be a parity defect.
+     *
+     * <p>A new instance is returned and this one is left untouched, so a caller cannot gate a screen in
+     * place and cannot end up publishing a half-gated one. The canonical constructor runs again on the
+     * copy, so the field-error collection is re-normalised and the monetary scales are re-checked
+     * exactly as they were on the original.
+     *
+     * @param newSsnPart1 the first three positions of the national identifier, or their mask
+     * @param newSsnPart2 the middle two positions, or their mask
+     * @param newSsnPart3 the final four positions, or their mask
+     * @param newDateOfBirthYear the birth year, or its mask
+     * @param newDateOfBirthMonth the birth month, or its mask
+     * @param newDateOfBirthDay the birth day, or its mask
+     * @param newGovernmentIssuedId the government-issued identifier, or its mask
+     * @param newEftAccountId the electronic-funds account identifier, or its mask
+     * @return a copy of this screen carrying the supplied eight components
+     */
+    public AccountUpdateResponse withRegulatedValues(final String newSsnPart1,
+            final String newSsnPart2,
+            final String newSsnPart3,
+            final String newDateOfBirthYear,
+            final String newDateOfBirthMonth,
+            final String newDateOfBirthDay,
+            final String newGovernmentIssuedId,
+            final String newEftAccountId) {
+        return new AccountUpdateResponse(
+                transactionName, title01, currentDate, programName, title02, currentTime,
+                accountId, accountStatus, openYear, openMonth, openDay, creditLimit,
+                expiryYear, expiryMonth, expiryDay, cashCreditLimit,
+                reissueYear, reissueMonth, reissueDay, currentBalance, currentCycleCredit,
+                accountGroupId, currentCycleDebit, customerId,
+                newSsnPart1, newSsnPart2, newSsnPart3,
+                newDateOfBirthYear, newDateOfBirthMonth, newDateOfBirthDay,
+                ficoScore, firstName, middleName, lastName, addressLine1, stateCode, addressLine2,
+                zipCode, city, countryCode, phone1AreaCode, phone1Prefix, phone1LineNumber,
+                newGovernmentIssuedId,
+                phone2AreaCode, phone2Prefix, phone2LineNumber,
+                newEftAccountId,
+                primaryCardHolderIndicator, infoMessage, errorMessage, error, focusScreenFieldId,
+                nextRoute, navigationContext, fieldErrors, concurrencyToken);
     }
 
     /**

@@ -16,8 +16,10 @@
  */
 package com.carddemo.batch;
 
+import com.carddemo.service.BatchJobCatalog;
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -28,7 +30,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -43,6 +44,7 @@ import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.scope.context.ChunkContext;
@@ -55,19 +57,26 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.PathResource;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.TransactionReportProcessor;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
-import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
+import com.carddemo.service.BatchJobCatalog;
+import com.carddemo.service.ReportTransactionInput;
+import com.carddemo.service.ReportTransactionSource;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.service.TransactionReportService.TransactionReportResult;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FixedWidthFieldReader;
 import com.carddemo.util.ReportLineFormatter;
+import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
 
@@ -248,16 +257,13 @@ import com.carddemo.util.ZonedDecimalCodec;
  *       shared meter registry and the metrics endpoint is where a baseline is read from.</li>
  * </ul>
  *
- * <h2>One measured divergence, recorded rather than hidden</h2>
+ * <h2>The report consumes the sort step's frozen generation</h2>
  *
- * <p>The legacy report step reads the filtered, ordered generation the sort step produced. In this
- * module the inclusive processing-date predicate together with the ascending card-number ordering is
- * expressed once, by the ordered range query {@link TransactionReportService} drives, and the report
- * stage's own contract is one whole report per date-parameter card - so the report is generated from
- * that same ordered range rather than by re-reading the generation. The second step remains the
- * faithful materialisation of the legacy sort output, catalogued as this job's sequential artefact
- * exactly as the legacy step catalogued it, and both routes express the same selection. The divergence
- * is a decision-log entry, not an omission.
+ * <p>The legacy report step reads the filtered, ordered generation the sort step produced. The target
+ * does the same: the emit lifecycle parses that exact generation once, detaches it into an immutable
+ * ordered snapshot and passes a service-owned {@link ReportTransactionSource} through the processor to
+ * {@link TransactionReportService}. No report-stage query of the mutable transaction master exists, so
+ * a row changed after the sort boundary cannot appear, disappear or move while the report is emitted.
  *
  * @since 1.0.0
  */
@@ -269,8 +275,15 @@ public final class TransactionReportJobConfig {
     // the same names against the measured member.
     // -----------------------------------------------------------------------------------------------
 
-    /** Registered name of this job, and the name a launch request addresses it by. */
-    public static final String JOB_NAME = "transactionReportJob";
+    /**
+     * Registered name of this job, and the name a launch request addresses it by.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
+     */
+    public static final String JOB_NAME = BatchJobCatalog.TRANSACTION_REPORT_JOB_NAME;
 
     /**
      * Name of the first step: the unload, standing in for the legacy step at line 23 of the job
@@ -399,9 +412,8 @@ public final class TransactionReportJobConfig {
     /**
      * Data-definition name of the report step's transaction input.
      *
-     * <p>Named for traceability only. The report content is produced from the ordered range the report
-     * service drives, which is the module's single expression of the same selection; the divergence is
-     * recorded in this class's documentation.
+     * <p>The third step opens and parses this generation, then freezes its ordered contents before
+     * report generation begins.
      */
     private static final String DD_REPORT_INPUT = "TRANFILE";
 
@@ -422,12 +434,6 @@ public final class TransactionReportJobConfig {
      */
     private static final String RECORD_SEPARATOR = "\n";
 
-    /** Absolute-generation naming form, which is how a legacy generation is addressed individually. */
-    private static final String GENERATION_NAME_FORMAT = "%s.G%04dV00";
-
-    /** Modulus keeping a generation number inside the four digits the naming form reserves. */
-    private static final int GENERATION_NUMBER_MODULUS = 10_000;
-
     /**
      * Scale the card-number sort key is decoded at. The field is a whole-number identifier, so it
      * carries no implied decimal position; the codec still owns the decode and the sign convention.
@@ -437,8 +443,7 @@ public final class TransactionReportJobConfig {
     /** Offset of the date portion within the record image's processing-timestamp field. */
     private static final int PROCESSING_DATE_OFFSET_IN_IMAGE = TransactionRecordMapper.TRAN_PROC_TS_OFFSET;
 
-    /** Key sequence the unload reads the transaction master in, which is its cluster key. */
-    private static final Sort UNLOAD_KEY_SEQUENCE = Sort.by(Sort.Direction.ASC, "tranId");
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
     // -----------------------------------------------------------------------------------------------
     // THE ORDERING. Private to this class, and it must stay private - see the class documentation for
@@ -482,8 +487,8 @@ public final class TransactionReportJobConfig {
     /** Owner of the launch-parameter cascade and of the single inclusive date-window predicate. */
     private final JobParameterValidators jobParameterValidators;
 
-    /** The transaction master, which the unload reads in cluster-key sequence. */
-    private final TransactionRepository transactionRepository;
+    /** Bounded sequential-read view kept separate from the frozen online repository surface. */
+    private final TransactionScanRepository transactionScanRepository;
 
     /** Source of the fixed-width reader over the unloaded generation. */
     private final FixedWidthFlatFileReaderFactory readerFactory;
@@ -523,7 +528,7 @@ public final class TransactionReportJobConfig {
      * @param jobRunIncrementer the shared run incrementer; must not be {@code null}
      * @param jobParameterValidators owner of the parameter cascade and of the window predicate; must
      *                               not be {@code null}
-     * @param transactionRepository the transaction master; must not be {@code null}
+     * @param transactionScanRepository bounded sequential-read view of the transaction master
      * @param readerFactory source of the fixed-width reader; must not be {@code null}
      * @param reportService the report generator; must not be {@code null}
      * @param meterRegistry the registry every step is timed on; must not be {@code null}
@@ -539,12 +544,14 @@ public final class TransactionReportJobConfig {
             @Qualifier("batchJobBoundaryListener") final JobExecutionListener jobBoundaryListener,
             @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer jobRunIncrementer,
             final JobParameterValidators jobParameterValidators,
-            final TransactionRepository transactionRepository,
+            final TransactionScanRepository transactionScanRepository,
             final FixedWidthFlatFileReaderFactory readerFactory,
             final TransactionReportService reportService,
             final MeterRegistry meterRegistry,
             final Clock clock,
-            @Value("${carddemo.batch.transaction-report.staging-directory:${java.io.tmpdir}}")
+            @Value("${carddemo.batch.transaction-report.staging-directory:${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
             @Value("${carddemo.batch.transaction-report.transaction-backup-base:"
                     + "AWS.M2.CARDDEMO.TRANSACT.BKUP}") final String transactionBackupBase,
@@ -560,18 +567,19 @@ public final class TransactionReportJobConfig {
         this.jobRunIncrementer = Objects.requireNonNull(jobRunIncrementer, "jobRunIncrementer");
         this.jobParameterValidators =
                 Objects.requireNonNull(jobParameterValidators, "jobParameterValidators");
-        this.transactionRepository =
-                Objects.requireNonNull(transactionRepository, "transactionRepository");
+        this.transactionScanRepository = Objects.requireNonNull(
+                transactionScanRepository, "transactionScanRepository");
         this.readerFactory = Objects.requireNonNull(readerFactory, "readerFactory");
         this.reportService = Objects.requireNonNull(reportService, "reportService");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stagingDirectory = requireResourceName(stagingDirectory, "stagingDirectory");
         this.transactionBackupBase =
-                requireResourceName(transactionBackupBase, "transactionBackupBase");
+                StagedResourceNames.requireSimpleName(transactionBackupBase, "transactionBackupBase");
         this.filteredTransactionBase =
-                requireResourceName(filteredTransactionBase, "filteredTransactionBase");
-        this.reportBase = requireResourceName(reportBase, "reportBase");
+                StagedResourceNames.requireSimpleName(filteredTransactionBase,
+                        "filteredTransactionBase");
+        this.reportBase = StagedResourceNames.requireSimpleName(reportBase, "reportBase");
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -694,16 +702,21 @@ public final class TransactionReportJobConfig {
      * step composes them and proves the width of every record that reaches the generation.
      *
      * @param reportProcessor the report stage; must not be {@code null}
+     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@link #EMIT_STEP_NAME}, never {@code null}
      */
     @Bean
     public Step transactionReportEmitStep(
-            @Qualifier("transactionReportProcessor") final TransactionReportProcessor reportProcessor) {
+            @Qualifier("transactionReportProcessor") final TransactionReportProcessor reportProcessor,
+            final BatchStagingArea stagingArea) {
 
         Objects.requireNonNull(reportProcessor, "reportProcessor");
         return new StepBuilder(EMIT_STEP_NAME, this.jobRepository)
-                .tasklet((contribution, chunkContext) -> emitReport(reportProcessor, chunkContext),
-                        this.transactionManager)
+                .tasklet((contribution, chunkContext) -> {
+                    final RepeatStatus result = emitReport(reportProcessor, chunkContext);
+                    stagingArea.publish(reportGeneration(jobExecutionIdOf(chunkContext)));
+                    return result;
+                }, this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -731,7 +744,13 @@ public final class TransactionReportJobConfig {
             final ChunkContext chunkContext) {
 
         final long jobExecutionId = jobExecutionIdOf(chunkContext);
-        newUnloadProgram(backupGeneration(jobExecutionId)).run();
+        final Path generation = backupGeneration(jobExecutionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
+        newUnloadProgram(working).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecutionOf(chunkContext),
+                this.transactionBackupBase, generation,
+                TRANSACTION_BACKUP_GENERATION_LIMIT);
         return RepeatStatus.FINISHED;
     }
 
@@ -747,8 +766,14 @@ public final class TransactionReportJobConfig {
             final ChunkContext chunkContext) {
 
         final long jobExecutionId = jobExecutionIdOf(chunkContext);
+        final Path generation = filteredGeneration(jobExecutionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
         newFilterAndOrderProgram(backupGeneration(jobExecutionId),
-                filteredGeneration(jobExecutionId), reportDateWindow(chunkContext)).run();
+                working, reportDateWindow(chunkContext)).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecutionOf(chunkContext),
+                this.filteredTransactionBase, generation,
+                FILTERED_TRANSACTION_GENERATION_LIMIT);
         return RepeatStatus.FINISHED;
     }
 
@@ -763,8 +788,13 @@ public final class TransactionReportJobConfig {
             final ChunkContext chunkContext) {
 
         final long jobExecutionId = jobExecutionIdOf(chunkContext);
+        final Path generation = reportGeneration(jobExecutionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
         newEmitProgram(reportProcessor, dateParameterCard(chunkContext),
-                reportGeneration(jobExecutionId)).run();
+                filteredGeneration(jobExecutionId), working).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecutionOf(chunkContext),
+                this.reportBase, generation, REPORT_GENERATION_LIMIT);
         return RepeatStatus.FINISHED;
     }
 
@@ -782,7 +812,7 @@ public final class TransactionReportJobConfig {
      */
     TransactionUnloadProgram newUnloadProgram(final Path generation) {
         return new TransactionUnloadProgram(this.meterRegistry, this.clock,
-                this.transactionRepository, generation);
+                this.transactionScanRepository, generation);
     }
 
     /**
@@ -806,14 +836,16 @@ public final class TransactionReportJobConfig {
      * @param reportProcessor the report stage; must not be {@code null}
      * @param dateParameterCard the validated date-parameter record, or {@code null} for an empty
      *                          parameter dataset
-     * @param generation the report generation to write; must not be {@code null}
+     * @param filteredGeneration the frozen report input produced by the preceding step
+     * @param reportGeneration the report generation to write; must not be {@code null}
      * @return a fresh lifecycle, never {@code null}
      */
     ReportEmitProgram newEmitProgram(final TransactionReportProcessor reportProcessor,
-            final String dateParameterCard, final Path generation) {
+            final String dateParameterCard, final Path filteredGeneration,
+            final Path reportGeneration) {
 
-        return new ReportEmitProgram(this.meterRegistry, this.clock, reportProcessor,
-                dateParameterCard, generation);
+        return new ReportEmitProgram(this.meterRegistry, this.clock, this.readerFactory,
+                reportProcessor, dateParameterCard, filteredGeneration, reportGeneration);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -917,12 +949,22 @@ public final class TransactionReportJobConfig {
      * @return the job execution identifier
      */
     private static long jobExecutionIdOf(final ChunkContext chunkContext) {
-        Objects.requireNonNull(chunkContext, "chunkContext");
-        final Long identifier =
-                chunkContext.getStepContext().getStepExecution().getJobExecutionId();
+        final Long identifier = stepExecutionOf(chunkContext).getJobExecutionId();
         return Objects.requireNonNull(identifier,
                 "the framework must have assigned a job execution identifier before a step runs")
                 .longValue();
+    }
+
+    /**
+     * Reads the step execution that owns one tasklet invocation.
+     *
+     * @param chunkContext framework chunk context
+     * @return current step execution
+     */
+    private static StepExecution stepExecutionOf(final ChunkContext chunkContext) {
+        Objects.requireNonNull(chunkContext, "chunkContext");
+        return Objects.requireNonNull(chunkContext.getStepContext().getStepExecution(),
+                "the framework must have opened a step execution before its tasklet runs");
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -968,14 +1010,19 @@ public final class TransactionReportJobConfig {
      * @return the resolved generation
      */
     private Path generationOf(final String base, final long jobExecutionId) {
-        final String generationName = String.format(Locale.ROOT, GENERATION_NAME_FORMAT, base,
-                Math.floorMod(jobExecutionId, GENERATION_NUMBER_MODULUS));
-        return Path.of(this.stagingDirectory).resolve(generationName);
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                base, jobExecutionId);
     }
 
     /**
      * Validates a configured logical name, because an absent or blank one would resolve to the staging
      * directory itself and a step would then write over a directory rather than a generation.
+     *
+     * <p><strong>This governs the staging root only.</strong> A dataset name resolved against that root
+     * is screened by {@link StagedResourceNames#requireSimpleName(String, String)}, which additionally
+     * refuses an absolute value, a path separator and a directory reference - none of which a blank
+     * check catches, and each of which would resolve outside the root. The root itself is legitimately
+     * a multi-segment path and may be absolute, so the stricter rule cannot be applied to it.
      *
      * @param value the configured value
      * @param name the property's role, for the diagnostic
@@ -1151,7 +1198,7 @@ public final class TransactionReportJobConfig {
     static final class TransactionUnloadProgram extends AbstractCobolStep<Transaction> {
 
         /** The transaction master being unloaded. */
-        private final TransactionRepository transactionRepository;
+        private final TransactionScanRepository transactionScanRepository;
 
         /** The generation this execution writes. */
         private final Path generation;
@@ -1168,23 +1215,27 @@ public final class TransactionReportJobConfig {
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
-         * @param transactionRepository the transaction master; must not be {@code null}
+         * @param transactionScanRepository bounded transaction-master scan; must not be {@code null}
          * @param generation the generation to write; must not be {@code null}
          */
         TransactionUnloadProgram(final MeterRegistry meterRegistry, final Clock clock,
-                final TransactionRepository transactionRepository, final Path generation) {
+                final TransactionScanRepository transactionScanRepository,
+                final Path generation) {
 
             super(LEGACY_CATALOGED_UNLOAD_STEP, meterRegistry, clock);
-            this.transactionRepository =
-                    Objects.requireNonNull(transactionRepository, "transactionRepository");
+            this.transactionScanRepository = Objects.requireNonNull(
+                    transactionScanRepository, "transactionScanRepository");
             this.generation = Objects.requireNonNull(generation, "generation");
         }
 
         @Override
         protected void openResources() {
             openResource(DD_UNLOAD_INPUT, () -> {
-                this.unloadCursor =
-                        this.transactionRepository.findAll(UNLOAD_KEY_SEQUENCE).iterator();
+                this.unloadCursor = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.transactionScanRepository
+                                .findByTranIdGreaterThanOrderByTranIdAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Transaction::getTranId, Comparator.naturalOrder());
                 return FileStatus.SUCCESS.getCode();
             });
 
@@ -1280,14 +1331,17 @@ public final class TransactionReportJobConfig {
         /** The inclusive processing-date window the predicate tests against. */
         private final JobParameterValidators.ReportDateWindow window;
 
-        /** The sort work area, standing in for the sort utility's own work dataset. */
-        private final List<String> sortWorkArea = new ArrayList<>();
+        /** Disk-backed bounded work area, standing in for the sort utility's work datasets. */
+        private ExternalStringSorter sorter;
 
         /** Handle on the generation being written. */
         private BufferedWriter writer;
 
         /** Records the predicate rejected, reported once the pass completes. */
         private long recordsExcluded;
+
+        /** Records the predicate included and the sorter emitted. */
+        private long recordsIncluded;
 
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
@@ -1322,6 +1376,9 @@ public final class TransactionReportJobConfig {
 
             openResource(DD_SORT_OUTPUT, () -> {
                 this.writer = openForWriting(this.filteredGeneration);
+                this.sorter = new ExternalStringSorter(
+                        CARD_NUMBER_ZONED_DECIMAL_ASCENDING,
+                        ExternalStringSorter.DEFAULT_RECORDS_PER_RUN);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -1346,7 +1403,7 @@ public final class TransactionReportJobConfig {
             // window in its own words and drift to an exclusive comparison; the comparison there is
             // between characters, exactly as the specification declares the field's type.
             if (this.window.includes(processingDateSortField(image))) {
-                this.sortWorkArea.add(image);
+                this.sorter.add(image);
             } else {
                 this.recordsExcluded++;
             }
@@ -1359,18 +1416,7 @@ public final class TransactionReportJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
 
-            // One key, ascending, applied by a stable sort: records sharing a card number keep the
-            // sequence the unload delivered them in, because the specification declares no second key.
-            this.sortWorkArea.sort(CARD_NUMBER_ZONED_DECIMAL_ASCENDING);
-
-            for (final String ordered : this.sortWorkArea) {
-                writeRecord(DD_SORT_OUTPUT, () -> {
-                    requireEncodedWidth(ordered, UNLOAD_RECORD_LENGTH, DD_SORT_OUTPUT);
-                    this.writer.write(ordered);
-                    this.writer.write(RECORD_SEPARATOR);
-                    return FileStatus.SUCCESS.getCode();
-                });
-            }
+            this.recordsIncluded = this.sorter.writeTo(this::writeOrderedRecord);
 
             closeResource(DD_SORT_OUTPUT, () -> {
                 this.writer.flush();
@@ -1380,7 +1426,7 @@ public final class TransactionReportJobConfig {
 
             LOGGER.info("{} INCLUDED {} AND EXCLUDED {} RECORD(S) FOR THE WINDOW {} TO {},"
                             + " ORDERED BY {} AT POSITION {} FOR {} BYTE(S) ASCENDING",
-                    TransactionReportProcessor.LEGACY_SORT_STEP, this.sortWorkArea.size(),
+                    TransactionReportProcessor.LEGACY_SORT_STEP, this.recordsIncluded,
                     this.recordsExcluded, this.window.startDate(), this.window.endDate(),
                     FIELD_TRAN_CARD_NUM, CARD_NUMBER_SORT_POSITION, CARD_NUMBER_SORT_LENGTH);
         }
@@ -1388,9 +1434,19 @@ public final class TransactionReportJobConfig {
         @Override
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_SORT_OUTPUT);
+            releaseQuietly(this.sorter, "SORTWK");
             // The item stream declares its own close rather than the standard one, so the release is
             // handed that close directly.
             releaseQuietly(this.reader::close, DD_SORT_INPUT);
+        }
+
+        private void writeOrderedRecord(final String ordered) {
+            writeRecord(DD_SORT_OUTPUT, () -> {
+                requireEncodedWidth(ordered, UNLOAD_RECORD_LENGTH, DD_SORT_OUTPUT);
+                this.writer.write(ordered);
+                this.writer.write(RECORD_SEPARATOR);
+                return FileStatus.SUCCESS.getCode();
+            });
         }
 
         /**
@@ -1399,7 +1455,12 @@ public final class TransactionReportJobConfig {
          * @return the record images in emission order, never {@code null}
          */
         List<String> orderedRecords() {
-            return List.copyOf(this.sortWorkArea);
+            try {
+                return Files.readAllLines(this.filteredGeneration, StandardCharsets.US_ASCII);
+            } catch (final IOException failure) {
+                throw new UncheckedIOException(
+                        "unable to read the filtered transaction-report generation", failure);
+            }
         }
 
         /**
@@ -1429,10 +1490,13 @@ public final class TransactionReportJobConfig {
      * total are the generator's, and the grand total it reports was reached only by way of page totals.
      * This class logs those figures and computes none of them.
      */
-    static final class ReportEmitProgram extends AbstractCobolStep<String> {
+    static final class ReportEmitProgram extends AbstractCobolStep<ReportTransactionInput> {
 
         /** The report stage this lifecycle delegates one whole report to. */
         private final TransactionReportProcessor reportProcessor;
+
+        /** Reader over the filtered, ordered generation produced by the preceding step. */
+        private final FlatFileItemReader<Transaction> transactionReader;
 
         /**
          * The validated date-parameter record image, or {@code null} for an empty parameter dataset.
@@ -1446,7 +1510,7 @@ public final class TransactionReportJobConfig {
         private final String dateParameterCard;
 
         /** The report generation this execution writes. */
-        private final Path generation;
+        private final Path reportGeneration;
 
         /** Whether the parameter record has already been served to the read loop. */
         private boolean parameterRecordServed;
@@ -1463,19 +1527,26 @@ public final class TransactionReportJobConfig {
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
+         * @param readerFactory source of the fixed-width transaction reader; must not be {@code null}
          * @param reportProcessor the report stage; must not be {@code null}
          * @param dateParameterCard the validated parameter record, or {@code null} for an empty
          *                          parameter dataset
-         * @param generation the report generation to write; must not be {@code null}
+         * @param filteredGeneration the filtered, ordered generation to snapshot
+         * @param reportGeneration the report generation to write; must not be {@code null}
          */
         ReportEmitProgram(final MeterRegistry meterRegistry, final Clock clock,
+                final FixedWidthFlatFileReaderFactory readerFactory,
                 final TransactionReportProcessor reportProcessor, final String dateParameterCard,
-                final Path generation) {
+                final Path filteredGeneration, final Path reportGeneration) {
 
             super(TransactionReportProcessor.LEGACY_REPORT_STEP, meterRegistry, clock);
+            Objects.requireNonNull(readerFactory, "readerFactory");
             this.reportProcessor = Objects.requireNonNull(reportProcessor, "reportProcessor");
             this.dateParameterCard = dateParameterCard;
-            this.generation = Objects.requireNonNull(generation, "generation");
+            this.transactionReader = readerFactory.transactionReader(
+                    new PathResource(Objects.requireNonNull(filteredGeneration,
+                            "filteredGeneration")));
+            this.reportGeneration = Objects.requireNonNull(reportGeneration, "reportGeneration");
         }
 
         @Override
@@ -1483,26 +1554,34 @@ public final class TransactionReportJobConfig {
             openResource(TransactionReportProcessor.LEGACY_DD_DATEPARM,
                     () -> FileStatus.SUCCESS.getCode());
 
+            openResource(DD_REPORT_INPUT, () -> {
+                this.transactionReader.open(new ExecutionContext());
+                return FileStatus.SUCCESS.getCode();
+            });
+
             openResource(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
-                this.writer = openForWriting(this.generation);
+                this.writer = openForWriting(this.reportGeneration);
                 return FileStatus.SUCCESS.getCode();
             });
         }
 
         @Override
-        protected Optional<String> readNextRecord() {
-            return this.<String>readRecord(TransactionReportProcessor.LEGACY_DD_DATEPARM, () -> {
+        protected Optional<ReportTransactionInput> readNextRecord() {
+            return this.<ReportTransactionInput>readRecord(
+                    TransactionReportProcessor.LEGACY_DD_DATEPARM, () -> {
                 if (this.parameterRecordServed || this.dateParameterCard == null) {
                     return IoResult.endOfFile();
                 }
                 this.parameterRecordServed = true;
-                return IoResult.of(FileStatus.SUCCESS.getCode(), this.dateParameterCard);
+                return IoResult.of(FileStatus.SUCCESS.getCode(),
+                        new ReportTransactionInput(this.dateParameterCard,
+                                snapshotTransactionSource()));
             });
         }
 
         @Override
-        protected void processRecord(final String record) {
-            this.result = Objects.requireNonNull(this.reportProcessor.process(record),
+        protected void processRecord(final ReportTransactionInput input) {
+            this.result = Objects.requireNonNull(this.reportProcessor.process(input),
                     TransactionReportProcessor.LEGACY_PROGRAM
                             + " reported no report for the parameter record it was given");
 
@@ -1520,11 +1599,57 @@ public final class TransactionReportJobConfig {
             }
         }
 
+        /**
+         * Reads the filtered generation to exhaustion and detaches its ordered contents.
+         *
+         * <p>The immutable copy is captured before report generation starts. A later change to the
+         * backing file or to the transaction master therefore cannot alter which records this run
+         * sees, and the source exposes only the sequential read contract the service needs.
+         *
+         * @return the frozen ordered source, never {@code null}
+         */
+        private ReportTransactionSource snapshotTransactionSource() {
+            final List<Transaction> records = new ArrayList<>();
+            boolean endOfFile = false;
+            while (!endOfFile) {
+                final Optional<Transaction> next = this.<Transaction>readRecord(DD_REPORT_INPUT,
+                        () -> {
+                            final Transaction transaction = this.transactionReader.read();
+                            if (transaction == null) {
+                                return IoResult.endOfFile();
+                            }
+                            return IoResult.of(FileStatus.SUCCESS.getCode(), transaction);
+                        });
+                if (next.isPresent()) {
+                    records.add(next.get());
+                } else {
+                    endOfFile = true;
+                }
+            }
+
+            final List<Transaction> snapshot = List.copyOf(records);
+            return position -> {
+                if (position < 0) {
+                    throw new IllegalArgumentException(
+                            "report transaction position must not be negative: " + position);
+                }
+                if (position >= snapshot.size()) {
+                    return Optional.empty();
+                }
+                return Optional.of(snapshot.get(position));
+            };
+        }
+
         @Override
         protected void closeResources() {
             closeResource(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
                 this.writer.flush();
                 this.writer.close();
+                return FileStatus.SUCCESS.getCode();
+            });
+
+            closeResource(DD_REPORT_INPUT, () -> {
+                this.transactionReader.close();
                 return FileStatus.SUCCESS.getCode();
             });
 
@@ -1551,6 +1676,7 @@ public final class TransactionReportJobConfig {
         @Override
         protected void releaseResources() {
             releaseQuietly(this.writer, TransactionReportProcessor.LEGACY_DD_TRANREPT);
+            releaseQuietly(this.transactionReader::close, DD_REPORT_INPUT);
         }
 
         /**

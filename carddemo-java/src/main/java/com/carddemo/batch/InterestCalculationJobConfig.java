@@ -20,11 +20,16 @@ import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.batch.step.AbstractCobolStep.ExecutionSummary;
 import com.carddemo.batch.step.InterestCalculationProcessor;
 import com.carddemo.batch.step.InterestCalculationProcessor.AccruedAccountGroup;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.InterestCalculationService;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.StagedResourceNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -32,8 +37,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
+import java.util.Comparator;
 import java.util.Iterator;
-import java.util.Locale;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -53,8 +59,11 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.interceptor.DefaultTransactionAttribute;
+import org.springframework.transaction.interceptor.TransactionAttribute;
 
 /**
  * The batch job configuration for monthly interest accrual: the translated wiring of the legacy job
@@ -81,25 +90,6 @@ import org.springframework.transaction.PlatformTransactionManager;
  * skeleton is in {@link AbstractCobolStep}; the monetary scale and its truncating rounding mode are in
  * {@link com.carddemo.util.ZonedDecimalCodec}; the fixed-width record image is in the transaction
  * record mapper. This class calls them and slices nothing.
- *
- * <h2>Rules provenance</h2>
- *
- * <p><strong>No user-specified rules were provided for this engagement.</strong> The project's rules
- * document reports that none were supplied, so no file enters scope by rule, no rule conflict exists
- * and none is invented here. The absence is not treated as licence to lower the bar: the work is held
- * to enterprise-standard best practice instead, and the standards that bear on this file are named in
- * prose rather than by label - a reproducible hermetic build whose dependency manifest this file never
- * touches; zero-warning compilation enforced as a build failure; layered separation of concerns with
- * the batch tier depending on the service, domain, repository, utility, exception and configuration
- * layers and never being depended upon by them; no code generation and a reflection budget of zero;
- * secrets never in source and never defaulted, of which this file needs none; schema owned solely by
- * the migration tool, with the framework's own metadata tables created by the framework; a test
- * pyramid with an enforced line-coverage floor; supply-chain hygiene through dependency scanning at
- * the verification phase; observability as a first-class concern with no hardcoded performance target
- * anywhere; licence continuity through the header above; full auditability through the traceability
- * matrix and the decision log, which are another agent's artefacts and are only referred to from here;
- * and, decisively for every judgement below, <strong>faithful beats idiomatic</strong> - where the
- * legacy semantics and natural Java diverge, the legacy wins and the divergence is recorded.
  *
  * <h2>The measured legacy job stream</h2>
  *
@@ -144,64 +134,32 @@ import org.springframework.transaction.PlatformTransactionManager;
  * and retention is deliberately not implemented here, because retention is a property of the
  * generation group rather than of the job that writes one generation.
  *
- * <h2>The behavioural contract this wiring must let the collaborators honour</h2>
+ * <h2>What this wiring must let the collaborators honour</h2>
  *
- * <p>Each item below is measured, is implemented by the collaborator named against it, and is stated
- * here because this class is what decides whether the collaborator is reached at all.
+ * <p>The run's behaviour belongs to {@link InterestCalculationService} and
+ * {@link InterestCalculationProcessor}, each of which documents its own invariants: the parenthesised
+ * multiply-then-divide interest expression that truncates rather than rounds and must never be
+ * rearranged algebraically; the zero-rate gate that skips the interest computation <em>and</em> the fee
+ * computation together; the fee paragraph that is an invoked, documented no-op which no fee logic may
+ * fill; the single default disclosure-group probe that abends on a second miss; the composite
+ * disclosure key built in record-image order rather than in the legacy's assignment order; and the
+ * synthesized transaction's field-by-field shape, including its identifier built from the launch
+ * parameter used verbatim. None of that is reproduced here, because a business rule in a configuration
+ * class is a rule in the wrong layer. Three consequences <em>are</em> this class's own, because it is
+ * the only place that can guarantee them.
  *
- * <p><strong>The arithmetic.</strong> The monthly interest is the parenthesised product of the
- * category balance and the disclosed rate, divided only afterwards by twelve hundred, stored into a
- * two-decimal field, and only then added to the running total. It must never be rearranged
- * algebraically: dividing the rate first is identical in exact arithmetic but moves the truncation
- * point and changes the result. The store <strong>truncates and does not round</strong>, because the
- * keyword that requests rounding occurs nowhere in the legacy estate; the truncating mode lives in
- * {@link com.carddemo.util.ZonedDecimalCodec} and nowhere else, which is why no scaling call and no
- * rounding mode appears in this file. Every amount is a {@link java.math.BigDecimal}; no binary
- * floating-point type appears anywhere on this path.
+ * <p><strong>No retry, no backoff and no skip is configured on this step.</strong> The legacy performs
+ * exactly one default-group probe, and a framework retry would silently turn one probe into several.
  *
- * <p><strong>The zero-rate gate wraps two things.</strong> When the disclosed rate is zero, both the
- * interest computation <em>and</em> the fee computation are skipped - not the interest alone. The
- * enclosing structure's other arm is the account control break. <strong>The fee paragraph is a
- * genuine, documented no-op</strong>: its whole body is a comment and an exit, yet it is genuinely
- * invoked. It is preserved as {@link InterestCalculationProcessor}'s own empty, documented method and
- * is deliberately <strong>not</strong> reproduced a third time here - a no-op business paragraph in a
- * configuration class would be a business rule in the wrong layer, and inventing fee logic to fill it
- * would be feature expansion that changed the run's output.
+ * <p><strong>The final account control break is driven explicitly, on the completing path, before
+ * anything is closed.</strong> The break adds the accumulated interest to the account's current balance
+ * and resets <strong>both</strong> cycle accumulators. The last account has no successor row to trigger
+ * its own break, so omitting the end-of-file break would lose that account's interest entirely while
+ * leaving every other figure of the run looking correct - a silent data-loss defect.
  *
- * <p><strong>The default disclosure-group fallback is one probe, never a loop.</strong> Only the
- * record-not-found status triggers it; any other unsuccessful status is diagnosed, reported with its
- * raw two-byte value and abended. The fallback moves a seven-character literal into a ten-character
- * group identifier, so the effective key is that literal followed by three spaces, and it performs
- * <strong>a single re-read</strong>. A second miss abends. No retry policy, no backoff and no third
- * attempt is configured on this step, because the legacy has exactly one probe and a framework retry
- * would silently turn one probe into several.
- *
- * <p><strong>The composite disclosure key is not assembled in the legacy's assignment order.</strong>
- * The program assigns its lookup key group, then category, then type;
- * {@link com.carddemo.domain.id.DisclosureGroupId} is constructed group, then <em>type</em>, then
- * <em>category</em>, in the order the components occupy the record image. Transposing the two short
- * character components resolves the wrong row or none at all and still compiles, which is exactly why
- * the key is built by the collaborator that documents the trap and never here.
- *
- * <p><strong>The account control break also fires at end of file.</strong> On a break the accumulated
- * interest is added to the account's current balance and <strong>both</strong> cycle accumulators, the
- * credit and the debit, are reset. The last account has no successor row to trigger its own break, so
- * omitting the end-of-file break would lose that account's interest entirely while leaving every other
- * figure of the run looking correct - a silent data-loss defect. This step therefore drives the final
- * break explicitly, on its completing path, before it closes anything.
- *
- * <p><strong>The synthesized transaction.</strong> Its sixteen-character identifier is the ten
- * characters of the launch parameter used <strong>verbatim</strong> followed by a six-digit suffix that
- * starts at zero and increments per run, so the parameter must not be reformatted into a hyphenated or
- * otherwise separated date on its way through the launch boundary. Type code and category code are
- * fixed, the category field being four digits wide so the value occupies all four positions; the source
- * is a fixed word space-padded to its field width; the description is a fixed literal whose trailing
- * space is part of the contract, followed by the eleven-digit account identifier; the merchant
- * identifier is zero-filled and the merchant name, city and postal code are spaces; the card number is
- * the one resolved through the cross-reference and not the account identifier; and the origination and
- * processing timestamps are <strong>identical</strong>, taken once, in the twenty-six-character batch
- * form whose formatter is nested inside {@link AbstractCobolStep}. Every width is confirmed on encoded
- * bytes rather than on a character count.
+ * <p><strong>The launch parameter reaches the service unaltered.</strong> It is the ten characters the
+ * legacy step passes, and the synthesized identifier uses them verbatim, so it must not be reformatted
+ * into a hyphenated or otherwise separated date on its way through the launch boundary.
  *
  * <h2>Diagnostics and failure</h2>
  *
@@ -262,8 +220,13 @@ public final class InterestCalculationJobConfig {
     /**
      * Registered name of the job. Launch and status queries address the job by name through the
      * framework's registry, so this value is API: renaming it breaks every launcher that names it.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = "interestCalculationJob";
+    public static final String JOB_NAME = BatchJobCatalog.INTEREST_CALCULATION_JOB_NAME;
 
     /**
      * Registered name of the one step. A configuration-time constant rather than a value derived from
@@ -338,31 +301,28 @@ public final class InterestCalculationJobConfig {
     /** Logical name of the output generation group, as the legacy stream names it. */
     private static final String DEFAULT_TRANSACT_DATASET_BASE = "AWS.M2.CARDDEMO.SYSTRAN";
 
-    /** Shape of a legacy absolute-generation name: the base, the generation number, the version. */
-    private static final String GENERATION_NAME_FORMAT = "%s.G%04dV00";
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
+
+    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
+
+    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
 
     /**
-     * Modulus of a legacy absolute generation number, whose names wrap rather than widen. Widening is
-     * avoided so a generation name keeps the shape an operator recognises.
+     * Prevents the tasklet adapter from opening one transaction around the complete file pass.
+     *
+     * <p>Each closed account group enters
+     * {@link com.carddemo.service.InterestGroupTransactionBoundary} instead. Using the same configured
+     * manager with {@link TransactionDefinition#PROPAGATION_NOT_SUPPORTED} leaves no transaction or
+     * transaction synchronization active around the tasklet, so the group's
+     * {@code REQUIRES_NEW} boundary is the only business transaction.
      */
-    private static final int GENERATION_NUMBER_MODULUS = 10_000;
-
-    /**
-     * Record-key order of the driving input: account identifier, then transaction type code, then
-     * transaction category code, which is the key order the indexed file declares and the order the
-     * control break depends on. The relational source imposes no order of its own, so the scan states
-     * one explicitly; rows of one account that were not adjacent would be treated as separate groups,
-     * each closing its own control break and each rewriting the account.
-     */
-    private static final Sort RECORD_KEY_ORDER = Sort.by(
-            Sort.Order.asc("trancatAcctId"),
-            Sort.Order.asc("trancatTypeCd"),
-            Sort.Order.asc("trancatCd"));
+    private static final TransactionAttribute NO_ENCOMPASSING_TRANSACTION =
+            new DefaultTransactionAttribute(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
 
     /** The framework's metadata repository, which records every execution of this job. */
     private final JobRepository jobRepository;
 
-    /** The manager the step's unit of work is bounded by. */
+    /** The manager used to suspend any caller transaction around the tasklet adapter. */
     private final PlatformTransactionManager transactionManager;
 
     /** Owner of the launch-boundary parameter contract, including the run date's cascade. */
@@ -417,7 +377,9 @@ public final class InterestCalculationJobConfig {
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final MeterRegistry meterRegistry,
             final Clock clock,
-            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${java.io.tmpdir}}")
+            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
             @Value("${" + TRANSACT_DATASET_BASE_PROPERTY + ":" + DEFAULT_TRANSACT_DATASET_BASE + "}")
                     final String transactDatasetBase) {
@@ -437,7 +399,8 @@ public final class InterestCalculationJobConfig {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.stagingDirectory = requireResourceName(stagingDirectory, "stagingDirectory");
-        this.transactDatasetBase = requireResourceName(transactDatasetBase, "transactDatasetBase");
+        this.transactDatasetBase =
+                StagedResourceNames.requireSimpleName(transactDatasetBase, "transactDatasetBase");
     }
 
     // -------------------------------------------------------------------------------------------
@@ -497,15 +460,18 @@ public final class InterestCalculationJobConfig {
     }
 
     /**
-     * The one step: the whole program in one indivisible pass.
+     * The one step: the whole program in one sequential pass with one commit per closed account group.
      *
-     * <p><strong>A single-invocation step and not a chunk-oriented one.</strong> The program is one
-     * pass over one driving input, and a legacy batch program is not restartable part way through its
-     * file, so there is no chunk boundary to place; placing one would also require stating a commit
-     * interval, and no such figure has a legacy basis. None appears anywhere in this file - no
-     * throughput, latency, heap, timeout, thread-pool, skip, retry, commit-interval, backoff or
-     * connection figure, in code or in comment - because the metrics endpoint is where a baseline is
-     * read from and this file states no target for one.
+     * <p><strong>A single-invocation tasklet and not a chunk-oriented step.</strong> The program is one
+     * pass over one driving input, but the pass is deliberately <em>not</em> one transaction. Each
+     * account control break invokes the service through its independent transaction boundary, matching
+     * the AAP's account-group commit point. A later account failure therefore leaves every earlier
+     * completed account durable. The tasklet transaction attribute is
+     * {@link TransactionDefinition#PROPAGATION_NOT_SUPPORTED}; no outer transaction can absorb those
+     * group commits. There is still no arbitrary chunk interval, because no such figure has a legacy
+     * basis. None appears anywhere in this file - no throughput, latency, heap, timeout, thread-pool,
+     * skip, retry, commit-interval, backoff or connection figure, in code or in comment - because the
+     * metrics endpoint is where a baseline is read from and this file states no target for one.
      *
      * <p><strong>Strictly sequential.</strong> No task executor, no partitioning, no multi-threaded
      * step and no parallel flow, because the output is ordered fixed-width records and any of the three
@@ -518,13 +484,17 @@ public final class InterestCalculationJobConfig {
      * only re-read is the single default-group probe, which the service performs once, and a framework
      * retry here would turn one probe into several.
      *
+     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@link #STEP_NAME}
      */
     @Bean(name = STEP_NAME)
-    public Step interestAccrualStep() {
+    public Step interestAccrualStep(final BatchStagingArea stagingArea) {
         return new StepBuilder(STEP_NAME, this.jobRepository)
                 .meterRegistry(this.meterRegistry)
-                .tasklet(this::runInterestAccrual, this.transactionManager)
+                .tasklet((contribution, chunkContext) ->
+                        runInterestAccrual(contribution, chunkContext, stagingArea),
+                        this.transactionManager)
+                .transactionAttribute(NO_ENCOMPASSING_TRANSACTION)
                 .build();
     }
 
@@ -542,13 +512,16 @@ public final class InterestCalculationJobConfig {
      *                     indivisible invocation with no partial contribution to report
      * @param chunkContext the framework's chunk context, which supplies the step execution; must not be
      *                     {@code null}
+     * @param stagingArea the shared object-store staging boundary
      * @return {@link RepeatStatus#FINISHED} always
      * @throws NullPointerException if the chunk context or its step execution is absent
      */
     private RepeatStatus runInterestAccrual(final StepContribution contribution,
-            final ChunkContext chunkContext) {
+            final ChunkContext chunkContext, final BatchStagingArea stagingArea) {
 
-        runAccrualPass(stepExecutionOf(chunkContext));
+        final StepExecution stepExecution = stepExecutionOf(chunkContext);
+        runAccrualPass(stepExecution);
+        stagingArea.publish(transactGeneration(jobExecutionIdOf(stepExecution)));
         return RepeatStatus.FINISHED;
     }
 
@@ -581,10 +554,17 @@ public final class InterestCalculationJobConfig {
 
         final InterestCalculationProcessor accrual = new InterestCalculationProcessor(
                 this.interestCalculationService, this.meterRegistry, this.clock);
-        final Path generation = transactGeneration(jobExecutionIdOf(stepExecution));
+        final long executionId = jobExecutionIdOf(stepExecution);
+        final Path generation = transactGeneration(executionId);
+        final Path working = StagedGenerationStore.workingPath(generation);
 
-        return new InterestAccrualStep(accrual, this.transactionCategoryBalanceRepository,
-                this.meterRegistry, this.clock, stepExecution, generation).run();
+        final ExecutionSummary summary = new InterestAccrualStep(accrual,
+                this.transactionCategoryBalanceRepository, this.meterRegistry, this.clock,
+                stepExecution, working).run();
+        StagedGenerationStore.completeWorkingFile(working, generation);
+        StagedGenerationStore.register(stepExecution, this.transactDatasetBase, generation,
+                StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+        return summary;
     }
 
     // -------------------------------------------------------------------------------------------
@@ -597,9 +577,9 @@ public final class InterestCalculationJobConfig {
      *
      * <p>Naming the generation from the framework's own execution identifier is what makes each
      * execution write a distinct resource, as the legacy step's new-generation allocation did, without
-     * this class holding any state between executions. Retention is not implemented: the generation
-     * group is declared with a limit and a scratch-on-roll-off policy, and both are properties of the
-     * group rather than of the job that writes one generation.
+     * this class holding any state between executions. The identifier is never reduced modulo a
+     * narrower range, so names do not collide; the shared durable store applies the measured
+     * scratch-on-roll-off depth after the whole job completes.
      *
      * <p>Exposed so a test that launched the job can locate the artefact the launch produced and
      * confirm that its size is an exact multiple of {@value #TRANSACT_RECORD_LENGTH} encoded bytes.
@@ -608,10 +588,8 @@ public final class InterestCalculationJobConfig {
      * @return the resolved generation resource
      */
     public Path transactGeneration(final long jobExecutionId) {
-        final String generationName = String.format(Locale.ROOT, GENERATION_NAME_FORMAT,
-                this.transactDatasetBase,
-                Math.floorMod(jobExecutionId, GENERATION_NUMBER_MODULUS));
-        return Path.of(this.stagingDirectory).resolve(generationName);
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.transactDatasetBase, jobExecutionId);
     }
 
     /**
@@ -645,6 +623,12 @@ public final class InterestCalculationJobConfig {
     /**
      * Validates a configured resource name, because a blank one would resolve to the staging directory
      * itself and the job would then truncate a directory rather than write a dataset.
+     *
+     * <p><strong>This governs the staging root only.</strong> A dataset name resolved against that root
+     * is screened by {@link StagedResourceNames#requireSimpleName(String, String)}, which additionally
+     * refuses an absolute value, a path separator and a directory reference - none of which a blank
+     * check catches, and each of which would resolve outside the root. The root itself is legitimately
+     * a multi-segment path and may be absolute, so the stricter rule cannot be applied to it.
      *
      * @param value the configured value
      * @param name the property's role, for the diagnostic
@@ -751,8 +735,25 @@ public final class InterestCalculationJobConfig {
          * @return the status a successful open reports
          */
         private String openCategoryBalanceMaster() {
-            this.master = this.categoryBalances.findAll(RECORD_KEY_ORDER).iterator();
+            this.master = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                    this::loadCategoryBalancePage,
+                    InterestCalculationJobConfig::categoryBalanceKey,
+                    Comparator.naturalOrder());
+            this.master.hasNext();
             return FileStatus.SUCCESS.getCode();
+        }
+
+        private List<TransactionCategoryBalance> loadCategoryBalancePage(
+                final String cursor, final Integer pageSize) {
+            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
+            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
+            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
+            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
+            final String categoryCode = cursor.length() <= categoryOffset
+                    ? ""
+                    : cursor.substring(categoryOffset);
+            return this.categoryBalances.findAfterKey(accountId, typeCode, categoryCode,
+                    PageRequest.of(0, pageSize.intValue()));
         }
 
         /**
@@ -948,9 +949,21 @@ public final class InterestCalculationJobConfig {
                 LOG.warn("PROGRAM {} RELEASED GENERATION {} AFTER FAILURE WITH {} RECORD(S) WRITTEN",
                         programName(), this.generation, this.recordsWritten);
             } catch (final IOException unreleased) {
-                LOG.warn("PROGRAM {} COULD NOT RELEASE GENERATION {} AFTER FAILURE", programName(),
-                        this.generation, unreleased);
+                LOG.warn("PROGRAM {} COULD NOT RELEASE GENERATION {} AFTER FAILURE failureChain={}",
+                        programName(), this.generation,
+                        FailureDiagnostics.failureChainOf(unreleased));
             }
         }
+    }
+
+    private static String keyPart(final String key, final int offset, final int width) {
+        if (key.length() <= offset) {
+            return "";
+        }
+        return key.substring(offset, Math.min(key.length(), offset + width));
+    }
+
+    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
+        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 }

@@ -100,6 +100,12 @@ class ReportRequestServiceTest {
     /** The affirmative confirmation entry the screen accepts. */
     private static final String CONFIRM_YES = "Y";
 
+    /** Stable token a caller repeats when retrying one logical report request. */
+    private static final String RETRY_TOKEN = "report-request-retry-001";
+
+    /** Token naming a deliberate second submission of the same reporting period. */
+    private static final String NEW_SUBMISSION_TOKEN = "report-request-new-002";
+
     /** The selection character the screen writes into whichever period the operator chose. */
     private static final String SELECTED = "Y";
 
@@ -114,6 +120,15 @@ class ReportRequestServiceTest {
 
     /** The card that terminates the stream, which the source transmits rather than merely holding. */
     private static final String END_OF_FILE_CARD = "/*EOF";
+
+    /**
+     * The submission identity a stubbed bridge echoes back on its outcome.
+     *
+     * <p>A fixed value, because the identity the screen actually mints carries a nonce and is therefore
+     * not predictable; what these tests assert about it is that the screen obtains one and hands it to the
+     * bridge unchanged, which they do by capturing the argument rather than by comparing it to a literal.
+     */
+    private static final String RESULT_SUBMISSION_ID = "stubbed-submission";
 
     /** The month-to-date window this fixed clock derives: the first of the current month. */
     private static final String MONTHLY_START_DATE = "2022-07-01";
@@ -275,7 +290,7 @@ class ReportRequestServiceTest {
                         ArgumentMatchers.anyList()))
                 .thenAnswer(invocation -> {
                     final int submitted = invocation.<List<String>>getArgument(1).size();
-                    return new JobSubmissionService.SubmissionResult(submitted, submitted, false, "");
+                    return new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, submitted, submitted, false, "");
                 });
         return publisher;
     }
@@ -291,6 +306,7 @@ class ReportRequestServiceTest {
         Mockito.when(publisher.submitCanonicalJobImage(ArgumentMatchers.anyString(),
                         ArgumentMatchers.anyList()))
                 .thenAnswer(invocation -> new JobSubmissionService.SubmissionResult(
+                        invocation.getArgument(0),
                         invocation.<List<String>>getArgument(1).size(), 0, true,
                         com.carddemo.exception.JobSubmissionException.DEFAULT_MESSAGE));
         return publisher;
@@ -308,6 +324,7 @@ class ReportRequestServiceTest {
         Mockito.when(publisher.submitCanonicalJobImage(ArgumentMatchers.anyString(),
                         ArgumentMatchers.anyList()))
                 .thenAnswer(invocation -> new JobSubmissionService.SubmissionResult(
+                        invocation.getArgument(0),
                         invocation.<List<String>>getArgument(1).size(), refusedSlot - 1, true,
                         com.carddemo.exception.JobSubmissionException.DEFAULT_MESSAGE));
         return publisher;
@@ -419,6 +436,78 @@ class ReportRequestServiceTest {
     }
 
     private record PublishedCard(String submissionId, String cardImage, int ordinal) {
+    }
+
+    @Nested
+    @DisplayName("Logical-request identity")
+    class LogicalRequestIdentity {
+
+        @Test
+        @DisplayName("the same retry token and date range reproduce the submission identity exactly")
+        void theSameRetryTokenReproducesTheIdentity() {
+            final JobSubmissionService publisher = publishingEveryCard();
+            final ReportRequestService service = serviceWith(publisher);
+            final ReportRequestService.ReportScreenInput screen =
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
+
+            final ReportRequestService.ReportRequestResult first =
+                    service.processReportRequest(screen, RETRY_TOKEN);
+            final ReportRequestService.ReportRequestResult retry =
+                    service.processReportRequest(screen, RETRY_TOKEN);
+
+            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
+            Mockito.verify(publisher, Mockito.times(2))
+                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
+            assertThat(identities.getAllValues()).hasSize(2)
+                    .allSatisfy(identity -> assertThat(identity)
+                            .contains(MONTHLY_START_DATE)
+                            .contains(MONTHLY_END_DATE)
+                            .doesNotContain(RETRY_TOKEN)
+                            .matches("[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9a-f]{64}"));
+            assertThat(identities.getAllValues().get(1))
+                    .isEqualTo(identities.getAllValues().get(0));
+            assertThat(first.submissionToken()).isEqualTo(RETRY_TOKEN);
+            assertThat(retry.submissionToken()).isEqualTo(RETRY_TOKEN);
+        }
+
+        @Test
+        @DisplayName("a distinct token makes a deliberate new submission of the same date range distinct")
+        void aDistinctTokenMakesANewSubmissionDistinct() {
+            final JobSubmissionService publisher = publishingEveryCard();
+            final ReportRequestService service = serviceWith(publisher);
+            final ReportRequestService.ReportScreenInput screen =
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
+
+            service.processReportRequest(screen, RETRY_TOKEN);
+            service.processReportRequest(screen, NEW_SUBMISSION_TOKEN);
+
+            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
+            Mockito.verify(publisher, Mockito.times(2))
+                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
+            assertThat(identities.getAllValues()).hasSize(2).doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("when no token is supplied each deliberate request receives a fresh returned token")
+        void anAbsentTokenIsMintedAndReturned() {
+            final JobSubmissionService publisher = publishingEveryCard();
+            final ReportRequestService service = serviceWith(publisher);
+            final ReportRequestService.ReportScreenInput screen =
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
+
+            final ReportRequestService.ReportRequestResult first =
+                    service.processReportRequest(screen);
+            final ReportRequestService.ReportRequestResult second =
+                    service.processReportRequest(screen);
+
+            assertThat(first.submissionToken()).isNotBlank();
+            assertThat(second.submissionToken()).isNotBlank().isNotEqualTo(first.submissionToken());
+
+            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
+            Mockito.verify(publisher, Mockito.times(2))
+                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
+            assertThat(identities.getAllValues()).hasSize(2).doesNotHaveDuplicates();
+        }
     }
 
     @Nested
@@ -793,7 +882,7 @@ class ReportRequestServiceTest {
             serviceWith(firstPublisher).processReportRequest(
                     input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
             serviceWith(secondPublisher).processReportRequest(
-                    input(null, SELECTED, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
 
             final String firstIdentity =
                     capturePublishedCards(firstPublisher, EXPECTED_CARD_COUNT).get(0).submissionId();
@@ -801,6 +890,42 @@ class ReportRequestServiceTest {
                     capturePublishedCards(secondPublisher, EXPECTED_CARD_COUNT).get(0).submissionId();
 
             assertThat(firstIdentity).isNotBlank().isNotEqualTo(secondIdentity);
+        }
+
+        @Test
+        @DisplayName("two turns requesting the SAME period also carry two different identities, so the "
+                + "queue service cannot discard the second turn behind the first one's success")
+        void twoTurnsForTheSamePeriodCarryTwoDifferentIdentities() {
+            // The defect this pins: an identity derived from the two date slots alone made both turns
+            // produce the same seventeen deduplication identifiers, so a first-in-first-out queue
+            // discarded the second turn's cards inside its deduplication interval and the operator was
+            // told the job had been submitted. The legacy queue's disposition appended, so the second
+            // turn ran the job again; suppressing it silently is the parity break.
+            final JobSubmissionService firstPublisher = publishingEveryCard();
+            final JobSubmissionService secondPublisher = publishingEveryCard();
+
+            serviceWith(firstPublisher).processReportRequest(
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
+            serviceWith(secondPublisher).processReportRequest(
+                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
+
+            final List<PublishedCard> first =
+                    capturePublishedCards(firstPublisher, EXPECTED_CARD_COUNT);
+            final List<PublishedCard> second =
+                    capturePublishedCards(secondPublisher, EXPECTED_CARD_COUNT);
+
+            assertThat(second.get(0).cardImage())
+                    .as("both turns submit the identical card stream, which is what makes the identity "
+                            + "the only thing distinguishing them")
+                    .isEqualTo(first.get(0).cardImage());
+            assertThat(second.get(0).submissionId())
+                    .as("and the identities differ, so nothing is deduplicated away")
+                    .isNotBlank()
+                    .isNotEqualTo(first.get(0).submissionId());
+            assertThat(first.get(0).submissionId())
+                    .as("the identity still names the period it submits, so a diagnostic reads back to "
+                            + "the request")
+                    .startsWith(MONTHLY_START_DATE);
         }
     }
 

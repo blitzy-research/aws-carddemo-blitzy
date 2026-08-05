@@ -21,10 +21,16 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -37,11 +43,18 @@ import org.springframework.boot.test.context.runner.WebApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.MergedAnnotations;
 import org.springframework.format.FormatterRegistry;
+import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.validation.MessageCodesResolver;
 import org.springframework.validation.Validator;
 import org.springframework.web.ErrorResponse;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.HandlerMethodReturnValueHandler;
 import org.springframework.web.servlet.HandlerExceptionResolver;
@@ -58,19 +71,23 @@ import org.springframework.web.servlet.config.annotation.ViewResolverRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurationSupport;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Verifies {@link WebMvcConfig}, whose entire contract is a <strong>deliberate absence</strong>.
+ * Verifies {@link WebMvcConfig}, whose contract is narrow, explicit web-boundary hardening.
  *
- * <p>{@code WebMvcConfig} implements {@link WebMvcConfigurer} and overrides nothing. An empty
- * configuration and a forgotten configuration look identical from the outside, so the only way to
- * establish that the emptiness is intentional and load-bearing is to assert it &mdash; behaviourally,
- * not by declaring that an annotation happens to be present. This class therefore has two halves, and
- * both exercise the object rather than describe it.
+ * <p>{@code WebMvcConfig} preserves the framework's converters, dispatch and exception translation,
+ * while adding exact-origin CORS and a bounded request-body reader beside its existing scalar and
+ * validation rules. This class therefore proves both the additions and the defaults that remain
+ * untouched.
  *
  * <h2>Half one &mdash; the negative-contribution proof</h2>
  *
- * <p>All nineteen configurer callbacks the framework will make are invoked here. The ones that receive a
+ * <p>All configurer callbacks the framework will make are invoked here. The ones that receive a
  * collection are handed a real, mutable, initially empty collection and the collection itself is the
  * evidence; the ones that receive a registry are handed a test double that records every call, and the
  * absence of any call is the evidence; the two that answer with a component are asserted to answer
@@ -130,8 +147,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * <h2>Customisations that must never appear, and would fail a test above if they did</h2>
  *
  * <p>A static resource handler; a view resolver, view-controller entry or templating engine of any kind
- * &mdash; there is no browser or single-page interface anywhere in this migration; a cross-origin
- * relaxation, and in particular a wildcard origin combined with credentials; a content-negotiation
+ * &mdash; there is no browser or single-page interface anywhere in this migration; a wildcard or
+ * credentialed cross-origin relaxation; a content-negotiation
  * override; a favicon handler or welcome page; a locale or theme resolver, since verbatim screen text is
  * resolved from the message catalogue and must not vary; a multipart configuration; an exception
  * resolver, framework advice base class or standard problem-detail format, because the error body is
@@ -151,7 +168,7 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
  * <p>Provenance: legacy checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. No legacy source text
  * is reproduced anywhere in this file; record widths and field shapes are cited as metadata only.
  */
-@DisplayName("WebMvcConfig - a deliberate absence, and the auto-configuration it protects")
+@DisplayName("WebMvcConfig - explicit web boundaries and the auto-configuration they preserve")
 class WebMvcConfigTest {
 
     /**
@@ -167,7 +184,10 @@ class WebMvcConfigTest {
             new WebApplicationContextRunner().withConfiguration(AutoConfigurations.of(
                     WebMvcAutoConfiguration.class,
                     JacksonAutoConfiguration.class,
-                    HttpMessageConvertersAutoConfiguration.class));
+                    HttpMessageConvertersAutoConfiguration.class))
+                    .withPropertyValues(
+                            WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
+                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB");
 
     /**
      * The configuration under test, held through the interface the framework invokes it through.
@@ -190,6 +210,118 @@ class WebMvcConfigTest {
      */
     private static void assertNothingWasContributedTo(final Object registry, final String rationale) {
         assertThatCode(() -> verifyNoInteractions(registry)).as(rationale).doesNotThrowAnyException();
+    }
+
+    /** Registry test seam exposing the configurations the framework would install. */
+    private static final class ExposedCorsRegistry extends CorsRegistry {
+
+        private Map<String, CorsConfiguration> configurations() {
+            return getCorsConfigurations();
+        }
+    }
+
+    @Nested
+    @DisplayName("the generic request-body ceiling")
+    class RequestBodyCeiling {
+
+        @Test
+        @DisplayName("a body at the configured size is copied intact for MVC")
+        void aBodyAtTheConfiguredSizeIsCopiedIntact() throws Exception {
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("POST", "/api/body-probe");
+            request.setContent("12345678".getBytes(StandardCharsets.US_ASCII));
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            final AtomicReference<jakarta.servlet.ServletRequest> forwarded =
+                    new AtomicReference<>();
+
+            filter.doFilter(request, response, (bounded, ignored) -> forwarded.set(bounded));
+
+            assertThat(((HttpServletRequest) forwarded.get()).getInputStream().readAllBytes())
+                    .containsExactly("12345678".getBytes(StandardCharsets.US_ASCII));
+        }
+
+        @Test
+        @DisplayName("a declared body above the ceiling is refused without reading or echoing it")
+        void aDeclaredBodyAboveTheCeilingIsRefused() throws Exception {
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("POST", "/api/body-probe");
+            request.setContent("sensitive".getBytes(StandardCharsets.US_ASCII));
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+            final AtomicInteger invocations = new AtomicInteger();
+
+            filter.doFilter(request, response,
+                    (ignoredRequest, ignoredResponse) -> invocations.incrementAndGet());
+
+            assertThat(response.getStatus()).isEqualTo(413);
+            assertThat(response.getContentAsString()).doesNotContain("sensitive");
+            assertThat(invocations).hasValue(0);
+        }
+
+        @Test
+        @DisplayName("a chunked body above the ceiling is refused after only one excess byte")
+        void aChunkedBodyAboveTheCeilingIsRefused() throws Exception {
+            final WebMvcConfig.RequestBodyLimitFilter filter =
+                    new WebMvcConfig.RequestBodyLimitFilter("8B");
+            final MockHttpServletRequest request =
+                    new MockHttpServletRequest("POST", "/api/body-probe") {
+                        @Override
+                        public long getContentLengthLong() {
+                            return -1L;
+                        }
+                    };
+            request.setContent("1234567890".getBytes(StandardCharsets.US_ASCII));
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            filter.doFilter(request, response, (ignoredRequest, ignoredResponse) -> {
+                throw new AssertionError("an oversized chunked request reached the chain");
+            });
+
+            assertThat(response.getStatus()).isEqualTo(413);
+        }
+
+        @Test
+        @DisplayName("the servlet pipeline answers 413 before an oversized body reaches a controller")
+        void theMvcPipelineAnswersPayloadTooLarge() {
+            AUTO_CONFIGURED_WEB_TIER
+                    .withUserConfiguration(WebMvcConfig.class)
+                    .withBean(BodyProbeController.class)
+                    .run(context -> {
+                        final MockMvc client = MockMvcBuilders.webAppContextSetup(context)
+                                .addFilters(new WebMvcConfig.RequestBodyLimitFilter("64KB"))
+                                .build();
+                        final String oversized =
+                                "{\"value\":\"" + "x".repeat(64 * 1_024) + "\"}";
+
+                        client.perform(post("/api/body-probe")
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(oversized))
+                                .andExpect(status().isPayloadTooLarge());
+
+                        assertThat(context.getBean(BodyProbeController.class).invocations)
+                                .as("the request-body filter must reject before controller invocation")
+                                .isZero();
+                    });
+        }
+    }
+
+    /** Probe endpoint used only to prove the request-body filter is in the servlet pipeline. */
+    @RestController
+    static final class BodyProbeController {
+
+        private int invocations;
+
+        @PostMapping(path = "/api/body-probe", consumes = MediaType.APPLICATION_JSON_VALUE)
+        void accept(@RequestBody final BodyProbe body) {
+            this.invocations++;
+        }
+    }
+
+    /** Small JSON shape whose payload size is controlled entirely by the test. */
+    private record BodyProbe(String value) {
     }
 
     /**
@@ -397,17 +529,39 @@ class WebMvcConfigTest {
         }
 
         @Test
-        @DisplayName("no cross-origin mapping is registered, so no origin is admitted that the framework "
-                + "defaults would refuse")
-        void noCrossOriginMappingIsRegistered() {
-            final CorsRegistry registry = mock(CorsRegistry.class);
+        @DisplayName("the shipped policy registers the entire API with an empty exact-origin set")
+        void theShippedPolicyDeniesEveryCrossOriginRequest() {
+            final ExposedCorsRegistry registry = new ExposedCorsRegistry();
 
             WebMvcConfigTest.this.configurer.addCorsMappings(registry);
 
-            assertNothingWasContributedTo(registry,
-                    "WebMvcConfig must register no cross-origin mapping. Cross-origin relaxation is "
-                            + "forbidden outright here, and a wildcard allowed origin combined with "
-                            + "credentials must never appear in this module in any form");
+            assertThat(registry.configurations()).containsOnlyKeys(WebMvcConfig.API_PATH_PATTERN);
+            final CorsConfiguration policy =
+                    registry.configurations().get(WebMvcConfig.API_PATH_PATTERN);
+            assertThat(policy.getAllowedOrigins()).isEmpty();
+            assertThat(policy.getAllowedMethods()).containsExactly("GET", "POST");
+            assertThat(policy.getAllowedHeaders())
+                    .containsExactly("Accept", "Authorization", "Content-Type");
+            assertThat(policy.getExposedHeaders()).containsExactly("Authorization");
+            assertThat(policy.getAllowCredentials()).isFalse();
+            assertThat(policy.getMaxAge()).isEqualTo(600L);
+        }
+
+        @Test
+        @DisplayName("configured origins are exact and never converted into a wildcard or pattern")
+        void configuredOriginsRemainExact() {
+            final WebMvcConfig configured =
+                    new WebMvcConfig("https://client.example,http://localhost:3000");
+            final ExposedCorsRegistry registry = new ExposedCorsRegistry();
+
+            configured.addCorsMappings(registry);
+
+            final CorsConfiguration policy =
+                    registry.configurations().get(WebMvcConfig.API_PATH_PATTERN);
+            assertThat(policy.getAllowedOrigins())
+                    .containsExactly("https://client.example", "http://localhost:3000");
+            assertThat(policy.getAllowedOriginPatterns()).isNullOrEmpty();
+            assertThat(policy.getAllowCredentials()).isFalse();
         }
 
         @Test
@@ -601,6 +755,9 @@ class WebMvcConfigTest {
         void theConfigurerAloneContributesNoConfigurationSupport() {
             new WebApplicationContextRunner()
                     .withUserConfiguration(WebMvcConfig.class)
+                    .withPropertyValues(
+                            WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
+                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
                     .run(context -> assertThat(context)
                             .as("with no auto-configuration registered, the only thing that could put an "
                                     + "MVC configuration-support bean in this context is WebMvcConfig "
@@ -618,6 +775,9 @@ class WebMvcConfigTest {
         void theConfigurerAloneContributesNoSerialiserOrConverter() {
             new WebApplicationContextRunner()
                     .withUserConfiguration(WebMvcConfig.class)
+                    .withPropertyValues(
+                            WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
+                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
                     .run(context -> assertThat(context)
                             .as("WebMvcConfig must contribute no object mapper, no builder customiser and "
                                     + "no message converter of its own. Any of those would re-derive the "

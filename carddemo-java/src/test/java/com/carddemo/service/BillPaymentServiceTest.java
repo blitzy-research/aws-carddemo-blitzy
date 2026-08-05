@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
@@ -38,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
@@ -48,6 +48,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
 
 /**
@@ -126,17 +129,17 @@ class BillPaymentServiceTest {
                 "          ");
     }
 
-    private static NavigationContext reEntry() {
-        return NavigationContext.empty().withReEntry();
+    private static ScreenNavigationState reEntry() {
+        return ScreenNavigationState.empty().withReEntry();
     }
 
-    private static NavigationContext firstEntry() {
-        return NavigationContext.empty().withFirstEntry();
+    private static ScreenNavigationState firstEntry() {
+        return ScreenNavigationState.empty().withFirstEntry();
     }
 
-    private static NavigationContext firstEntryNominating(final String accountId) {
-        return new NavigationContext(null, null, null, null, null, null,
-                NavigationContext.ProgramContext.ENTER, null, null, null, null, accountId, null,
+    private static ScreenNavigationState firstEntryNominating(final String accountId) {
+        return new ScreenNavigationState(null, null, null, null, null, null,
+                ScreenNavigationState.ProgramContext.ENTER, null, null, null, null, accountId, null,
                 null, null, null);
     }
 
@@ -160,19 +163,18 @@ class BillPaymentServiceTest {
         Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
         Mockito.when(accountRepository.saveAndFlush(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        Mockito.when(crossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
+        Mockito.when(crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
         Mockito.when(transactionRepository.findMaxId())
                 .thenReturn(Optional.ofNullable(highestExisting));
-        Mockito.when(transactionRepository.existsById(Mockito.anyString())).thenReturn(false);
-        Mockito.when(transactionRepository.save(Mockito.any(Transaction.class)))
+        Mockito.when(transactionRepository.insertAndFlush(Mockito.any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         return account;
     }
 
     private Transaction capturedInsert() {
         final ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-        Mockito.verify(transactionRepository).save(captor.capture());
+        Mockito.verify(transactionRepository).insertAndFlush(captor.capture());
         return captor.getValue();
     }
 
@@ -229,13 +231,29 @@ class BillPaymentServiceTest {
             arrangePayableAccount("100.00", null);
 
             final BillPaymentService.BillPaymentResult result = service.processBillPayment(
+                    new BillPaymentService.BillPaymentScreenInput(ACCOUNT_ID, null, null,
+                            firstEntryNominating("99999999999")));
+
+            // The bounded screen field nominates the account. The different account echoed in the
+            // communication area is retained state, not authority over which row the turn may read.
+            Mockito.verify(accountRepository).findById(ACCOUNT_ID);
+            Mockito.verify(accountRepository, Mockito.never()).findById("99999999999");
+            // No confirmation was supplied, so the turn prompts rather than paying.
+            assertThat(result.message()).isEqualTo("Confirm to make a bill payment...");
+            assertThat(result.transaction()).isNull();
+        }
+
+        @Test
+        @DisplayName("an account echoed only in navigation state cannot nominate a row for lookup")
+        void echoedNavigationAccountAloneCannotNominateAnAccount() {
+            final BillPaymentService.BillPaymentResult result = service.processBillPayment(
                     new BillPaymentService.BillPaymentScreenInput(null, null, null,
                             firstEntryNominating(ACCOUNT_ID)));
 
-            // The nominated value reached the account-id field and the account was actually read.
-            Mockito.verify(accountRepository).findById(ACCOUNT_ID);
-            // No confirmation was supplied, so the turn prompts rather than paying.
-            assertThat(result.message()).isEqualTo("Confirm to make a bill payment...");
+            Mockito.verifyNoInteractions(accountRepository, transactionRepository,
+                    crossReferenceRepository);
+            assertThat(result.focusField()).isEqualTo("ACTIDIN");
+            assertThat(result.message()).isEmpty();
             assertThat(result.transaction()).isNull();
         }
 
@@ -420,7 +438,7 @@ class BillPaymentServiceTest {
             assertThat(result.screenBalance()).isEqualByComparingTo("250.75");
             assertThat(result.transaction()).isNull();
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -476,7 +494,7 @@ class BillPaymentServiceTest {
             assertThat(result.focusField()).isEqualTo("ACTIDIN");
             assertThat(result.transaction()).isNull();
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -547,6 +565,22 @@ class BillPaymentServiceTest {
         }
 
         @Test
+        @DisplayName("the allocation lock is taken before the maximum and remains in the same turn "
+                + "through the flushed insert")
+        void allocationLockPrecedesTheMaximumAndInsert() {
+            arrangePayableAccount("10.00", "0000000000000123");
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            final InOrder allocationOrder = Mockito.inOrder(transactionRepository);
+            allocationOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            allocationOrder.verify(transactionRepository).findMaxId();
+            allocationOrder.verify(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
+        }
+
+        @Test
         @DisplayName("a malformed maximum is refused rather than incremented, under the source's own "
                 + "catch-all text")
         void malformedMaximumRefused() {
@@ -561,7 +595,7 @@ class BillPaymentServiceTest {
             assertThat(result.message()).isEqualTo("Unable to Add Bill pay Transaction...");
             assertThat(result.transaction()).isNull();
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -576,7 +610,7 @@ class BillPaymentServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.transaction()).isNull();
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -584,15 +618,16 @@ class BillPaymentServiceTest {
                 + "silently overwriting the existing row")
         void duplicateIdentifierRefused() {
             arrangePayableAccount("10.00", "0000000000000001");
-            Mockito.when(transactionRepository.existsById("0000000000000002")).thenReturn(true);
+            Mockito.when(transactionRepository.insertAndFlush(Mockito.any(Transaction.class)))
+                    .thenThrow(new DuplicateKeyException("duplicate transaction identifier"));
 
             final BillPaymentService.BillPaymentResult result =
                     service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.message()).isEqualTo("Tran ID already exist...");
-            Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+            Mockito.verify(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -601,8 +636,8 @@ class BillPaymentServiceTest {
         void missingCrossReferenceRefusesTheInsert() {
             arrangePayableAccount("10.00", null);
             Mockito.when(crossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                    .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
 
             final BillPaymentService.BillPaymentResult result =
                     service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
@@ -610,7 +645,7 @@ class BillPaymentServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.message()).isEqualTo("Unable to Add Bill pay Transaction...");
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(Mockito.any(Transaction.class));
+                    .insertAndFlush(Mockito.any(Transaction.class));
         }
 
         @Test
@@ -618,8 +653,8 @@ class BillPaymentServiceTest {
         void blankCardNumberReachesTheCrossReferenceCatchAll() {
             arrangePayableAccount("10.00", null);
             Mockito.when(crossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(
+                    .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(
                             new CardCrossReference(" ".repeat(16), CUSTOMER_ID, ACCOUNT_ID)));
 
             final BillPaymentService.BillPaymentResult result =
@@ -630,6 +665,190 @@ class BillPaymentServiceTest {
             assertThat(result.message()).isEqualTo("Unable to Add Bill pay Transaction...");
         }
     }
+
+    // ==============================================================================================
+    // Serialised identifier allocation, lines 212 to 233
+    //
+    // The legacy region held its browse position across the read, the increment and the write, which
+    // admitted one allocator at a time. A relational store expresses that hold as the repository's
+    // transaction-scoped advisory lock plus an existence probe, and the repository's own contract
+    // obliges the allocating service to take the lock BEFORE the maximum is read and to re-read under
+    // it when a writer that skipped the lock has already taken the identifier. Sharing a transaction is
+    // not sufficient on its own: under READ COMMITTED an uncommitted insert is invisible, so two
+    // allocators could otherwise read the same maximum, derive the same successor and collide.
+    //
+    // Every expectation here is authored from that contract rather than read back from the service.
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("Serialised identifier allocation, lines 212 to 233")
+    class SerialisedAllocation {
+
+        @Test
+        @DisplayName("the advisory lock is taken BEFORE the maximum is read, which is the whole point: "
+                + "a lock taken afterwards would serialise nothing")
+        void theLockPrecedesTheRead() {
+            arrangePayableAccount("10.00", "0000000000000123");
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            final InOrder inOrder = Mockito.inOrder(transactionRepository);
+            inOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            inOrder.verify(transactionRepository).findMaxId();
+        }
+
+        @Test
+        @DisplayName("the key the lock is taken on is the repository's own constant, because a lock on "
+                + "any other key serialises against nobody")
+        void theLockKeyIsTheRepositoryConstant() {
+            arrangePayableAccount("10.00", null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY)
+                    .as("the constant itself is part of the contract: every participant must use it")
+                    .isEqualTo(350_016L);
+            Mockito.verify(transactionRepository)
+                    .lockIdentifierAllocation(350_016L);
+        }
+
+        @Test
+        @DisplayName("the lock is still held when the insert is flushed, so the row reaches the server "
+                + "inside the serialised window rather than at commit")
+        void theLockIsHeldWhenTheInsertIsFlushed() {
+            arrangePayableAccount("10.00", null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            final InOrder inOrder = Mockito.inOrder(transactionRepository);
+            inOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            inOrder.verify(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("the lock is taken exactly once per turn, because it is re-entrant within a "
+                + "session and a second acquisition would buy nothing")
+        void theLockIsTakenOncePerTurn() {
+            arrangePayableAccount("10.00", null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            Mockito.verify(transactionRepository, Mockito.times(1))
+                    .lockIdentifierAllocation(Mockito.anyLong());
+        }
+
+        @Test
+        @DisplayName("a turn that mints nothing takes no lock at all: an unconfirmed submission reads "
+                + "the account and stops, and must not serialise every other allocator behind it")
+        void anUnconfirmedTurnTakesNoLock() {
+            arrangePayableAccount("10.00", null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, " "));
+
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .lockIdentifierAllocation(Mockito.anyLong());
+            Mockito.verify(transactionRepository, Mockito.never()).findMaxId();
+        }
+
+        @Test
+        @DisplayName("an identifier already taken is re-minted from a re-read maximum rather than "
+                + "refused, which is the bounded retry the repository contract obliges")
+        void aTakenIdentifierIsReMintedFromAReReadMaximum() {
+            arrangePayableAccount("10.00", null);
+            // The first read sees a maximum whose successor another writer has already committed; the
+            // re-read under the lock sees that writer's row, so the second successor is free.
+            Mockito.when(transactionRepository.findMaxId())
+                    .thenReturn(Optional.of("0000000000000009"))
+                    .thenReturn(Optional.of("0000000000000019"));
+            Mockito.when(transactionRepository.existsById("0000000000000010")).thenReturn(true);
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag())
+                    .as("the second attempt succeeds, so the payment is not rejected for a reason that "
+                            + "has nothing to do with the payment")
+                    .isFalse();
+            assertThat(capturedInsert().getTranId()).isEqualTo("0000000000000020");
+            Mockito.verify(transactionRepository, Mockito.times(2)).findMaxId();
+            Mockito.verify(transactionRepository, Mockito.times(1))
+                    .lockIdentifierAllocation(Mockito.anyLong());
+        }
+
+        @Test
+        @DisplayName("the retry is BOUNDED: a maximum that never moves is attempted twice and then "
+                + "reported under the source's duplicate text, never retried forever")
+        void theRetryIsBounded() {
+            arrangePayableAccount("10.00", "0000000000000001");
+            Mockito.when(transactionRepository.existsById("0000000000000002")).thenReturn(true);
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+            Mockito.verify(transactionRepository, Mockito.times(2)).findMaxId();
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .insertAndFlush(Mockito.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("a duplicate raised by the FLUSH is reported and not retried, because a refused "
+                + "flush leaves the transaction unable to commit whatever is attempted next")
+        void aFlushDuplicateIsReportedRatherThanRetried() {
+            arrangePayableAccount("10.00", null);
+            Mockito.doThrow(new DataIntegrityViolationException("duplicate key value"))
+                    .when(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+            assertThat(result.transaction())
+                    .as("nothing was inserted, so no arm may report a stored record")
+                    .isNull();
+            Mockito.verify(transactionRepository, Mockito.times(1)).findMaxId();
+        }
+
+        @Test
+        @DisplayName("a flush failure that is NOT a duplicate reaches the insert's catch-all text, so "
+                + "the failure is reported by this paragraph instead of escaping at commit")
+        void aFlushFailureThatIsNotADuplicateReachesTheCatchAll() {
+            arrangePayableAccount("10.00", null);
+            Mockito.doThrow(new DataAccessResourceFailureException("connection reset"))
+                    .when(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Unable to Add Bill pay Transaction...");
+            assertThat(result.transaction()).isNull();
+        }
+
+        @Test
+        @DisplayName("a duplicate nested inside a wrapping failure is still recognised, because the "
+                + "classification walks the cause chain rather than matching a message")
+        void aNestedDuplicateIsRecognised() {
+            arrangePayableAccount("10.00", null);
+            Mockito.doThrow(new DataAccessResourceFailureException("wrapper",
+                            new DuplicateKeyException("duplicate key value")))
+                    .when(transactionRepository)
+                    .insertAndFlush(Mockito.any(Transaction.class));
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+        }
+    }
+
 
     // ==============================================================================================
     // The synthesized transaction, lines 218 to 232
@@ -789,9 +1008,8 @@ class BillPaymentServiceTest {
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             final InOrder inOrder = Mockito.inOrder(transactionRepository, accountRepository);
-            inOrder.verify(transactionRepository).save(Mockito.any(Transaction.class));
+            inOrder.verify(transactionRepository).insertAndFlush(Mockito.any(Transaction.class));
             inOrder.verify(accountRepository).saveAndFlush(Mockito.any(Account.class));
-            inOrder.verifyNoMoreInteractions();
         }
 
         @Test
@@ -830,8 +1048,8 @@ class BillPaymentServiceTest {
         void accountIsRewrittenEvenWhenTheInsertWasRefused() {
             final Account account = arrangePayableAccount("50.00", null);
             Mockito.when(crossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                    .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
@@ -1076,7 +1294,8 @@ class BillPaymentServiceTest {
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
             final ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-            Mockito.verify(transactionRepository, Mockito.times(2)).save(captor.capture());
+            Mockito.verify(transactionRepository, Mockito.times(2))
+                    .insertAndFlush(captor.capture());
             assertThat(captor.getAllValues()).extracting(Transaction::getTranId)
                     .containsExactly("0000000000000001", "0000000000000001");
             assertThat(second.getAcctCurrBal()).isEqualByComparingTo(BigDecimal.ZERO);

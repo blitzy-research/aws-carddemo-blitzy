@@ -867,7 +867,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Rate of the item-read timer's count, which is one observation per record read. This is where the Gate 3 records-per-second figure is read. Note that this timer's labels are unprefixed, unlike the job and step timers above. Absent until a job has been launched.",
+      "description": "Exact application-owned record counters, divided by the explicit dashboard rate window. The interest job is tasklet-based and therefore appears through its own row counter rather than a Spring Batch item-reader timer. Every target is absent until its code path has run; absence is not treated as zero.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -945,15 +945,80 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (job_name, step_name) (rate(spring_batch_item_read_seconds_count{job=\"$job\"}[$__rate_interval]))",
+          "expr": "sum(rate(carddemo_batch_posting_records_total{job=\"$job\"}[$__rate_interval]))",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "{{job_name}} / {{step_name}}",
+          "legendFormat": "POSTTRAN input records",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (step) (rate(carddemo_batch_interest_rows_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "INTCALC / {{step}} rows",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (rate(carddemo_batch_report_records_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "TRANREPT / {{resource}} records",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (rate(carddemo_batch_statement_records_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "CREASTMT / {{resource}} plain records",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (rate(carddemo_batch_statement_htmlRecords_records_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "CREASTMT / {{resource}} HTML records",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (mode, program, resource) (rate(carddemo_batch_fileprobe_records_total{job=\"$job\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "FILEPROBE / {{program}} / {{resource}}",
+          "range": true,
+          "refId": "F"
         }
       ],
-      "title": "Records read per second - GATE 3 RECORDS PER SECOND",
+      "title": "Exact application records per second - GATE 3 RECORDS PER SECOND",
       "type": "timeseries"
     },
     {
@@ -961,7 +1026,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Increase in the item-read count across whatever window the time picker is showing. A volume observed, never a volume expected.",
+      "description": "Exact application-owned record-counter increases across the selected dashboard window. These are observed volumes, never expected-volume thresholds.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1014,15 +1079,80 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (job_name, step_name) (increase(spring_batch_item_read_seconds_count{job=\"$job\"}[$__range]))",
+          "expr": "sum(increase(carddemo_batch_posting_records_total{job=\"$job\"}[$__range]))",
           "format": "time_series",
           "instant": true,
-          "legendFormat": "{{job_name}} / {{step_name}}",
+          "legendFormat": "POSTTRAN input records",
           "range": false,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (step) (increase(carddemo_batch_interest_rows_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "INTCALC / {{step}} rows",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (increase(carddemo_batch_report_records_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "TRANREPT / {{resource}} records",
+          "range": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (increase(carddemo_batch_statement_records_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "CREASTMT / {{resource}} plain records",
+          "range": false,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (resource) (increase(carddemo_batch_statement_htmlRecords_records_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "CREASTMT / {{resource}} HTML records",
+          "range": false,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (mode, program, resource) (increase(carddemo_batch_fileprobe_records_total{job=\"$job\"}[$__range]))",
+          "format": "time_series",
+          "instant": true,
+          "legendFormat": "FILEPROBE / {{program}} / {{resource}}",
+          "range": false,
+          "refId": "F"
         }
       ],
-      "title": "Records read over the selected window",
+      "title": "Exact application records over the selected window",
       "type": "stat"
     },
     {
@@ -1030,7 +1160,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Cumulative job-timer count split by status. Spring Batch 5.2.6 publishes no active-job gauge, so execution counts by status are the available view of job outcomes over time.",
+      "description": "Cumulative job-timer count split by status. This is the historical view of job outcomes; the active-executions panel below is the separate point-in-time gauge.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1124,6 +1254,194 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
+      "description": "Diagnostic call rate for Spring Batch item readers, grouped by the exact sanitized labels Spring Batch exports. This is not the Gate 3 record rate: a completed reader makes one terminal call that returns end of input.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "records/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "id": 31,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_item_read_job_name, spring_batch_item_read_step_name, spring_batch_item_read_status) (rate(spring_batch_item_read_seconds_count{job=\"$job\", spring_batch_item_read_job_name=~\"$itemReadJob\", spring_batch_item_read_step_name=~\"$step\"}[$__rate_interval]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_item_read_job_name}} / {{spring_batch_item_read_step_name}} / {{spring_batch_item_read_status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Spring Batch item-reader calls per second - diagnostic only",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Selected-window count of Spring Batch item-reader calls, grouped by the exact sanitized labels Spring Batch exports. This is a diagnostic complement to the application-owned Gate 3 counters.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "active executions",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (spring_batch_item_read_job_name, spring_batch_item_read_step_name, spring_batch_item_read_status) (increase(spring_batch_item_read_seconds_count{job=\"$job\", spring_batch_item_read_job_name=~\"$itemReadJob\", spring_batch_item_read_step_name=~\"$step\"}[$__range]))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_item_read_job_name}} / {{spring_batch_item_read_step_name}} / {{spring_batch_item_read_status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Spring Batch item-reader calls over the selected window - diagnostic only",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
       "description": "One row per job, step and status. The status label distinguishes a step that completed from one that failed, which is the distinction the legacy condition-code gating depended on.",
       "fieldConfig": {
         "defaults": {
@@ -1152,7 +1470,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 42
       },
       "id": 14,
       "options": {
@@ -1215,7 +1533,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 50
       },
       "id": 15,
       "panels": [],
@@ -1279,7 +1597,7 @@
         "h": 8,
         "w": 10,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "id": 16,
       "options": {
@@ -1372,7 +1690,7 @@
         "h": 8,
         "w": 4,
         "x": 10,
-        "y": 43
+        "y": 51
       },
       "id": 17,
       "options": {
@@ -1468,7 +1786,7 @@
         "h": 8,
         "w": 10,
         "x": 14,
-        "y": 43
+        "y": 51
       },
       "id": 18,
       "options": {
@@ -1575,7 +1893,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 51
+        "y": 59
       },
       "id": 19,
       "options": {
@@ -1699,7 +2017,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 51
+        "y": 59
       },
       "id": 20,
       "options": {
@@ -1792,7 +2110,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 51
+        "y": 59
       },
       "id": 21,
       "options": {
@@ -1842,7 +2160,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 67
       },
       "id": 22,
       "panels": [],
@@ -1906,7 +2224,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "id": 23,
       "options": {
@@ -1980,7 +2298,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 76
       },
       "id": 24,
       "panels": [],
@@ -2001,7 +2319,7 @@
         "h": 22,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 77
       },
       "id": 25,
       "options": {
@@ -2029,7 +2347,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 99
       },
       "id": 26,
       "panels": [],
@@ -2093,7 +2411,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 92
+        "y": 100
       },
       "id": 27,
       "options": {
@@ -2217,7 +2535,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 92
+        "y": 100
       },
       "id": 28,
       "options": {
@@ -2324,7 +2642,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 100
+        "y": 108
       },
       "id": 29,
       "options": {
@@ -2431,7 +2749,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 100
+        "y": 108
       },
       "id": 30,
       "options": {
@@ -2480,6 +2798,100 @@
       ],
       "title": "Sign-on turn elapsed time by outcome",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Point-in-time gauge of Spring Batch job executions that are currently active. Jobs are launched on demand, so this series is absent until an execution is running.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "reader calls/s",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 108
+      },
+      "id": 33,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "spring_batch_job_active_seconds_active_count{job=\"$job\"}",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{spring_batch_job_name}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Active job executions",
+      "type": "timeseries"
     }
   ],
   "preload": false,
@@ -2515,6 +2927,36 @@
         "query": "carddemo-app",
         "skipUrlSync": false,
         "type": "custom"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "carddemo-prometheus"
+        },
+        "definition": "label_values(spring_batch_item_read_seconds_count{job=\"carddemo-app\"}, spring_batch_item_read_job_name)",
+        "description": "Batch job filter for item-read throughput. Spring Batch 5.2.6 prefixes the Observation tag as spring_batch_item_read_job_name in Prometheus; using a generic job_name label yields an empty Gate-3 panel. Defaults to All and stays empty until a reading step has run.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Item-read job",
+        "multi": true,
+        "name": "itemReadJob",
+        "options": [],
+        "query": "label_values(spring_batch_item_read_seconds_count{job=\"carddemo-app\"}, spring_batch_item_read_job_name)",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
       },
       {
         "allValue": ".*",

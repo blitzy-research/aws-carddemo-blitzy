@@ -16,6 +16,8 @@
  */
 package com.carddemo.support;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -30,7 +32,21 @@ import org.testcontainers.utility.DockerImageName;
 
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
+import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.sns.SnsClient;
+import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.CreateQueueRequest;
 import software.amazon.awssdk.services.sqs.model.DeleteMessageRequest;
@@ -46,10 +62,12 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageResponse;
  * stand-in for one.
  *
  * <h2>What this provides</h2>
- * One LocalStack Community emulator with the queue service enabled, one client built against it, and
- * the three queue operations an interface test needs: create a first-in-first-out queue, drain it in
- * delivery order, and empty it between tests. Nothing about the migrated application is configured
- * here; a subclass wires whatever component it is exercising against {@link #sqsAsyncClient()}.
+ * One LocalStack Community emulator with the queue and notification services enabled, one queue
+ * client built against it, and the three queue operations an interface test needs: create a
+ * first-in-first-out queue, drain it in delivery order, and empty it between tests. Notification
+ * tests build their synchronous client from the protected endpoint, region and throwaway credential
+ * accessors below. Nothing about the migrated application is configured here; a subclass wires
+ * whatever component it is exercising against {@link #sqsAsyncClient()}.
  *
  * <h2>Why an emulator rather than a stand-in</h2>
  * The queue is an external interface contract, and the acceptance criterion for that contract is
@@ -121,6 +139,14 @@ public abstract class AbstractLocalStackIT {
     /** Suffix the queue service requires on the name of a first-in-first-out queue. */
     protected static final String FIFO_SUFFIX = ".fifo";
 
+    /**
+     * The wildcard that asks the receive operation for every user message attribute.
+     *
+     * <p>A literal the service defines, and the only value that returns attributes a test did not name
+     * in advance - which is what an assertion about the <em>set</em> of published attributes needs.
+     */
+    private static final String ALL_MESSAGE_ATTRIBUTES = "All";
+
     /** Largest batch the receive operation will return in one call. */
     private static final int RECEIVE_BATCH_SIZE = 10;
 
@@ -136,6 +162,15 @@ public abstract class AbstractLocalStackIT {
     /** The one client every subclass shares, bound to the emulator's ephemeral endpoint. */
     private static final SqsAsyncClient SQS_ASYNC_CLIENT = buildSqsAsyncClient();
 
+    /** Synchronous queue client used by cross-service notification tests. */
+    private static final SqsClient SQS_CLIENT = buildSqsClient();
+
+    /** Object-store client used by durable batch-artifact integration tests. */
+    private static final S3Client S3_CLIENT = buildS3Client();
+
+    /** Notification client used by terminal job-event integration tests. */
+    private static final SnsClient SNS_CLIENT = buildSnsClient();
+
     /**
      * Restricts construction to subclasses. A test class extends this type; nothing instantiates it
      * directly.
@@ -145,14 +180,16 @@ public abstract class AbstractLocalStackIT {
     }
 
     /**
-     * Starts the emulator with the queue service enabled.
+     * Starts the emulator with the queue and notification services enabled.
      *
      * @return the started emulator
      */
     private static LocalStackContainer startEmulator() {
         final LocalStackContainer container =
                 new LocalStackContainer(DockerImageName.parse(LOCALSTACK_IMAGE))
-                        .withServices(LocalStackContainer.Service.SQS);
+                        .withServices(LocalStackContainer.Service.S3,
+                                LocalStackContainer.Service.SQS,
+                                LocalStackContainer.Service.SNS);
         container.start();
         return container;
     }
@@ -164,6 +201,37 @@ public abstract class AbstractLocalStackIT {
      */
     private static SqsAsyncClient buildSqsAsyncClient() {
         return SqsAsyncClient.builder()
+                .endpointOverride(LOCALSTACK.getEndpoint())
+                .region(Region.of(LOCALSTACK.getRegion()))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
+                        LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .build();
+    }
+
+    /** Builds the synchronous queue client used where a second service delivers into a queue. */
+    private static SqsClient buildSqsClient() {
+        return SqsClient.builder()
+                .endpointOverride(LOCALSTACK.getEndpoint())
+                .region(Region.of(LOCALSTACK.getRegion()))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
+                        LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .build();
+    }
+
+    /** Builds the object-store client used to verify uploaded bytes and retention. */
+    private static S3Client buildS3Client() {
+        return S3Client.builder()
+                .endpointOverride(LOCALSTACK.getEndpoint())
+                .region(Region.of(LOCALSTACK.getRegion()))
+                .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
+                        LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .forcePathStyle(true)
+                .build();
+    }
+
+    /** Builds the notification client used to verify terminal job events. */
+    private static SnsClient buildSnsClient() {
+        return SnsClient.builder()
                 .endpointOverride(LOCALSTACK.getEndpoint())
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
@@ -214,6 +282,21 @@ public abstract class AbstractLocalStackIT {
      */
     protected static SqsAsyncClient sqsAsyncClient() {
         return SQS_ASYNC_CLIENT;
+    }
+
+    /** @return the shared synchronous queue client */
+    protected static SqsClient sqsClient() {
+        return SQS_CLIENT;
+    }
+
+    /** @return the shared object-store client */
+    protected static S3Client s3Client() {
+        return S3_CLIENT;
+    }
+
+    /** @return the shared notification client */
+    protected static SnsClient snsClient() {
+        return SNS_CLIENT;
     }
 
     /**
@@ -289,6 +372,11 @@ public abstract class AbstractLocalStackIT {
      * response rather than only on the expected count is what lets a caller assert that <em>fewer</em>
      * messages than requested were published.</p>
      *
+     * <p>Both every system attribute and every user message attribute are requested, because the
+     * service does not return either kind unless it is asked for them by name. Without the second
+     * request a test asserting on a published message attribute would observe an empty map and could
+     * not tell an attribute that was never set from one that was simply not fetched.</p>
+     *
      * @param queueUrl              the queue to read
      * @param expectedMessageCount  how many messages to stop after; must not be negative
      * @return the messages read, in the order the service delivered them
@@ -307,6 +395,7 @@ public abstract class AbstractLocalStackIT {
                                     .maxNumberOfMessages(RECEIVE_BATCH_SIZE)
                                     .waitTimeSeconds(RECEIVE_WAIT_SECONDS)
                                     .messageSystemAttributeNames(MessageSystemAttributeName.ALL)
+                                    .messageAttributeNames(ALL_MESSAGE_ATTRIBUTES)
                                     .build())
                     .join();
             if (!response.hasMessages() || response.messages().isEmpty()) {
@@ -331,5 +420,45 @@ public abstract class AbstractLocalStackIT {
      */
     protected static void purgeQueue(final String queueUrl) {
         SQS_ASYNC_CLIENT.purgeQueue(PurgeQueueRequest.builder().queueUrl(queueUrl).build()).join();
+    }
+
+    /** Creates the bucket unless another test already created it. */
+    protected static void createBucketIfAbsent(final String bucket) {
+        try {
+            S3_CLIENT.createBucket(CreateBucketRequest.builder().bucket(bucket).build());
+        } catch (final BucketAlreadyExistsException | BucketAlreadyOwnedByYouException alreadyThere) {
+            // The requested postcondition already holds.
+        }
+    }
+
+    /** Stores one exact byte image. */
+    protected static void putObject(final String bucket, final String key, final byte[] content) {
+        S3_CLIENT.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(),
+                RequestBody.fromBytes(content));
+    }
+
+    /** Removes one object; S3 treats an absent key as success. */
+    protected static void deleteObject(final String bucket, final String key) {
+        S3_CLIENT.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    }
+
+    /** Reads one object back as exact bytes. */
+    protected static byte[] objectBytes(final String bucket, final String key) {
+        try (ResponseInputStream<GetObjectResponse> body = S3_CLIENT.getObject(
+                GetObjectRequest.builder().bucket(bucket).key(key).build())) {
+            return body.readAllBytes();
+        } catch (final IOException failure) {
+            throw new UncheckedIOException("the staged object " + key + " could not be read", failure);
+        }
+    }
+
+    /** Reports whether one object exists without reading its body. */
+    protected static boolean objectExists(final String bucket, final String key) {
+        try {
+            S3_CLIENT.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+            return true;
+        } catch (final NoSuchKeyException absent) {
+            return false;
+        }
     }
 }

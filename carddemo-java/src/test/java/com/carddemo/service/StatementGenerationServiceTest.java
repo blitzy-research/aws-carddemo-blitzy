@@ -35,6 +35,7 @@ import org.mockito.Mockito;
 import com.carddemo.exception.AbendException;
 import com.carddemo.service.StatementDataAccessService.StatementFileRequest;
 import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
+import com.carddemo.util.TransactionRecordMapper;
 
 /**
  * Behavioural suite over {@link StatementGenerationService}, the translation of
@@ -83,6 +84,10 @@ class StatementGenerationServiceTest {
     private static final String STATUS_EOF = "10";
     private static final String STATUS_BAD = "31";
     private static final int PAYLOAD = StatementDataAccessService.PAYLOAD_WIDTH;
+
+    /** Frozen source identity threaded through every data-access call in this service-level suite. */
+    private static final StatementTransactionSource TRANSACTION_SOURCE =
+            position -> java.util.Optional.empty();
 
     private static final UnaryOperator<String> REVEALER = envelope -> {
         if (envelope != null && envelope.startsWith("ENC1:")) {
@@ -224,14 +229,15 @@ class StatementGenerationServiceTest {
         List<String> dailytran = fixture("dailytran.txt");
         List<String> trnxImages = new ArrayList<>();
         for (int index = 0; index < transactionCount; index++) {
-            trnxImages.add(overwrite(dailytran.get(index), 262, cardNumber));
+            trnxImages.add(TransactionRecordMapper.projectStatementWorkRecord(
+                    overwrite(dailytran.get(index), 262, cardNumber)));
         }
         String custImage = fixture("custdata.txt").get(0);
         String acctImage = fixture("acctdata.txt").get(0);
         Script script = new Script(trnxImages, List.of(xref50), custImage, acctImage, acceptedStatus,
                 badTrnxReadOrdinal);
         StatementDataAccessService dataAccess = Mockito.mock(StatementDataAccessService.class);
-        Mockito.when(dataAccess.execute(Mockito.any()))
+        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE)))
                 .thenAnswer(invocation -> script.answer(invocation.getArgument(0)));
         return new Harness(new StatementGenerationService(dataAccess, new AbendService()), script);
     }
@@ -240,7 +246,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the dispatcher is re-entered after every state change, and its six clauses run in source order")
     void dispatchSequence() {
         Harness harness = harness(STATUS_OK, -1, 2);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.dispatchedPhases()).containsExactly("TRNXFILE", "READTRNX", "XREFFILE",
                 "CUSTFILE", "ACCTFILE", "TERMINATED");
     }
@@ -249,7 +256,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the initial state is the transaction-file phase the field is initialised to")
     void initialState() {
         Harness harness = harness(STATUS_OK, -1, 1);
-        assertThat(harness.service().generate(REVEALER, SEALER).dispatchedPhases().get(0))
+        assertThat(harness.service()
+                .generate(TRANSACTION_SOURCE, REVEALER, SEALER).dispatchedPhases().get(0))
                 .isEqualTo("TRNXFILE");
     }
 
@@ -257,10 +265,20 @@ class StatementGenerationServiceTest {
     @DisplayName("the inner read loop iterates on success and leaves the phase at end of file")
     void innerLoopIteratesAndExits() {
         Harness harness = harness(STATUS_OK, -1, 5);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.cardsTabulated()).isEqualTo(1);
         assertThat(run.transactionsTabulated()).isEqualTo(5);
-        assertThat(run.transactionSummaries()).hasSize(5);
+        assertThat(run.transactionSummaries())
+                .hasSize(5)
+                .hasOnlyElementsOfType(StatementLineSummary.class)
+                .extracting(StatementLineSummary::transactionId)
+                .containsExactlyElementsOf(fixture("dailytran.txt").subList(0, 5).stream()
+                        .map(image -> image.substring(0, 16))
+                        .toList());
+        assertThat(run.transactionSummaries())
+                .extracting(StatementLineSummary::cardNumber)
+                .containsOnly(fixture("cardxref.txt").get(0).substring(0, 16));
         assertThat(run.statementsWritten()).isEqualTo(1);
     }
 
@@ -268,7 +286,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the inner read loop abends on any status that is neither success nor end of file")
     void innerLoopAbends() {
         Harness harness = harness(STATUS_OK, 2, 5);
-        assertThatThrownBy(() -> harness.service().generate(REVEALER, SEALER))
+        assertThatThrownBy(() ->
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER))
                 .isInstanceOf(AbendException.class);
     }
 
@@ -276,7 +295,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the record-length status is accepted at every open, every close and the priming read")
     void recordLengthMismatchAccepted() {
         Harness harness = harness(STATUS_LENGTH, -1, 2);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.statementsWritten()).isEqualTo(1);
         assertThat(run.transactionsTabulated()).isEqualTo(2);
     }
@@ -287,12 +307,16 @@ class StatementGenerationServiceTest {
         String xref36 = fixture("cardxref.txt").get(0);
         String cardNumber = xref36.substring(0, 16);
         List<String> dailytran = fixture("dailytran.txt");
-        List<String> trnxImages = List.of(overwrite(dailytran.get(0), 262, cardNumber),
-                overwrite(dailytran.get(1), 262, cardNumber));
+        List<String> trnxImages = List.of(
+                TransactionRecordMapper.projectStatementWorkRecord(
+                        overwrite(dailytran.get(0), 262, cardNumber)),
+                TransactionRecordMapper.projectStatementWorkRecord(
+                        overwrite(dailytran.get(1), 262, cardNumber)));
         Script script = new Script(trnxImages, List.of(pad(xref36, 50)),
                 fixture("custdata.txt").get(0), fixture("acctdata.txt").get(0), STATUS_OK, -1);
         StatementDataAccessService dataAccess = Mockito.mock(StatementDataAccessService.class);
-        Mockito.when(dataAccess.execute(Mockito.any())).thenAnswer(invocation -> {
+        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE)))
+                .thenAnswer(invocation -> {
             StatementFileRequest request = invocation.getArgument(0);
             StatementFileResponse response = script.answer(request);
             boolean loopRead = request.hasOperation(StatementDataAccessService.OPERATION_READ)
@@ -302,10 +326,10 @@ class StatementGenerationServiceTest {
                     ? new StatementFileResponse(response.ddName(), STATUS_LENGTH, response.payload(),
                             response.sequentialPosition())
                     : response;
-        });
+                });
         StatementGenerationService service =
                 new StatementGenerationService(dataAccess, new AbendService());
-        assertThatThrownBy(() -> service.generate(REVEALER, SEALER))
+        assertThatThrownBy(() -> service.generate(TRANSACTION_SOURCE, REVEALER, SEALER))
                 .isInstanceOf(AbendException.class);
     }
 
@@ -313,7 +337,8 @@ class StatementGenerationServiceTest {
     @DisplayName("every plain record is 80 encoded bytes and every HTML record is 100")
     void recordWidths() {
         Harness harness = harness(STATUS_OK, -1, 3);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.statementRecords()).isNotEmpty()
                 .allSatisfy(record -> assertThat(record.getBytes(StandardCharsets.US_ASCII))
                         .hasSize(80));
@@ -326,7 +351,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the two banners keep their different padding splits, 31/18/31 and 32/16/32")
     void bannerSplits() {
         Harness harness = harness(STATUS_OK, -1, 2);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         String start = run.statementRecords().get(0);
         assertThat(start.substring(0, 31)).isEqualTo("*".repeat(31));
         assertThat(start.substring(31, 49)).isEqualTo("START OF STATEMENT");
@@ -341,7 +367,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the duplicated and triplicated rule-line writes survive, in their source positions")
     void repeatedWrites() {
         Harness harness = harness(STATUS_OK, -1, 2);
-        List<String> records = harness.service().generate(REVEALER, SEALER).statementRecords();
+        List<String> records = harness.service()
+                .generate(TRANSACTION_SOURCE, REVEALER, SEALER).statementRecords();
         assertThat(records).hasSize(21);
         String rule = "-".repeat(80);
         assertThat(records.get(5)).isEqualTo(rule);
@@ -360,7 +387,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the name line stops at the first pair of adjacent spaces, not at the first single one")
     void doubleSpaceDelimiter() {
         Harness harness = harness(STATUS_OK, -1, 1);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         String custImage = fixture("custdata.txt").get(0);
         String first = custImage.substring(9, 34).trim();
         String middle = custImage.substring(34, 59).trim();
@@ -377,7 +405,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the populated-but-never-written group appears nowhere in the output")
     void neverWrittenGroupAbsent() {
         Harness harness = harness(STATUS_OK, -1, 1);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.htmlRecords())
                 .filteredOn(record -> record.startsWith("<p style=\"font-size:16px\">"))
                 .allSatisfy(record -> assertThat(record).contains("</p>"));
@@ -387,7 +416,7 @@ class StatementGenerationServiceTest {
     @DisplayName("the payload is blanked before every call, and neither dead operation is ever named")
     void payloadBlankedAndNoDeadOperations() {
         Harness harness = harness(STATUS_OK, -1, 3);
-        harness.service().generate(REVEALER, SEALER);
+        harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         List<StatementFileRequest> requests = harness.script().requests;
         assertThat(requests).isNotEmpty()
                 .allSatisfy(request -> assertThat(request.payload()).isEqualTo(pad("", PAYLOAD)))
@@ -405,7 +434,8 @@ class StatementGenerationServiceTest {
     @DisplayName("the HTML preamble and tail are emitted in source order")
     void htmlOrder() {
         Harness harness = harness(STATUS_OK, -1, 1);
-        List<String> html = harness.service().generate(REVEALER, SEALER).htmlRecords();
+        List<String> html = harness.service()
+                .generate(TRANSACTION_SOURCE, REVEALER, SEALER).htmlRecords();
         assertThat(html.get(0)).startsWith("<!DOCTYPE html>");
         assertThat(html.get(7)).startsWith("<table  align=\"center\"");
         assertThat(html.get(html.size() - 1)).startsWith("</html>");
@@ -443,7 +473,7 @@ class StatementGenerationServiceTest {
         for (int transactions = 1; transactions <= 4; transactions++) {
             Harness harness = harness(STATUS_OK, -1, transactions);
             StatementGenerationService.StatementRun run =
-                    harness.service().generate(REVEALER, SEALER);
+                    harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
             assertThat(run.statementRecords()).hasSize(19 + transactions);
             assertThat(run.htmlRecords()).hasSize(64 + 11 * transactions);
         }
@@ -453,7 +483,8 @@ class StatementGenerationServiceTest {
     @DisplayName("every invariant record emitted appears verbatim in the golden fixtures")
     void goldenInvariantRecords() {
         Harness harness = harness(STATUS_OK, -1, 3);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         List<String> goldenText = golden("statement.txt");
         List<String> goldenHtml = golden("statement-html.txt");
         List<String> invariantText = List.of(run.statementRecords().get(0),
@@ -475,7 +506,8 @@ class StatementGenerationServiceTest {
     @DisplayName("composed lines carry the same prefixes and field widths as the golden fixtures")
     void goldenComposedPrefixes() {
         Harness harness = harness(STATUS_OK, -1, 2);
-        StatementGenerationService.StatementRun run = harness.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun run =
+                harness.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(run.statementRecords().get(8)).startsWith("Account ID         :");
         assertThat(run.statementRecords().get(9)).startsWith("Current Balance    :");
         assertThat(run.statementRecords().get(10)).startsWith("FICO Score         :");
@@ -506,8 +538,10 @@ class StatementGenerationServiceTest {
     @DisplayName("the service holds no mutable state, so a second run repeats the first exactly")
     void statelessAcrossRuns() {
         Harness first = harness(STATUS_OK, -1, 2);
-        StatementGenerationService.StatementRun runOne = first.service().generate(REVEALER, SEALER);
-        StatementGenerationService.StatementRun runTwo = first.service().generate(REVEALER, SEALER);
+        StatementGenerationService.StatementRun runOne =
+                first.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
+        StatementGenerationService.StatementRun runTwo =
+                first.service().generate(TRANSACTION_SOURCE, REVEALER, SEALER);
         assertThat(runTwo.dispatchedPhases()).isEqualTo(runOne.dispatchedPhases());
         assertThat(runTwo.statementRecords()).hasSameSizeAs(runOne.statementRecords());
         assertThat(runTwo.transactionsTabulated()).isEqualTo(runOne.transactionsTabulated());

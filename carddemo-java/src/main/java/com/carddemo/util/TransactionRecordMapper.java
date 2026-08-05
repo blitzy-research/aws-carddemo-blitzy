@@ -268,16 +268,12 @@ import java.util.Objects;
  *       card-number checksum and no reject-reason assignment; the reject reason codes and the
  *       430-byte reject record belong to the posting step.</li>
  *   <li><strong>No enumeration translation</strong> - the source code stays a raw ten-byte value.</li>
- *   <li><strong>No projection or truncation.</strong> The statement job's record reprojection in
- *       {@code [app/jcl/CREASTMT.JCL]} rebuilds this record as the 16-byte card number, then the
- *       first 262 bytes, then 50 bytes taken from one-based 279 - which is
- *       {@code 16 + 262 + 50 = 328} of the 350 bytes, and those last 50 cover the whole 26-byte
- *       origination timestamp but only 24 of the 26 processing-timestamp bytes, so the processing
- *       timestamp loses exactly two bytes. The consuming program's own working storage shows the same
- *       shortfall independently, holding each transaction as a 16-byte identifier plus a 318-byte
- *       remainder, which is 334 rather than 350. Both figures are recorded here for the benefit of the
- *       job that has to reproduce them; <strong>the projection belongs to the {@code batch} package,
- *       and this mapper always maps the full twenty-six bytes.</strong></li>
+ *   <li><strong>No projection orchestration or ordering.</strong> The statement job decides when the
+ *       reprojection in {@code [app/jcl/CREASTMT.JCL]} runs and keeps its character comparator private.
+ *       This mapper owns only the fixed-width mechanics: card number, first 262 bytes and 50 timestamp
+ *       bytes produce 328 selected bytes, truncate exactly two processing-timestamp bytes, and are
+ *       padded back to 350. Keeping those mechanics here gives the canonical and COSTM01 layouts one
+ *       offset authority without moving job control into the utility layer.</li>
  *   <li><strong>No optimistic-lock counter</strong> - this entity declares none, because a posted
  *       transaction is inserted and read, never edited in place.</li>
  *   <li><strong>No logging</strong> - this package is not among the module's configured logger
@@ -303,7 +299,7 @@ import java.util.Objects;
  *       fixture is the offset witness for this layout; the two layouts are field-for-field
  *       parallel.</li>
  *   <li>The statement job's 328-of-350-byte reprojection truncates the processing timestamp by two
- *       bytes; that truncation is handled in the {@code batch} package and never here.</li>
+ *       bytes; the job owns when it occurs and this mapper owns the projection and parse mechanics.</li>
  *   <li>The merchant identifier maps to the column {@code merchant_id}, unprefixed, diverging from
  *       the parallel daily-transaction entity whose every column carries a prefix. The divergence is
  *       preserved rather than corrected.</li>
@@ -526,6 +522,60 @@ public final class TransactionRecordMapper {
     public static final int FILLER_LENGTH = 20;
 
     /**
+     * Layout name of the statement job's projected transaction-work record.
+     *
+     * <p>The job still owns when and why the projection occurs; this mapper owns the byte mechanics so
+     * no batch or service class can re-derive the COSTM01 offsets independently.
+     */
+    public static final String STATEMENT_WORK_ARTEFACT = "TRNX-RECORD (COSTM01)";
+
+    /** Fixed encoded width of one projected statement-work record. */
+    public static final int STATEMENT_WORK_RECORD_LENGTH = RECORD_LENGTH;
+
+    /** Zero-based offset of the card number after the statement projection moves it to the front. */
+    public static final int STATEMENT_WORK_CARD_NUM_OFFSET = 0;
+
+    /** Zero-based offset of the transaction identifier in the projected statement-work record. */
+    public static final int STATEMENT_WORK_TRAN_ID_OFFSET = TRAN_CARD_NUM_LENGTH;
+
+    /** Width of the projected work-resource key: card number followed by transaction identifier. */
+    public static final int STATEMENT_WORK_KEY_LENGTH =
+            TRAN_CARD_NUM_LENGTH + TRAN_ID_LENGTH;
+
+    /** Zero-based offset of COSTM01 {@code TRNX-REST}, immediately after the 32-byte key. */
+    public static final int STATEMENT_WORK_REST_OFFSET = STATEMENT_WORK_KEY_LENGTH;
+
+    /** Declared width of COSTM01 {@code TRNX-REST}. */
+    public static final int STATEMENT_WORK_REST_LENGTH = 318;
+
+    /** Width of the canonical record prefix moved behind the card number by the projection. */
+    public static final int STATEMENT_WORK_LEADING_SEGMENT_LENGTH = TRAN_CARD_NUM_OFFSET;
+
+    /** Zero-based offset of the projected timestamp segment. */
+    public static final int STATEMENT_WORK_TIMESTAMP_SEGMENT_OFFSET =
+            TRAN_CARD_NUM_LENGTH + STATEMENT_WORK_LEADING_SEGMENT_LENGTH;
+
+    /**
+     * Width of the projection's final copied segment: all 26 origination-timestamp bytes and the first
+     * 24 processing-timestamp bytes.
+     */
+    public static final int STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH = 50;
+
+    /** Content bytes explicitly selected by the projection before fixed-record blank padding. */
+    public static final int STATEMENT_WORK_PROJECTED_CONTENT_LENGTH =
+            TRAN_CARD_NUM_LENGTH + STATEMENT_WORK_LEADING_SEGMENT_LENGTH
+                    + STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH;
+
+    /** Blank padding appended to the 328 selected bytes to restore the fixed 350-byte record width. */
+    public static final int STATEMENT_WORK_PADDING_LENGTH =
+            STATEMENT_WORK_RECORD_LENGTH - STATEMENT_WORK_PROJECTED_CONTENT_LENGTH;
+
+    /** Processing-timestamp bytes intentionally absent from the projected work record. */
+    public static final int STATEMENT_WORK_TRUNCATED_PROCESSING_TIMESTAMP_LENGTH =
+            TRAN_PROC_TS_LENGTH
+                    - (STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH - TRAN_ORIG_TS_LENGTH);
+
+    /**
      * Byte the encode direction writes across the filler run. Space, which is what the parallel
      * fixture carries; no byte value is canonical, because the filler is declared uninitialised.
      */
@@ -629,6 +679,26 @@ public final class TransactionRecordMapper {
                 TRAN_PROC_DT_OFFSET);
         requireSum("processing date offset", TRAN_PROC_DT_OFFSET, TRAN_PROC_TS_OFFSET);
         requireLeadingPartOf("TRAN-PROC-DT", TRAN_PROC_DT_LENGTH, TRAN_PROC_TS, TRAN_PROC_TS_LENGTH);
+
+        requireSum("statement work key", STATEMENT_WORK_KEY_LENGTH,
+                TRAN_CARD_NUM_LENGTH + TRAN_ID_LENGTH);
+        requireSum("statement work transaction-id offset", STATEMENT_WORK_TRAN_ID_OFFSET,
+                TRAN_CARD_NUM_LENGTH);
+        requireSum("statement work rest offset", STATEMENT_WORK_REST_OFFSET,
+                STATEMENT_WORK_KEY_LENGTH);
+        requireSum("statement work rest", STATEMENT_WORK_REST_LENGTH,
+                RECORD_LENGTH - STATEMENT_WORK_KEY_LENGTH);
+        requireSum("statement work timestamp offset", STATEMENT_WORK_TIMESTAMP_SEGMENT_OFFSET,
+                TRAN_CARD_NUM_LENGTH + STATEMENT_WORK_LEADING_SEGMENT_LENGTH);
+        requireSum("statement projected content", STATEMENT_WORK_PROJECTED_CONTENT_LENGTH,
+                TRAN_CARD_NUM_LENGTH + STATEMENT_WORK_LEADING_SEGMENT_LENGTH
+                        + STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH);
+        requireSum("statement work record", STATEMENT_WORK_RECORD_LENGTH,
+                STATEMENT_WORK_PROJECTED_CONTENT_LENGTH + STATEMENT_WORK_PADDING_LENGTH);
+        requireSum("statement processing-timestamp truncation",
+                STATEMENT_WORK_TRUNCATED_PROCESSING_TIMESTAMP_LENGTH,
+                TRAN_PROC_TS_LENGTH
+                        - (STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH - TRAN_ORIG_TS_LENGTH));
     }
 
     /**
@@ -770,6 +840,132 @@ public final class TransactionRecordMapper {
      */
     public static byte[] toRecordBytes(Transaction record) {
         return toReader(record).toByteArray();
+    }
+
+    /**
+     * Projects a transaction entity into the statement job's fixed-width COSTM01 work layout.
+     *
+     * @param record the canonical transaction to project
+     * @return the projected work record, exactly {@value #STATEMENT_WORK_RECORD_LENGTH} encoded bytes
+     */
+    public static String toStatementWorkRecord(Transaction record) {
+        return projectStatementWorkRecord(toRecord(record));
+    }
+
+    /**
+     * Applies the statement job's card-first projection to one canonical transaction record image.
+     *
+     * <p>The three copied segments are the card number, the canonical leading 262 bytes, and 50 bytes
+     * beginning at the origination timestamp. The last segment therefore carries the origination
+     * timestamp in full and only the first 24 bytes of the processing timestamp. Exactly two processing
+     * timestamp bytes and all 20 canonical filler bytes are omitted, after which 22 spaces pad the
+     * selected 328 bytes back to the fixed 350-byte COSTM01 record length.
+     *
+     * @param canonicalRecord the canonical TRAN-RECORD image
+     * @return the card-first COSTM01 work record
+     * @throws NullPointerException if {@code canonicalRecord} is {@code null}
+     * @throws IllegalArgumentException if the canonical record is not exactly
+     *                                  {@value #RECORD_LENGTH} encoded bytes
+     */
+    public static String projectStatementWorkRecord(String canonicalRecord) {
+        Objects.requireNonNull(canonicalRecord, ARTEFACT + " record image must not be null");
+        final FixedWidthFieldReader source =
+                FixedWidthFieldReader.of(ARTEFACT, canonicalRecord, RECORD_LENGTH);
+
+        return FixedWidthFieldReader.builder(STATEMENT_WORK_ARTEFACT, STATEMENT_WORK_RECORD_LENGTH)
+                .putAlphanumeric(TRAN_CARD_NUM, STATEMENT_WORK_CARD_NUM_OFFSET,
+                        TRAN_CARD_NUM_LENGTH,
+                        source.field(TRAN_CARD_NUM, TRAN_CARD_NUM_OFFSET, TRAN_CARD_NUM_LENGTH))
+                .putAlphanumeric("TRAN-RECORD-LEADING-SEGMENT",
+                        STATEMENT_WORK_TRAN_ID_OFFSET, STATEMENT_WORK_LEADING_SEGMENT_LENGTH,
+                        source.field("TRAN-RECORD-LEADING-SEGMENT", TRAN_ID_OFFSET,
+                                STATEMENT_WORK_LEADING_SEGMENT_LENGTH))
+                .putAlphanumeric("TRAN-ORIG-TS-THROUGH-TRAN-PROC-TS",
+                        STATEMENT_WORK_TIMESTAMP_SEGMENT_OFFSET,
+                        STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH,
+                        source.field("TRAN-ORIG-TS-THROUGH-TRAN-PROC-TS", TRAN_ORIG_TS_OFFSET,
+                                STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH))
+                .putSpaceFiller(STATEMENT_WORK_PROJECTED_CONTENT_LENGTH,
+                        STATEMENT_WORK_PADDING_LENGTH)
+                .build()
+                .image();
+    }
+
+    /**
+     * Parses one projected COSTM01 work record into the transaction fields statement generation uses.
+     *
+     * <p>The original canonical record cannot be reconstructed byte for byte because the projection
+     * intentionally discarded the last two processing-timestamp bytes and the 20-byte filler. The
+     * missing processing-timestamp suffix is represented by two spaces, exactly the bytes occupying the
+     * fixed work record's padding, and canonical filler remains spaces as on the normal encoding path.
+     * All business fields, both keys, the origination timestamp and the first 24 processing-timestamp
+     * bytes come exclusively from the frozen projected record.
+     *
+     * @param statementWorkRecord the complete projected work record
+     * @return the transaction represented by that frozen snapshot record
+     * @throws NullPointerException if {@code statementWorkRecord} is {@code null}
+     * @throws IllegalArgumentException if its encoded width is not exactly
+     *                                  {@value #STATEMENT_WORK_RECORD_LENGTH}
+     */
+    public static Transaction fromStatementWorkRecord(String statementWorkRecord) {
+        Objects.requireNonNull(statementWorkRecord,
+                STATEMENT_WORK_ARTEFACT + " record image must not be null");
+        return fromStatementWorkReader(FixedWidthFieldReader.of(STATEMENT_WORK_ARTEFACT,
+                statementWorkRecord, STATEMENT_WORK_RECORD_LENGTH));
+    }
+
+    /**
+     * Parses one projected COSTM01 record held inside a larger byte buffer.
+     *
+     * @param buffer byte buffer containing the projected record
+     * @param from   zero-based record offset in the buffer
+     * @return the transaction represented by the projected record
+     */
+    public static Transaction fromStatementWorkRecord(byte[] buffer, int from) {
+        Objects.requireNonNull(buffer, STATEMENT_WORK_ARTEFACT + " record buffer must not be null");
+        return fromStatementWorkReader(FixedWidthFieldReader.of(STATEMENT_WORK_ARTEFACT, buffer,
+                from, STATEMENT_WORK_RECORD_LENGTH));
+    }
+
+    /**
+     * Reconstructs the canonical mapped fields from a validated projected-record reader.
+     */
+    private static Transaction fromStatementWorkReader(FixedWidthFieldReader work) {
+        final int canonicalMiddleLength = TRAN_CARD_NUM_OFFSET - TRAN_TYPE_CD_OFFSET;
+
+        final String canonicalRecord = FixedWidthFieldReader.builder(ARTEFACT, RECORD_LENGTH)
+                .putAlphanumeric(TRAN_ID, TRAN_ID_OFFSET, TRAN_ID_LENGTH,
+                        work.field(TRAN_ID, STATEMENT_WORK_TRAN_ID_OFFSET, TRAN_ID_LENGTH))
+                .putAlphanumeric("TRAN-RECORD-AFTER-ID-THROUGH-ZIP", TRAN_TYPE_CD_OFFSET,
+                        canonicalMiddleLength,
+                        work.field("TRNX-REST-BEFORE-CARD", STATEMENT_WORK_REST_OFFSET,
+                                canonicalMiddleLength))
+                .putAlphanumeric(TRAN_CARD_NUM, TRAN_CARD_NUM_OFFSET, TRAN_CARD_NUM_LENGTH,
+                        work.field(TRAN_CARD_NUM, STATEMENT_WORK_CARD_NUM_OFFSET,
+                                TRAN_CARD_NUM_LENGTH))
+                .putAlphanumeric("TRAN-ORIG-TS-THROUGH-PARTIAL-TRAN-PROC-TS",
+                        TRAN_ORIG_TS_OFFSET, STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH,
+                        work.field("TRNX-REST-TIMESTAMP-SEGMENT",
+                                STATEMENT_WORK_TIMESTAMP_SEGMENT_OFFSET,
+                                STATEMENT_WORK_TIMESTAMP_SEGMENT_LENGTH))
+                .putSpaceFiller(STATEMENT_WORK_PROJECTED_CONTENT_LENGTH,
+                        STATEMENT_WORK_PADDING_LENGTH)
+                .build()
+                .image();
+        return fromRecord(canonicalRecord);
+    }
+
+    /**
+     * Returns the 32-byte key at the front of a projected COSTM01 work record.
+     *
+     * @param statementWorkRecord the projected work record
+     * @return card number followed by transaction identifier
+     */
+    public static String statementWorkKey(String statementWorkRecord) {
+        Objects.requireNonNull(statementWorkRecord,
+                STATEMENT_WORK_ARTEFACT + " record image must not be null");
+        return FixedWidthFieldReader.of(STATEMENT_WORK_ARTEFACT, statementWorkRecord,
+                STATEMENT_WORK_RECORD_LENGTH).key(STATEMENT_WORK_KEY_LENGTH);
     }
 
     /**

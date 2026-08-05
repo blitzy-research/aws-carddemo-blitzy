@@ -27,7 +27,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import com.carddemo.api.dto.StatementSummary;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
@@ -39,7 +38,7 @@ import com.carddemo.util.CardXrefRecordMapper;
 import com.carddemo.util.CustomerRecordMapper;
 import com.carddemo.util.StatementHtmlTemplates;
 import com.carddemo.util.StatementTextTemplates;
-import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.util.StatementWorkRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -72,7 +71,8 @@ import com.carddemo.util.ZonedDecimalCodec;
  * refactor that breaks the program. This is recorded in the decision log as the most consequential
  * structural decision in the batch tier.
  *
- * <p>The state variable lives in {@link #generate(UnaryOperator, UnaryOperator)} as a local, never as a
+ * <p>The state variable lives in
+ * {@link #generate(StatementTransactionSource, UnaryOperator, UnaryOperator)} as a local, never as a
  * field, so two runs sharing this singleton cannot observe one another's phase. Every other item of the
  * legacy {@code WORKING-STORAGE} lives in a per-invocation context object for the same reason.
  *
@@ -187,10 +187,11 @@ import com.carddemo.util.ZonedDecimalCodec;
  * the data layer is relational, so no substitute is attempted and neither reflection nor any native
  * mechanism is used to emulate it. Recorded as a decision-log entry.
  *
- * <p>Also not this class's work: the 328-of-350-byte statement reprojection and the two-byte timestamp
- * truncation that the job's external sort performs, which belong to the batch tier and are why the
- * payload this class receives is the canonical transaction record image rather than the reprojected
- * one; {@code FileStatusException}, which models the error arm alone and rejects the success and
+ * <p>The job decides when to perform the 328-of-350-byte statement reprojection and supplies that frozen
+ * projected snapshot to this service. The utility mapper owns the projection and parse mechanics,
+ * including the two-byte processing-timestamp truncation, so this class consumes the projected payload
+ * without re-deriving any offset. Also not this class's work: {@code FileStatusException}, which models
+ * the error arm alone and rejects the success and
  * end-of-file codes, so this member's abend path goes straight to the abend service instead; and the
  * string and upper-folding primitives of {@code CobolStringUtils}, because this member performs no
  * inspection, no case fold and no alphabetic test.
@@ -392,6 +393,8 @@ public final class StatementGenerationService {
      * image composer rejects a stored envelope for overflowing a nine-byte field, and the entity rejects
      * cleartext outright.
      *
+     * @param transactionSource      the frozen projected transaction-work snapshot materialised by the
+     *                               preceding statement-job steps; must not be {@code null}
      * @param regulatedFieldRevealer recovers the cleartext of the two regulated customer identifiers, so
      *                               that the collaborator can compose a customer record image; must not
      *                               be {@code null} and must not return {@code null}
@@ -400,19 +403,22 @@ public final class StatementGenerationService {
      *                               {@code null} and must not return {@code null}
      * @return the run's ordered 80-byte statement records, ordered 100-byte HTML records, per-card
      *         transaction summaries, observed dispatch sequence and three counts
-     * @throws NullPointerException     if either operation is {@code null}
+     * @throws NullPointerException     if the source or either operation is {@code null}
      * @throws AbendException           if any file operation fails, reproducing
      *                                  {@code 9999-ABEND-PROGRAM} at {@code [app/cbl/CBSTM03A.CBL:L921]}
      * @throws IllegalArgumentException if a record image the collaborator returns does not satisfy the
      *                                  layout its mapper declares, or if a composed line does not reach
      *                                  its declared record width
      */
-    public StatementRun generate(final UnaryOperator<String> regulatedFieldRevealer,
+    public StatementRun generate(final StatementTransactionSource transactionSource,
+                                 final UnaryOperator<String> regulatedFieldRevealer,
                                  final UnaryOperator<String> regulatedFieldSealer) {
+        Objects.requireNonNull(transactionSource, "transactionSource must not be null");
         Objects.requireNonNull(regulatedFieldRevealer, "regulatedFieldRevealer must not be null");
         Objects.requireNonNull(regulatedFieldSealer, "regulatedFieldSealer must not be null");
         final StatementRunContext context =
-                new StatementRunContext(regulatedFieldRevealer, regulatedFieldSealer);
+                new StatementRunContext(transactionSource, regulatedFieldRevealer,
+                        regulatedFieldSealer);
         openOutputFilesAndInitialiseTables(context);
         startDispatcher(context);
         return new StatementRun(context.stmtFileRecords, context.htmlFileRecords,
@@ -1050,7 +1056,7 @@ public final class StatementGenerationService {
                 StatementTextTemplates.formatAmountMaskWithZeroSuppression(context.stTranAmt)));
         context.writeHtmlRecord(StatementHtmlTemplates.HTML_LTDE);
         context.writeHtmlRecord(StatementHtmlTemplates.HTML_LTRE);
-        context.transactionSummaries.add(new StatementSummary(transaction.getTranCardNum(),
+        context.transactionSummaries.add(new StatementLineSummary(transaction.getTranCardNum(),
                 transaction.getTranId(), transaction.getTranTypeCd(), transaction.getTranCatCd(),
                 transaction.getTranSource(), transaction.getTranDesc(), transaction.getTranAmt(),
                 transaction.getMerchantId(), transaction.getMerchantName(),
@@ -1466,7 +1472,7 @@ public final class StatementGenerationService {
                         key, keyLength, BLANK_PAYLOAD, sequentialPosition,
                         context.regulatedFieldRevealer);
         final StatementDataAccessService.StatementFileResponse response =
-                this.statementDataAccessService.execute(request);
+                this.statementDataAccessService.execute(request, context.transactionSource);
         context.m03bRc = response.returnCode();
         context.m03bFldt = response.payload();
         return response;
@@ -1604,16 +1610,18 @@ public final class StatementGenerationService {
     /**
      * {@code MOVE WS-M03B-FLDT TO TRNX-RECORD} - the transaction record the payload carries.
      *
-     * <p>The image is the canonical transaction record, because the reprojection the statement job's sort
-     * performs belongs to the batch tier and not to either this class or the file-handling collaborator.
-     * The mapper named here owns every offset and width of that layout, so none appears in this file.
+     * <p>The image is the card-first projected COSTM01 transaction-work record materialised by the
+     * statement job's preceding steps. The mapper named here owns both that projected layout and the
+     * canonical transaction layout, including the faithful two-byte processing-timestamp truncation, so
+     * no offset appears in this service.
      *
      * @param payload the payload field the call left behind
      * @return the record the payload's leading bytes describe
      */
     private static Transaction transactionRecordFromPayload(final String payload) {
-        return TransactionRecordMapper.fromRecord(payload.getBytes(StandardCharsets.US_ASCII),
-                PAYLOAD_RECORD_START);
+        return StatementWorkRecordMapper.fromRecord(
+                payload.substring(PAYLOAD_RECORD_START,
+                        PAYLOAD_RECORD_START + StatementWorkRecordMapper.RECORD_LENGTH));
     }
 
     /**
@@ -1742,7 +1750,7 @@ public final class StatementGenerationService {
      */
     public record StatementRun(List<String> statementRecords,
                                List<String> htmlRecords,
-                               List<StatementSummary> transactionSummaries,
+                               List<StatementLineSummary> transactionSummaries,
                                List<String> dispatchedPhases,
                                int cardsTabulated,
                                int transactionsTabulated,
@@ -2063,7 +2071,7 @@ public final class StatementGenerationService {
         private final List<String> htmlFileRecords = new ArrayList<>();
 
         /** One summary per emitted transaction line, in emission order. */
-        private final List<StatementSummary> transactionSummaries = new ArrayList<>();
+        private final List<StatementLineSummary> transactionSummaries = new ArrayList<>();
 
         /** The value of {@code WS-FL-DD} seen at each dispatcher entry, in order. */
         private final List<String> dispatchedPhases = new ArrayList<>();
@@ -2082,14 +2090,20 @@ public final class StatementGenerationService {
         /** Seals those two identifiers again when the composed image is read back into an entity. */
         private final UnaryOperator<String> regulatedFieldSealer;
 
+        /** Frozen projected transaction input supplied by the statement job for this invocation. */
+        private final StatementTransactionSource transactionSource;
+
         /**
          * Creates one run's storage.
          *
+         * @param transactionSource      the frozen transaction-work snapshot; must not be {@code null}
          * @param regulatedFieldRevealer the caller's revealing operation; must not be {@code null}
          * @param regulatedFieldSealer   the caller's sealing operation; must not be {@code null}
          */
-        private StatementRunContext(final UnaryOperator<String> regulatedFieldRevealer,
+        private StatementRunContext(final StatementTransactionSource transactionSource,
+                                    final UnaryOperator<String> regulatedFieldRevealer,
                                     final UnaryOperator<String> regulatedFieldSealer) {
+            this.transactionSource = transactionSource;
             this.regulatedFieldRevealer = regulatedFieldRevealer;
             this.regulatedFieldSealer = regulatedFieldSealer;
         }

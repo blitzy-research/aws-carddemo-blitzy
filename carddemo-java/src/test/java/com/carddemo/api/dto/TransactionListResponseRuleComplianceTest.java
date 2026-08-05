@@ -659,18 +659,18 @@ class TransactionListResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares fifteen components, the row block, the routing block, the "
+        @DisplayName("the response declares sixteen components, the row block, the routing block, the "
                 + "filter and page number, the message pair and the screen furniture")
         void theResponseDeclaresFifteenComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("rows", "pageMetadata", "navigationContext",
-                    "nextRoute", "transactionIdFilter", "displayedPageNumber", "message", "error",
-                    "focusScreenFieldId", "title01", "title02", "currentDate", "currentTime",
-                    "transactionName", "programName");
-            assertThat(declared).hasSize(15);
+            assertThat(declared).containsExactly("rows", "pageMetadata", "continuation",
+                    "navigationContext", "nextRoute", "transactionIdFilter",
+                    "displayedPageNumber", "message", "error", "focusScreenFieldId", "title01",
+                    "title02", "currentDate", "currentTime", "transactionName", "programName");
+            assertThat(declared).hasSize(16);
         }
 
         @Test

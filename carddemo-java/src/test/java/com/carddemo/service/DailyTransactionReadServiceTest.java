@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
@@ -129,6 +129,15 @@ final class DailyTransactionReadServiceTest {
     /** Line 235. */
     private static final String ORACLE_SUCCESSFUL_READ_OF_XREF = "SUCCESSFUL READ OF XREF";
 
+    private static final String ORACLE_ACCOUNT_NOT_FOUND =
+            "ACCOUNT RECORD NOT FOUND FOR RESOLVED CROSS-REFERENCE";
+
+    private static final String ORACLE_CARD_NOT_VERIFIED =
+            "CARD NUMBER COULD NOT BE VERIFIED; SKIPPING DAILY TRANSACTION RECORD";
+
+    private static final String ORACLE_RECORD_READ_STATUS =
+            "DALYTRAN-RECORD read fileStatus=00";
+
     /** The prefix the status display carries, recognisable to an operator. */
     private static final String ORACLE_STATUS_PREFIX = "FILE STATUS IS: NNNN";
 
@@ -151,8 +160,6 @@ final class DailyTransactionReadServiceTest {
     private static final String ORACLE_PERMANENT_ERROR_STATUS = "31";
 
     /** The JPA property the sequential scan must order by, ascending. */
-    private static final String ORACLE_SORT_PROPERTY = "dalytranId";
-
     private DailyTransactionRepository dailyTransactionRepository;
 
     private CardCrossReferenceRepository cardCrossReferenceRepository;
@@ -486,17 +493,17 @@ final class DailyTransactionReadServiceTest {
         }
 
         @Test
-        @DisplayName("the no-argument form scans the input ordered by record identity ascending")
-        void noArgumentFormScansWithAnExplicitAscendingSort() {
-            when(dailyTransactionRepository.findAll(any(Sort.class))).thenReturn(List.of());
+        @DisplayName("the no-argument form scans through a bounded strict keyset page")
+        void noArgumentFormScansWithABoundedKeysetPage() {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
             service.execute();
 
-            ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
-            verify(dailyTransactionRepository).findAll(sort.capture());
-            assertThat(sort.getValue())
-                    .isEqualTo(Sort.by(Sort.Direction.ASC, ORACLE_SORT_PROPERTY));
+            final ArgumentCaptor<Limit> limit = ArgumentCaptor.forClass(Limit.class);
+            verify(dailyTransactionRepository)
+                    .findByDalytranIdGreaterThanOrderByDalytranIdAsc(
+                            org.mockito.ArgumentMatchers.eq(""), limit.capture());
+            assertThat(limit.getValue().max()).isEqualTo(256);
         }
 
         @Test
@@ -542,7 +549,8 @@ final class DailyTransactionReadServiceTest {
         @Test
         @DisplayName("the supplied-source form refuses a null source")
         void suppliedSourceFormRefusesNull() {
-            assertThatThrownBy(() -> service.execute(null))
+            assertThatThrownBy(() ->
+                    service.execute((Iterable<DailyTransaction>) null))
                     .isInstanceOf(NullPointerException.class);
         }
     }
@@ -681,6 +689,30 @@ final class DailyTransactionReadServiceTest {
 
             assertThat(recorded())
                     .contains(ORACLE_SUCCESSFUL_READ_OF_XREF, ORACLE_SUCCESSFUL_READ_OF_ACCOUNT);
+            assertThat(recorded()).allSatisfy(message -> assertThat(message)
+                    .doesNotContain("0000000000000001", "00000000001", "000000001"));
+        }
+
+        @Test
+        @DisplayName("the successful cross-reference diagnostic exposes none of its three identifiers")
+        void successfulCrossReferenceFieldsAreRedacted() {
+            final String cardNumber = "0000000000000001";
+            final String accountId = "00000000001";
+            final String customerId = "000000001";
+            givenResolvable(cardNumber, accountId);
+
+            service.verify(transaction("2022071900000001", cardNumber));
+
+            assertAll(
+                    () -> assertThat(recorded()).anyMatch(message -> message.matches(
+                            "CARD NUMBER: \\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(recorded()).anyMatch(message -> message.matches(
+                            "ACCOUNT ID : \\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(recorded()).anyMatch(message -> message.matches(
+                            "CUSTOMER ID: \\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(recorded()).noneMatch(message -> message.contains(cardNumber)),
+                    () -> assertThat(recorded()).noneMatch(message -> message.contains(accountId)),
+                    () -> assertThat(recorded()).noneMatch(message -> message.contains(customerId)));
         }
 
         @Test
@@ -688,9 +720,15 @@ final class DailyTransactionReadServiceTest {
         void invalidKeyArmsReportTheirLiterals() {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
-            service.verify(transaction("9", "0000000000000009"));
+            final String transactionId = "2022071900000009";
+            final String cardNumber = "0000000000000009";
+            service.verify(transaction(transactionId, cardNumber));
 
-            assertThat(recorded()).contains(ORACLE_INVALID_CARD_FOR_XREF);
+            assertAll(
+                    () -> assertThat(recorded())
+                            .contains(ORACLE_INVALID_CARD_FOR_XREF, ORACLE_CARD_NOT_VERIFIED),
+                    () -> assertThat(recorded()).allSatisfy(message -> assertThat(message)
+                            .doesNotContain("0000000000000009", "transaction ID-9")));
         }
 
         @Test
@@ -704,7 +742,9 @@ final class DailyTransactionReadServiceTest {
 
             assertAll(
                     () -> assertThat(recorded()).contains(ORACLE_INVALID_ACCOUNT),
-                    () -> assertThat(recorded()).contains("ACCOUNT 00000000001 NOT FOUND"));
+                    () -> assertThat(recorded()).contains(ORACLE_ACCOUNT_NOT_FOUND),
+                    () -> assertThat(recorded()).allSatisfy(message -> assertThat(message)
+                            .doesNotContain("00000000001")));
         }
 
         /**
@@ -728,7 +768,9 @@ final class DailyTransactionReadServiceTest {
             assertAll(
                     () -> assertThat(literal).isNotNegative(),
                     () -> assertThat(status).isGreaterThan(literal),
-                    () -> assertThat(abending).isGreaterThan(status));
+                    () -> assertThat(abending).isGreaterThan(status),
+                    () -> assertThat(recorded()).noneMatch(
+                            message -> message.contains("gateway unavailable")));
         }
 
         @Test
@@ -795,39 +837,30 @@ final class DailyTransactionReadServiceTest {
                     () -> assertThat(recorded()).doesNotContain("ERROR CLOSING DAILY TRANSACTION FILE"));
         }
 
-        /**
-         * No rounding clause exists anywhere in the estate, so a store into a two-decimal field
-         * truncates toward zero. Four fractional digits must therefore lose two rather than round up.
-         */
         @Test
-        @DisplayName("the record diagnostic truncates a surplus fraction rather than rounding it")
-        void recordDiagnosticTruncatesRatherThanRounds() {
+        @DisplayName("the record diagnostic reports only status and withholds every protected field")
+        void recordDiagnosticWithholdsProtectedFields() {
             givenResolvable("0000000000000001", "00000000001");
 
             service.execute(List.of(
-                    transaction("1", "0000000000000001", new BigDecimal("12.3499"))));
+                    transaction("1234567890123456", "0000000000000001",
+                            new BigDecimal("12.3499"))));
 
             assertAll(
-                    () -> assertThat(recorded()).anySatisfy(message -> assertThat(message)
-                            .contains("amt=12.34")),
-                    () -> assertThat(recorded()).noneSatisfy(message -> assertThat(message)
-                            .contains("amt=12.35")));
-        }
-
-        @Test
-        @DisplayName("the record diagnostic carries the prefixed daily-transaction merchant fields")
-        void recordDiagnosticCarriesThePrefixedMerchantFields() {
-            givenResolvable("0000000000000001", "00000000001");
-
-            service.execute(List.of(transaction("1", "0000000000000001")));
-
-            assertThat(recorded()).anySatisfy(message -> assertThat(message)
-                    .contains("DALYTRAN-RECORD")
-                    .contains("merchantId=123456789")
-                    .contains("merchantName=MERCHANT NAME")
-                    .contains("merchantCity=MERCHANT CITY")
-                    .contains("merchantZip=12345")
-                    .contains("cardNum=0000000000000001"));
+                    () -> assertThat(recorded()).contains(ORACLE_RECORD_READ_STATUS),
+                    () -> assertThat(recorded()).allSatisfy(message -> assertThat(message)
+                            .doesNotContain(
+                                    "1234567890123456",
+                                    "0000000000000001",
+                                    "00000000001",
+                                    "000000001",
+                                    "12.34",
+                                    "PURCHASE",
+                                    "123456789",
+                                    "MERCHANT NAME",
+                                    "MERCHANT CITY",
+                                    "12345",
+                                    "2022-07-19 00:00:00.000000")));
         }
 
         @Test
@@ -857,15 +890,13 @@ final class DailyTransactionReadServiceTest {
         }
 
         @Test
-        @DisplayName("an absent amount is reported as absent rather than failing the diagnostic")
-        void absentAmountIsReportedAsAbsent() {
+        @DisplayName("an absent amount does not change the field-free record status diagnostic")
+        void absentAmountDoesNotChangeTheStatusDiagnostic() {
             givenResolvable("0000000000000001", "00000000001");
 
             service.execute(List.of(transaction("1", "0000000000000001", null)));
 
-            assertThat(recorded()).anySatisfy(message -> assertThat(message)
-                    .contains("DALYTRAN-RECORD")
-                    .contains("amt=(none)"));
+            assertThat(recorded()).contains(ORACLE_RECORD_READ_STATUS);
         }
 
         /**

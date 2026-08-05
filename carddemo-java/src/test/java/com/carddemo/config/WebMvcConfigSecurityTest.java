@@ -17,6 +17,7 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,15 +25,16 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.method.support.HandlerMethodArgumentResolver;
 import org.springframework.web.method.support.HandlerMethodReturnValueHandler;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * Unit test for {@link WebMvcConfig}, the web tier's single customisation hook - which customises
- * nothing, on purpose.
+ * Unit test for {@link WebMvcConfig}, the web tier's bounded CORS and request-body policy.
  *
  * <h2>Asserting that a class does nothing is not a contradiction</h2>
  *
@@ -54,7 +56,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * body of a rejected request without any change to the handler that produces it, so the two nulls are
  * asserted explicitly.</p>
  */
-@DisplayName("WebMvcConfig - the deliberately empty web customisation hook")
+@DisplayName("WebMvcConfig - explicit deny-by-default web boundaries")
 class WebMvcConfigSecurityTest {
 
     private final WebMvcConfig config = new WebMvcConfig();
@@ -75,6 +77,42 @@ class WebMvcConfigSecurityTest {
                 + "merely existing beside it")
         void theClassIsAWebConfigurer() {
             assertThat(config).isInstanceOf(WebMvcConfigurer.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("Configuration values are strict and bounded")
+    class ConfigurationValues {
+
+        @Test
+        @DisplayName("wildcards, non-HTTP schemes and path-bearing origins are refused")
+        void unsafeOriginsAreRefused() {
+            assertThatThrownBy(() -> new WebMvcConfig("*"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exact");
+            assertThatThrownBy(() -> new WebMvcConfig("file:///tmp/client"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("HTTP or HTTPS");
+            assertThatThrownBy(() -> new WebMvcConfig("https://client.example/path"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("scheme, host, and optional port");
+            assertThatThrownBy(() -> new WebMvcConfig("https://client.example:70000"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("scheme, host, and optional port");
+        }
+
+        @Test
+        @DisplayName("zero, malformed and excessively large body limits are refused")
+        void unsafeBodyLimitsAreRefused() {
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("0B"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("between 1 byte");
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("17MB"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("between 1 byte");
+            assertThatThrownBy(() -> new WebMvcConfig.RequestBodyLimitFilter("not-a-size"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("valid data-size");
         }
     }
 
@@ -158,10 +196,15 @@ class WebMvcConfigSecurityTest {
         void theHookIsContributedAndTheContextStarts() {
             new ApplicationContextRunner()
                     .withUserConfiguration(WebMvcConfig.class)
+                    .withPropertyValues(
+                            WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
+                            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB")
                     .run(context -> assertThat(context)
                             .hasNotFailed()
                             .hasSingleBean(WebMvcConfig.class)
-                            .hasSingleBean(WebMvcConfigurer.class));
+                            .hasSingleBean(WebMvcConfigurer.class)
+                            .hasSingleBean(CorsConfigurationSource.class)
+                            .hasSingleBean(FilterRegistrationBean.class));
         }
     }
 }

@@ -16,6 +16,10 @@
  */
 package com.carddemo.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -28,6 +32,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -37,6 +42,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.domain.Sort;
@@ -52,7 +58,6 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
-import com.carddemo.repository.TransactionRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -65,6 +70,11 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Parity tests for {@link InterestCalculationService}, the translation of the batch interest
@@ -172,25 +182,68 @@ final class InterestCalculationServiceTest {
     @Mock
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
-    @Mock
-    private TransactionRepository transactionRepository;
-
     private AbendService abendService;
+
+    private InterestGroupTransactionBoundary groupTransactionBoundary;
 
     private InterestCalculationService service;
 
+    private Logger serviceLogger;
+
+    private Level originalServiceLevel;
+
+    private ListAppender<ILoggingEvent> logCapture;
+
     @BeforeEach
     void setUp() {
+        this.transactionCategoryBalanceRepository = org.mockito.Mockito.mock(
+                TransactionCategoryBalanceRepository.class, invocation -> {
+                    if (invocation.getMethod().getName().equals("findAfterKey")) {
+                        final String cursor = invocation.<String>getArgument(0)
+                                + invocation.getArgument(1) + invocation.getArgument(2);
+                        final org.springframework.data.domain.Pageable page =
+                                invocation.getArgument(3);
+                        return this.transactionCategoryBalanceRepository.findAll(Sort.by(
+                                        Sort.Order.asc("trancatAcctId"),
+                                        Sort.Order.asc("trancatTypeCd"),
+                                        Sort.Order.asc("trancatCd")))
+                                .stream()
+                                .filter(row -> (row.getTrancatAcctId() + row.getTrancatTypeCd()
+                                        + row.getTrancatCd()).compareTo(cursor) > 0)
+                                .sorted(java.util.Comparator.comparing(row ->
+                                        row.getTrancatAcctId() + row.getTrancatTypeCd()
+                                                + row.getTrancatCd()))
+                                .limit(page.getPageSize())
+                                .toList();
+                    }
+                    return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+                });
         // The real collaborator, so an abend genuinely terminates the run, wrapped in a spy so the
         // emit-then-abend ordering can be asserted rather than assumed.
         this.abendService = spy(new AbendService());
+        this.groupTransactionBoundary = new InterestGroupTransactionBoundary();
         this.service = new InterestCalculationService(this.transactionCategoryBalanceRepository,
                 this.disclosureGroupRepository,
                 this.accountRepository,
                 this.cardCrossReferenceRepository,
-                this.transactionRepository,
+                this.groupTransactionBoundary,
                 this.abendService,
                 Clock.fixed(ORACLE_INSTANT, ZoneOffset.UTC));
+        this.serviceLogger =
+                (Logger) org.slf4j.LoggerFactory.getLogger(InterestCalculationService.class);
+        this.originalServiceLevel = this.serviceLogger.getLevel();
+        this.serviceLogger.setLevel(Level.DEBUG);
+        this.logCapture = new ListAppender<>();
+        this.logCapture.setContext(this.serviceLogger.getLoggerContext());
+        this.logCapture.start();
+        this.serviceLogger.addAppender(this.logCapture);
+    }
+
+    @AfterEach
+    void detachLogCapture() {
+        this.serviceLogger.detachAppender(this.logCapture);
+        this.logCapture.stop();
+        this.serviceLogger.setLevel(this.originalServiceLevel);
     }
 
     /* ------------------------------------------------------------------------------------------ */
@@ -219,6 +272,28 @@ final class InterestCalculationServiceTest {
                 groupId);
     }
 
+    @Test
+    @DisplayName("debug diagnostics retain reference codes but no account identifier or balance")
+    void debugDiagnosticsWithholdProtectedFinancialData() {
+        givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
+        givenAccountRewriteEchoes();
+        when(this.disclosureGroupRepository.findById(any()))
+                .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "0.00")));
+
+        this.service.calculateInterest(ORACLE_RUN_DATE,
+                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "987654321.99")));
+
+        final List<String> messages =
+                this.logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(messages)
+                .contains(
+                        "category balance read type=03 category=0007",
+                        "rate gate skipped type=03 category=0007 reason=ZERO_RATE")
+                .allSatisfy(message -> assertThat(message)
+                        .doesNotContain(ORACLE_ACCOUNT_ID, "987654321.99", "account=", "balance="));
+    }
+
     private static CardCrossReference crossReference(final String accountId) {
         return new CardCrossReference("4111111111111111", "000000011", accountId);
     }
@@ -226,6 +301,33 @@ final class InterestCalculationServiceTest {
     private static DisclosureGroup disclosureGroup(final String groupId, final String rate) {
         return new DisclosureGroup(groupId, ORACLE_TRAN_TYPE_CD, ORACLE_TRAN_CAT_CD,
                 new BigDecimal(rate));
+    }
+
+    private List<String> loggedMessages() {
+        return this.logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+    }
+
+    @Test
+    @DisplayName("account identifiers and category balances are redacted from accrual diagnostics")
+    void sensitiveAccrualValuesAreRedacted() {
+        givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
+        givenAccountRewriteEchoes();
+        when(this.disclosureGroupRepository.findById(any()))
+                .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "0.00")));
+
+        this.service.calculateInterest(ORACLE_RUN_DATE,
+                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "98765.43")));
+
+        assertThat(loggedMessages())
+                .anyMatch(message -> message.matches(
+                        "category balance read accountRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                + "type=03 category=0007"))
+                .anyMatch(message -> message.matches(
+                        "rate gate skipped accountRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                + "type=03 category=0007 rate=0"))
+                .noneMatch(message -> message.contains(ORACLE_ACCOUNT_ID))
+                .noneMatch(message -> message.contains("98765.43"));
     }
 
     /**
@@ -236,19 +338,13 @@ final class InterestCalculationServiceTest {
     private void givenGroupReadsResolve(final String accountId, final Account existing) {
         when(this.accountRepository.findById(accountId)).thenReturn(Optional.of(existing));
         when(this.cardCrossReferenceRepository
-                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountId))
-                .thenReturn(Optional.of(crossReference(accountId)));
+                .findByXrefAcctId(accountId))
+                .thenReturn(List.of(crossReference(accountId)));
     }
 
     /** Wires the account rewrite the control break performs, echoing back what was saved. */
     private void givenAccountRewriteEchoes() {
         when(this.accountRepository.save(any(Account.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-    }
-
-    /** Wires the transaction write, echoing back what was saved. */
-    private void givenTransactionWritesEcho() {
-        when(this.transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
@@ -315,7 +411,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -343,7 +438,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -361,23 +455,21 @@ final class InterestCalculationServiceTest {
             // empty in the source and must stay empty, so its only assertable property is that it has
             // no effect at all. Because it is a private method and this module's reflection budget is
             // zero, that is asserted by proving the run's complete interaction set: exactly one keyed
-            // read of each input, one transaction write and one account rewrite, and nothing else. Any
-            // invented fee logic would have to touch a repository, change a balance or write a row, and
-            // every one of those would break this assertion.
+            // read of each input and one account rewrite. The synthesized transaction is returned for
+            // the batch generation writer and this service has no live-master output collaborator.
+            // Any invented fee logic would have to touch a repository or change a balance, and either
+            // would break this assertion.
             verify(InterestCalculationServiceTest.this.accountRepository)
                     .findById(ORACLE_ACCOUNT_ID);
             verify(InterestCalculationServiceTest.this.cardCrossReferenceRepository)
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID);
+                    .findByXrefAcctId(ORACLE_ACCOUNT_ID);
             verify(InterestCalculationServiceTest.this.disclosureGroupRepository, times(1))
                     .findById(any());
-            verify(InterestCalculationServiceTest.this.transactionRepository, times(1))
-                    .save(any(Transaction.class));
             verify(InterestCalculationServiceTest.this.accountRepository, times(1))
                     .save(any(Account.class));
             verifyNoMoreInteractions(InterestCalculationServiceTest.this.accountRepository,
                     InterestCalculationServiceTest.this.cardCrossReferenceRepository,
                     InterestCalculationServiceTest.this.disclosureGroupRepository,
-                    InterestCalculationServiceTest.this.transactionRepository,
                     InterestCalculationServiceTest.this.transactionCategoryBalanceRepository);
             // No abend, and no status report, on the happy path.
             verifyNoMoreInteractions(InterestCalculationServiceTest.this.abendService);
@@ -405,11 +497,9 @@ final class InterestCalculationServiceTest {
                 assertThat(row.producedTransaction()).isFalse();
                 assertThat(row.interestTransaction()).isNull();
             });
-            // Nothing was written, and the identifier suffix did not advance - which is what proves the
-            // whole gated block was skipped rather than only its arithmetic.
+            // No generation record was synthesized, and the identifier suffix did not advance - which
+            // proves the whole gated block was skipped rather than only its arithmetic.
             assertThat(result.lastTranIdSuffix()).isZero();
-            verify(InterestCalculationServiceTest.this.transactionRepository, never())
-                    .save(any(Transaction.class));
         }
 
         @Test
@@ -441,7 +531,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -467,7 +556,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_BLANK_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.empty())
                     .thenReturn(Optional.of(
@@ -565,6 +653,9 @@ final class InterestCalculationServiceTest {
                     .findById(any());
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("31", "READ", "DISCGRP");
+            assertThat(InterestCalculationServiceTest.this.loggedMessages())
+                    .anyMatch(message -> message.contains("failureChain=QueryTimeoutException"))
+                    .noneMatch(message -> message.contains("the store did not answer"));
         }
     }
 
@@ -578,7 +669,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -621,7 +711,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -650,7 +739,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -682,7 +770,6 @@ final class InterestCalculationServiceTest {
             assertThat(existing.getAcctCurrCycDebit()).isNotEqualByComparingTo("0.00");
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID, existing);
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -704,7 +791,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_SECOND_ACCOUNT_ID,
                     account(ORACLE_SECOND_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "700.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -753,9 +839,8 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
-            givenTransactionWritesEcho();
+                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
+                    .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
             when(InterestCalculationServiceTest.this.accountRepository.save(any(Account.class)))
@@ -821,7 +906,7 @@ final class InterestCalculationServiceTest {
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("23", "READ", "ACCTFILE");
             verify(InterestCalculationServiceTest.this.cardCrossReferenceRepository, never())
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(any());
+                    .findByXrefAcctId(any());
         }
 
         @Test
@@ -831,8 +916,8 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
+                    .thenReturn(List.of());
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
@@ -844,35 +929,14 @@ final class InterestCalculationServiceTest {
         }
 
         @Test
-        @DisplayName("an unwritable transaction file is the write error arm and abends")
-        void unwritableTransactionFileAbends() {
-            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
-                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
-            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
-                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
-            when(InterestCalculationServiceTest.this.transactionRepository
-                    .save(any(Transaction.class)))
-                    .thenThrow(new QueryTimeoutException("the store did not answer"));
-
-            assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
-                    InterestCalculationServiceTest.this.service.calculateGroupInterest(
-                            ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
-
-            verify(InterestCalculationServiceTest.this.abendService)
-                    .displayIoStatus("31", "WRITE", "TRANSACT");
-        }
-
-        @Test
         @DisplayName("an unwritable account master is the rewrite error arm and abends")
         void unwritableAccountMasterAbends() {
             when(InterestCalculationServiceTest.this.accountRepository.findById(ORACLE_ACCOUNT_ID))
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
-            givenTransactionWritesEcho();
+                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
+                    .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
             when(InterestCalculationServiceTest.this.accountRepository.save(any(Account.class)))
@@ -925,7 +989,6 @@ final class InterestCalculationServiceTest {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
-            givenTransactionWritesEcho();
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
@@ -983,7 +1046,7 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
+                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
                     .thenThrow(new QueryTimeoutException("the store did not answer"));
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
@@ -996,26 +1059,6 @@ final class InterestCalculationServiceTest {
         }
 
         @Test
-        @DisplayName("a concurrent modification on the transaction write also propagates untranslated")
-        void concurrentModificationOnTheTransactionWriteIsNotTranslated() {
-            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
-                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
-            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
-                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
-            when(InterestCalculationServiceTest.this.transactionRepository
-                    .save(any(Transaction.class)))
-                    .thenThrow(new OptimisticLockingFailureException("another writer won"));
-
-            assertThatExceptionOfType(OptimisticLockingFailureException.class).isThrownBy(() ->
-                    InterestCalculationServiceTest.this.service.calculateGroupInterest(
-                            ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
-
-            verify(InterestCalculationServiceTest.this.abendService, never())
-                    .displayIoStatus(any(), any(), any());
-        }
-
-        @Test
         @DisplayName("a year the four-character field cannot hold is refused rather than truncated")
         void yearOutsideTheLegacyFieldIsRefused() {
             final InterestCalculationService farFuture = new InterestCalculationService(
@@ -1023,7 +1066,7 @@ final class InterestCalculationServiceTest {
                     InterestCalculationServiceTest.this.disclosureGroupRepository,
                     InterestCalculationServiceTest.this.accountRepository,
                     InterestCalculationServiceTest.this.cardCrossReferenceRepository,
-                    InterestCalculationServiceTest.this.transactionRepository,
+                    InterestCalculationServiceTest.this.groupTransactionBoundary,
                     InterestCalculationServiceTest.this.abendService,
                     Clock.fixed(LocalDateTime.of(10_000, 1, 1, 0, 0).toInstant(ZoneOffset.UTC),
                             ZoneOffset.UTC));
@@ -1090,11 +1133,9 @@ final class InterestCalculationServiceTest {
         when(this.accountRepository.findById(ORACLE_ACCOUNT_ID)).thenReturn(
                 Optional.of(account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
         when(this.cardCrossReferenceRepository
-                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
-                .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
+                .findByXrefAcctId(ORACLE_ACCOUNT_ID))
+                .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
         when(this.accountRepository.save(any(Account.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
-        when(this.transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(this.disclosureGroupRepository.findById(any())).thenReturn(Optional.of(
                 new DisclosureGroup(ORACLE_DIRECT_GROUP_ID, ORACLE_TRAN_TYPE_CD,

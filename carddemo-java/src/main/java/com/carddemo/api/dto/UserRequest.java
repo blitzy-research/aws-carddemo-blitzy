@@ -38,38 +38,19 @@ import java.util.List;
  * implied by four separate shapes.
  *
  * <p><strong>The symbolic maps are the contract, and only their inbound value items are in
- * scope.</strong> The widths below were measured from {@code app/cpy-bms/COUSR00.CPY},
+ * scope.</strong> Every width declared below was measured from {@code app/cpy-bms/COUSR00.CPY},
  * {@code app/cpy-bms/COUSR01.CPY}, {@code app/cpy-bms/COUSR02.CPY} and
- * {@code app/cpy-bms/COUSR03.CPY} rather than inferred:
+ * {@code app/cpy-bms/COUSR03.CPY} rather than inferred, and each component states its own item name,
+ * width and map line at its declaration. Two asymmetries in those maps matter here and are carried:
+ * the add map declares the two name parts before the user id while the update and delete maps declare
+ * the user id first, and <strong>the delete map declares no password item at all</strong>.
  *
- * <ul>
- *   <li>the list map declares an eight-character page number at line 60 and an eight-character
- *       user-id entry field at line 66, followed by ten identical row families running from line 72
- *       to line 366, each family carrying a one-character selection item, an eight-character user
- *       id, a twenty-character first name, a twenty-character last name and a one-character user
- *       type;</li>
- *   <li>the add map declares a twenty-character first name at line 60, a twenty-character last name
- *       at line 66, an eight-character user id at line 72, an eight-character password at line 78
- *       and a one-character user type at line 84;</li>
- *   <li>the update map declares the eight-character user id first, at line 60, then the two
- *       twenty-character name parts at lines 66 and 72, the eight-character password at line 78 and
- *       the one-character user type at line 84;</li>
- *   <li>the delete map declares the eight-character user id at line 60, the two name parts at lines
- *       66 and 72 and the one-character user type at line 78 - <strong>and no password item at
- *       all.</strong></li>
- * </ul>
- *
- * <p>Everything else those maps declare is out of scope. The six leading items of every map - the
- * transaction name, the two title lines, the current date, the program name and the current time -
- * are screen furniture the programs write outbound, and the seventy-eight-character message item
- * each map declares last is an outbound diagnostic; all seven belong to the response contract and
- * are deliberately absent here. So are the generated terminal artefacts: the per-item length, flag
- * and attribute groups, the leading twelve-byte terminal input/output area filler, the map
- * coordinates and field lengths carried in {@code app/bms/COUSR00.bms},
- * {@code app/bms/COUSR01.bms}, {@code app/bms/COUSR02.bms} and {@code app/bms/COUSR03.bms}, the
- * colour and highlight attributes, the cursor-positioning value and the marker byte. Those are
- * 3270 plumbing, not contract, and modelling any of them would tie a REST payload to a terminal
- * that no longer exists.
+ * <p>Everything else those maps declare is out of scope: the six leading screen-furniture items and the
+ * seventy-eight-character message item are outbound and belong to the response contract, and the
+ * generated terminal artefacts - per-item length, flag and attribute groups, the leading terminal
+ * input/output area filler, the map coordinates and field lengths in {@code app/bms/COUSR0*.bms}, the
+ * colour and highlight attributes, the cursor-positioning value and the marker byte - are 3270 plumbing.
+ * Modelling any of them would tie a REST payload to a terminal that no longer exists.
  *
  * <h2>Two eight-character user identifiers, not one</h2>
  *
@@ -111,21 +92,14 @@ import java.util.List;
  *
  * <h2>The internal staging row is not the screen contract</h2>
  *
- * <p>Lines 56 to 64 of {@code COUSR00C.cbl} declare a ten-occurrence working-storage table the
- * program fills before transmitting. Its element is shaped for a fixed-pitch display, not for the
- * map: it carries a one-character selection, an eight-character user id, a <strong>single combined
- * twenty-five-character name</strong>, an <strong>eight-character user type</strong> and three
- * two-character alignment fillers between them. None of those three widths is the contract.
- *
- * <p>The map - which is the contract - keeps the name in two separate twenty-character parts and
- * declares the user type one character wide, exactly as the credential record
- * {@code app/cpy/CSUSR01Y.cpy} does at its lines 19, 20 and 22. This record therefore models eight,
- * twenty, twenty and one, and models neither the combined twenty-five-character name, nor an
- * eight-character type, nor any alignment filler. Copying the staging row would have produced a
- * type that cannot round-trip a name whose two parts together exceed twenty-five characters, and a
- * user-type field seven characters wider than anything the screen or the record can hold. The
- * divergence is recorded here because it is a deliberate rejection of the wider internal shape, not
- * an oversight.
+ * <p>The ten-occurrence working-storage table at lines 56 to 64 of {@code COUSR00C.cbl} is shaped for a
+ * fixed-pitch display rather than for the map: it carries a single combined twenty-five-character name,
+ * an eight-character user type and three alignment fillers. None of those widths is the contract. The
+ * map keeps the name in two separate twenty-character parts and declares the user type one character
+ * wide, exactly as the credential record {@code app/cpy/CSUSR01Y.cpy} does at its lines 19, 20 and 22,
+ * so this record models eight, twenty, twenty and one - and models no combined name, no wider type and
+ * no filler. Copying the staging row would produce a type that cannot round-trip a name whose two parts
+ * together exceed twenty-five characters.
  *
  * <h2>The row selections are positional, and nothing here interprets them</h2>
  *
@@ -197,14 +171,12 @@ import java.util.List;
  * a character the mainframe already stores can still be read back.
  *
  * <p><strong>That vocabulary is shared, not local to this type.</strong> The same raw one-character
- * code, carrying the same two values, is what the sign-on response returns, what the navigation
- * context carries between turns and across a signed token claim, and what the user-administration
- * response echoes both at its top level and on every list row. No type in this package emits the
- * enumeration's Java constant names, and none accepts a spelled-out role word; a single wire
- * vocabulary spans the whole contract, so a client learns the codes once. The tolerant resolution of
- * a code to a typed role lives behind one adapter - the non-throwing lookup on
- * {@code com.carddemo.domain.enums.UserType}, which yields an empty result rather than raising for an
- * undeclared character - and never in a transport type.
+ * code is what the sign-on response returns, what the navigation context carries between turns and
+ * across a signed token claim, and what the user-administration response echoes at its top level and on
+ * every list row. No type in this package emits the enumeration's Java constant names and none accepts a
+ * spelled-out role word, so a client learns the two codes once. Resolving a code to a typed role lives
+ * behind the non-throwing lookup on {@code com.carddemo.domain.enums.UserType}, which yields an empty
+ * result rather than raising for an undeclared character, and never in a transport type.
  *
  * <h2>The attention key, with no default and no folding</h2>
  *
@@ -280,15 +252,14 @@ import java.util.List;
  * validation untouched.
  *
  * <p><strong>Two structural bounds sit beside it, and neither is a field edit.</strong> The selection
- * sequence carries a cardinality bound at the screen's ten rows, and the navigation component carries
- * a cascade so that the widths it declares are actually evaluated. Both differ in kind from the
- * cascades above: a sequence longer than the screen and an over-wide value inside a nested record are
- * states no legacy submission could produce, so the estate has no ordered check and no message for
- * either, and there is nothing for a declarative bound to pre-empt. What there is instead is unbounded
- * work - an arbitrarily long sequence the canonical constructor would faithfully copy, and nested
- * values that are bounded on paper and unenforced in practice, because a nested constraint is only
- * evaluated when something asks for it. Neither bound alters a value, neither reorders or truncates
- * anything, and neither expresses an opinion about <em>which</em> characters a selection may carry.
+ * sequence carries a cardinality bound at the screen's ten rows, and the navigation component carries a
+ * cascade so that the widths it declares are actually evaluated. Both differ in kind from the cascades
+ * above: a sequence longer than the screen and an over-wide value inside a nested record are states no
+ * legacy submission could produce, so the estate has no ordered check and no message for either and
+ * there is nothing to pre-empt - what there is instead is unbounded work, an arbitrarily long sequence
+ * the canonical constructor would faithfully copy and nested widths that nothing evaluates. Neither
+ * bound alters, reorders or truncates a value, and neither expresses an opinion about <em>which</em>
+ * characters a selection may carry.
  *
  * <h2>The password is carried inbound only, and never rendered</h2>
  *
@@ -359,17 +330,21 @@ import java.util.List;
  * indicator is carried on this request, because a client-supplied privilege claim would be a
  * privilege-escalation surface and authorisation decided by request content is not authorisation.
  *
- * <p><strong>The positive half of that gating is an obligation on code that does not exist yet, and
- * this contract does not discharge it.</strong> No endpoint in this module receives this type, so
- * nothing currently reads an administrator authority, maps one of these operations to a route or
- * refuses an unprivileged caller - and a reader who takes the paragraph above as an assurance that
- * something already does would be mistaken. The endpoint that eventually receives this type is
- * therefore required to place all four operations behind an administrator-only mapping, using a path
- * the module's security configuration already gates or an equivalent explicit method guard, and to
- * reconcile the identity echoed in the navigation component against the authenticated principal
- * rather than believing it. Until such an endpoint exists and its real route mapping is exercised by
- * a test, the gate is unbuilt: a catch-all rule that admits any authenticated caller would admit an
- * unprivileged one to every operation this record describes.
+ * <p><strong>The positive half of that gating is discharged elsewhere, and it is asserted rather than
+ * described.</strong> {@code api.AdminUserController} receives this type and maps all four operations
+ * beneath {@code /api/admin/users}, which is inside the path prefix the module's security configuration
+ * requires the administrator authority for, so an unprivileged caller is refused before any component of
+ * this record is read. Two tests hold that in place from different directions:
+ * {@code config.SecurityConfigTest} drives a standard principal at the gated region through a real chain
+ * and requires a forbidden answer, and {@code config.DeliveredRouteSecurityStateTest} requires each of
+ * these four operations to stay inside that prefix - so moving one out fails the build instead of silently
+ * falling through to the catch-all rule that admits any authenticated caller.
+ *
+ * <p>The negative in the paragraph above is therefore load-bearing rather than merely cautious: because
+ * the authority is established by the filter chain from the bearer grant, nothing needs to read one from
+ * this request, and the identity echoed in the navigation component is never the thing authorised. That is
+ * the arrangement working - the authority arrives on the transport, and the request body carries only what
+ * the operation acts on.
  *
  * <h2>Provenance</h2>
  *
@@ -438,6 +413,10 @@ import java.util.List;
  * @param lastUserIdOnPage the eight-character key of the last row of the page just displayed - the
  *     retained last-key field at line 69 of {@code app/cbl/COUSR00C.cbl}. Echoed for the same reason
  *     as {@link #firstUserIdOnPage()}.
+ * @param rowSnapshotToken authenticated server-minted snapshot of the ordered identifiers displayed
+ *     in the ten list rows. It is accepted only by the list operation and is required when a row
+ *     marker is submitted; the service resolves the selected position from this snapshot rather than
+ *     from a mutable re-query.
  * @param keyAction the resolved attention key, or {@code null} when the submitted terminal
  *     identifier resolved to nothing. Carries the confirmation keystroke the update and delete
  *     screens gate on; no default is substituted and no key folding is performed here.
@@ -566,6 +545,16 @@ public record UserRequest(
         @Null(groups = {UserRequest.AddOperation.class, UserRequest.UpdateOperation.class,
                 UserRequest.DeleteOperation.class})
         String lastUserIdOnPage,
+
+        /* Server-minted authenticated snapshot of the ordered identifiers displayed in the list
+         * rows. The legacy terminal returned each row's protected identifier with its marker; a REST
+         * request instead returns this opaque token so an intervening insert or delete cannot move a
+         * different identity into the selected position. It is list-only and never rendered by
+         * toString. */
+        @Null(groups = {UserRequest.AddOperation.class, UserRequest.UpdateOperation.class,
+                UserRequest.DeleteOperation.class})
+        @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+        String rowSnapshotToken,
 
         /* Resolved attention key. Nullable on purpose: the CSSTRPFY key mapping has no catch-all
          * branch, so an unresolved identifier is a real state. */
@@ -706,10 +695,8 @@ public record UserRequest(
      *
      * <p><strong>This is the single declaration of the figure, and both enforcement points read
      * it.</strong> The declarative bound on {@link #rowSelections()} and the refusal in the canonical
-     * constructor name this same constant, so the count cannot drift between the two. An earlier
-     * revision published the figure twice, under two names with two separate justifications, and the
-     * duplication was the stated reason a later revision removed the cap altogether; consolidating
-     * onto one constant keeps the cap and removes the reason it was dropped.
+     * constructor name this same constant, so the count cannot drift between the two and no second copy
+     * of it exists to be widened alone.
      */
     public static final int ROW_SELECTION_COUNT = 10;
 
@@ -769,6 +756,30 @@ public record UserRequest(
                     + " entries, because the list screen declares that many rows, but it carries "
                     + rowSelections.size());
         }
+    }
+
+    /**
+     * Compatibility constructor for the pre-token request shape.
+     *
+     * <p>It deliberately supplies no page token. Such a request remains valid for first presentation,
+     * paging and every non-list operation; a list request that marks a row is refused by the service
+     * until it echoes the token returned with the displayed page.
+     */
+    public UserRequest(final String userId,
+                       final String searchUserId,
+                       final String firstName,
+                       final String lastName,
+                       final String password,
+                       final String userType,
+                       final List<String> rowSelections,
+                       final String displayedPageNumber,
+                       final String firstUserIdOnPage,
+                       final String lastUserIdOnPage,
+                       final KeyAction keyAction,
+                       final NavigationContext navigationContext) {
+        this(userId, searchUserId, firstName, lastName, password, userType, rowSelections,
+                displayedPageNumber, firstUserIdOnPage, lastUserIdOnPage, null, keyAction,
+                navigationContext);
     }
 
     /**
@@ -832,15 +843,13 @@ public record UserRequest(
     /**
      * Returns a diagnostic representation that identifies the request and discloses no personal data.
      *
-     * <p><strong>Why redacting the credential alone was not enough.</strong> An earlier form of this
-     * method withheld the password and printed everything else verbatim, on the reasoning that only a
-     * credential is a secret. That reasoning does not survive contact with what the other components
-     * actually are: two account-holder names, three user identifiers and a user type, all belonging to
-     * one identifiable person, on a single line. A record whose remaining components are a person's
-     * given name, family name, sign-on identifier and privilege level is a personal-data record
-     * whether or not a password sits beside it, and one instance exists per administrative request, so
-     * a verbatim rendering placed that record one interpolation away from every log line, assertion
-     * message and diagnostic dump on the user-administration path.
+     * <p><strong>Why the credential is not the only component withheld.</strong> The remaining
+     * components are two account-holder names, three user identifiers and a user type, all belonging to
+     * one identifiable person and all on a single line. A record carrying a person's given name, family
+     * name, sign-on identifier and privilege level is a personal-data record whether or not a password
+     * sits beside it, and one instance exists per administrative request - so a verbatim rendering would
+     * place that record one interpolation away from every log line, assertion message and diagnostic
+     * dump on the user-administration path.
      *
      * <p><strong>What is withheld.</strong> Both user identifiers, the browse key, the two retained
      * page anchors, the two name parts, the user type and the credential, each replaced by
@@ -888,6 +897,7 @@ public record UserRequest(
                 + ", displayedPageNumber=" + displayedPageNumber
                 + ", firstUserIdOnPage=" + REDACTION_PLACEHOLDER
                 + ", lastUserIdOnPage=" + REDACTION_PLACEHOLDER
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + REDACTION_PLACEHOLDER
                 + "]";

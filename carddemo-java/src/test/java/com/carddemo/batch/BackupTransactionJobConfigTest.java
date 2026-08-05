@@ -35,6 +35,7 @@ import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.domain.Transaction;
 import com.carddemo.exception.AbendException;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.util.TransactionRecordMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -51,18 +52,20 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
-import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
@@ -79,14 +82,16 @@ import org.springframework.transaction.PlatformTransactionManager;
  * the clear it performs, and the postures it is required to keep.
  *
  * <p><strong>Why the ceiling is asserted first and most.</strong> The gate on the legacy member this
- * job translates is the estate's <em>only</em> non-strict one: it admits a prior return code of up to
- * and including four, because the posting job that runs earlier in the same cycle reports four
- * whenever it rejected a record - a partial success rather than a failure. Substituting the strict
- * zero-only ceiling used by the statement job would compile, would read like hardening, and would
- * abort the archive-and-reset cycle on a tolerated warning. That substitution is the single most
- * plausible defect in this configuration, so this suite pins the selection both behaviourally,
- * through the ceiling the gate admits, and textually, so that a future edit to the constant name
- * cannot pass unnoticed.
+ * job translates is the fourth and last of the estate's four condition-code step gates, and the
+ * migration plan is the frozen contract for how those four translate: <em>all</em> four are the strict
+ * form, admitting a prior return code of zero and nothing above it. Loosening this one to admit a
+ * warning would compile, would read like faithfulness to the member's own literal, and would run the
+ * reset behind a nonzero prior code that the plan holds the gate against. That loosening is the single
+ * most plausible defect in this configuration, so this suite pins the selection both behaviourally,
+ * through the ceiling the gate admits and the codes it refuses, and textually, so that a future edit to
+ * the constant name cannot pass unnoticed. The differently spelled literal on the legacy member is
+ * recorded in {@code docs/decision-log.md} entry DL-145 and is deliberately not asserted as behaviour
+ * anywhere: a test that protected the looser reading would make a departure from the plan look correct.
  *
  * <p><strong>Why the widths are asserted in encoded bytes.</strong> The archive is a fixed-width
  * record image, so a suite that compared parsed fields would pass while a record was a byte wide of
@@ -108,7 +113,7 @@ import org.springframework.transaction.PlatformTransactionManager;
  *
  * @since 1.0.0
  */
-@DisplayName("BackupTransactionJobConfig - the tolerant ceiling, the 350-byte archive and the clear")
+@DisplayName("BackupTransactionJobConfig - the strict ceiling, the 350-byte archive and the clear")
 final class BackupTransactionJobConfigTest {
 
     /** A destination deliberately unlike the shipped default, so a hardcoded name cannot pass. */
@@ -117,15 +122,25 @@ final class BackupTransactionJobConfigTest {
     /** A region deliberately unlike the shipped default, for the same reason. */
     private static final String REGION = "eu-west-2";
 
-    /** The number of records the archive assertions drive through the step. */
+    /**
+     * The number of records the archive assertions drive through the step.
+     *
+     * <p>The committed golden archive carries exactly this many records, and one of the assertions below
+     * checks that it does, so raising this figure without regenerating the fixture fails loudly rather
+     * than quietly comparing against the wrong expectation.
+     */
     private static final int MASTER_SIZE = 3;
 
-    /** The width of the batch timestamp the object name carries. */
-    private static final int BATCH_TIMESTAMP_WIDTH = 26;
-
-    /** The batch timestamp form: hyphens at the date breaks and before the hour, dots in the time. */
-    private static final String BATCH_TIMESTAMP_PATTERN =
-            "\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000";
+    /**
+     * The committed golden archive: the exact external bytes one archive of {@link #MASTER_SIZE} records
+     * must have.
+     *
+     * <p>Sits beside the module's other fixed-width golden files, which pin the 430-, 133-, 100- and
+     * 80-byte formats; this one pins the 350-byte archive that {@code app/jcl/COMBTRAN.jcl:24} reads
+     * back.
+     */
+    private static final String GOLDEN_ARCHIVE_FIXTURE =
+            "/fixtures/expected/transaction-archive.b64";
 
     /** The configuration's own source, read for the postures that are textual by nature. */
     private static final Path SOURCE = Path.of("src", "main", "java", "com", "carddemo", "batch",
@@ -136,6 +151,8 @@ final class BackupTransactionJobConfigTest {
 
     private TransactionRepository transactionRepository;
 
+    private TransactionScanRepository transactionScanRepository;
+
     private S3Operations objectStore;
 
     private MeterRegistry meterRegistry;
@@ -145,6 +162,13 @@ final class BackupTransactionJobConfigTest {
     @BeforeEach
     void buildConfigurationOverMockedCollaborators() {
         this.transactionRepository = mock(TransactionRepository.class);
+        this.transactionScanRepository = (cursor, limit) ->
+                this.transactionRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "tranId"))
+                        .stream()
+                        .filter(record -> record.getTranId().compareTo(cursor) > 0)
+                        .limit(limit.max())
+                        .toList();
         this.objectStore = mock(S3Operations.class);
         this.meterRegistry = new SimpleMeterRegistry();
         this.config = configWithBucket(BUCKET);
@@ -168,7 +192,8 @@ final class BackupTransactionJobConfigTest {
         final Clock fixed = Clock.fixed(Instant.parse("2026-08-04T07:48:12.34Z"), ZoneOffset.UTC);
 
         return new BackupTransactionJobConfig(jobRepository, transactionManager,
-                boundaryListener, incrementer, this.transactionRepository, this.objectStore,
+                boundaryListener, incrementer, this.transactionRepository,
+                this.transactionScanRepository, this.objectStore,
                 awsProperties, this.meterRegistry, fixed);
     }
 
@@ -177,56 +202,48 @@ final class BackupTransactionJobConfigTest {
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("The gate admits a warning, which is the whole point of it")
-    final class TheGateAdmitsAWarning {
+    @DisplayName("The gate demands a prior zero, the same strict rule as the estate's other three")
+    final class TheGateDemandsAPriorZero {
 
         @Test
-        @DisplayName("the ceiling this job selects is four, inclusive, so a prior warning still runs "
-                + "the clear")
-        void theCeilingIsFourInclusive() {
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.highestToleratedReturnCode())
-                    .as("the legacy gate bypasses its step only when four is below the return code")
-                    .isEqualTo(4);
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(0)).isTrue();
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(4))
-                    .as("four is the code the posting job reports for a partial success")
-                    .isTrue();
-        }
-
-        @Test
-        @DisplayName("anything above four is refused, so a real failure does not reach the clear")
-        void anythingAboveFourIsRefused() {
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(5)).isFalse();
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(8)).isFalse();
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(12)).isFalse();
-        }
-
-        @Test
-        @DisplayName("the strict zero-only ceiling is a different policy and is not the one selected")
-        void theStrictCeilingIsADifferentPolicy() {
+        @DisplayName("the ceiling this job selects is zero, so only a wholly clean run reaches the clear")
+        void theCeilingIsZero() {
             assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.highestToleratedReturnCode())
+                    .as("the plan defines all four condition-code step gates as the strict form")
                     .isZero();
-            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(4))
-                    .as("conflating the two ceilings is the defect this assertion exists to catch")
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(0)).isTrue();
+        }
+
+        @ParameterizedTest(name = "a prior return code of {0} is refused")
+        @ValueSource(ints = {1, 4, 5, 8, 12})
+        @DisplayName("anything above zero is refused, four included, so no nonzero code reaches the clear")
+        void anythingAboveZeroIsRefused(final int priorReturnCode) {
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(priorReturnCode))
+                    .as("admitting %d here would loosen a gate the plan holds to zero", priorReturnCode)
                     .isFalse();
         }
 
         @Test
-        @DisplayName("the configuration names the tolerant ceiling and never the strict one")
-        void theConfigurationNamesTheTolerantCeiling() throws IOException {
+        @DisplayName("one ceiling exists, so there is no looser policy this job could have selected")
+        void oneCeilingExists() {
+            assertThat(ConditionCodeGate.values())
+                    .as("a second constant would describe a gate the plan does not define")
+                    .containsExactly(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
+        }
+
+        @Test
+        @DisplayName("the configuration names the strict ceiling and routes both verdicts")
+        void theConfigurationNamesTheStrictCeiling() throws IOException {
             final String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
 
-            assertThat(source).contains("ConditionCodeGate.WARNINGS_TOLERATED");
-            assertThat(source)
-                    .as("the statement job's ceiling must not appear in the backup job")
-                    .doesNotContain("ALL_PRIOR_STEPS_ZERO");
+            assertThat(source).contains("ConditionCodeGate.ALL_PRIOR_STEPS_ZERO");
             assertThat(source)
                     .as("both verdicts must be routed, so a refusal is distinguished from a failure")
                     .contains("ConditionCodeGate.PERMITTED")
                     .contains("ConditionCodeGate.REFUSED");
             assertThat(source)
-                    .as("routing on the framework's failure status alone would reject the tolerated"
-                            + " code as well")
+                    .as("routing on the framework's failure status alone would admit a step that "
+                            + "completed while stating a nonzero code of its own")
                     .doesNotContain(".on(\"FAILED\")");
         }
     }
@@ -301,7 +318,7 @@ final class BackupTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("writes every record as exactly its encoded image, newline separated")
+        @DisplayName("writes every record as exactly its encoded image with no separator byte")
         void writesEveryRecordAtItsExactEncodedWidth() throws Exception {
             final List<Transaction> master = master();
             when(transactionRepository.findAll(any(Sort.class))).thenReturn(master);
@@ -309,21 +326,88 @@ final class BackupTransactionJobConfigTest {
             runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
 
             final byte[] content = capturedBody();
-            final int stride = TransactionRecordMapper.RECORD_LENGTH + 1;
+            final int stride = BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE;
             assertThat(content)
-                    .as("a stride is one record image plus one separator")
+                    .as("a stride is exactly one fixed-unblocked record image")
                     .hasSize(master.size() * stride);
             for (int index = 0; index < master.size(); index++) {
                 final int from = index * stride;
-                final byte[] image = new byte[TransactionRecordMapper.RECORD_LENGTH];
+                final byte[] image = new byte[BackupTransactionJobConfig.ARCHIVE_RECORD_LENGTH];
                 System.arraycopy(content, from, image, 0, image.length);
                 assertThat(image)
                         .as("record %d is the mapper's image, byte for byte", index)
                         .isEqualTo(TransactionRecordMapper.toRecordBytes(master.get(index)));
-                assertThat(content[from + TransactionRecordMapper.RECORD_LENGTH])
-                        .as("record %d is followed by the separator and nothing else", index)
-                        .isEqualTo((byte) '\n');
             }
+        }
+
+        @Test
+        @DisplayName("★ the external bytes of the stored object are exactly the committed golden "
+                + "fixture, which is what makes the archive's byte contract enforced rather than "
+                + "incidental")
+        void theStoredObjectMatchesTheCommittedGoldenFixture() throws Exception {
+            final byte[] golden = goldenArchiveFixture();
+            when(transactionRepository.findAll(any(Sort.class))).thenReturn(master());
+
+            runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
+
+            assertThat(capturedBody())
+                    .as("the stored object is byte-for-byte the committed fixture: %d records of %d "
+                            + "bytes at a %d-byte stride, and nothing else",
+                            MASTER_SIZE, BackupTransactionJobConfig.ARCHIVE_RECORD_LENGTH,
+                            BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .isEqualTo(golden);
+        }
+
+        @Test
+        @DisplayName("the committed golden fixture is itself a whole number of fixed records, so the "
+                + "expected side of the comparison above cannot silently drift")
+        void theGoldenFixtureIsAWholeNumberOfFramedRecords() throws Exception {
+            final byte[] golden = goldenArchiveFixture();
+
+            assertThat(golden.length % BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .as("the fixture is a whole number of %d-byte records",
+                            BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .isZero();
+            assertThat(golden.length / BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .as("the fixture carries exactly the master this suite archives")
+                    .isEqualTo(MASTER_SIZE);
+            assertThat(new String(golden, StandardCharsets.US_ASCII))
+                    .as("fixed-unblocked records carry neither line-feed nor carriage-return framing")
+                    .doesNotContain("\n")
+                    .doesNotContain("\r");
+        }
+
+        @Test
+        @DisplayName("the stored object ends on a record boundary, so a consumer never meets a partial "
+                + "record at the end of the archive")
+        void theStoredObjectEndsOnARecordBoundary() throws Exception {
+            when(transactionRepository.findAll(any(Sort.class))).thenReturn(master());
+
+            runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
+
+            final byte[] content = capturedBody();
+            assertThat(content.length % BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .as("an object that is not a whole number of fixed records is unreadable")
+                    .isZero();
+            assertThat(new String(content, StandardCharsets.US_ASCII).chars()
+                    .filter(character -> character == '\n' || character == '\r')
+                    .count())
+                    .as("there is no transport framing between or after fixed-unblocked records")
+                    .isZero();
+        }
+
+        @Test
+        @DisplayName("the published byte contract agrees with the mapping layer and with itself, so a "
+                + "reader of the archive can rely on the fixed record stride")
+        void thePublishedByteContractIsInternallyConsistent() {
+            assertThat(BackupTransactionJobConfig.ARCHIVE_RECORD_LENGTH)
+                    .as("the record length is the mapping layer's, restated nowhere")
+                    .isEqualTo(TransactionRecordMapper.RECORD_LENGTH)
+                    .as("the legacy declaration is LRECL=350 at app/jcl/TRANBKP.jcl:35")
+                    .isEqualTo(350);
+            assertThat(BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE)
+                    .as("fixed-unblocked data advances by exactly one record length")
+                    .isEqualTo(BackupTransactionJobConfig.ARCHIVE_RECORD_LENGTH);
         }
 
         @Test
@@ -350,6 +434,8 @@ final class BackupTransactionJobConfigTest {
             runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
 
             verify(objectStore, times(1)).upload(eq(BUCKET), anyString(), any(InputStream.class));
+            verify(objectStore).listObjects(BUCKET,
+                    BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX);
             verifyNoMoreInteractions(objectStore);
         }
 
@@ -395,7 +481,7 @@ final class BackupTransactionJobConfigTest {
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("The object name: the generation base, the batch timestamp, the generation number")
+    @DisplayName("The object name: the generation base and the unwrapped execution identifier")
     final class TheObjectName {
 
         @Test
@@ -413,42 +499,27 @@ final class BackupTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("carries the batch timestamp form and never the online one")
-        void carriesTheBatchTimestampFormAndNeverTheOnlineOne() throws Exception {
+        @DisplayName("renders the framework execution identifier at a ten-digit minimum width")
+        void rendersTheExecutionIdentifierWithoutModulo() throws Exception {
             when(transactionRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
 
-            final String stamp = capturedStamp();
-            assertThat(stamp).hasSize(BATCH_TIMESTAMP_WIDTH).matches(BATCH_TIMESTAMP_PATTERN);
-            assertThat(stamp.charAt(10))
-                    .as("the batch form separates the date from the hour with a hyphen; the online "
-                            + "form uses a space")
-                    .isEqualTo('-');
-            assertThat(stamp.charAt(13)).isEqualTo('.');
-            assertThat(stamp.charAt(16)).isEqualTo('.');
-            assertThat(stamp.charAt(19)).isEqualTo('.');
-            assertThat(stamp)
-                    .as("no colon and no space, which is what the online form would contribute")
-                    .doesNotContain(":")
-                    .doesNotContain(" ");
+            assertThat(capturedKey())
+                    .isEqualTo(BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX
+                            + "G0000000001V00");
         }
 
         @Test
-        @DisplayName("needs no second rendering, because every character of the form is admissible "
-                + "in an object name unchanged")
+        @DisplayName("uses only key-safe characters without a second escaping convention")
         void needsNoSecondRendering() throws Exception {
             when(transactionRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
 
-            assertThat(capturedStamp())
-                    .as("digits, hyphens and dots only - so no key-safe variant of the timestamp has "
-                            + "to be derived and no second timestamp format may be invented")
-                    .matches("[0-9.\\-]+");
             assertThat(capturedKey())
                     .as("the whole name likewise carries nothing an object name would have to escape")
-                    .matches("[A-Za-z0-9./\\-]+");
+                    .matches("[A-Za-z0-9./]+");
         }
 
         @Test
@@ -467,9 +538,9 @@ final class BackupTransactionJobConfigTest {
                     .as("an archive that silently replaces its predecessor is a lost archive")
                     .doesNotHaveDuplicates();
             assertThat(key.getAllValues().get(0))
-                    .endsWith(BackupTransactionJobConfig.ARCHIVE_GENERATION_INFIX + "41");
+                    .endsWith("/G0000000041V00");
             assertThat(key.getAllValues().get(1))
-                    .endsWith(BackupTransactionJobConfig.ARCHIVE_GENERATION_INFIX + "42");
+                    .endsWith("/G0000000042V00");
         }
     }
 
@@ -660,6 +731,35 @@ final class BackupTransactionJobConfigTest {
         }
 
         @Test
+        @DisplayName("the stride invariant is enforced before the object is stored, not after, so a "
+                + "partial-record archive can never reach the bucket")
+        void theStrideInvariantIsEnforcedBeforeTheObjectIsStored() throws IOException {
+            final String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
+
+            assertThat(source)
+                    .as("the guard exists and names the stride it enforces")
+                    .contains("requireWholeRecordStride")
+                    .contains("% ARCHIVE_RECORD_STRIDE != 0");
+            assertThat(source.indexOf("requireWholeRecordStride(content.length)"))
+                    .as("the guard is called before the upload on the close path, so an object that is "
+                            + "not a whole number of records is never handed to the store")
+                    .isGreaterThan(0)
+                    .isLessThan(source.indexOf(
+                            "this.generationStore.publishBytes(ARCHIVE_DATASET_BASE"));
+        }
+
+        @Test
+        @DisplayName("record production appends no transport separator to the mapper image")
+        void recordProductionAddsNoTransportFraming() throws IOException {
+            final String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
+
+            assertThat(source)
+                    .contains("this.generation.writeBytes(image);")
+                    .doesNotContain("ARCHIVE_RECORD_SEPARATOR")
+                    .doesNotContain("frameRecord()");
+        }
+
+        @Test
         @DisplayName("it names no bucket and no region, so the destination is configuration and not "
                 + "source")
         void itNamesNoBucketAndNoRegion() throws IOException {
@@ -672,20 +772,10 @@ final class BackupTransactionJobConfigTest {
         @Test
         @DisplayName("a blanked destination stops the archive rather than being defaulted, because a "
                 + "defaulted destination is a request against no bucket")
-        void aBlankedDestinationStopsTheArchive() throws JobInterruptedException {
-            final BackupTransactionJobConfig blanked = configWithBucket("   ");
-            final Step archive = ((StepLocator) blanked.backupTransactionJob())
-                    .getStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
-            final JobExecution jobExecution = new JobExecution(
-                    new JobInstance(1L, BackupTransactionJobConfig.JOB_NAME), 1L,
-                    new JobParameters());
-            final StepExecution stepExecution = jobExecution
-                    .createStepExecution(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
-
-            archive.execute(stepExecution);
-
-            assertThat(stepExecution.getFailureExceptions())
-                    .hasAtLeastOneElementOfType(IllegalArgumentException.class);
+        void aBlankedDestinationStopsTheArchive() {
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> configWithBucket("   "))
+                    .withMessageContaining(AwsProperties.S3.BATCH_STAGING_BUCKET_PROPERTY);
             verify(objectStore, never()).upload(anyString(), anyString(), any(InputStream.class));
         }
 
@@ -791,18 +881,35 @@ final class BackupTransactionJobConfigTest {
         return body.getValue().readAllBytes();
     }
 
+    /**
+     * Reads the committed golden archive, which is the <strong>expected</strong> side of the byte
+     * comparison and is never produced by the code under test.
+     *
+     * <p>The fixture was authored from the published record layout and the overpunched-sign convention,
+     * not snapshotted from a run, so comparing against it proves the placement of every field, the
+     * absence of framing and the stride between records rather than merely proving that the step is
+     * self-consistent.
+     *
+     * @return the fixture's bytes, exactly as committed
+     * @throws IOException if the fixture cannot be read, which is a broken build rather than a
+     *                     behavioural failure
+     */
+    private static byte[] goldenArchiveFixture() throws IOException {
+        try (InputStream fixture = BackupTransactionJobConfigTest.class
+                .getResourceAsStream(GOLDEN_ARCHIVE_FIXTURE)) {
+            assertThat(fixture)
+                    .as("the committed golden archive %s must be on the test classpath",
+                            GOLDEN_ARCHIVE_FIXTURE)
+                    .isNotNull();
+            return Base64.getMimeDecoder().decode(fixture.readAllBytes());
+        }
+    }
+
     /** @return the name of the single stored object */
     private String capturedKey() {
         final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
         verify(this.objectStore).upload(eq(BUCKET), key.capture(), any(InputStream.class));
         return key.getValue();
-    }
-
-    /** @return the batch timestamp portion of the single stored object's name */
-    private String capturedStamp() {
-        final String suffix = capturedKey()
-                .substring(BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX.length());
-        return suffix.substring(0, BATCH_TIMESTAMP_WIDTH);
     }
 
     /** @return a small master whose identifiers ascend, as a keyed read would deliver them */

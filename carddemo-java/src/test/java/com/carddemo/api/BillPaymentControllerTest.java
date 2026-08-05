@@ -17,10 +17,10 @@
 package com.carddemo.api;
 
 import com.carddemo.api.dto.BillPaymentResponse;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.config.SecurityConfig;
 import com.carddemo.service.BillPaymentService;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.ScreenNavigationState;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
@@ -103,6 +103,9 @@ class BillPaymentControllerTest {
     /** The bill-payment transaction, stubbed so an outcome can be placed at the boundary exactly. */
     private BillPaymentService billPaymentService;
 
+    /** The converter between the wire navigation record and the service-owned state. */
+    private ScreenStateAdapter screenStateAdapter;
+
     /** Registry the turn timer is registered against. */
     private MeterRegistry meterRegistry;
 
@@ -113,9 +116,13 @@ class BillPaymentControllerTest {
     @BeforeEach
     void setUp() {
         billPaymentService = mock(BillPaymentService.class);
+        // The real converter rather than a mock: it holds no state and performs a positional copy, so
+        // stubbing it would measure the stub instead of the crossing it is here to prove.
+        screenStateAdapter = new ScreenStateAdapter();
         meterRegistry = new SimpleMeterRegistry();
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new BillPaymentController(billPaymentService, meterRegistry))
+                .standaloneSetup(new BillPaymentController(billPaymentService, screenStateAdapter,
+                        meterRegistry))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -139,7 +146,7 @@ class BillPaymentControllerTest {
         when(billPaymentService.processBillPayment(any())).thenReturn(
                 new BillPaymentService.BillPaymentResult(
                         NavigationService.Route.BILL_PAYMENT,
-                        NavigationContext.empty(),
+                        ScreenNavigationState.empty(),
                         "CB00",
                         posted,
                         posted == null ? null
@@ -285,10 +292,16 @@ class BillPaymentControllerTest {
                 + "fails while it is starting rather than inside a payment")
         void anAbsentCollaboratorIsRefusedAtConstruction() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new BillPaymentController(null, meterRegistry))
+                    .isThrownBy(() -> new BillPaymentController(null, screenStateAdapter,
+                            meterRegistry))
                     .withMessageContaining("billPaymentService");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new BillPaymentController(billPaymentService, null))
+                    .isThrownBy(() -> new BillPaymentController(billPaymentService, null,
+                            meterRegistry))
+                    .withMessageContaining("screenStateAdapter");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new BillPaymentController(billPaymentService,
+                            screenStateAdapter, null))
                     .withMessageContaining("meterRegistry");
         }
     }
@@ -319,7 +332,44 @@ class BillPaymentControllerTest {
                     .isEqualTo(ACCOUNT_ID);
             assertThat(input.confirm()).isEqualTo("Y");
             assertThat(input.keyAction().name()).isEqualTo("ENTER");
-            assertThat(input.navigationContext()).isNull();
+            // A body that echoed no navigation record reaches the transaction as the empty carried state
+            // rather than as a null reference. The two are the same outcome to this screen, whose own
+            // absence test answers identically for a null reference and for an all-blank state, and the
+            // empty carrier is what the legacy treats as no carry-over at all.
+            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty());
+        }
+
+        @Test
+        @DisplayName("an echoed navigation record crosses component for component, so nothing the client "
+                + "echoed is trimmed, dropped or defaulted on the way in")
+        void anEchoedNavigationRecordCrossesComponentForComponent() throws Exception {
+            givenSettlementCompleted();
+
+            mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"accountId\":\"" + ACCOUNT_ID + "\",\"confirm\":\"Y\","
+                                    + "\"keyAction\":\"ENTER\",\"navigationContext\":"
+                                    + "{\"fromTransactionId\":\"CM00\","
+                                    + "\"fromProgram\":\"COMEN01C\","
+                                    + "\"toTransactionId\":\"CB00\","
+                                    + "\"toProgram\":\"COBIL00C\","
+                                    + "\"userId\":\"USER0001\",\"userType\":\"U\","
+                                    + "\"programContext\":\"REENTER\","
+                                    + "\"customerId\":\"000000123\","
+                                    + "\"customerFirstName\":\"ANN\","
+                                    + "\"customerMiddleName\":\"B\","
+                                    + "\"customerLastName\":\"SMITH\","
+                                    + "\"accountId\":\"" + ACCOUNT_ID + "\","
+                                    + "\"accountStatus\":\"Y\","
+                                    + "\"cardNumber\":\"4111111111111111\","
+                                    + "\"lastMap\":\"CBILL0A\",\"lastMapset\":\"COBIL00\"}}"))
+                    .andExpect(status().isOk());
+
+            final ScreenNavigationState carried = capturedInput().navigationContext();
+            assertThat(carried).isEqualTo(new ScreenNavigationState("CM00", "COMEN01C", "CB00",
+                    "COBIL00C", "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER,
+                    "000000123", "ANN", "B", "SMITH", ACCOUNT_ID, "Y", "4111111111111111", "CBILL0A",
+                    "COBIL00"));
         }
 
         @ParameterizedTest(name = "the confirmation character {0} crosses as typed")

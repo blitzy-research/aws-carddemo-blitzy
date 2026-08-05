@@ -32,13 +32,13 @@ package com.carddemo.exception;
  * {@link #STATUS_SUCCESS} or {@link #STATUS_END_OF_FILE} to a constructor raises
  * {@link IllegalArgumentException}, while every other well-formed two-character value is accepted.
  *
- * <p>A census of all 28 programs found nine distinct status literals - {@code 00}, {@code 01},
- * {@code 02}, {@code 04}, {@code 05}, {@code 10}, {@code 12}, {@code 23} and {@code 31} - of which
- * only {@code 00}, {@code 10} and {@code 23} are ever compared, {@code 23} being the fallback that
- * selects the default disclosure group. That list is documentation and not a whitelist: a status the
- * runtime reports but the legacy source never tested must still be carried rather than swallowed.
- * Statuses {@code 22} and {@code 35} appear in earlier documentation and in no source member, so no
- * code path may depend on them (decision D-22).
+ * <p>Nine distinct status literals occur across the 28 programs - {@code 00}, {@code 01}, {@code 02},
+ * {@code 04}, {@code 05}, {@code 10}, {@code 12}, {@code 23} and {@code 31} - of which only {@code 00},
+ * {@code 10} and {@code 23} are ever compared, {@code 23} being the fallback that selects the default
+ * disclosure group. That list is documentation and not a whitelist: a status the runtime reports but the
+ * legacy source never tested must still be carried rather than swallowed. No code path may depend on a
+ * status the source never compares, which specifically excludes {@code 22} and {@code 35} (decision
+ * D-22).
  *
  * <p>Caller obligation, and the ordering matters: the legacy sequence at every I/O site is emit the
  * diagnostic, move the raw status into the display field, emit the status, and only then abend.

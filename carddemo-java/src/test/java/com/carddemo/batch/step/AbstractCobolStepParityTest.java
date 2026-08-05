@@ -378,7 +378,7 @@ class AbstractCobolStepParityTest {
 
         @Test
         @DisplayName("the tasklet entry point runs the same lifecycle and finishes in one chunk")
-        void theTaskletEntryPointDelegates() {
+        void theTaskletEntryPointDelegates() throws Exception {
             final RecordingStep step = new RecordingStep(new SimpleMeterRegistry()).withRecords("A");
 
             final RepeatStatus status = step.execute(null, null);

@@ -82,9 +82,10 @@ class UserResponseSecurityTest {
 
     private static final String NEXT_CURSOR = "NXTUSER0099";
 
-    /** The six components the outer renderer withholds, in declaration order. */
+    /** The seven components the outer renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_OUTER_COMPONENTS =
-            List.of("rows", "pageMetadata", "userId", "firstName", "lastName", "userType");
+            List.of("rows", "pageMetadata", "rowSnapshotToken", "userId", "firstName", "lastName",
+                    "userType");
 
     /** The four components the row renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_ROW_COMPONENTS =

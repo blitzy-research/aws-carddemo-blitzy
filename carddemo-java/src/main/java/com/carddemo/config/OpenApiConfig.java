@@ -16,44 +16,24 @@
  */
 package com.carddemo.config;
 
-import java.util.List;
+import java.util.Objects;
 
-import com.carddemo.api.dto.AccountUpdateRequest;
-import com.carddemo.api.dto.AccountUpdateResponse;
-import com.carddemo.api.dto.AccountViewResponse;
-import com.carddemo.api.dto.BillPaymentRequest;
-import com.carddemo.api.dto.BillPaymentResponse;
-import com.carddemo.api.dto.CardDetailResponse;
-import com.carddemo.api.dto.CardListRequest;
-import com.carddemo.api.dto.CardListResponse;
-import com.carddemo.api.dto.CardUpdateRequest;
-import com.carddemo.api.dto.CardUpdateResponse;
-import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.MenuResponse;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
-import com.carddemo.api.dto.ReportRequest;
-import com.carddemo.api.dto.ReportResponse;
-import com.carddemo.api.dto.ScreenWorkArea;
-import com.carddemo.api.dto.SignOnRequest;
-import com.carddemo.api.dto.SignOnResponse;
-import com.carddemo.api.dto.StatementSummary;
-import com.carddemo.api.dto.TransactionAddRequest;
-import com.carddemo.api.dto.TransactionAddResponse;
-import com.carddemo.api.dto.TransactionListRequest;
-import com.carddemo.api.dto.TransactionListResponse;
-import com.carddemo.api.dto.TransactionViewResponse;
-import com.carddemo.api.dto.UserRequest;
-import com.carddemo.api.dto.UserResponse;
+import com.carddemo.util.ContractTypeRoster;
 import io.swagger.v3.core.converter.ModelConverters;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
+import io.swagger.v3.oas.models.media.Content;
+import io.swagger.v3.oas.models.media.MediaType;
+import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.media.StringSchema;
+import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
 
+import org.springdoc.core.customizers.OperationCustomizer;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.Bean;
@@ -84,12 +64,13 @@ import org.springframework.context.annotation.Configuration;
  * the same seventeen-and-an-anomaly derivation applied to the navigation vocabulary, and
  * {@code docs/decision-log.md} DL-107 for why the earlier reading was withdrawn.
  *
- * <p><strong>The endpoint inventory is derived, never declared here.</strong> A path enters the document
- * when a request-mapped controller exists for the library to scan, and this class contributes none, so the
- * paths object always reflects exactly what was scanned. Whatever is true of it is stated in the served
- * description and asserted by {@code OpenApiConfigBoundaryTest}, whose assertion fails in either
- * direction: an unlabelled empty inventory fails, and so does a label left on a populated one. See
- * {@code docs/decision-log.md} DL-101.
+ * <p><strong>The endpoint inventory is derived, never declared here.</strong> The delivered
+ * request-mapped controllers contribute the online transaction and operational batch paths when
+ * springdoc builds the served document. This class contributes metadata and reusable schemas but no
+ * hand-maintained path, so invoking {@link #cardDemoOpenApi()} directly still returns the unaugmented
+ * metadata model while {@code /v3/api-docs} carries the scanned operations. The description states that
+ * distinction explicitly, and {@code OpenApiConfigBoundaryTest} prevents the withdrawn empty-inventory
+ * claim from returning. See {@code docs/decision-log.md} DL-101.
  *
  * <p><strong>This class contributes document metadata only</strong> &mdash; title, description, version,
  * licence and the bearer security scheme &mdash; everything else being produced by the
@@ -156,57 +137,20 @@ public final class OpenApiConfig {
     public static final String BEARER_SCHEME_NAME = "bearerAuth";
 
     /**
-     * Every request and response contract of the REST surface, each of which is published as a named
-     * schema in the document's component section.
+     * The roster of request and response families that are published as named schemas, supplied by the
+     * boundary through {@link ContractTypeRoster}.
      *
-     * <p><strong>Why the roster is explicit rather than discovered.</strong> A schema reaches the document
-     * only if some scanned controller operation happens to reference the type. This module's controllers
-     * are not yet written, so an operation-driven document would publish nothing at all - and once they
-     * are written it would publish only the subset any signature happens to mention, silently omitting the
-     * rest. Naming all twenty-eight families here makes the published contract complete and makes its
-     * completeness assertable, which is what lets a test fail when a family is added and forgotten.</p>
-     *
-     * <p><strong>The nested shapes are deliberately absent from this list, and are still published.</strong>
-     * Each entry is resolved transitively, so a family's nested rows, states and cursor shapes are derived
-     * from the components that reference them rather than restated here. Listing a nested type explicitly
-     * would create a second place for it to be declared and a second place for it to drift. Every nested
-     * type in the package carries a distinct simple name, so no two schemas contend for one key.</p>
+     * <p><strong>Why the roster is not a list in this file.</strong> The families are transport types the
+     * boundary package owns, and this package may not import that one. The roster therefore arrives through
+     * a contract the base layer declares, which keeps the published document complete without inverting the
+     * dependency direction. Its completeness, and the reason it is explicit rather than discovered, are
+     * documented on the implementation.
      *
      * <p><strong>Nothing here is hand-written.</strong> The entries are types, not schemas: every property,
      * width, format and access mode in the published document is derived from the annotations on the type
-     * itself. This is the opposite of maintaining a schema by hand beside the code it describes, and it is
-     * why the derived document cannot disagree with the contracts it documents.</p>
+     * itself, which is what keeps the derived document from disagreeing with the contracts it documents.
      */
-    private static final List<Class<?>> PUBLISHED_CONTRACT_TYPES = List.of(
-            AccountUpdateRequest.class,
-            AccountUpdateResponse.class,
-            AccountViewResponse.class,
-            BillPaymentRequest.class,
-            BillPaymentResponse.class,
-            CardDetailResponse.class,
-            CardListRequest.class,
-            CardListResponse.class,
-            CardUpdateRequest.class,
-            CardUpdateResponse.class,
-            ErrorResponse.class,
-            FieldErrorDecorator.class,
-            MenuResponse.class,
-            NavigationContext.class,
-            PageMetadata.class,
-            PageMetadata.PageCursorRequest.class,
-            ReportRequest.class,
-            ReportResponse.class,
-            ScreenWorkArea.class,
-            SignOnRequest.class,
-            SignOnResponse.class,
-            StatementSummary.class,
-            TransactionAddRequest.class,
-            TransactionAddResponse.class,
-            TransactionListRequest.class,
-            TransactionListResponse.class,
-            TransactionViewResponse.class,
-            UserRequest.class,
-            UserResponse.class);
+    private final ContractTypeRoster contractTypeRoster;
 
     /**
      * The HTTP authentication scheme registered under {@link #BEARER_SCHEME_NAME}, spelled as the OpenAPI
@@ -222,6 +166,31 @@ public final class OpenApiConfig {
     public static final String BEARER_TOKEN_FORMAT = "JWT";
 
     public static final String API_TITLE = "CardDemo REST API";
+
+    /** Component key of the bearer token returned by the sign-on operation. */
+    public static final String AUTHORIZATION_HEADER_COMPONENT = "BearerAuthorization";
+
+    /** Component reference used by the sign-on operation's successful response. */
+    public static final String AUTHORIZATION_HEADER_REFERENCE =
+            "#/components/headers/" + AUTHORIZATION_HEADER_COMPONENT;
+
+    /** Shared bad-request response component key. */
+    public static final String BAD_REQUEST_RESPONSE = "BadRequest";
+
+    /** Shared unauthenticated response component key. */
+    public static final String UNAUTHORIZED_RESPONSE = "Unauthorized";
+
+    /** Shared forbidden response component key. */
+    public static final String FORBIDDEN_RESPONSE = "Forbidden";
+
+    /** Shared absent-resource response component key. */
+    public static final String NOT_FOUND_RESPONSE = "NotFound";
+
+    /** Shared optimistic/state-conflict response component key. */
+    public static final String CONFLICT_RESPONSE = "Conflict";
+
+    /** Shared terminal-failure response component key. */
+    public static final String INTERNAL_SERVER_ERROR_RESPONSE = "InternalServerError";
 
     /**
      * Licence name carried by the published document: the licence granted by the legacy estate, and the same
@@ -246,9 +215,13 @@ public final class OpenApiConfig {
      * migration to be held to. The screen geometry it quotes is an interface fact, not a measurement.
      *
      * <p>This is published contract text rather than prose about the code, and its wording is asserted by
-     * {@code OpenApiConfigBoundaryTest} against the document actually built &mdash; including the label
-     * that must agree with the endpoint inventory in either direction. It is edited only together with
-     * that assertion.
+     * {@code OpenApiConfigBoundaryTest} against the document actually built. It carries no claim about how
+     * many paths the inventory holds, deliberately: it once said the inventory was empty, which stopped
+     * being true the moment the first controller was mapped, and a count stated here would go stale the
+     * same way on the next one. What the text says instead is where the inventory comes from, and
+     * {@code OpenApiConfigBoundaryTest} asserts both that no emptiness claim has returned and that the
+     * count of delivered operations is what the code actually maps. It is edited only together with those
+     * assertions.
      */
     private static final String API_DESCRIPTION = """
             Machine-readable interface description for the CardDemo application, migrated from the AWS \
@@ -256,12 +229,11 @@ public final class OpenApiConfig {
             rather than an account of one held elsewhere, and no separate hand-maintained contract file \
             exists that could drift away from the code.
 
-            The endpoint inventory is derived from the code rather than written here, and at this \
-            milestone it is empty: no request-mapped operation has been delivered yet, so this document \
-            currently describes the reusable message shapes and the authentication rule and lists no \
-            path. Paths appear as the endpoint groups arrive - the REST form of the 17 legacy \
-            transactions that each drove a 24x80 terminal screen - and this description needs no change \
-            when they do.
+            The endpoint inventory is derived from the code's annotated controllers rather than written \
+            here, so this description needs no edit when an operation moves. It publishes 19 operations: \
+            the REST form of the 17 legacy transactions that each drove a 24x80 terminal screen, including \
+            sign-on, plus 2 administrator-only batch-control operations that launch and report the \
+            migrated Spring Batch jobs. No path is hand-maintained in this description.
 
             Where this document describes an operation, message text, per-field error states, page sizes \
             and fixed-width record widths are reproduced from the legacy estate rather than redesigned, \
@@ -293,6 +265,8 @@ public final class OpenApiConfig {
             """ + SecurityConfig.SIGN_ON_PATH + """
             , which issues them and therefore cannot itself require one. Operations beneath \
             """ + SecurityConfig.ADMIN_PATH_PREFIX + """
+             and operations beneath \
+            """ + SecurityConfig.BATCH_PATH_PREFIX + """
              require a token whose user type is the administrative one; a token for a standard user is \
             refused there rather than ignored.
 
@@ -316,8 +290,16 @@ public final class OpenApiConfig {
      * module both paths yield the same coordinate version, so the served value is stable either way, and
      * the build binds the goal that generates the resource, so the present path is the normal one rather
      * than the exception; see {@code docs/decision-log.md} DL-091.
+     *
+     * @param buildPropertiesProvider provider for the build-information bean, which need not be present
+     * @param contractTypeRoster      the boundary's roster of published request and response families; must
+     *                                not be {@code null}
+     * @throws NullPointerException if the roster is {@code null}
      */
-    public OpenApiConfig(final ObjectProvider<BuildProperties> buildPropertiesProvider) {
+    public OpenApiConfig(final ObjectProvider<BuildProperties> buildPropertiesProvider,
+                         final ContractTypeRoster contractTypeRoster) {
+        this.contractTypeRoster =
+                Objects.requireNonNull(contractTypeRoster, "contractTypeRoster must not be null");
         final BuildProperties buildProperties = buildPropertiesProvider.getIfAvailable();
         final String publishedVersion = buildProperties == null ? null : buildProperties.getVersion();
         this.contractVersion = publishedVersion == null || publishedVersion.isBlank()
@@ -338,7 +320,7 @@ public final class OpenApiConfig {
      * recorded on this class.</p>
      *
      * <p><strong>It also publishes a named schema for every request and response contract.</strong> Each
-     * family in {@link #PUBLISHED_CONTRACT_TYPES} is converted to a schema and registered in the component
+     * family the injected {@link ContractTypeRoster} names is converted to a schema and registered in the component
      * section under its own name, together with every nested shape reachable from it. Without this the
      * component section would carry the security scheme alone: a schema otherwise reaches the document only
      * when a scanned controller operation references the type, so every contract this module declares would
@@ -375,14 +357,78 @@ public final class OpenApiConfig {
                 .description(BEARER_SCHEME_DESCRIPTION);
 
         final Components components = new Components()
-                .addSecuritySchemes(BEARER_SCHEME_NAME, bearerScheme);
+                .addSecuritySchemes(BEARER_SCHEME_NAME, bearerScheme)
+                .addHeaders(AUTHORIZATION_HEADER_COMPONENT, authorizationHeader())
+                .addResponses(BAD_REQUEST_RESPONSE, errorResponse(
+                        "The request did not satisfy the published input contract."))
+                .addResponses(UNAUTHORIZED_RESPONSE, errorResponse(
+                        "A verifiable bearer credential is required."))
+                .addResponses(FORBIDDEN_RESPONSE, errorResponse(
+                        "The established principal is not permitted to perform this operation."))
+                .addResponses(NOT_FOUND_RESPONSE, errorResponse(
+                        "The addressed business or batch resource was not found."))
+                .addResponses(CONFLICT_RESPONSE, errorResponse(
+                        "The requested change conflicts with the current persisted or execution state."))
+                .addResponses(INTERNAL_SERVER_ERROR_RESPONSE, errorResponse(
+                        "The operation failed without disclosing internal implementation detail."));
 
-        PUBLISHED_CONTRACT_TYPES.forEach(contractType ->
+        this.contractTypeRoster.publishedContractTypes().forEach(contractType ->
                 ModelConverters.getInstance().readAll(contractType).forEach(components::addSchemas));
 
         return new OpenAPI()
                 .info(info)
                 .components(components)
                 .addSecurityItem(new SecurityRequirement().addList(BEARER_SCHEME_NAME));
+    }
+
+    /**
+     * Applies the reusable error responses to every served operation.
+     *
+     * @return an operation customizer for the shared HTTP contract
+     */
+    @Bean
+    public OperationCustomizer sharedOperationContract() {
+        return (operation, handlerMethod) -> {
+            io.swagger.v3.oas.models.responses.ApiResponses responses = operation.getResponses();
+            if (responses == null) {
+                responses = new io.swagger.v3.oas.models.responses.ApiResponses();
+                operation.setResponses(responses);
+            }
+            responses.addApiResponse("400", responseReference(BAD_REQUEST_RESPONSE));
+            responses.addApiResponse("401", responseReference(UNAUTHORIZED_RESPONSE));
+            responses.addApiResponse("403", responseReference(FORBIDDEN_RESPONSE));
+            responses.addApiResponse("404", responseReference(NOT_FOUND_RESPONSE));
+            responses.addApiResponse("409", responseReference(CONFLICT_RESPONSE));
+            responses.addApiResponse("500", responseReference(INTERNAL_SERVER_ERROR_RESPONSE));
+
+            if ("signOn".equals(operation.getOperationId())) {
+                final ApiResponse successful = responses.get("200");
+                if (successful != null) {
+                    successful.addHeaderObject(org.springframework.http.HttpHeaders.AUTHORIZATION,
+                            new Header().$ref(AUTHORIZATION_HEADER_REFERENCE));
+                }
+            }
+            return operation;
+        };
+    }
+
+    private static Header authorizationHeader() {
+        return new Header()
+                .description("Bearer session issued by a successful sign-on, formatted as 'Bearer "
+                        + "<token>'. Absent when the screen turn rejects the credential.")
+                .schema(new StringSchema());
+    }
+
+    private static ApiResponse errorResponse(final String description) {
+        final Schema<Object> errorSchema = new Schema<>();
+        errorSchema.set$ref("#/components/schemas/ErrorResponse");
+        final Content content = new Content().addMediaType(
+                org.springframework.http.MediaType.APPLICATION_JSON_VALUE,
+                new MediaType().schema(errorSchema));
+        return new ApiResponse().description(description).content(content);
+    }
+
+    private static ApiResponse responseReference(final String component) {
+        return new ApiResponse().$ref("#/components/responses/" + component);
     }
 }

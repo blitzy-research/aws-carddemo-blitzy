@@ -29,7 +29,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import io.micrometer.observation.ObservationRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -72,7 +75,7 @@ import org.springframework.messaging.support.GenericMessage;
 class JobSubmissionServiceConcurrencyTest {
 
     /** The configured destination, a bare first-in-first-out queue name. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The one stable message group every card carries, which is why order is preserved at all. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -311,6 +314,28 @@ class JobSubmissionServiceConcurrencyTest {
         }
     }
 
+    /**
+     * Builds the service over a test-owned coordinator. Production uses the PostgreSQL advisory-lock
+     * implementation; this focused unit test supplies the same whole-stream contract without booting a
+     * database.
+     */
+    private static JobSubmissionService serviceOver(final RecordingQueue queue) {
+        final ReentrantLock lock = new ReentrantLock(true);
+        final JobSubmissionCoordinator coordinator = submission -> serialized(lock, submission);
+        return new JobSubmissionService(queue.operations, QUEUE_NAME, MESSAGE_GROUP, coordinator,
+                ObservationRegistry.NOOP);
+    }
+
+    private static JobSubmissionService.SubmissionResult serialized(final ReentrantLock lock,
+            final Supplier<JobSubmissionService.SubmissionResult> submission) {
+        lock.lock();
+        try {
+            return submission.get();
+        } finally {
+            lock.unlock();
+        }
+    }
+
     @Nested
     @DisplayName("two submissions published at once")
     class TwoSubmissionsAtOnce {
@@ -321,8 +346,7 @@ class JobSubmissionServiceConcurrencyTest {
                 + "submission is deliberately held inside its emitting loop")
         void eachSubmissionArrivesContiguously() throws Exception {
             final RecordingQueue queue = new RecordingQueue();
-            final JobSubmissionService service =
-                    new JobSubmissionService(queue.operations, QUEUE_NAME, MESSAGE_GROUP);
+            final JobSubmissionService service = serviceOver(queue);
             queue.blockFirstSend = true;
 
             final ExecutorService submitters = Executors.newFixedThreadPool(2);
@@ -373,8 +397,7 @@ class JobSubmissionServiceConcurrencyTest {
                 + "preserves the append ordering rather than only separating the streams")
         void eachRunKeepsItsOwnCardOrder() throws Exception {
             final RecordingQueue queue = new RecordingQueue();
-            final JobSubmissionService service =
-                    new JobSubmissionService(queue.operations, QUEUE_NAME, MESSAGE_GROUP);
+            final JobSubmissionService service = serviceOver(queue);
 
             final ExecutorService submitters = Executors.newFixedThreadPool(4);
             try {

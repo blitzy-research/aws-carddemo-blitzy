@@ -92,12 +92,11 @@ import com.carddemo.domain.enums.KeyAction;
 @DisplayName("UserRequest - the CU00 to CU03 inbound contract")
 class UserRequestSecurityTest {
 
-    /** The twelve components in declaration order. A change here is a change to the REST contract. */
+    /** The thirteen components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
             "userId", "searchUserId", "firstName", "lastName", "password", "userType",
             "rowSelections", "displayedPageNumber", "firstUserIdOnPage", "lastUserIdOnPage",
-            "keyAction",
-            "navigationContext");
+            "rowSnapshotToken", "keyAction", "navigationContext");
 
     /**
      * The measured widths of the eight bounded text components, read from
@@ -161,8 +160,8 @@ class UserRequestSecurityTest {
     /** A realistic administrative add submission, with every component populated. */
     private static UserRequest populated() {
         return new UserRequest(USER_ID, "B", FIRST_NAME, LAST_NAME, SYNTHETIC_CREDENTIAL, "A",
-                TEN_SELECTIONS, DISPLAYED_PAGE_NUMBER, "AAAAAAA1", "ZZZZZZZ9", KeyAction.PFK05,
-                NavigationContext.empty().withReEntry());
+                TEN_SELECTIONS, DISPLAYED_PAGE_NUMBER, "AAAAAAA1", "ZZZZZZZ9",
+                "sealed-page-token", KeyAction.PFK05, NavigationContext.empty().withReEntry());
     }
 
     private static Set<ConstraintViolation<UserRequest>> violationsOf(UserRequest request) {
@@ -182,13 +181,13 @@ class UserRequestSecurityTest {
     class TheComponentSetIsTheFourMapsUnion {
 
         @Test
-        @DisplayName("twelve components are declared in order")
+        @DisplayName("thirteen components are declared in order")
         void twelveComponentsAreDeclaredInOrder() {
             List<String> declared = Arrays.stream(UserRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(12);
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(13);
         }
 
         @Test
@@ -297,7 +296,8 @@ class UserRequestSecurityTest {
                 + "component that declares an access mode is closed to writing instead")
         void theCredentialIsTheOnlyComponentClosedToReading() throws NoSuchFieldException {
             for (String name : COMPONENTS_IN_ORDER) {
-                if (CREDENTIAL_PROPERTY.equals(name) || PUBLISHED_PAGE_LABEL.equals(name)) {
+                if (CREDENTIAL_PROPERTY.equals(name) || "rowSnapshotToken".equals(name)
+                        || PUBLISHED_PAGE_LABEL.equals(name)) {
                     continue;
                 }
                 Field field = UserRequest.class.getDeclaredField(name);
@@ -316,6 +316,9 @@ class UserRequestSecurityTest {
                     .getAnnotation(JsonProperty.class).access())
                     .isEqualTo(JsonProperty.Access.READ_ONLY);
             assertThat(UserRequest.class.getDeclaredField(CREDENTIAL_PROPERTY)
+                    .getAnnotation(JsonProperty.class).access())
+                    .isEqualTo(JsonProperty.Access.WRITE_ONLY);
+            assertThat(UserRequest.class.getDeclaredField("rowSnapshotToken")
                     .getAnnotation(JsonProperty.class).access())
                     .isEqualTo(JsonProperty.Access.WRITE_ONLY);
         }
@@ -378,6 +381,7 @@ class UserRequestSecurityTest {
 
             List<String> expected = new java.util.ArrayList<>(COMPONENTS_IN_ORDER);
             expected.remove(CREDENTIAL_PROPERTY);
+            expected.remove("rowSnapshotToken");
             Collections.sort(expected);
 
             assertThat(emitted).containsExactlyElementsOf(expected);
@@ -393,6 +397,7 @@ class UserRequestSecurityTest {
             UserRequest revived = mapper.readValue(document, UserRequest.class);
 
             assertThat(revived.password()).isNull();
+            assertThat(revived.rowSnapshotToken()).isNull();
             assertThat(revived.userId()).isEqualTo(USER_ID);
             assertThat(revived.rowSelections()).containsExactlyElementsOf(TEN_SELECTIONS);
         }

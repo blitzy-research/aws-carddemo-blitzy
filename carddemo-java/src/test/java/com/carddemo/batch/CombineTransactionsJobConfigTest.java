@@ -21,15 +21,19 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyIterable;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.step.CombineTransactionsProcessor;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.DateValidationService;
 import com.carddemo.util.TransactionRecordMapper;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -42,13 +46,17 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.JobParametersIncrementer;
+import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
@@ -65,6 +73,7 @@ import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -118,18 +127,28 @@ class CombineTransactionsJobConfigTest {
     /** A stamped origination timestamp at the layout's twenty-six characters. */
     private static final String ORIGIN_TIMESTAMP = "2022-07-19-23.23.05.000000";
 
+    /** A representative execution identifier used to name the per-run combined generation. */
+    private static final long JOB_EXECUTION_ID = 42L;
+
     /** Builds the readers over the transaction master layout; stateless, so one instance serves all. */
     private final FixedWidthFlatFileReaderFactory readerFactory = new FixedWidthFlatFileReaderFactory();
 
-    /** Resolves the two job-parameter locations exactly as the application context would. */
+    /** Resolves the two configured locations exactly as the application context would. */
     private final ResourceLoader resourceLoader = new DefaultResourceLoader();
 
     /** The transaction master, mocked so that a load can be observed without a database. */
     private final TransactionRepository transactionRepository = mock(TransactionRepository.class);
 
+    /** The shared object-store staging boundary, mocked so publication remains observable. */
+    private final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
+
+    /** Local fallback root; file-URI fixtures bypass it while logical-name tests exercise it. */
+    private static final String STAGING_DIRECTORY = System.getProperty("java.io.tmpdir");
+
     /** The configuration under test. */
     private final CombineTransactionsJobConfig config = new CombineTransactionsJobConfig(
-            readerFactory, resourceLoader, transactionRepository);
+            readerFactory, resourceLoader, stagingArea, transactionRepository,
+            STAGING_DIRECTORY, "backup.txt", "synthesized.txt");
 
     /**
      * Builds a transaction whose every field already sits at its contractual width, then rounds it
@@ -154,10 +173,13 @@ class CombineTransactionsJobConfigTest {
     /**
      * Writes a sequential dataset of fixed-width record images, one per line, and returns its location.
      *
-     * @param  directory the temporary directory to write into
+     * <p>The location returned is a file URI supplied as deployment configuration to the test
+     * configuration. It is never a launch parameter and therefore never caller-controlled.
+     *
+     * @param  directory the staging directory to write into, which is the configuration's own
      * @param  fileName  the dataset's file name
      * @param  records   the records to render, in file order
-     * @return the location string a job parameter would carry
+     * @return the deployment-owned location of the staged dataset
      * @throws IOException if the dataset cannot be written
      */
     private static String dataset(final Path directory, final String fileName,
@@ -167,11 +189,10 @@ class CombineTransactionsJobConfigTest {
             final byte[] image = TransactionRecordMapper.toRecordBytes(record);
             assertThat(image).as("every rendered record is exactly the layout's encoded width")
                     .hasSize(RECORD_WIDTH);
-            images.append(new String(image, StandardCharsets.US_ASCII)).append('\n');
+            images.append(new String(image, StandardCharsets.US_ASCII));
         }
-        final Path dataset = directory.resolve(fileName);
-        Files.writeString(dataset, images.toString(), StandardCharsets.US_ASCII);
-        return dataset.toUri().toString();
+        Files.writeString(directory.resolve(fileName), images.toString(), StandardCharsets.US_ASCII);
+        return directory.resolve(fileName).toUri().toString();
     }
 
     /** Reads the description field out of an entity, which carries this test's origin marker. */
@@ -189,6 +210,20 @@ class CombineTransactionsJobConfigTest {
             next = reader.read();
         }
         return served;
+    }
+
+    /**
+     * Builds a configuration whose two deployment-owned input locations point at the supplied datasets.
+     *
+     * <p>The values are constructor configuration, not job parameters. That distinction is the security
+     * boundary this integrated design preserves: callers can launch the job but cannot choose what it
+     * reads.
+     */
+    private ItemStreamReader<Transaction> orderedReaderOver(
+            final String backup, final String synthesized) {
+        return new CombineTransactionsJobConfig(readerFactory, resourceLoader, stagingArea,
+                transactionRepository, STAGING_DIRECTORY, backup, synthesized)
+                .combineTransactionsOrderedReader();
     }
 
     /** A step execution detached from any repository, sufficient to drive a listener. */
@@ -221,15 +256,37 @@ class CombineTransactionsJobConfigTest {
         }
 
         @Test
-        @DisplayName("both inputs are named by their own job parameter, because a combine job that read "
-                + "one input instead of two would look perfectly well formed")
-        void bothInputsAreNamedByTheirOwnJobParameter() {
-            assertThat(CombineTransactionsJobConfig.BACKUP_INPUT_LOCATION)
-                    .isEqualTo("transactionBackupCurrentGeneration");
-            assertThat(CombineTransactionsJobConfig.SYNTHESIZED_INPUT_LOCATION)
-                    .isEqualTo("synthesizedTransactionCurrentGeneration");
-            assertThat(CombineTransactionsJobConfig.BACKUP_INPUT_LOCATION)
-                    .isNotEqualTo(CombineTransactionsJobConfig.SYNTHESIZED_INPUT_LOCATION);
+        @DisplayName("both inputs are named by their own configuration property, because a combine job "
+                + "that read one input instead of two would look perfectly well formed")
+        void bothInputsAreNamedByTheirOwnConfigurationProperty() {
+            assertThat(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY)
+                    .isEqualTo("carddemo.batch.combine-transactions.transaction-backup");
+            assertThat(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY)
+                    .isEqualTo("carddemo.batch.combine-transactions.synthesized-transaction");
+            assertThat(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY)
+                    .isNotEqualTo(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("both input properties sit under this job's own configuration prefix, so neither can "
+                + "be supplied with a launch")
+        void bothInputPropertiesSitUnderThisJobsOwnPrefix() {
+            assertThat(CombineTransactionsJobConfig.RESOURCE_PROPERTY_PREFIX)
+                    .isEqualTo("carddemo.batch.combine-transactions.");
+            assertThat(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY)
+                    .startsWith(CombineTransactionsJobConfig.RESOURCE_PROPERTY_PREFIX);
+            assertThat(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY)
+                    .startsWith(CombineTransactionsJobConfig.RESOURCE_PROPERTY_PREFIX);
+        }
+
+        @Test
+        @DisplayName("the reader takes no argument at all, so there is no seam through which a caller's "
+                + "location could reach the resource loader")
+        void theReaderTakesNoArgument() throws NoSuchMethodException {
+            assertThat(CombineTransactionsJobConfig.class
+                    .getMethod("combineTransactionsOrderedReader").getParameterCount())
+                    .as("a location parameter here would be a caller-supplied read")
+                    .isZero();
         }
 
         @Test
@@ -242,11 +299,31 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("every collaborator is required, so a half-wired configuration cannot be built")
         void everyCollaboratorIsRequired() {
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(null, resourceLoader,
-                    transactionRepository)).isInstanceOf(NullPointerException.class);
+                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, null,
-                    transactionRepository)).isInstanceOf(NullPointerException.class);
+                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    null)).isInstanceOf(NullPointerException.class);
+                    null, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
+                    stagingArea, null, STAGING_DIRECTORY, "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
+                    stagingArea, transactionRepository, null, "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
+                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    null, "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
+                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", null))
+                    .isInstanceOf(NullPointerException.class);
         }
     }
 
@@ -272,13 +349,15 @@ class CombineTransactionsJobConfigTest {
         private final JobExecutionListener boundaryListener = mock(JobExecutionListener.class);
 
         private Job buildJob() {
+            final CombineTransactionsJobConfig.CombinedGeneration combinedGeneration =
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
             final Step orderStep = config.combineTransactionsOrderStep(jobRepository,
                     transactionManager,
-                    config.combineTransactionsOrderedReader("classpath:absent-backup.txt",
+                    orderedReaderOver("classpath:absent-backup.txt",
                             "classpath:absent-synthesized.txt"),
-                    config.combineTransactionsCombinedGeneration());
+                    combinedGeneration);
             final Step loadStep = config.combineTransactionsLoadStep(jobRepository, transactionManager,
-                    config.combineTransactionsCombinedGeneration(),
+                    combinedGeneration,
                     config.combineTransactionsProcessor(),
                     config.combineTransactionsMasterWriter());
             return config.combineTransactionsJob(jobRepository, runIncrementer, boundaryListener,
@@ -309,20 +388,6 @@ class CombineTransactionsJobConfigTest {
                 + "instance rather than a refusal")
         void theRunIncrementerIsAttached() {
             assertThat(buildJob().getJobParametersIncrementer()).isSameAs(runIncrementer);
-        }
-
-        @Test
-        @DisplayName("this job attaches no validator of its own, so the framework's permissive default "
-                + "stands: the measured member carries no parameter card to validate")
-        void noParameterValidatorOfItsOwnIsAttached() {
-            final JobParametersValidator validator = buildJob().getJobParametersValidator();
-
-            assertThat(validator)
-                    .as("a validator of this job's own would impose a contract the estate never had")
-                    .isInstanceOf(DefaultJobParametersValidator.class);
-            assertThatNoException()
-                    .as("the default requires no key, so a submission carrying none is accepted")
-                    .isThrownBy(() -> validator.validate(new JobParameters()));
         }
 
         @Test
@@ -358,7 +423,7 @@ class CombineTransactionsJobConfigTest {
                             record("0000000000000003", SYNTHESIZED_MARKER)));
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
             final List<Transaction> ordered = drain(reader);
             reader.close();
@@ -378,7 +443,7 @@ class CombineTransactionsJobConfigTest {
             final String synthesized = dataset(directory, "synthesized.txt", List.of());
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
             final List<Transaction> ordered = drain(reader);
             reader.close();
@@ -401,7 +466,7 @@ class CombineTransactionsJobConfigTest {
                     List.of(record(shared, SYNTHESIZED_MARKER)));
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
             final List<Transaction> ordered = drain(reader);
             reader.close();
@@ -422,7 +487,7 @@ class CombineTransactionsJobConfigTest {
                     List.of(record(shared, SYNTHESIZED_MARKER)));
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
 
             assertThat(drain(reader)).hasSize(3);
@@ -438,7 +503,7 @@ class CombineTransactionsJobConfigTest {
             final String synthesized = dataset(directory, "synthesized.txt", List.of());
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
 
             assertThat(reader.read()).isNull();
@@ -455,7 +520,7 @@ class CombineTransactionsJobConfigTest {
                     List.of(record("0000000000000002", SYNTHESIZED_MARKER)));
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
             assertThat(drain(reader)).hasSize(2);
             reader.open(new ExecutionContext());
@@ -475,7 +540,7 @@ class CombineTransactionsJobConfigTest {
             final ExecutionContext context = new ExecutionContext();
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(context);
             assertThat(drain(reader)).hasSize(1);
             reader.update(context);
@@ -493,7 +558,7 @@ class CombineTransactionsJobConfigTest {
             final String synthesized = dataset(directory, "synthesized.txt", List.of());
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(backup, synthesized);
+                    orderedReaderOver(backup, synthesized);
             reader.open(new ExecutionContext());
             reader.close();
 
@@ -510,22 +575,23 @@ class CombineTransactionsJobConfigTest {
     final class AnUnresolvableInputIsRefused {
 
         @Test
-        @DisplayName("a missing location is refused, and no default is substituted for it")
-        void aMissingLocationIsRefused() {
-            assertThatThrownBy(() -> config.combineTransactionsOrderedReader(null, "file:/tmp/x.txt"))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(CombineTransactionsJobConfig.BACKUP_INPUT_LOCATION);
-            assertThatThrownBy(() -> config.combineTransactionsOrderedReader("file:/tmp/x.txt", null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(CombineTransactionsJobConfig.SYNTHESIZED_INPUT_LOCATION);
+        @DisplayName("an unconfigured location is refused as a deployment fault, and no default is "
+                + "substituted for it")
+        void anUnconfiguredLocationIsRefused() {
+            assertThatThrownBy(() -> orderedReaderOver("", "file:/tmp/x.txt"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY);
+            assertThatThrownBy(() -> orderedReaderOver("file:/tmp/x.txt", ""))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY);
         }
 
         @Test
-        @DisplayName("a blank location is refused for the same reason a missing one is")
+        @DisplayName("a blank location is refused for the same reason an unconfigured one is")
         void aBlankLocationIsRefused() {
-            assertThatThrownBy(() -> config.combineTransactionsOrderedReader("   ", "file:/tmp/x.txt"))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining(CombineTransactionsJobConfig.BACKUP_INPUT_LOCATION);
+            assertThatThrownBy(() -> orderedReaderOver("   ", "file:/tmp/x.txt"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY);
         }
 
         @Test
@@ -533,10 +599,10 @@ class CombineTransactionsJobConfigTest {
                 + "empty run")
         void anAbsentDatasetFailsOnOpen(@TempDir final Path directory) throws IOException {
             final String present = dataset(directory, "backup.txt", List.of());
-            final String absent = directory.resolve("never-created.txt").toUri().toString();
+            final String absent = "never-created.txt";
 
             final ItemStreamReader<Transaction> reader =
-                    config.combineTransactionsOrderedReader(present, absent);
+                    orderedReaderOver(present, absent);
 
             assertThatThrownBy(() -> reader.open(new ExecutionContext()))
                     .isInstanceOf(ItemStreamException.class)
@@ -551,7 +617,7 @@ class CombineTransactionsJobConfigTest {
             Files.writeString(malformed, "SHORT RECORD\n", StandardCharsets.US_ASCII);
             final String synthesized = dataset(directory, "synthesized.txt", List.of());
 
-            final ItemStreamReader<Transaction> reader = config.combineTransactionsOrderedReader(
+            final ItemStreamReader<Transaction> reader = orderedReaderOver(
                     malformed.toUri().toString(), synthesized);
 
             assertThatThrownBy(() -> reader.open(new ExecutionContext()))
@@ -571,7 +637,7 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("records are served in the order they were written, once each, then exhaustion")
         void recordsAreServedInWrittenOrderOnceEach() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration();
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
             final Transaction first = record("0000000000000001", BACKUP_MARKER);
             final Transaction second = record("0000000000000002", SYNTHESIZED_MARKER);
 
@@ -586,7 +652,8 @@ class CombineTransactionsJobConfigTest {
         @Test
         @DisplayName("an empty generation reports exhaustion immediately rather than failing")
         void anEmptyGenerationReportsExhaustion() throws Exception {
-            assertThat(config.combineTransactionsCombinedGeneration().read()).isNull();
+            assertThat(config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID).read())
+                    .isNull();
         }
 
         @Test
@@ -594,10 +661,11 @@ class CombineTransactionsJobConfigTest {
                 + "cannot reach another's")
         void eachExecutionReceivesItsOwnGeneration() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration first =
-                    config.combineTransactionsCombinedGeneration();
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
             first.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
 
-            assertThat(config.combineTransactionsCombinedGeneration().read()).isNull();
+            assertThat(config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID + 1).read())
+                    .isNull();
         }
 
         @Test
@@ -605,9 +673,31 @@ class CombineTransactionsJobConfigTest {
                 + "breached rather than that the group was empty")
         void aGroupIsRequired() {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration();
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
 
             assertThatThrownBy(() -> combined.write(null))
+                    .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("closing publishes the execution generation once through the shared staging area")
+        void closingPublishesTheExecutionGenerationOnce() throws Exception {
+            final CombineTransactionsJobConfig.CombinedGeneration combined =
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+            combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
+
+            combined.close();
+            combined.close();
+
+            verify(stagingArea, times(1)).publish(
+                    eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + JOB_EXECUTION_ID),
+                    any(byte[].class));
+        }
+
+        @Test
+        @DisplayName("an absent execution identifier cannot name a staged generation")
+        void anAbsentExecutionIdentifierIsRefused() {
+            assertThatThrownBy(() -> config.combineTransactionsCombinedGeneration(null))
                     .isInstanceOf(NullPointerException.class);
         }
     }
@@ -621,22 +711,35 @@ class CombineTransactionsJobConfigTest {
     final class TheLoadWritesThroughTheRepository {
 
         @Test
-        @DisplayName("each group is saved into the transaction master")
-        void eachGroupIsSavedIntoTheMaster() throws Exception {
+        @DisplayName("each record is inserted and flushed into the transaction master")
+        void eachRecordIsInsertedAndFlushedIntoTheMaster() throws Exception {
             final ItemWriter<Transaction> writer = config.combineTransactionsMasterWriter();
             final Transaction loaded = record("0000000000000001", BACKUP_MARKER);
 
             writer.write(Chunk.of(loaded));
 
-            verify(transactionRepository).saveAll(List.of(loaded));
+            verify(transactionRepository).insertAndFlush(loaded);
         }
 
         @Test
-        @DisplayName("an empty group is a no-operation rather than an empty save")
+        @DisplayName("an empty group is a no-operation rather than an empty insert")
         void anEmptyGroupIsANoOperation() throws Exception {
             config.combineTransactionsMasterWriter().write(new Chunk<>(List.of()));
 
-            verify(transactionRepository, never()).saveAll(anyIterable());
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("a duplicate key fails the writer instead of merging over the existing row")
+        void aDuplicateKeyFailsTheWriter() {
+            final Transaction loaded = record("0000000000000001", BACKUP_MARKER);
+            final DuplicateKeyException duplicate =
+                    new DuplicateKeyException("duplicate transaction identifier");
+            when(transactionRepository.insertAndFlush(loaded)).thenThrow(duplicate);
+
+            assertThatThrownBy(() -> config.combineTransactionsMasterWriter()
+                    .write(Chunk.of(loaded)))
+                    .isSameAs(duplicate);
         }
 
         @Test
@@ -717,12 +820,13 @@ class CombineTransactionsJobConfigTest {
         void anInputThatWillNotCloseCleanlyDoesNotFailThePass() throws Exception {
             final FixedWidthFlatFileReaderFactory closesBadly =
                     mock(FixedWidthFlatFileReaderFactory.class);
-            when(closesBadly.transactionReader(any())).thenReturn(new ClosesBadly());
+            when(closesBadly.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final CombineTransactionsJobConfig configuration = new CombineTransactionsJobConfig(
-                    closesBadly, resourceLoader, transactionRepository);
+                    closesBadly, resourceLoader, stagingArea, transactionRepository,
+                    STAGING_DIRECTORY, "backup.txt", "synthesized.txt");
 
-            final ItemStreamReader<Transaction> reader = configuration
-                    .combineTransactionsOrderedReader("classpath:first.txt", "classpath:second.txt");
+            final ItemStreamReader<Transaction> reader =
+                    configuration.combineTransactionsOrderedReader();
             reader.open(new ExecutionContext());
 
             assertThat(reader.read())
@@ -787,16 +891,28 @@ class CombineTransactionsJobConfigTest {
         }
 
         @Test
-        @DisplayName("the batch tier names no transport record and no configuration class, so the "
-                + "layering direction holds for this file on its own")
-        void theBatchTierNamesNoTransportRecordOrConfiguration() throws IOException {
+        @DisplayName("the batch tier names no transport record and no controller, so the layering "
+                + "direction holds for this file on its own")
+        void theBatchTierNamesNoTransportRecordOrController() throws IOException {
             final List<String> upward = source().lines()
-                    .filter(line -> line.startsWith("import com.carddemo."))
-                    .filter(line -> line.startsWith("import com.carddemo.api")
-                            || line.startsWith("import com.carddemo.config"))
+                    .filter(line -> line.startsWith("import com.carddemo.api"))
                     .toList();
 
             assertThat(upward).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the only configuration type this file names is the bound cloud settings, which is "
+                + "the edge the module's layering permits and the staged-input allow-list needs")
+        void theOnlyConfigurationTypeNamedIsTheBoundSettings() throws IOException {
+            final List<String> configurationImports = source().lines()
+                    .filter(line -> line.startsWith("import com.carddemo.config"))
+                    .toList();
+
+            assertThat(configurationImports)
+                    .as("a job configuration reads the bucket the deployment provisioned rather than "
+                            + "configuring a second copy of it, and it names nothing else from that layer")
+                    .containsExactly("import com.carddemo.config.AwsProperties;");
         }
     }
 

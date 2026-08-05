@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.CreateStatementJobConfig.ClearStatementOutputsProgram;
@@ -33,9 +34,12 @@ import com.carddemo.batch.CreateStatementJobConfig.TransactionWorkResource;
 import com.carddemo.batch.step.StatementProcessor;
 import com.carddemo.domain.Transaction;
 import com.carddemo.exception.AbendException;
+import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementLineSummary;
+import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.util.TransactionRecordMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
@@ -128,6 +132,15 @@ class CreateStatementJobConfigTest {
     private final com.carddemo.repository.TransactionRepository transactionRepository =
             mock(com.carddemo.repository.TransactionRepository.class);
 
+    /** Bounded scan adapter over the existing repository double. */
+    private final TransactionScanRepository transactionScanRepository = (cursor, limit) ->
+            transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId"))
+                    .stream()
+                    .filter(record -> record.getTranId().compareTo(cursor) > 0)
+                    .sorted(java.util.Comparator.comparing(Transaction::getTranId))
+                    .limit(limit.max())
+                    .toList();
+
     /** The statement generator, mocked so one whole run can be handed back as a fixture. */
     private final StatementGenerationService generationService =
             mock(StatementGenerationService.class);
@@ -150,7 +163,7 @@ class CreateStatementJobConfigTest {
      */
     private CreateStatementJobConfig config(final Path staging) {
         return new CreateStatementJobConfig(jobRepository, transactionManager, boundaryListener,
-                runIncrementer, transactionRepository, generationService, fieldEncryption,
+                runIncrementer, transactionScanRepository, generationService, fieldEncryption,
                 meterRegistry, clock, staging.toString(), "AWS.M2.CARDDEMO.TRXFL.SEQ",
                 "AWS.M2.CARDDEMO.STATEMNT.PS", "AWS.M2.CARDDEMO.STATEMNT.HTML");
     }
@@ -192,6 +205,28 @@ class CreateStatementJobConfigTest {
     }
 
     /**
+     * Projects one posted transaction into the service-owned statement-line carrier.
+     *
+     * <p>The batch tier consumes this type directly because {@code batch -> service} is the intended
+     * package direction. There is no API adapter on this path: no controller publishes a statement
+     * line, while the wire-side {@code StatementSummary} remains a separately published schema.
+     *
+     * @param tranId  transaction identifier, exactly sixteen characters
+     * @param cardNum card number, exactly sixteen characters
+     * @return the statement projection that the generation service would return
+     */
+    private static StatementLineSummary statementSummary(final String tranId,
+            final String cardNum) {
+        final Transaction transaction = record(tranId, cardNum);
+        return new StatementLineSummary(transaction.getTranCardNum(), transaction.getTranId(),
+                transaction.getTranTypeCd(), transaction.getTranCatCd(),
+                transaction.getTranSource(), transaction.getTranDesc(), transaction.getTranAmt(),
+                transaction.getMerchantId(), transaction.getMerchantName(),
+                transaction.getMerchantCity(), transaction.getMerchantZip(),
+                transaction.getTranOrigTs(), transaction.getTranProcTs());
+    }
+
+    /**
      * A statement run that satisfies every proof the statement stage applies to one, so that a
      * generation lifecycle can be exercised without a database.
      *
@@ -206,7 +241,11 @@ class CreateStatementJobConfigTest {
                         pad("STATEMENT LINE TWO", CreateStatementJobConfig.STATEMENT_RECORD_LENGTH)),
                 List.of(pad("<p>HTML LINE ONE</p>", CreateStatementJobConfig.HTML_RECORD_LENGTH),
                         pad("<p>HTML LINE TWO</p>", CreateStatementJobConfig.HTML_RECORD_LENGTH)),
-                List.of(), dispatched, 2, 3, 2);
+                List.of(
+                        statementSummary("TRAN000000000001", "4111111111111111"),
+                        statementSummary("TRAN000000000002", "4111111111111111"),
+                        statementSummary("TRAN000000000003", "5555555555554444")),
+                dispatched, 2, 3, 2);
     }
 
     @Nested
@@ -380,7 +419,7 @@ class CreateStatementJobConfigTest {
             program.run();
 
             final List<String> orderedKeys = program.orderedRecords().stream()
-                    .map(image -> image.substring(262, 278) + image.substring(0, 16))
+                    .map(image -> image.substring(0, 32))
                     .toList();
             assertThat(orderedKeys).containsExactly(
                     "10111111111111  TRAN000000000005",
@@ -445,6 +484,27 @@ class CreateStatementJobConfigTest {
                     .allSatisfy(key -> assertThat(encoded(key)).isEqualTo(32));
             assertThat(resource.orderedRecords())
                     .allSatisfy(image -> assertThat(encoded(image)).isEqualTo(350));
+        }
+
+        @Test
+        @DisplayName("a generation snapshot is frozen even if the mutable work resource is loaded "
+                + "again afterwards")
+        void generationSnapshotIsFrozen() {
+            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
+            final String first = TransactionRecordMapper.toStatementWorkRecord(
+                    record("TRAN000000000001", "4111111111111111"));
+            final String later = TransactionRecordMapper.toStatementWorkRecord(
+                    record("TRAN000000000002", "9111111111111111"));
+            resource.load(first);
+
+            final StatementTransactionSource frozen = resource.snapshot();
+            resource.load(later);
+
+            assertThat(frozen.readAt(0)).contains(first);
+            assertThat(frozen.readAt(1)).isEmpty();
+            assertThat(resource.recordCount()).isEqualTo(2);
+            assertThatThrownBy(() -> frozen.readAt(-1))
+                    .isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
@@ -577,17 +637,28 @@ class CreateStatementJobConfigTest {
         void bothStreamsReachTheirResourcesAtTheirDeclaredWidths(@TempDir final Path staging)
                 throws IOException {
 
-            when(generationService.generate(any(), any())).thenReturn(completedRun());
+            when(generationService.generate(any(), any(), any())).thenReturn(completedRun());
 
             final CreateStatementJobConfig config = config(staging);
             final TransactionWorkResource resource = new InMemoryTransactionWorkResource();
+            final String projected = TransactionRecordMapper.toStatementWorkRecord(
+                    record("TRAN000000000001", "4111111111111111"));
+            resource.load(projected);
             final GenerateStatementsProgram program = config.newGenerateStatementsProgram(
                     config.createStatementProcessor(), resource);
+            resource.load(TransactionRecordMapper.toStatementWorkRecord(
+                    record("TRAN000000000002", "9111111111111111")));
             program.run();
 
             assertThat(program.statementRecordsWritten()).isEqualTo(2L);
             assertThat(program.htmlRecordsWritten()).isEqualTo(2L);
             assertThat(program.statementRun()).isNotNull();
+            assertThat(program.statementRun().transactionSummaries())
+                    .as("the batch stage consumes the service-owned statement carrier directly; no "
+                            + "transport DTO or cross-layer adapter participates in this path")
+                    .hasSize(3)
+                    .extracting(StatementLineSummary::transactionId)
+                    .containsExactly("TRAN000000000001", "TRAN000000000002", "TRAN000000000003");
 
             final List<String> statements = Files.readAllLines(config.statementOutputResource(),
                     StandardCharsets.US_ASCII);
@@ -599,6 +670,15 @@ class CreateStatementJobConfigTest {
             assertThat(html).hasSize(2).allSatisfy(
                     line -> assertThat(encoded(line))
                             .isEqualTo(CreateStatementJobConfig.HTML_RECORD_LENGTH));
+
+            final org.mockito.ArgumentCaptor<StatementTransactionSource> source =
+                    org.mockito.ArgumentCaptor.forClass(StatementTransactionSource.class);
+            verify(generationService).generate(source.capture(), any(), any());
+            assertThat(source.getValue().readAt(0)).contains(projected);
+            assertThat(source.getValue().readAt(1)).isEmpty();
+            assertThat(resource.recordCount())
+                    .as("the program captured its source before this later load")
+                    .isEqualTo(2);
         }
 
         @Test
@@ -607,7 +687,7 @@ class CreateStatementJobConfigTest {
             final List<String> dispatched =
                     new ArrayList<>(StatementProcessor.EXPECTED_DISPATCH_SEQUENCE);
             dispatched.add("TERMINATED");
-            when(generationService.generate(any(), any())).thenReturn(new StatementRun(List.of(),
+            when(generationService.generate(any(), any(), any())).thenReturn(new StatementRun(List.of(),
                     List.of(), List.of(), dispatched, 0, 0, 0));
 
             final CreateStatementJobConfig config = config(staging);
@@ -638,7 +718,7 @@ class CreateStatementJobConfigTest {
             final Step load = config.createStatementLoadWorkResourceStep(resource);
             final Step clear = config.createStatementClearOutputsStep();
             final Step generate = config.createStatementGenerateStatementsStep(
-                    config.createStatementProcessor(), resource);
+                    config.createStatementProcessor(), resource, mock(BatchStagingArea.class));
 
             assertThat(order.getName())
                     .isEqualTo(CreateStatementJobConfig.ORDER_AND_REPROJECT_STEP_NAME);
@@ -673,7 +753,7 @@ class CreateStatementJobConfigTest {
         @DisplayName("a blank logical resource name is refused rather than resolved to the directory")
         void aBlankLogicalNameIsRefused(@TempDir final Path staging) {
             assertThatThrownBy(() -> new CreateStatementJobConfig(jobRepository, transactionManager,
-                    boundaryListener, runIncrementer, transactionRepository, generationService,
+                    boundaryListener, runIncrementer, transactionScanRepository, generationService,
                     fieldEncryption, meterRegistry, clock, staging.toString(), " ",
                     "AWS.M2.CARDDEMO.STATEMNT.PS", "AWS.M2.CARDDEMO.STATEMNT.HTML"))
                     .isInstanceOf(IllegalArgumentException.class);

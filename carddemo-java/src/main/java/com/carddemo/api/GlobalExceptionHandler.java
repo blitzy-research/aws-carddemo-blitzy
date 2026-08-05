@@ -24,6 +24,7 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.RefusalBodyRenderer;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -330,12 +331,15 @@ public final class GlobalExceptionHandler {
      * authentication refusal can be reached two ways: raised inside the dispatch, where the handler
      * below answers it, or raised in the filter chain <em>before</em> the dispatch, where no
      * exception handler in this class is ever consulted. Those two paths must not answer the same
-     * condition with two different bodies, so {@code com.carddemo.config.SecurityConfig}'s
-     * entry point renders this same constant rather than a literal of its own. One literal with one
-     * home is the only form of that agreement a reader can check by inspection. The chain that
-     * refuses before the dispatch is reasoned in {@code docs/decision-log.md} DL-096.</p>
+     * condition with two different bodies, so both read one literal. Its home is the neutral refusal
+     * contract in the base layer, which is the one package both this boundary and the security chain are
+     * permitted to depend on; this constant is that literal, republished here because the handler below
+     * and its tests are written in terms of it. One literal with one home is the only form of that
+     * agreement a reader can check by inspection. The chain that refuses before the dispatch is reasoned
+     * in {@code docs/decision-log.md} DL-096.</p>
      */
-    public static final String AUTHENTICATION_REQUIRED_MESSAGE = "Authentication required";
+    public static final String AUTHENTICATION_REQUIRED_MESSAGE =
+            RefusalBodyRenderer.AUTHENTICATION_REQUIRED_MESSAGE;
 
     /**
      * The summary returned when an established principal was refused. It names neither the rule
@@ -345,7 +349,7 @@ public final class GlobalExceptionHandler {
      * reason as the constant above: an authorization refusal decided by a filter-chain rule and one
      * decided inside the dispatch are the same condition and must read identically.</p>
      */
-    public static final String ACCESS_DENIED_MESSAGE = "Access denied";
+    public static final String ACCESS_DENIED_MESSAGE = RefusalBodyRenderer.ACCESS_DENIED_MESSAGE;
 
     /**
      * The bean-validation constraints that assert presence rather than shape. A field rejected by
@@ -430,9 +434,8 @@ public final class GlobalExceptionHandler {
      */
     @ExceptionHandler(AbendException.class)
     public ResponseEntity<ErrorResponse> handleAbend(AbendException exception) {
-        LOG.error("Abend reached the REST boundary: abendCode={} culprit={} reason={} message={}"
-                        + " failureChain={}",
-                exception.code(), exception.culprit(), exception.reason(), exception.getMessage(),
+        LOG.error("Abend reached the REST boundary: abendCode={} reason={} failureChain={}",
+                exception.code(), exception.reason(),
                 FailureDiagnostics.failureChainOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(operatorTextOf(exception)));

@@ -19,11 +19,11 @@
 #   docker compose --profile observability up -d    # adds prometheus + grafana
 #   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 #
-# The compose stack runs NO application container: the application is launched on the host against
-# published container ports, so every default below is the value that actually takes effect. Each is
-# still written as ${VARIABLE:default} so the CLONE_INDEX port-offset scheme in docker-compose.yml,
-# or a container-network deployment supplying service DNS, can redirect one endpoint without editing
-# this file. The module image sets SPRING_PROFILES_ACTIVE=local, so an image run picks this up too.
+# The profile supports both execution forms: a host-launched JVM uses the loopback-published defaults,
+# while the Compose app service supplies container DNS names and fixed internal ports through the same
+# variables. Each value remains ${VARIABLE:default} so parallel host stacks and the container-network
+# deployment can redirect endpoints without editing this file. The module image receives
+# SPRING_PROFILES_ACTIVE=local from Compose.
 #
 # This overlay overrides endpoints, credentials and verbosity only. It introduces no key prefix that
 # application.yml does not already own, and it never narrows a surface a sibling file resolves
@@ -106,8 +106,8 @@
 #   byte-identically in this file, in docker-compose.yml and in the emulator bootstrap script, so
 #   changing one here changes nothing until all three change together:
 #     carddemo-batch-staging       object-store bucket
-#     carddemo-jobs.fifo           first-in-first-out submission queue; the suffix is demanded by the
-#                                  queue service, and the name itself is mandated by the plan
+#     JOBS.fifo                    first-in-first-out submission queue; the suffix is demanded by the
+#                                  queue service, and the stem is the name the plan prescribes
 #     carddemo-job-submission      message group id
 #     carddemo-job-notifications   notification topic
 #     us-east-1                    region
@@ -118,37 +118,32 @@
 #   only within a single message group, and append order is the part of the legacy queue contract
 #   that acceptance drains a real queue to verify.
 #
-#   NAMING RATIONALE - recorded rather than left implicit. All four resource names are MANDATED by the
-#   migration plan and required byte-identically; none of them is this file's choice to make. Each is
-#   also expressed in the naming form its own service requires, which is why only the queue carries a
-#   suffix. The queue stands in for the CICS transient-data queue named JOBS, and the emulator
-#   bootstrap this module ships provisions it under the mandated name.
+#   NAMING RATIONALE - recorded rather than left implicit. The QUEUE name is prescribed: the migration
+#   plan names the resource the emulator bootstrap provisions as "the SQS FIFO JOBS queue", which is
+#   also the name the legacy CICS transient-data queue carried, so the value is JOBS plus the .fifo
+#   suffix the queue service demands. The other three names are this module's to choose, because the
+#   plan names no value for them, and they are therefore module-namespaced. Only the queue stands in
+#   for a named legacy resource, so only the queue carries a legacy name and only the queue carries a
+#   suffix.
 #
-#   THE SET IS UNIFORM, AND AN EARLIER REVISION BROKE THAT DELIBERATELY. The queue was renamed to
-#   carddemo-jobs.fifo on the argument that the legacy transient-data queue name is itself part of the frozen
-#   inventory, that no exception authorises editing it, and that the module should therefore agree with
-#   whatever the environment provisions. The argument is worth stating because it is plausible, and it
-#   fails at each step. What the plan freezes for this resource is the target name it prescribes; the
-#   legacy name is carried instead by the operator-visible failure message, which is the contract
-#   actually compared byte for byte, so reproducing the external interface means reproducing what its
-#   consumers observe rather than what its infrastructure is called; and deferring to the provisioned
-#   resource inverts the dependency, because the bootstrap script in this module is what creates the
-#   queue. The name is restored to carddemo-jobs.fifo. See docs/decision-log.md DL-092 for the full
-#   record, DL-045 for how the four names divide between legacy-derived and module-namespaced, and
-#   DL-047 for why this overlay widens the shared baseline's fail-closed defaults one concession at a
-#   time rather than in bulk.
+#   AN EARLIER REVISION RENAMED THE QUEUE to a module-namespaced form and asserted that the plan
+#   mandated that form. The plan does not: it names this resource twice and names it JOBS both times.
+#   The prescribed name is therefore restored rather than argued about again. See
+#   docs/decision-log.md DL-092 for the full record, DL-045 for how the four names divide between
+#   legacy-derived and module-namespaced, and DL-047 for why this overlay widens the shared
+#   baseline's fail-closed defaults one concession at a time rather than in bulk.
 #
-#   WHAT SURVIVES FROM THAT ARGUMENT IS ITS WARNING, and it is kept: a well-formed name that names
+#   WHAT SURVIVES FROM THAT REVISION IS ITS WARNING, and it is kept: a well-formed name that names
 #   nothing is exactly the input a create-on-absence default resolves by provisioning a queue nothing
 #   consumes, so a submission would report complete while the cards sat unread. That is why the value
 #   appears once per place and why a disagreement is made loud rather than silent. A collision with an
 #   unrelated queue in a shared account remains a deployment concern, answered by the environment
 #   override rather than by renaming what the module ships.
 #
-#   A namespaced name would also disagree with the resource the environment actually provisions,
-#   which is precisely the valid-but-wrong-name failure that the queue-not-found strategy inherited
-#   from application.yml makes loud instead of silent. Carrying the legacy name and setting that
-#   strategy are two halves of one guarantee.
+#   A name that disagrees with the resource the environment actually provisions is precisely the
+#   valid-but-wrong-name failure that the queue-not-found strategy inherited from application.yml
+#   makes loud instead of silent. Binding the prescribed name and setting that strategy are two
+#   halves of one guarantee.
 #
 #   The operator-visible message text is unchanged by any of this. It names the transient-data queue
 #   verbatim as JOBS with no suffix, is asserted character for character, and is frozen text rather
@@ -202,36 +197,29 @@ spring:
 
   # -----------------------------------------------------------------------------------------------
   # Schema evolution - versioned, forward-only, and the ONLY path by which an application table or a
-  # seeded row is created. What makes this a LOCAL profile is two settings, and the first is the one
-  # that matters: it ADDS THE SEED LOCATION, which production is refused, and it then lifts the shared
-  # version ceiling so the scripts that location resolves are actually applied.
+  # seeded row is created. What makes this a LOCAL profile is ONE setting: it LIFTS THE SHARED VERSION
+  # CEILING, which is what applies the two seed scripts that production stops short of.
   #
-  #   classpath:db/migration/schema                                            EVERY profile
+  #   classpath:db/migration                                                   EVERY profile
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
-  #
-  #   classpath:db/migration/seed                                              local and test ONLY
   #     V3__seed_reference_data.sql    the nine measured ASCII reference datasets, 626 rows across
-  #                                    nine tables
+  #                                    nine tables                             local and test ONLY
   #     V4__seed_user_security.sql     the ten sign-on identities, five administrative and five
   #                                    standard, each credential stored only as a hash
+  #                                                                            local and test ONLY
   #
-  # THE SEED LOCATION IS ADDED HERE AND ONLY HERE (and identically in application-test.yml). This is the
-  # mechanism AAP 0.3.1 and 0.4.2 require: FlywayConfig resolves V3 and V4 from profile-scoped locations
-  # so a production deployment migrates schema and indexes without inheriting sample data or seeded
-  # credentials. FlywayConfig refuses the seed location outright while the production profile is active,
-  # so it is not merely unlisted there - it is unlistable.
+  # ALL FOUR SCRIPTS ARE PHYSICALLY FLAT IN ONE DIRECTORY. There is no schema/ or seed/ child directory
+  # and none may be created, so the location list is identical in every profile and cannot carry any
+  # part of the separation. The separation is a ceiling on the migration VERSION, lifted here and only
+  # here (and identically in application-test.yml). See docs/decision-log.md DL-127, which supersedes
+  # DL-102 and DL-119.
   #
-  # THE CEILING IS LIFTED AS WELL, because the two controls are stacked rather than alternative. The
-  # shared baseline in application.yml pins spring.flyway.target to "2", which would stop a migration at
-  # the schema even with the seed location resolved; this overlay raises it to latest, so a local
-  # migration ends at V4. The production overlay resolves the schema location alone AND re-asserts
-  # target: 2. See docs/decision-log.md DL-127, which supersedes DL-102 and DL-119.
-  #
-  # THE SHARED PARENT classpath:db/migration IS NEVER DECLARED, by this document or any other, and holds
-  # no script. A location is scanned recursively, so naming the parent beside a child would resolve every
-  # script twice and the migration tool would reject the repeated version. A seeded sign-on credential is
-  # stored only as a hash regardless, so that even a mistake here leaks nothing.
+  # THE CEILING IS THE WHOLE MECHANISM. The shared baseline in application.yml pins
+  # spring.flyway.target to "2", which stops a migration after the indexes; this overlay raises it to
+  # latest, so a local migration ends at V4. The production overlay re-asserts target: 2, and
+  # FlywayConfig re-applies that ceiling after binding so it cannot be lifted in silence. A seeded
+  # sign-on credential is stored only as a hash regardless, so that even a mistake here leaks nothing.
   #
   # TWO THINGS COM.CARDDEMO.CONFIG.FLYWAYCONFIG DOES TO THIS BLOCK, neither of which this document
   # could do for itself:
@@ -286,17 +274,15 @@ spring:
     enabled: true
     # See docs/decision-log.md DL-127.
     #
-    # BOTH DELIVERED LOCATIONS. The shared baseline declares the schema location alone, which is the
-    # production posture; adding the seed location here is THE SETTING THAT MAKES THE SEEDS RESOLVABLE
-    # AT ALL, and production is refused it outright by FlywayConfig. Both are restated in full rather
-    # than inherited so this document reads completely on its own.
-    #
-    # The shared parent classpath:db/migration is never declared. A location is scanned recursively, so
-    # naming the parent beside a child would resolve every script twice and Flyway would reject the
-    # repeated version before executing anything.
-    locations: classpath:db/migration/schema,classpath:db/migration/seed
-    # AND THE CEILING IS LIFTED TO MATCH. The shared baseline pins target at "2", which would stop a
-    # migration at the schema even with the seed location resolved, so both halves are required here.
+    # THE ONE DELIVERED LOCATION, restated in full rather than inherited so this document reads
+    # completely on its own. All four scripts are physically flat in this single directory and no
+    # child directory exists, so the location is identical in every profile and carries no part of
+    # the production/non-production separation.
+    locations: classpath:db/migration
+    # THE CEILING IS LIFTED, AND IT IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE AT ALL. The
+    # shared baseline pins target at "2", which stops a migration after the indexes; lifting it here
+    # is what admits V3__seed_reference_data.sql and V4__seed_user_security.sql. Production keeps the
+    # ceiling at 2 and FlywayConfig refuses to start it at any higher value.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -319,7 +305,9 @@ spring:
   # AWS integration, aimed at the LocalStack Community container.
   #
   # CREDENTIALS: the emulator accepts any non-empty pair and verifies nothing, so the values below are
-  # deliberate placeholders and are NOT keys. Never substitute a real access key here.
+  # deliberate placeholders and are NOT keys. Only LOCALSTACK_* variables may override them; ambient
+  # AWS_* variables are intentionally ignored so a developer's real cloud credentials cannot be drawn
+  # into the local profile by the standard SDK environment names.
   #
   # The endpoint override is applied globally AND restated per client, so no client can fall through
   # to a real AWS endpoint if the global setting is dropped. Path-style addressing is required because
@@ -333,14 +321,15 @@ spring:
       region:
         static: ${carddemo.aws.region}
       credentials:
-        access-key: ${AWS_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
-        secret-key: ${AWS_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
+        access-key: ${LOCALSTACK_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
+        secret-key: ${LOCALSTACK_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
       endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
       s3:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
         path-style-access-enabled: true
       sqs:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+        observation-enabled: true
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
@@ -366,15 +355,14 @@ spring:
 #                         target to the same job is what an earlier revision did, and it doubled every
 #                         series whenever both answered.
 #
-# EVERYTHING IN THIS BLOCK WIDENS A CLOSED BASELINE. application.yml publishes four endpoints -
-# health, info, metrics and prometheus, each one resolved by a sibling file or by the performance
-# baseline - and answers the health probe with an aggregate status alone, because that is the posture a
-# profile should inherit when nobody chose one. This overlay opens the diagnostics that only make sense on
-# a developer's own machine - resolved configuration, the bean graph, the request mappings, the
-# applied migrations, and full health component detail - and it opens them HERE so that the
-# concession is visible in the profile that takes it. Production does not narrow this list; it simply
-# does not widen it. The individual-meter endpoint is NOT among the concessions: it is inherited from
-# the shared baseline, because the performance baseline has to be readable in every profile.
+# THIS PROFILE PUBLISHES NO EXTRA MANAGEMENT ENDPOINT. The shared four are sufficient for health,
+# build identity and the Gate-3 metrics surface. Environment, bean, mapping, migration and writable
+# logger endpoints are intentionally absent even on a developer machine: loopback binding reduces
+# reachability but does not make a resolved-configuration dump or a mutable logger harmless.
+#
+# Health detail is available only when the request is authenticated. The container's anonymous
+# health probe therefore still receives the aggregate status alone, while an administrator can
+# diagnose a failed local dependency without exposing the component inventory to every local process.
 #
 # Traces are sampled in full so that a migrated flow can be followed end to end in the trace UI
 # while acceptance evidence is gathered. Full fidelity is a local diagnostic choice, not a target.
@@ -384,24 +372,11 @@ management:
     web:
       base-path: /actuator
       exposure:
-        # WIDENING THIS LIST WIDENS WHAT A CREDENTIAL REACHES, NEVER WHAT ANONYMITY REACHES.
-        # com.carddemo.config.SecurityConfig permits exactly two paths beneath this base path - the
-        # health probe and the Prometheus scrape endpoint - and authenticates everything else under it
-        # with a rule placed after those two permits and before the catch-all. Every endpoint added
-        # on this line beyond those two therefore requires a bearer token, including the ones that
-        # describe the running system most completely: env and configprops publish the resolved
-        # configuration, beans the wiring, flyway the schema history, mappings the route table and
-        # loggers a writable log level. None of them is anonymous, and none becomes anonymous by
-        # being listed here, because no rule anywhere permits this base path as a whole.
-        include: health,info,metrics,prometheus,env,configprops,beans,flyway,mappings,loggers
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      # Reopened from the baseline's `never`. A failed migration or an unreachable container then
-      # surfaces in the probe body itself, which is the fastest way to diagnose a compose stack
-      # that will not come up. The payload names every health contributor and the database product
-      # and version, which is why it is opened only here.
-      show-details: always
-      show-components: always
+      show-details: when-authorized
+      show-components: when-authorized
   tracing:
     enabled: true
     sampling:
@@ -418,16 +393,16 @@ management:
 # comes from application.yml, so only the switch appears here and the path cannot drift between
 # profiles.
 #
-# WHAT IS ACTUALLY SERVED HERE: identity metadata, the reusable component shapes and the
-# bearer security scheme - and no endpoint inventory, because no request-mapped controller exists
-# to contribute one. Fetching this address on a running local stack returns a document with an
-# empty paths object, and that is the expected answer rather than a symptom of a broken overlay.
-# The inventory is later bound and grows as the controllers derived from the 17 legacy screens
-# arrive; this switch needs no change when they do. See docs/decision-log.md DL-101.
+# WHAT IS ACTUALLY SERVED HERE: identity metadata, the reusable component shapes, the bearer
+# security scheme and the operations derived from the delivered request-mapped controllers.
+# OpenApiConfig itself maintains no path literals; springdoc augments that metadata model from the
+# controller scan when it serves this profile's document. That distinction prevents a second route
+# inventory from drifting without repeating the obsolete claim that the delivered inventory is empty.
+# See docs/decision-log.md DL-101.
 #
-# Reopening it is safe HERE and nowhere else, and that is a judgement about what the document will
-# carry rather than about how little it carries now. Once it describes the request and response
-# shape of every endpoint, it is exactly what a developer wants and exactly what an unauthenticated
+# Reopening it is safe HERE and nowhere else, and that is a judgement about what the document carries
+# rather than about how little it once carried. It describes the request and response shape of the
+# delivered endpoints, which is exactly what a developer wants and exactly what an unauthenticated
 # caller should not be handed. On a developer's machine that is the whole point; on anything
 # reachable by someone else it is a map handed to them. The production overlay does not turn it
 # off - it inherits it off, and it inherits it off already, before there is anything to disclose.
@@ -451,15 +426,16 @@ springdoc:
     enabled: true
 
 # Levels only; appender selection and the structured encoder live in logback-spring.xml. Raising the
-# application package to DEBUG is the point of a local overlay: the migrated services log their
-# decision points, and the migration tool logs each script it applies, so a start-up that stops short
-# of the highest delivered version says so plainly. The framework packages stay at INFO so that
-# signal is not buried.
+# application package to DEBUG is the point of a local overlay: the migrated services log decision
+# points, and the migration tool logs each script it applies, so a start-up that stops short of the
+# highest delivered version says so plainly. The framework packages stay at INFO so that signal is
+# not buried.
 #
-# What DEBUG does not disclose: the services reached by this level log outcomes, status codes, format
-# identifiers and their own message numbers, never the value a caller submitted. That is a property of
-# the log statements rather than of this level, so raising the level here cannot turn a diagnostic
-# into a disclosure - see docs/decision-log.md DL-100.
+# A level is not a confidentiality control. Enabling this switch grants no exception to the
+# source-level rule: protected record fields, financial values and submitted free text must not be
+# interpolated into a diagnostic. The paths covered by DL-100 and DL-152 use bounded counts, statuses,
+# reference codes and failure types instead; exception rendering elsewhere remains subject to the
+# appender policy rather than being justified by this local setting.
 logging:
   level:
     com.carddemo: DEBUG
@@ -487,10 +463,13 @@ logging:
 #   the queue pre-existed first use  which is why the emulator bootstrap runs to completion before the
 #                          application starts rather than creating it lazily.
 #
-# THE OBJECT STORE replaces the sequential output datasets and the generation-data-group bases that
-# retained their history; retention becomes object versioning on the staging bucket rather than a
-# generation limit. The key each staged object is written under is composed by the job that writes it,
-# not configured, so one output family cannot overwrite another by configuration going stale.
+# THE OBJECT STORE replaces the sequential datasets and the generation-data-group bases that retained
+# their history; retention becomes object versioning on the staging bucket rather than a generation
+# limit. BatchStagingArea is the single object-store adapter shared by every staging job. It resolves a
+# staged input through S3 when the named object exists, and publishes every completed fixed-width
+# output through the same bucket. Writers keep only an execution-local file while Spring Batch needs
+# file-backed restart state, then upload after a successful close. The key is composed by the job, not
+# configured, so one output family cannot overwrite another because configuration went stale.
 #
 # THE ENDPOINT OVERRIDE IS DECLARED HERE, in the profile that takes the concession, and it is the one
 # key under this prefix that production leaves unset. It carries the same expression the four
@@ -505,7 +484,7 @@ carddemo:
     s3:
       batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
-      job-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
     sns:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}
@@ -527,6 +506,22 @@ carddemo:
     # authentication manager, which withdraws the auto-configured in-memory user and the password that
     # would otherwise be written to this profile's log at start-up. Presenting a token is the only way
     # to authenticate here, exactly as in production.
+    #
+    # WHAT MAKES A COMMITTED SIGNING SECRET ACCEPTABLE - and it is not that the secret is obviously a
+    # fixture. Anyone reading this repository can sign a token with the literal below, and a token
+    # signed with it carries whatever authority its role claim names, including the administrator
+    # authority that gates the batch-control surface. The secret is acceptable only while the process
+    # holding it cannot be reached from anywhere but the machine running it, and that is not a hope
+    # about how it will be used: docker-compose.yml publishes every port through
+    # ${APP_BIND_ADDRESS:-127.0.0.1} and its peers, so loopback is what an unqualified `up` produces,
+    # and LocalValidationStackExposureTest fails the build if any of those defaults is lost.
+    #
+    # WIDENING THAT EXPOSURE OBLIGES REPLACING THIS VALUE. Setting APP_BIND_ADDRESS to anything else -
+    # or running this profile outside Compose on a host reachable by others - makes the literal below a
+    # published signing key, so CARDDEMO_JWT_SECRET must be supplied with a generated value at the same
+    # time. The environment reference is retained here precisely so that displacement needs no edit to
+    # this file; production declares the same key with NO fallback, so the obligation is enforced there
+    # rather than documented. See docs/decision-log.md DL-096.
     jwt:
       issuer: carddemo-java
       secret: ${CARDDEMO_JWT_SECRET:local-development-only-signing-secret-do-not-reuse-0123456789}
@@ -575,6 +570,15 @@ carddemo:
     # has decrypted it for a response. Neither risk exists for a process addressing containers over
     # the loopback interface on one machine, which is the only situation this profile describes.
     # Production does not re-require HTTPS - it inherits the requirement.
+    #
+    # AND THAT "ONLY SITUATION" IS NOW ENFORCED RATHER THAN ASSERTED. This paragraph used to rest on a
+    # claim about intent while docker-compose.yml published every port on every interface, which made
+    # the claim false for anyone who ran the documented command: plaintext bearer tokens crossed a
+    # network the profile had assumed away. Every mapping in that file now binds
+    # ${*_BIND_ADDRESS:-127.0.0.1}, so the loopback-only premise holds by default, and
+    # LocalValidationStackExposureTest fails the build if a mapping loses it. An operator who widens the
+    # exposure has left the situation this concession was reasoned about, and the paragraph above the
+    # signing secret states what that costs.
     #
     # The relaxation is now load-bearing rather than decorative. SecurityConfig binds this key, and
     # when it is set it redirects every insecure request instead of serving it. Left at the baseline's

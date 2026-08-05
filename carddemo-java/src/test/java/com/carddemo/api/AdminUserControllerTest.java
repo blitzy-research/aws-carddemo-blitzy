@@ -20,7 +20,11 @@ import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.UserRequest;
 import com.carddemo.api.dto.UserResponse;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.service.ScreenNavigationState;
+import com.carddemo.service.UserCommand;
 import com.carddemo.service.UserManagementService;
+import com.carddemo.service.UserOutcome;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
@@ -29,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -40,7 +45,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -76,6 +80,15 @@ class AdminUserControllerTest {
     /** The collaborator that owns every screen rule these routes expose. */
     private UserManagementService userManagementService;
 
+    /**
+     * The real converter between the wire contract and the service-owned command and outcome.
+     *
+     * <p>The real one rather than a mock, because it is the crossing under test here: it holds no mutable
+     * state, performs a positional copy of twelve components inbound and nineteen outbound, and stubbing it
+     * would leave the delegation tests measuring a stub instead of the conversion.
+     */
+    private UserContractAdapter userContractAdapter;
+
     /** The registry the four turn timers are registered against. */
     private MeterRegistry meterRegistry;
 
@@ -85,8 +98,10 @@ class AdminUserControllerTest {
     @BeforeEach
     void setUp() {
         userManagementService = mock(UserManagementService.class);
+        userContractAdapter = new UserContractAdapter(new ScreenStateAdapter());
         meterRegistry = new SimpleMeterRegistry();
-        controller = new AdminUserController(userManagementService, meterRegistry);
+        controller = new AdminUserController(userManagementService, userContractAdapter,
+                meterRegistry);
     }
 
     /**
@@ -106,10 +121,10 @@ class AdminUserControllerTest {
      * @param generalError whether the screen raised its general error switch
      * @return the response
      */
-    private static UserResponse response(final boolean actionSucceeded, final boolean generalError) {
-        return new UserResponse(null, null, USER_ID, "GIVEN", "FAMILY", "A", "CU01", "TITLE ONE",
+    private static UserOutcome response(final boolean actionSucceeded, final boolean generalError) {
+        return new UserOutcome(null, null, USER_ID, "GIVEN", "FAMILY", "A", "CU01", "TITLE ONE",
                 "07/19/22", "COUSR01C", "TITLE TWO", "14:23:07", null, null, generalError,
-                actionSucceeded, "USRIDIN", "admin-user-list", NavigationContext.empty());
+                actionSucceeded, "USRIDIN", "admin-user-list", ScreenNavigationState.empty());
     }
 
     /**
@@ -117,12 +132,12 @@ class AdminUserControllerTest {
      *
      * @return the response
      */
-    private static UserResponse responseWithFieldError() {
-        return new UserResponse(null, null, USER_ID, null, null, null, "CU01", null, null, null, null,
+    private static UserOutcome responseWithFieldError() {
+        return new UserOutcome(null, null, USER_ID, null, null, null, "CU01", null, null, null, null,
                 null, null,
-                List.of(new ErrorResponse.FieldError("firstName", "FNAME",
-                        ErrorResponse.FieldState.MISSING, "First Name can NOT be empty...")),
-                false, false, "FNAME", null, NavigationContext.empty());
+                List.of(new ValidationException.FieldError("firstName", "FNAME",
+                        ValidationException.FieldState.MISSING, "First Name can NOT be empty...")),
+                false, false, "FNAME", null, ScreenNavigationState.empty());
     }
 
     /**
@@ -141,14 +156,20 @@ class AdminUserControllerTest {
     class Construction {
 
         @Test
-        @DisplayName("neither collaborator may be absent, so a misassembled context fails at "
+        @DisplayName("no collaborator may be absent, so a misassembled context fails at "
                 + "construction rather than on the first request")
-        void neitherCollaboratorMayBeAbsent() {
+        void noCollaboratorMayBeAbsent() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AdminUserController(null, meterRegistry))
+                    .isThrownBy(() -> new AdminUserController(null, userContractAdapter,
+                            meterRegistry))
                     .withMessageContaining("userManagementService");
             assertThatNullPointerException()
-                    .isThrownBy(() -> new AdminUserController(userManagementService, null))
+                    .isThrownBy(() -> new AdminUserController(userManagementService, null,
+                            meterRegistry))
+                    .withMessageContaining("userContractAdapter");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new AdminUserController(userManagementService,
+                            userContractAdapter, null))
                     .withMessageContaining("meterRegistry");
         }
     }
@@ -161,14 +182,18 @@ class AdminUserControllerTest {
         @DisplayName("the list route hands the submitted record to the list screen and answers its body")
         void theListRouteReachesTheListScreen() {
             UserRequest submitted = request();
-            UserResponse composed = response(false, false);
-            when(userManagementService.listUsers(same(submitted))).thenReturn(composed);
+            UserOutcome composed = response(false, false);
+            when(userManagementService.listUsers(any())).thenReturn(composed);
 
             ResponseEntity<UserResponse> answer = controller.listUsers(submitted);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).isSameAs(composed);
-            verify(userManagementService).listUsers(same(submitted));
+            assertThat(answer.getBody()).isEqualTo(userContractAdapter.toResponse(composed));
+            // The command the screen received is the submitted record component for component, so the
+            // crossing carried everything and altered nothing on the way in.
+            ArgumentCaptor<UserCommand> captor = ArgumentCaptor.forClass(UserCommand.class);
+            verify(userManagementService).listUsers(captor.capture());
+            assertThat(captor.getValue()).isEqualTo(userContractAdapter.toCommand(submitted));
             verifyNoMoreInteractions(userManagementService);
         }
 
@@ -176,14 +201,18 @@ class AdminUserControllerTest {
         @DisplayName("the add route hands the submitted record to the add screen and answers its body")
         void theAddRouteReachesTheAddScreen() {
             UserRequest submitted = request();
-            UserResponse composed = response(true, false);
-            when(userManagementService.addUser(same(submitted))).thenReturn(composed);
+            UserOutcome composed = response(true, false);
+            when(userManagementService.addUser(any())).thenReturn(composed);
 
             ResponseEntity<UserResponse> answer = controller.addUser(submitted);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).isSameAs(composed);
-            verify(userManagementService).addUser(same(submitted));
+            assertThat(answer.getBody()).isEqualTo(userContractAdapter.toResponse(composed));
+            // The command the screen received is the submitted record component for component, so the
+            // crossing carried everything and altered nothing on the way in.
+            ArgumentCaptor<UserCommand> captor = ArgumentCaptor.forClass(UserCommand.class);
+            verify(userManagementService).addUser(captor.capture());
+            assertThat(captor.getValue()).isEqualTo(userContractAdapter.toCommand(submitted));
             verifyNoMoreInteractions(userManagementService);
         }
 
@@ -192,14 +221,18 @@ class AdminUserControllerTest {
                 + "its body")
         void theUpdateRouteReachesTheUpdateScreen() {
             UserRequest submitted = request();
-            UserResponse composed = response(true, false);
-            when(userManagementService.updateUser(same(submitted))).thenReturn(composed);
+            UserOutcome composed = response(true, false);
+            when(userManagementService.updateUser(any())).thenReturn(composed);
 
             ResponseEntity<UserResponse> answer = controller.updateUser(submitted);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).isSameAs(composed);
-            verify(userManagementService).updateUser(same(submitted));
+            assertThat(answer.getBody()).isEqualTo(userContractAdapter.toResponse(composed));
+            // The command the screen received is the submitted record component for component, so the
+            // crossing carried everything and altered nothing on the way in.
+            ArgumentCaptor<UserCommand> captor = ArgumentCaptor.forClass(UserCommand.class);
+            verify(userManagementService).updateUser(captor.capture());
+            assertThat(captor.getValue()).isEqualTo(userContractAdapter.toCommand(submitted));
             verifyNoMoreInteractions(userManagementService);
         }
 
@@ -208,30 +241,42 @@ class AdminUserControllerTest {
                 + "its body")
         void theDeleteRouteReachesTheDeleteScreen() {
             UserRequest submitted = request();
-            UserResponse composed = response(true, false);
-            when(userManagementService.deleteUser(same(submitted))).thenReturn(composed);
+            UserOutcome composed = response(true, false);
+            when(userManagementService.deleteUser(any())).thenReturn(composed);
 
             ResponseEntity<UserResponse> answer = controller.deleteUser(submitted);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).isSameAs(composed);
-            verify(userManagementService).deleteUser(same(submitted));
+            assertThat(answer.getBody()).isEqualTo(userContractAdapter.toResponse(composed));
+            // The command the screen received is the submitted record component for component, so the
+            // crossing carried everything and altered nothing on the way in.
+            ArgumentCaptor<UserCommand> captor = ArgumentCaptor.forClass(UserCommand.class);
+            verify(userManagementService).deleteUser(captor.capture());
+            assertThat(captor.getValue()).isEqualTo(userContractAdapter.toCommand(submitted));
             verifyNoMoreInteractions(userManagementService);
         }
 
         @Test
-        @DisplayName("the boundary edits nothing: the body answered is the instance the service "
-                + "composed, so no screen value can be rewritten here")
+        @DisplayName("the boundary edits nothing: every component of the body answered is the value the "
+                + "screen composed, so no screen value can be rewritten here")
         void theBoundaryEditsNothing() {
-            UserResponse composed = responseWithFieldError();
+            UserOutcome composed = responseWithFieldError();
             when(userManagementService.addUser(any())).thenReturn(composed);
 
             UserResponse answered = controller.addUser(request()).getBody();
 
-            assertThat(answered).isSameAs(composed);
             assertThat(answered).isNotNull();
-            assertThat(answered.fieldErrors()).isEqualTo(composed.fieldErrors());
+            // Equality across the whole conversion rather than instance identity, which is the stronger
+            // claim now that a crossing exists: identity would be preserved by a conversion that dropped
+            // a component, whereas this compares all nineteen.
+            assertThat(answered).isEqualTo(userContractAdapter.toResponse(composed));
             assertThat(answered.focusScreenFieldId()).isEqualTo("FNAME");
+            assertThat(answered.fieldErrors()).singleElement().satisfies(error -> {
+                assertThat(error.fieldName()).isEqualTo("firstName");
+                assertThat(error.screenFieldId()).isEqualTo("FNAME");
+                assertThat(error.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+                assertThat(error.message()).isEqualTo("First Name can NOT be empty...");
+            });
         }
     }
 

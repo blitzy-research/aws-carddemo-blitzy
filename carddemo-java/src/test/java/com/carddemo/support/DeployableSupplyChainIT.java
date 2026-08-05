@@ -23,7 +23,10 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.jar.JarEntry;
@@ -34,44 +37,38 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Asserts that the deployable artifact contains only the graph the vulnerability gate scans.
+ * Asserts that the deployable artifact contains no test-only library.
  *
  * <h2>Why this test exists</h2>
  *
- * <p>The vulnerability gate scans the compile and runtime graph and not the test graph, which is the
- * plugin's own default and is stated explicitly in {@code pom.xml}. That narrowing is only honest if
- * the unscanned graph genuinely does not reach the product, and nothing in a Maven build proves that
- * on its own - scope is a declaration, and a declaration is exactly the kind of thing that drifts. A
- * single dependency whose scope was omitted, or a plugin configured to bundle more than it should,
- * would put an unscanned artifact into the shipped jar and the gate would never notice.</p>
+ * <p>The vulnerability gate scans the complete graph, including test scope. This test protects a
+ * different boundary: no library that exists only to build or test the module may enter the product.
+ * A single dependency whose scope was omitted, or a packaging plugin configured too broadly, would
+ * enlarge the deployed attack surface even though the vulnerability scan still saw it.</p>
  *
  * <p>This test is the check. It opens the repackaged jar this build produces and fails if any
  * test-scoped library appears among the libraries bundled inside it. It runs in the integration tier,
  * which executes after the repackaging step, so the artifact it inspects is the one that would be
  * deployed rather than a reconstruction of it.</p>
  *
- * <h2>Why the container transport is named specifically</h2>
+ * <h2>Why both container transport names are listed</h2>
  *
- * <p>One test-scoped artifact is the reason the scope boundary matters at all: the container-testing
- * transport embeds a relocated copy of an HTTP core library carrying two findings at 7.5 HIGH. Those
- * findings are real rather than false matches - the vulnerable classes are physically present in the
- * shaded artifact - and they are unfixable in place, because the copy is relocated beyond the reach of
- * any managed coordinate and the transport is the only one the container-testing library will
- * construct. It is named in its own assertion rather than left to the general sweep so that a failure
- * reports the artifact whose absence the gate's scope claim actually depends on.</p>
+ * <p>The shaded zerodep transport was removed because its embedded HTTP Core copy could not be managed.
+ * The replacement HttpClient 5 transport is non-shaded and fully scanned, but it is still test-only.
+ * Both names remain in the exclusion sweep: the first prevents a vulnerable transport regression and
+ * the second prevents the correct replacement from leaking into the application jar.</p>
  *
  * <h2>What this test does not claim</h2>
  *
- * <p>It does not claim the test graph is free of vulnerabilities; it claims the test graph is not part
- * of the product. The residual exposure - test-scoped code executing on developer machines and hosted
- * runners - is recorded in {@code pom.xml} and in the decision log rather than closed here.</p>
+ * <p>It does not make a vulnerability claim; dependency-check owns that claim over every scope. It
+ * proves only that build-time tooling is not packaged as runtime code.</p>
  *
  * <p>Provenance: the deployable artifact this inspects replaces the load modules the legacy
  * compile-and-link procedures produced, at checkout
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.</p>
  */
-@DisplayName("the deployable artifact carries only the graph the vulnerability gate scans")
+@DisplayName("the deployable artifact excludes every test-only library")
 class DeployableSupplyChainIT {
 
     /** Directory the build writes its artifacts to. */
@@ -84,12 +81,12 @@ class DeployableSupplyChainIT {
      * Test-scoped artifact stems that must never appear inside the deployable jar.
      *
      * <p>Stems rather than exact file names, so a version bump in any of them cannot silently retire
-     * the assertion. The first entry is the one the vulnerability gate's scope claim depends on
-     * directly; the rest are the test libraries that pull it in or sit beside it, and their presence
-     * would be the same class of defect.</p>
+     * the assertion. Both Docker transport forms are named explicitly; the rest are the test libraries
+     * that pull them in or sit beside them, and their presence would be the same class of defect.</p>
      */
     private static final List<String> ARTIFACTS_THAT_MUST_NOT_SHIP = List.of(
             "docker-java-transport-zerodep",
+            "docker-java-transport-httpclient5",
             "docker-java-api",
             "docker-java-transport",
             "testcontainers",
@@ -193,13 +190,11 @@ class DeployableSupplyChainIT {
     class NothingTestScopedShips {
 
         @Test
-        @DisplayName("the container-testing transport whose findings the gate's scope excludes is "
-                + "absent, which is what makes that exclusion honest")
+        @DisplayName("neither the removed shaded transport nor its non-shaded replacement ships")
         void theContainerTestingTransportIsAbsent() throws IOException {
             assertThat(bundledLibraries())
-                    .as("the vulnerability gate scans the compile and runtime graph only; that claim "
-                            + "holds exactly as long as this artifact does not ship")
-                    .noneMatch(name -> name.startsWith("docker-java-transport-zerodep"));
+                    .noneMatch(name -> name.startsWith("docker-java-transport-zerodep"))
+                    .noneMatch(name -> name.startsWith("docker-java-transport-httpclient5"));
         }
 
         @Test
@@ -220,9 +215,177 @@ class DeployableSupplyChainIT {
             }
 
             assertThat(offenders)
-                    .as("a test-scoped artifact inside the deployable jar means the vulnerability "
-                            + "gate's scope no longer describes what ships")
+                    .as("a test-scoped artifact inside the deployable jar enlarges the deployed "
+                            + "attack surface")
                     .isEmpty();
+        }
+    }
+
+    /**
+     * The other half of the same guarantee, and the half a scope sweep cannot reach.
+     *
+     * <p>The sweep above proves that nothing the gate deliberately skips gets in. It says nothing about
+     * a library that gets in without ever having been in the graph at all - and that is a real route,
+     * not a hypothetical one. The repackaging plugin can copy a library out of <em>itself</em>: its
+     * loader-tools dependency carries {@code META-INF/jarmode/spring-boot-jarmode-tools.jar} as an
+     * ordinary resource, and with the tools extraction left on, that resource is written into
+     * {@code BOOT-INF/lib} without passing through dependency resolution. A gate that scans the resolved
+     * graph therefore cannot see it, and the report is one library short with nothing anywhere reporting
+     * the shortfall. That is exactly what was found: 178 of 179 bundled libraries resolved, and the one
+     * that did not was a library the container image goes on to <em>execute</em>.
+     *
+     * <p>So the property asserted here is resolvability: every library inside the archive must exist as
+     * a resolved artifact in the repository this build used. That is the same set the gate scans, which
+     * makes this a coverage check rather than a proxy for one, and it fails for any future library that
+     * arrives by the embedded-resource route rather than only for the one already found.
+     */
+    @Nested
+    @DisplayName("every bundled library is one the vulnerability gate can see")
+    class EveryBundledLibraryIsScannable {
+
+        /** Where the running build resolves artifacts, handed over by the build rather than guessed. */
+        private static final String REPOSITORY_PROPERTY = "carddemo.maven.repository";
+
+        /** The library whose invisibility this whole nested class was written for. */
+        private static final String TOOLS_LIBRARY = "spring-boot-jarmode-tools-";
+
+        /**
+         * The digest the tools library must carry.
+         *
+         * <p>The build declares the artifact and turns the plugin's own extraction off, so the archive is
+         * fed from the graph instead of from a resource inside the build tool. Those two sources are the
+         * same bytes today, and this digest is what keeps the substitution honest: if the resolved
+         * artifact ever stopped matching what the tool embeds, the change of provenance would have become
+         * a change of content, and that must not pass silently.
+         */
+        private static final String TOOLS_LIBRARY_DIGEST =
+                "d05beb46a7eac0f1a06733c75828b190a1cb250076ce03be2213aca4a5c0f03f";
+
+        /**
+         * The repository this build resolves from.
+         *
+         * @return its path
+         */
+        private static Path repository() {
+            String configured = System.getProperty(REPOSITORY_PROPERTY);
+            assertThat(configured)
+                    .as("the build must pass %s; without it this class would silently check nothing",
+                            REPOSITORY_PROPERTY)
+                    .isNotNull()
+                    .isNotBlank();
+            Path repository = Paths.get(configured);
+            assertThat(repository).as("the resolved repository must exist").isDirectory();
+            return repository;
+        }
+
+        /**
+         * Searches the repository for an artifact file of the given name.
+         *
+         * @param fileName the bundled library's file name
+         * @param root     the repository root
+         * @return true when an artifact of that name is present
+         * @throws IOException if the repository cannot be walked
+         */
+        private static boolean resolves(final String fileName, final Path root) throws IOException {
+            try (var tree = Files.walk(root)) {
+                return tree.anyMatch(candidate -> candidate.getFileName().toString().equals(fileName)
+                        && Files.isRegularFile(candidate));
+            }
+        }
+
+        @Test
+        @DisplayName("so no library reaches the archive by a route the scan cannot follow")
+        void soNoLibraryReachesTheArchiveUnscanned() throws IOException {
+            Path root = repository();
+            List<String> unresolvable = new ArrayList<>();
+            for (String name : bundledLibraries()) {
+                if (!resolves(name, root)) {
+                    unresolvable.add(name);
+                }
+            }
+
+            assertThat(unresolvable)
+                    .as("declare the artifact so it enters the resolved graph the gate scans, rather "
+                            + "than letting the packaging step copy it in from somewhere else")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and the jarmode tools library specifically - the one that was invisible - now "
+                + "ships exactly once, from the graph")
+        void andTheToolsLibraryShipsOnceFromTheGraph() throws IOException {
+            List<String> tools = bundledLibraries().stream()
+                    .filter(name -> name.startsWith(TOOLS_LIBRARY))
+                    .toList();
+
+            assertThat(tools)
+                    .as("the container image runs `java -Djarmode=tools`, so the library must ship - and "
+                            + "exactly one copy of it, because the plugin refuses two and a silent "
+                            + "duplicate would be worse than the gap being closed")
+                    .hasSize(1);
+            assertThat(resolves(tools.get(0), repository()))
+                    .as("and it must be the graph's copy, which is what makes it scannable")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("and changing where it comes from did not change what it is")
+        void andChangingItsProvenanceDidNotChangeItsContent() throws IOException {
+            Path jar = deployableJar();
+            String digest;
+            try (JarFile archive = new JarFile(jar.toFile())) {
+                JarEntry entry = archive.stream()
+                        .filter(candidate -> candidate.getName()
+                                .startsWith(BUNDLED_LIBRARY_PREFIX + TOOLS_LIBRARY))
+                        .findFirst()
+                        .orElseThrow(() -> new AssertionError("the tools library must be bundled"));
+                try (var content = archive.getInputStream(entry)) {
+                    digest = HexFormat.of().formatHex(
+                            MessageDigest.getInstance("SHA-256").digest(content.readAllBytes()));
+                }
+            } catch (NoSuchAlgorithmException unavailable) {
+                throw new AssertionError("SHA-256 must be available on any supported runtime",
+                        unavailable);
+            }
+
+            assertThat(digest)
+                    .as("the artifact resolved from the repository and the resource the build tool "
+                            + "embeds were the same bytes when the extraction was turned off; if that "
+                            + "ever stops being true, a provenance change has become a content change")
+                    .isEqualTo(TOOLS_LIBRARY_DIGEST);
+        }
+
+        @Test
+        @DisplayName("and the loader the tools library depends on is scanned too, which is why its "
+                + "redundant bundled copy is accepted rather than excluded")
+        void andTheLoaderIsScannedRatherThanExcluded() throws IOException {
+            // Declaring the tools library brought its own runtime dependency, the loader, onto the
+            // graph, so the archive now carries spring-boot-loader as a bundled jar as well - about
+            // 200 kB in a 92 MB artefact. That copy is redundant: the repackaging step already writes
+            // the loader's 99 classes UNPACKED at the archive root, because that is how the jar boots.
+            //
+            // Excluding it would remove the redundancy and reintroduce the defect. The unpacked classes
+            // come from a resource embedded in the build tool - the same route that hid the tools
+            // library - so with the coordinate off the graph, 99 shipped classes would go unscanned.
+            // Keeping it means the gate scans the coordinate those classes come from. The redundancy is
+            // the price of the coverage, and it is the cheaper of the two.
+            List<String> bundled = bundledLibraries();
+            assertThat(bundled)
+                    .as("the loader coordinate must be on the graph, so the classes at the archive root "
+                            + "are covered by the scan")
+                    .anySatisfy(name -> assertThat(name).startsWith("spring-boot-loader-"));
+
+            try (JarFile archive = new JarFile(deployableJar().toFile())) {
+                long unpacked = archive.stream()
+                        .map(JarEntry::getName)
+                        .filter(name -> name.startsWith("org/springframework/boot/loader/"))
+                        .filter(name -> name.endsWith(".class"))
+                        .count();
+                assertThat(unpacked)
+                        .as("the unpacked loader classes are the reason the coordinate must stay on the "
+                                + "graph; if they ever stop being written, revisit the trade")
+                        .isPositive();
+            }
         }
     }
 }

@@ -262,7 +262,7 @@ class JobSubmissionQueueBridgeIT extends AbstractLocalStackIT {
                 emulatorRegion(),
                 null,
                 new AwsProperties.S3("carddemo-batch-staging"),
-                new AwsProperties.Sqs("carddemo-jobs" + FIFO_SUFFIX, MESSAGE_GROUP_ID),
+                new AwsProperties.Sqs("JOBS" + FIFO_SUFFIX, MESSAGE_GROUP_ID),
                 new AwsProperties.Sns("carddemo-job-notifications"));
     }
 

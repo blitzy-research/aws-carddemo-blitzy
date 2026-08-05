@@ -19,6 +19,7 @@ package com.carddemo.service;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -29,7 +30,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,22 +47,21 @@ import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
  * Posts daily transactions onto the account, category-balance and transaction stores.
  *
- * <p>Translation of {@code app/cbl/CBTRN02C.cbl}, the batch daily-transaction posting program:
- * <strong>731 source lines</strong> containing <strong>27 procedure units</strong> - twenty-six named
- * paragraphs plus the unnamed {@code PROCEDURE DIVISION} mainline at lines 193 to 234. A count of
- * <strong>26</strong> also circulates, and both are correct under different conventions: the higher
- * count includes the timestamp helper {@code Z-GET-DB2-FORMAT-TIMESTAMP} at lines 692 to 705, which
- * the lower one omits because it carries a {@code Z-} rather than a numeric prefix. Every one of the
- * twenty-seven units has its own named method here, the timestamp helper included, so the
- * traceability matrix has a row per unit and neither convention leaves a gap. Provenance: checkout
- * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
+ * <p>Translation of {@code app/cbl/CBTRN02C.cbl}, the batch daily-transaction posting program. Each of
+ * its procedure units has a named method here, and {@code docs/traceability-matrix.md} carries the
+ * unit-to-method inventory with the source line range of each; every method below also states its own
+ * paragraph name and line range. Provenance: checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * <h2>Record authorities</h2>
@@ -136,46 +136,11 @@ import com.carddemo.util.ZonedDecimalCodec;
  * refuses both success and end-of-file by construction.
  *
  * <h2>Control flow this member does not contain</h2>
- * Four constructs that the estate as a whole uses heavily are absent from these 731 lines, verified by
- * counting them in the member: there is no {@code EVALUATE}, so no switch is introduced and no clause
- * order needs preserving; no {@code PERFORM ... THRU}, so no paragraph range falls through into
- * another; no {@code GO TO}, so none of the estate's backward jumps belongs here and no paragraph
- * loops back on itself; and no {@code SORT} or {@code MERGE}, so no ordering is imposed on the records
- * beyond the order they arrive in. Every {@code PERFORM} is a plain single-paragraph invocation, which
- * is why every unit below maps to an ordinary method call.
- *
- * <h2>Unit map: all twenty-seven procedure units</h2>
- * One method per unit, in source order, so a traceability row exists for each and the two counts
- * reconcile. Every method below also repeats its own paragraph name and line range on itself.
- * <ol>
- *   <li>mainline, 193 to 234 - {@code postAll}</li>
- *   <li>{@code 0000-DALYTRAN-OPEN}, 236 to 252 - {@code openDailyTransactionInput}</li>
- *   <li>{@code 0100-TRANFILE-OPEN}, 254 to 270 - {@code openTransactionOutput}</li>
- *   <li>{@code 0200-XREFFILE-OPEN}, 273 to 289 - {@code openCrossReferenceInput}</li>
- *   <li>{@code 0300-DALYREJS-OPEN}, 291 to 307 - {@code openRejectOutput}</li>
- *   <li>{@code 0400-ACCTFILE-OPEN}, 309 to 325 - {@code openAccountUpdate}</li>
- *   <li>{@code 0500-TCATBALF-OPEN}, 327 to 343 - {@code openCategoryBalanceUpdate}</li>
- *   <li>{@code 1000-DALYTRAN-GET-NEXT}, 345 to 369 - {@code getNextDailyTransaction}</li>
- *   <li>{@code 1500-VALIDATE-TRAN}, 370 to 378 - {@code validateTransaction}</li>
- *   <li>{@code 1500-A-LOOKUP-XREF}, 380 to 392 - {@code lookupCrossReference}</li>
- *   <li>{@code 1500-B-LOOKUP-ACCT}, 393 to 422 - {@code lookupAccount}</li>
- *   <li>{@code 2000-POST-TRANSACTION}, 424 to 444 - {@code postTransaction}</li>
- *   <li>{@code 2500-WRITE-REJECT-REC}, 446 to 465 - {@code writeRejectRecord}</li>
- *   <li>{@code 2700-UPDATE-TCATBAL}, 467 to 501 - {@code updateCategoryBalance}</li>
- *   <li>{@code 2700-A-CREATE-TCATBAL-REC}, 503 to 524 - {@code createCategoryBalanceRecord}</li>
- *   <li>{@code 2700-B-UPDATE-TCATBAL-REC}, 526 to 542 - {@code updateCategoryBalanceRecord}</li>
- *   <li>{@code 2800-UPDATE-ACCOUNT-REC}, 545 to 560 - {@code updateAccountRecord}</li>
- *   <li>{@code 2900-WRITE-TRANSACTION-FILE}, 562 to 579 - {@code writeTransactionFile}</li>
- *   <li>{@code 9000-DALYTRAN-CLOSE}, 582 to 598 - {@code closeDailyTransactionInput}</li>
- *   <li>{@code 9100-TRANFILE-CLOSE}, 600 to 616 - {@code closeTransactionOutput}</li>
- *   <li>{@code 9200-XREFFILE-CLOSE}, 619 to 635 - {@code closeCrossReferenceInput}</li>
- *   <li>{@code 9300-DALYREJS-CLOSE}, 637 to 653 - {@code closeRejectOutput}</li>
- *   <li>{@code 9400-ACCTFILE-CLOSE}, 655 to 671 - {@code closeAccountUpdate}</li>
- *   <li>{@code 9500-TCATBALF-CLOSE}, 674 to 690 - {@code closeCategoryBalanceUpdate}</li>
- *   <li>{@code Z-GET-DB2-FORMAT-TIMESTAMP}, 692 to 705 - {@code getDb2FormatTimestamp}</li>
- *   <li>{@code 9999-ABEND-PROGRAM}, 707 to 711 - {@code abendProgram}</li>
- *   <li>{@code 9910-DISPLAY-IO-STATUS}, 714 to 727 - {@code displayIoStatus}</li>
- * </ol>
+ * The member carries no {@code EVALUATE}, no {@code PERFORM ... THRU}, no {@code GO TO} and no
+ * {@code SORT} or {@code MERGE}. So no clause order needs preserving, no paragraph range falls through
+ * into another, no paragraph loops back on itself, and no ordering is imposed on the records beyond the
+ * order they arrive in. Every {@code PERFORM} is a plain single-paragraph invocation, which is why every
+ * unit maps to an ordinary method call.
  *
  * <h2>Lifecycle, state and transactions</h2>
  * Stateless: every field is final and holds a collaborator, so the reason code, the description, the
@@ -335,11 +300,7 @@ public class TransactionPostingService {
     /** The blank a fixed-width alphanumeric field is padded with, as {@code MOVE SPACES} leaves it. */
     private static final char COBOL_SPACE = ' ';
 
-    /**
-     * Order the staged read imposes in place of the physical order a sequential dataset would have had.
-     * Immutable, so sharing one instance is safe.
-     */
-    private static final Sort STAGED_READ_ORDER = Sort.by(Sort.Direction.ASC, "dalytranId");
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
     private final DailyTransactionRepository dailyTransactionRepository;
 
@@ -350,6 +311,8 @@ public class TransactionPostingService {
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
+
+    private final RecordWriter recordWriter;
 
     private final AbendService abendService;
 
@@ -369,6 +332,7 @@ public class TransactionPostingService {
      *                                             input of line 40
      * @param transactionCategoryBalanceRepository stands in for the {@value #TCATBALF_DD} file of
      *                                             line 57, opened for update
+     * @param recordWriter                         explicit create-only write boundary
      * @param abendService                         the estate's single abend path, reached from
      *                                             {@code 9999-ABEND-PROGRAM} at lines 707 to 711
      * @param clock                                the time source the processing timestamp is built
@@ -381,6 +345,7 @@ public class TransactionPostingService {
             final AccountRepository accountRepository,
             final CardCrossReferenceRepository cardCrossReferenceRepository,
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+            final RecordWriter recordWriter,
             final AbendService abendService,
             final Clock clock) {
         this.dailyTransactionRepository = Objects.requireNonNull(dailyTransactionRepository,
@@ -394,6 +359,7 @@ public class TransactionPostingService {
         this.transactionCategoryBalanceRepository = Objects.requireNonNull(
                 transactionCategoryBalanceRepository,
                 "transactionCategoryBalanceRepository must not be null");
+        this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
@@ -623,13 +589,22 @@ public class TransactionPostingService {
      * @throws AbendException if the staged dataset cannot be read, or if a write fails
      */
     public PostingRunSummary postStagedDailyTransactions(final Consumer<PostingResult> rejectSink) {
-        final List<DailyTransaction> staged;
-        try {
-            staged = this.dailyTransactionRepository.findAll(STAGED_READ_ORDER);
-        } catch (final DataAccessException unreadable) {
-            throw abendAfterIoFailure(READ_DALYTRAN_FAILURE, READ, DALYTRAN_DD, unreadable);
-        }
+        final Iterable<DailyTransaction> staged = () -> new BoundedKeysetIterator<>(
+                "", KEYSET_PAGE_SIZE, this::loadStagedPage,
+                DailyTransaction::getDalytranId, Comparator.naturalOrder());
         return postAll(staged, rejectSink);
+    }
+
+    private List<DailyTransaction> loadStagedPage(
+            final String cursor, final Integer pageSize) {
+        try {
+            return this.dailyTransactionRepository
+                    .findByDalytranIdGreaterThanOrderByDalytranIdAsc(
+                            cursor, Limit.of(pageSize.intValue()));
+        } catch (final DataAccessException unreadable) {
+            throw abendAfterIoFailure(
+                    READ_DALYTRAN_FAILURE, READ, DALYTRAN_DD, unreadable);
+        }
     }
 
     /**
@@ -640,11 +615,15 @@ public class TransactionPostingService {
      * state. Nothing in this class holds a reason code, a description, a counter or a create flag
      * between calls; a field would let one record's verdict decide the next one's.
      *
-     * <p>Nothing here forces a rollback. The legacy member contains no rollback of any kind - the
-     * estate's only explicit one belongs to the online account-update program - so a reject simply
-     * returns its verdict with the record's own stages never having run. The account carries an
-     * optimistic-lock version, and a conflict on it is allowed to propagate untranslated, because this
-     * member has no arm that handles one.
+     * <p>No legacy rollback arm is translated here, because the legacy member has none - the estate's
+     * only explicit rollback belongs to the online account-update program. A reject is therefore an
+     * ordinary return carrying a verdict, not a rollback: the record's three posting stages never ran,
+     * so there is nothing to undo and the transaction commits. What still rolls back is a failure: this
+     * method is transactional, so any unchecked exception that escapes it - an abend, a file-status
+     * failure, or an optimistic-lock conflict on the account's version attribute - marks the transaction
+     * for rollback under the framework's own rule, and the record's stages are discarded together. That
+     * is the framework's rollback, not a legacy one, and none of those three is translated into a
+     * handled arm because the legacy member handles none of them.
      *
      * @param  record the daily-transaction record to post
      * @return the verdict together with every artefact it produced
@@ -669,8 +648,9 @@ public class TransactionPostingService {
             return postTransaction(record, validated.crossReference(), validated.account());
         }
 
-        LOG.warn("record rejected program={} transactionId={} reasonCode={} reason={}",
-                PROGRAM_NAME, record.getDalytranId(), reasonCode, reasonDescription);
+        LOG.warn("record rejected program={} transactionRef={} reasonCode={} reason={}",
+                PROGRAM_NAME, SensitiveLogRedactor.redact(record.getDalytranId()),
+                reasonCode, reasonDescription);
         return new PostingResult(reasonCode, reasonDescription, validated.rejectReason(), false,
                 record, null, null, null);
     }
@@ -1144,9 +1124,11 @@ public class TransactionPostingService {
     private static void writeRejectRecord(final PostingResult result,
             final Consumer<PostingResult> rejectSink) {
         if (LOG.isWarnEnabled()) {
-            LOG.warn("reject record queued program={} transactionId={} reasonCode={} reason={}"
+            LOG.warn("reject record queued program={} transactionRef={} reasonCode={} reason={}"
                             + " recordLength={}",
-                    PROGRAM_NAME, result.sourceRecord().getDalytranId(), result.reasonCode(),
+                    PROGRAM_NAME,
+                    SensitiveLogRedactor.redact(result.sourceRecord().getDalytranId()),
+                    result.reasonCode(),
                     result.reasonDescription(), REJECT_RECORD_LENGTH);
         }
         rejectSink.accept(result);
@@ -1166,11 +1148,9 @@ public class TransactionPostingService {
      * {@code 00} and {@code 23} alike, so {@link FileStatus#RECORD_NOT_FOUND} normalises to success
      * just as {@link FileStatus#SUCCESS} does, and only some third value reaches the display-and-abend
      * arm at lines 489 to 492. Lines 495 to 499 then branch on the flag: create, or update. Persisting
-     * either one is a single save, because a save of an entity whose key is absent inserts and of one
-     * whose key is present updates - but the decision between the two is made here, in the service,
-     * from the emptiness of the read. It is not delegated to an upsert, a modifying query or a native
-     * statement, because then the two legacy paragraphs below would have nowhere to live and the
-     * missing-key diagnostic would have nothing to report.
+     * either one is an immediate save-and-flush, because the write status belongs to this paragraph and
+     * must be observed before control reaches the account rewrite. The decision between create and update
+     * is made here, in the service, from the emptiness of the read; it is not delegated to an upsert.
      *
      * @param  record         the record being posted
      * @param  crossReference the cross-reference naming the account
@@ -1195,7 +1175,8 @@ public class TransactionPostingService {
         if (existing.isEmpty()) {
             // Lines 476 to 478: the legacy displays the key it could not find and says it is creating
             // the row. Reproduced, at a level that says the same thing without implying a failure.
-            LOG.info("{}{}{}", TCATBAL_NOT_FOUND_PREFIX, legacyKeyImage(key),
+            LOG.info("{}{}{}", TCATBAL_NOT_FOUND_PREFIX,
+                    SensitiveLogRedactor.redact(legacyKeyImage(key)),
                     TCATBAL_NOT_FOUND_SUFFIX);
             createFlag = CREATE_FLAG_SET;
         }
@@ -1232,7 +1213,12 @@ public class TransactionPostingService {
                 record.getDalytranCatCd(),
                 balance);
 
-        return saveCategoryBalance(created, WRITE_TCATBALF_FAILURE, WRITE);
+        try {
+            return this.recordWriter.insert(created);
+        } catch (final DataAccessException unwritable) {
+            throw abendAfterIoFailure(
+                    WRITE_TCATBALF_FAILURE, WRITE, TCATBALF_DD, unwritable);
+        }
     }
 
     /**
@@ -1260,7 +1246,7 @@ public class TransactionPostingService {
             final TransactionCategoryBalance categoryBalance, final String failureLiteral,
             final String operation) {
         try {
-            return this.transactionCategoryBalanceRepository.save(categoryBalance);
+            return this.transactionCategoryBalanceRepository.saveAndFlush(categoryBalance);
         } catch (final DataAccessException unwritable) {
             throw abendAfterIoFailure(failureLiteral, operation, TCATBALF_DD, unwritable);
         }
@@ -1301,12 +1287,11 @@ public class TransactionPostingService {
      * description text is identical to 101's, because the two arise at different points and a
      * traceability row needs to tell them apart.
      *
-     * <p>The presence check before the save is what makes this a rewrite rather than a write. A save
-     * alone would insert an account row when the key is absent, which the legacy rewrite would never
-     * do - it would take the invalid-key arm and leave the file untouched. Checking first is therefore
-     * fidelity, not caution. Following the legacy, this stage checks no status and raises no abend, so
-     * a failure to reach the account propagates as it arises, and an optimistic-lock conflict on the
-     * account's version propagates untranslated because this member has no arm that handles one.
+     * <p>The repository performs one update-only statement and returns its affected-row count. That is
+     * the relational equivalent of {@code REWRITE ... INVALID KEY}: zero rows reaches 109 without a
+     * time-of-check/time-of-use window, while one row means the rewrite completed at this paragraph.
+     * The statement increments the version explicitly and clears the persistence context afterward, so
+     * the managed account read during validation cannot be dirty-flushed a second time.
      *
      * @param  record  the record being posted
      * @param  account the account read during validation
@@ -1317,31 +1302,41 @@ public class TransactionPostingService {
         final BigDecimal amount = record.getDalytranAmt();
 
         // Line 547: ADD DALYTRAN-AMT TO ACCT-CURR-BAL.
-        account.setAcctCurrBal(
-                ZonedDecimalCodec.toMonetaryScale(account.getAcctCurrBal().add(amount)));
+        final BigDecimal currentBalance =
+                ZonedDecimalCodec.toMonetaryScale(account.getAcctCurrBal().add(amount));
+        BigDecimal currentCycleCredit = account.getAcctCurrCycCredit();
+        BigDecimal currentCycleDebit = account.getAcctCurrCycDebit();
 
         if (amount.compareTo(BigDecimal.ZERO) >= 0) {
             // Line 549: a non-negative amount joins the cycle credit.
-            account.setAcctCurrCycCredit(ZonedDecimalCodec.toMonetaryScale(
-                    account.getAcctCurrCycCredit().add(amount)));
+            currentCycleCredit = ZonedDecimalCodec.toMonetaryScale(
+                    account.getAcctCurrCycCredit().add(amount));
         } else {
             // Line 551: a negative amount joins the cycle debit UNCHANGED - not negated, not made
             // absolute - so the debit total goes negative. Deliberate and legacy-faithful.
-            account.setAcctCurrCycDebit(ZonedDecimalCodec.toMonetaryScale(
-                    account.getAcctCurrCycDebit().add(amount)));
+            currentCycleDebit = ZonedDecimalCodec.toMonetaryScale(
+                    account.getAcctCurrCycDebit().add(amount));
         }
 
-        // Lines 554 to 559: REWRITE ... INVALID KEY. Update-only semantics, so the row must be there.
-        if (!this.accountRepository.existsById(account.getAcctId())) {
-            LOG.warn("account rewrite found no row program={} accountId={} reasonCode={} reason={}"
+        // Lines 554 to 559: REWRITE ... INVALID KEY. The update count is the rewrite status.
+        final int rewritten = this.accountRepository.rewritePostingBalances(account.getAcctId(),
+                currentBalance, currentCycleCredit, currentCycleDebit);
+
+        // The bulk update cleared the persistence context. Keep the detached result image aligned with
+        // the values the paragraph attempted to rewrite, including on the inert invalid-key path.
+        account.setAcctCurrBal(currentBalance);
+        account.setAcctCurrCycCredit(currentCycleCredit);
+        account.setAcctCurrCycDebit(currentCycleDebit);
+
+        if (rewritten == 0) {
+            LOG.warn("account rewrite found no row program={} accountRef={} reasonCode={} reason={}"
                             + " effect=none",
-                    PROGRAM_NAME, account.getAcctId(),
+                    PROGRAM_NAME, SensitiveLogRedactor.redact(account.getAcctId()),
                     RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE.getReasonCode(),
                     RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE.getDescription());
             return Optional.of(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE);
         }
 
-        this.accountRepository.save(account);
         return Optional.empty();
     }
 
@@ -1359,7 +1354,7 @@ public class TransactionPostingService {
      */
     private Transaction writeTransactionFile(final Transaction transaction) {
         try {
-            return this.transactionRepository.save(transaction);
+            return this.transactionRepository.insertAndFlush(transaction);
         } catch (final DataAccessException unwritable) {
             throw abendAfterIoFailure(WRITE_TRANFILE_FAILURE, WRITE, TRANFILE_DD, unwritable);
         }

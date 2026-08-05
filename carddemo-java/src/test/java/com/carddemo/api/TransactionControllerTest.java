@@ -18,7 +18,6 @@ package com.carddemo.api;
 
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.api.dto.TransactionAddRequest;
 import com.carddemo.api.dto.TransactionAddResponse;
 import com.carddemo.api.dto.TransactionListRequest;
@@ -26,7 +25,9 @@ import com.carddemo.api.dto.TransactionListResponse;
 import com.carddemo.api.dto.TransactionViewResponse;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.BrowseWindow;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.service.TransactionAddService;
 import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
@@ -88,6 +89,8 @@ class TransactionControllerTest {
 
     private TransactionAddService transactionAddService;
 
+    private ScreenStateAdapter screenStateAdapter;
+
     private MeterRegistry meterRegistry;
 
     private TransactionController controller;
@@ -97,9 +100,12 @@ class TransactionControllerTest {
         transactionListService = mock(TransactionListService.class);
         transactionViewService = mock(TransactionViewService.class);
         transactionAddService = mock(TransactionAddService.class);
+        // The real converter rather than a mock: it holds no state and performs a positional copy, so
+        // stubbing it would measure the stub instead of the crossing.
+        screenStateAdapter = new ScreenStateAdapter();
         meterRegistry = new SimpleMeterRegistry();
         controller = new TransactionController(transactionListService, transactionViewService,
-                transactionAddService, meterRegistry);
+                transactionAddService, screenStateAdapter, meterRegistry);
     }
 
     /**
@@ -123,25 +129,25 @@ class TransactionControllerTest {
      * @param rows the rows the turn presented
      * @param error whether the turn was rejected
      * @param route the route the turn resolved, possibly {@code null}
-     * @param pageMetadata the paging record, possibly {@code null}
+     * @param pageMetadata the browse window the turn assembled, possibly {@code null}
      * @return the result
      */
     private static TransactionListService.TransactionListResult listResult(
             final List<TransactionListService.TransactionListRow> rows, final boolean error,
-            final NavigationService.Route route, final PageMetadata pageMetadata) {
-        return new TransactionListService.TransactionListResult(route, NavigationContext.empty(),
+            final NavigationService.Route route, final BrowseWindow pageMetadata) {
+        return new TransactionListService.TransactionListResult(route, ScreenNavigationState.empty(),
                 rows, pageMetadata, "MESSAGE TEXT", List.of(), "TRNIDIN", error, false, false,
                 "FILTER ECHO", TRANSACTION_ID, "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07",
                 "CT00", "COTRN00C");
     }
 
     /**
-     * Builds the paging record the list screen publishes.
+     * Builds the browse window the list transaction assembles.
      *
-     * @return the paging record
+     * @return the browse window
      */
-    private static PageMetadata pageMetadata() {
-        return new PageMetadata(10, "PREV", "NEXT", PageMetadata.PagingDirection.FORWARD, true,
+    private static BrowseWindow browseWindow() {
+        return new BrowseWindow(10, "PREV", "NEXT", BrowseWindow.PagingDirection.FORWARD, true,
                 false, "3");
     }
 
@@ -156,8 +162,9 @@ class TransactionControllerTest {
             final List<String> rowSelectors) {
         return new TransactionListRequest("FILTER", "2", rowSelectors, keyAction,
                 NavigationContext.empty(),
-                new PageMetadata.PageCursorRequest("PREV", "NEXT",
-                        PageMetadata.PagingDirection.FORWARD));
+                new com.carddemo.api.dto.PageMetadata.PageCursorRequest(
+                        "PREV", "NEXT",
+                        com.carddemo.api.dto.PageMetadata.PagingDirection.FORWARD));
     }
 
     /**
@@ -189,7 +196,8 @@ class TransactionControllerTest {
     private static TransactionViewService.TransactionViewResult viewResult(
             final TransactionViewService.TransactionProjection projection, final boolean errorFlag,
             final TransactionViewService.ScreenHeader header, final NavigationService.Route route) {
-        return new TransactionViewService.TransactionViewResult(route, NavigationContext.empty(),
+        return new TransactionViewService.TransactionViewResult(route,
+                ScreenNavigationState.empty(),
                 "CT01", "SEARCH ID", projection, "MESSAGE TEXT", "TRNIDIN", errorFlag, false, false,
                 List.of(), header);
     }
@@ -216,7 +224,7 @@ class TransactionControllerTest {
             final TransactionAddService.TransactionProjection written, final boolean errorFlag,
             final List<ValidationException.FieldError> fieldErrors) {
         return new TransactionAddService.TransactionAddResult(NavigationService.Route.TRANSACTION_ADD,
-                NavigationContext.empty(), "CT02", written, "MESSAGE TEXT", "ACTIDIN", errorFlag,
+                ScreenNavigationState.empty(), "CT02", written, "MESSAGE TEXT", "ACTIDIN", errorFlag,
                 false, fieldErrors,
                 new TransactionAddService.ScreenHeader("TITLE ONE", "TITLE TWO", "CT02", "COTRN02C",
                         "07/19/22", "14:23:07", "2022-07-19-14.23.07", null, false),
@@ -244,7 +252,8 @@ class TransactionControllerTest {
     private static TransactionAddRequest addRequest() {
         return new TransactionAddRequest("00000000011", "4111111111111111", "01", "05", "POS TERM",
                 "PURCHASE", "123.45", "2022-07-19", "2022-07-19", "M001", "MERCHANT", "CITY",
-                "12345", "Y", KeyAction.ENTER, NavigationContext.empty());
+                "12345", "Y", KeyAction.ENTER,
+                NavigationContext.empty());
     }
 
     /**
@@ -267,16 +276,23 @@ class TransactionControllerTest {
         @DisplayName("no collaborator may be absent, so a misassembled context fails at construction")
         void noCollaboratorMayBeAbsent() {
             assertThatNullPointerException().isThrownBy(() -> new TransactionController(null,
-                    transactionViewService, transactionAddService, meterRegistry))
+                    transactionViewService, transactionAddService, screenStateAdapter, meterRegistry))
                     .withMessageContaining("transactionListService");
             assertThatNullPointerException().isThrownBy(() -> new TransactionController(
-                    transactionListService, null, transactionAddService, meterRegistry))
+                    transactionListService, null, transactionAddService, screenStateAdapter,
+                    meterRegistry))
                     .withMessageContaining("transactionViewService");
             assertThatNullPointerException().isThrownBy(() -> new TransactionController(
-                    transactionListService, transactionViewService, null, meterRegistry))
+                    transactionListService, transactionViewService, null, screenStateAdapter,
+                    meterRegistry))
                     .withMessageContaining("transactionAddService");
             assertThatNullPointerException().isThrownBy(() -> new TransactionController(
-                    transactionListService, transactionViewService, transactionAddService, null))
+                    transactionListService, transactionViewService, transactionAddService, null,
+                    meterRegistry))
+                    .withMessageContaining("screenStateAdapter");
+            assertThatNullPointerException().isThrownBy(() -> new TransactionController(
+                    transactionListService, transactionViewService, transactionAddService,
+                    screenStateAdapter, null))
                     .withMessageContaining("meterRegistry");
         }
     }
@@ -290,7 +306,7 @@ class TransactionControllerTest {
         void everySubmittedComponentReachesTheTransaction() {
             when(transactionListService.listTransactions(any()))
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
-                            pageMetadata()));
+                            browseWindow()));
 
             controller.listTransactions(listRequest(KeyAction.PFK08, List.of("S", "")),
                     List.of("ID-1", "ID-2"), 4, true);
@@ -305,7 +321,7 @@ class TransactionControllerTest {
             assertThat(command.displayedTransactionIds()).containsExactly("ID-1", "ID-2");
             assertThat(command.currentPageNumber()).isEqualTo(4);
             assertThat(command.nextPageAvailable()).isTrue();
-            assertThat(command.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty());
             assertThat(command.pageCursor().previousCursorKey()).isEqualTo("PREV");
             assertThat(command.pageCursor().nextCursorKey()).isEqualTo("NEXT");
         }
@@ -316,7 +332,7 @@ class TransactionControllerTest {
         void anUnnamedKeyBecomesTheClearKey() {
             when(transactionListService.listTransactions(any()))
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
-                            pageMetadata()));
+                            browseWindow()));
 
             controller.listTransactions(listRequest(null, List.of()), null, 0, false);
 
@@ -337,7 +353,7 @@ class TransactionControllerTest {
         void theScreenAndControlItemsAreCarriedAcross() {
             when(transactionListService.listTransactions(any()))
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
-                            pageMetadata()));
+                            browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
@@ -378,7 +394,7 @@ class TransactionControllerTest {
         @DisplayName("a turn that resolved no route answers no route rather than an empty one")
         void aTurnWithNoRouteAnswersNoRoute() {
             when(transactionListService.listTransactions(any()))
-                    .thenReturn(listResult(List.of(), false, null, pageMetadata()));
+                    .thenReturn(listResult(List.of(), false, null, browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
@@ -394,7 +410,7 @@ class TransactionControllerTest {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, "FIRST", ORIGIN_TS), listRow(2, "SECOND", ORIGIN_TS),
                             listRow(3, "THIRD", ORIGIN_TS)),
-                    false, NavigationService.Route.TRANSACTION_LIST, pageMetadata()));
+                    false, NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
                     listRequest(KeyAction.ENTER, List.of("S", "U")), null, 0, false);
@@ -410,7 +426,7 @@ class TransactionControllerTest {
         void anAbsentSelectorColumnLeavesEveryRowWithoutOne() {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, "FIRST", ORIGIN_TS)), false,
-                    NavigationService.Route.TRANSACTION_LIST, pageMetadata()));
+                    NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, null), null, 0, false);
@@ -425,7 +441,7 @@ class TransactionControllerTest {
         void theDateColumnIsBuiltByPosition() {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, "FIRST", ORIGIN_TS)), false,
-                    NavigationService.Route.TRANSACTION_LIST, pageMetadata()));
+                    NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
@@ -439,7 +455,7 @@ class TransactionControllerTest {
         void aShortTimestampYieldsNoColumn() {
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, "FIRST", "2022-07"), listRow(2, "SECOND", null)), false,
-                    NavigationService.Route.TRANSACTION_LIST, pageMetadata()));
+                    NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
@@ -456,7 +472,7 @@ class TransactionControllerTest {
             String tooLong = "X".repeat(TransactionListResponse.DESCRIPTION_LENGTH + 9);
             when(transactionListService.listTransactions(any())).thenReturn(listResult(
                     List.of(listRow(1, tooLong, ORIGIN_TS), listRow(2, "SHORT", ORIGIN_TS)), false,
-                    NavigationService.Route.TRANSACTION_LIST, pageMetadata()));
+                    NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
@@ -472,7 +488,7 @@ class TransactionControllerTest {
         void aListTurnIsTimedUnderItsOutcomeAndRoute() {
             when(transactionListService.listTransactions(any()))
                     .thenReturn(listResult(List.of(), true, NavigationService.Route.TRANSACTION_LIST,
-                            pageMetadata()));
+                            browseWindow()));
 
             controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0, false);
 
@@ -502,7 +518,7 @@ class TransactionControllerTest {
             assertThat(input.transactionIdInput()).isEqualTo(TRANSACTION_ID);
             assertThat(input.selectedTransactionId()).isEqualTo("SELECTED");
             assertThat(input.keyAction()).isEqualTo(KeyAction.PFK05);
-            assertThat(input.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty());
         }
 
         @Test
@@ -652,7 +668,7 @@ class TransactionControllerTest {
             assertThat(input.confirm()).isEqualTo("Y");
             assertThat(input.selectedTransaction()).isEqualTo("SELECTED");
             assertThat(input.keyAction()).isEqualTo(KeyAction.ENTER);
-            assertThat(input.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty());
         }
 
         @Test

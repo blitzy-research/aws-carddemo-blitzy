@@ -16,6 +16,7 @@
  */
 package com.carddemo.service;
 
+import com.carddemo.api.dto.AccountUpdateRequest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -38,7 +39,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import com.carddemo.api.dto.AccountUpdateRequest;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Customer;
 import com.carddemo.exception.OptimisticLockConflictException;

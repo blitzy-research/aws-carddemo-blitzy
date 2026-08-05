@@ -18,8 +18,16 @@ package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.step.InterestCalculationProcessor;
+import com.carddemo.batch.step.StagedGenerationStore;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Transaction;
@@ -30,14 +38,22 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.service.InterestCalculationService;
+import com.carddemo.service.InterestGroupTransactionBoundary;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.util.TransactionRecordMapper;
+
+import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.sns.core.SnsOperations;
+
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -55,8 +71,10 @@ import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.actuate.autoconfigure.tracing.prometheus.PrometheusExemplarsAutoConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -78,16 +96,19 @@ import org.springframework.test.context.TestPropertySource;
  * <strong>truncated and not rounded</strong>, which the fixture makes visible by choosing a balance and
  * a rate whose exact quotient carries a third decimal; that the zero-rate gate skips a row entirely;
  * that the control break fires both inside the read loop and <strong>for the final group at end of
- * file</strong>; that both cycle accumulators are left at zero; and that the origination and processing
- * timestamps are identical and in the batch form rather than the online one.
+ * file</strong>; that both cycle accumulators are left at zero; that the origination and processing
+ * timestamps are identical and in the batch form rather than the online one; that INTCALC writes only
+ * the SYSTRAN generation and never inserts those rows into the live transaction master; and that a
+ * failure in a later account group leaves an earlier completed group committed.
  *
  * <p><strong>The fixture is this specification's own, and the master is put back exactly as it was
  * found.</strong> The driving input is a shared master that neighbouring specifications also write to,
  * and an assertion over "whatever happens to be in it" is an assertion about the order specifications
  * ran in. So the master's contents are captured, replaced by three rows this specification chose, and
  * restored afterwards - whatever the outcome, because a half-restored master is as disruptive to a
- * neighbour as an unrestored one. Account balances and the transactions the run minted are restored on
- * the same principle.
+ * neighbour as an unrestored one. Account balances are restored on the same principle. The transaction
+ * master needs no restoration because this job is forbidden to write it; its unchanged row count is
+ * asserted.
  *
  * <p>The three rows are chosen from what the reference seed already makes reachable. The seeded accounts
  * carry a blank group identifier, so every rate resolves through the <em>single</em> default-group probe;
@@ -101,16 +122,21 @@ import org.springframework.test.context.TestPropertySource;
 @SpringBootTest(classes = InterestCalculationJobIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {"spring.flyway.enabled=false", "spring.main.banner-mode=off",
-                "spring.jpa.hibernate.ddl-auto=none"})
+                "spring.jpa.hibernate.ddl-auto=none",
+                "management.endpoint.health.validate-group-membership=false",
+                "management.tracing.enabled=false"})
 @ActiveProfiles("test")
 @TestPropertySource(properties = "carddemo.batch.interest-calculation.staging-directory="
         + "${java.io.tmpdir}/carddemo-interest-calculation-it")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-@DisplayName("InterestCalculationJobIT - launched by name, one pass, one fixed-width generation")
+@DisplayName("InterestCalculationJobIT - one pass, account-group commits, one SYSTRAN generation")
 class InterestCalculationJobIT extends AbstractPostgresIT {
 
     /** The ten-character run date, with no separator, exactly as the legacy step supplies one. */
     private static final String RUN_DATE = "2022071800";
+
+    /** A distinct valid run date for the late-group failure scenario. */
+    private static final String FAILURE_RUN_DATE = "2022071801";
 
     /** An account the reference seed carries, together with a cross-reference that names its card. */
     private static final String FIRST_ACCOUNT = "00000000001";
@@ -184,14 +210,21 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
     @Autowired
     private TransactionRepository transactionRepository;
 
+    @Autowired
+    private S3Operations objectStore;
+
     /** The driving input as it was found, so it can be put back. */
     private final List<TransactionCategoryBalance> displacedRows = new ArrayList<>();
 
     /** The account amounts as they were found. */
     private final List<Balances> displacedBalances = new ArrayList<>();
 
+    /** The live transaction-master row count before the job, which INTCALC must not change. */
+    private long transactionCountBefore;
+
     @BeforeEach
-    void installTheFixture() {
+    void installTheFixture() throws Exception {
+        clearStagedGenerations();
         this.displacedRows.clear();
         this.displacedRows.addAll(this.categoryBalanceRepository.findAll());
 
@@ -200,6 +233,7 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
             this.displacedBalances.add(new Balances(account.getAcctId(), account.getAcctCurrBal(),
                     account.getAcctCurrCycCredit(), account.getAcctCurrCycDebit()));
         }
+        this.transactionCountBefore = this.transactionRepository.count();
 
         this.categoryBalanceRepository.deleteAllInBatch();
         this.categoryBalanceRepository.saveAll(List.of(
@@ -211,12 +245,32 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
                         EARNING_BALANCE)));
     }
 
+    /**
+     * Removes completed and in-progress generations left by a prior test JVM.
+     *
+     * <p>The integration database is recreated between Maven runs, so its execution identifiers start
+     * again at one while the platform temporary directory survives. Without this cleanup, a failed
+     * execution can appear to own an old completed file that merely reused its identifier.
+     *
+     * @throws Exception if the namespaced staging directory cannot be inspected or cleaned
+     */
+    private static void clearStagedGenerations() throws Exception {
+        final Path directory = Path.of(System.getProperty("java.io.tmpdir"),
+                "carddemo-interest-calculation-it");
+        if (!Files.isDirectory(directory)) {
+            return;
+        }
+        try (Stream<Path> contents = Files.list(directory)) {
+            for (final Path artifact : contents.toList()) {
+                if (Files.isRegularFile(artifact)) {
+                    Files.deleteIfExists(artifact);
+                }
+            }
+        }
+    }
+
     @AfterEach
     void restoreWhatWasDisplaced() {
-        for (final Transaction minted : synthesizedTransactions()) {
-            this.transactionRepository.deleteById(minted.getTranId());
-        }
-
         this.categoryBalanceRepository.deleteAllInBatch();
         this.categoryBalanceRepository.saveAll(this.displacedRows);
 
@@ -231,22 +285,37 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
     }
 
     /**
-     * Every transaction this run minted, in identifier order.
+     * Every live-master transaction carrying a run-date prefix.
      *
-     * <p>Selected by the run date prefix, which is the one thing every identifier of a run shares, so a
-     * neighbouring specification's own rows are never touched.
+     * <p>The correct INTCALC result is an empty list: synthesized rows belong only to the SYSTRAN
+     * generation until COMBTRAN loads them later.
      *
-     * @return the run's transactions, ordered by identifier
+     * @param runDate the ten-character identifier prefix
+     * @return matching rows in the live master
      */
-    private List<Transaction> synthesizedTransactions() {
+    private List<Transaction> liveMasterTransactionsFor(final String runDate) {
         final List<Transaction> minted = new ArrayList<>();
         for (final Transaction candidate : this.transactionRepository.findAll()) {
-            if (candidate.getTranId().startsWith(RUN_DATE)) {
+            if (candidate.getTranId().startsWith(runDate)) {
                 minted.add(candidate);
             }
         }
-        minted.sort(Comparator.comparing(Transaction::getTranId));
         return minted;
+    }
+
+    /**
+     * Parses every fixed-width record in one generation through the canonical transaction mapper.
+     *
+     * @param artefact the complete fixed-length-unblocked generation
+     * @return the records in generation order
+     */
+    private static List<Transaction> generationTransactions(final byte[] artefact) {
+        final List<Transaction> records = new ArrayList<>();
+        for (int offset = 0; offset < artefact.length;
+                offset += InterestCalculationJobConfig.TRANSACT_RECORD_LENGTH) {
+            records.add(TransactionRecordMapper.fromRecord(artefact, offset));
+        }
+        return records;
     }
 
     /** The balance the fixture found on one account. */
@@ -340,8 +409,18 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
                 .isZero();
         assertThat(artefact.length)
                 .isEqualTo(synthesized * InterestCalculationJobConfig.TRANSACT_RECORD_LENGTH);
+        final String durableKey = "AWS.M2.CARDDEMO.SYSTRAN/"
+                + String.format(Locale.ROOT, "G%010dV00", execution.getId().longValue());
+        verify(this.objectStore).upload(
+                eq("carddemo-batch-staging"),
+                eq(durableKey),
+                any(InputStream.class));
+        assertThat(StagedGenerationStore.registeredArtifactCount(execution))
+                .as("a successful terminal publication removes the serializable registry so a "
+                        + "repeated callback cannot upload the same generation twice")
+                .isZero();
 
-        final List<Transaction> minted = synthesizedTransactions();
+        final List<Transaction> minted = generationTransactions(artefact);
         assertThat(minted).hasSize(synthesized);
 
         long expectedSuffix = 1L;
@@ -403,6 +482,57 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
             assertThat(account.getAcctCurrCycDebit())
                     .isEqualByComparingTo(BigDecimal.ZERO);
         }
+
+        assertThat(this.transactionRepository.count())
+                .as("INTCALC writes SYSTRAN only; COMBTRAN is the later master-load boundary")
+                .isEqualTo(this.transactionCountBefore);
+        assertThat(liveMasterTransactionsFor(RUN_DATE)).isEmpty();
+    }
+
+    @Test
+    @Order(4)
+    @DisplayName("a later account failure preserves the earlier account-group commit and its "
+            + "in-progress generation record without publishing a completed generation")
+    void aLateGroupFailureDoesNotRollBackAnEarlierGroup() throws Exception {
+        this.categoryBalanceRepository.deleteAllInBatch();
+        this.categoryBalanceRepository.saveAll(List.of(
+                new TransactionCategoryBalance(FIRST_ACCOUNT, EARNING_TYPE, CATEGORY,
+                        EARNING_BALANCE),
+                new TransactionCategoryBalance(SECOND_ACCOUNT, "99", "9999",
+                        EARNING_BALANCE)));
+
+        final BigDecimal firstBalanceBefore = displacedBalanceOf(FIRST_ACCOUNT);
+        final BigDecimal secondBalanceBefore = displacedBalanceOf(SECOND_ACCOUNT);
+
+        final JobExecution execution = this.jobLauncher.run(this.interestCalculationJob,
+                new JobParametersBuilder()
+                        .addString(InterestCalculationJobConfig.PARM_DATE_KEY, FAILURE_RUN_DATE)
+                        .toJobParameters());
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(this.accountRepository.findById(FIRST_ACCOUNT).orElseThrow().getAcctCurrBal())
+                .as("the first control break committed before the second account abended")
+                .isEqualByComparingTo(firstBalanceBefore.add(TRUNCATED_INTEREST));
+        assertThat(this.accountRepository.findById(SECOND_ACCOUNT).orElseThrow().getAcctCurrBal())
+                .as("the failing group never reaches its account rewrite")
+                .isEqualByComparingTo(secondBalanceBefore);
+
+        final Path completedGeneration =
+                this.config.transactGeneration(execution.getId().longValue());
+        final Path generation = StagedGenerationStore.workingPath(completedGeneration);
+        assertThat(completedGeneration)
+                .as("a failed job must not advertise its partial generation as completed")
+                .doesNotExist();
+        assertThat(generation).exists();
+        final List<Transaction> records = generationTransactions(Files.readAllBytes(generation));
+        assertThat(records).singleElement().satisfies(record -> {
+            assertThat(record.getTranId())
+                    .isEqualTo(InterestCalculationProcessor.interestTranId(FAILURE_RUN_DATE, 1L));
+            assertThat(record.getTranAmt()).isEqualByComparingTo(TRUNCATED_INTEREST);
+        });
+
+        assertThat(this.transactionRepository.count()).isEqualTo(this.transactionCountBefore);
+        assertThat(liveMasterTransactionsFor(FAILURE_RUN_DATE)).isEmpty();
     }
 
     /**
@@ -414,9 +544,12 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
      * would switch off the very infrastructure this context depends on.
      */
     @Configuration(proxyBeanMethods = false)
-    @EnableAutoConfiguration
+    @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({InterestCalculationJobConfig.class, BatchConfig.class, JobParameterValidators.class,
-            DateValidationService.class, InterestCalculationService.class, AbendService.class})
+            BatchStagingArea.class, StagedGenerationStore.class, DateValidationService.class,
+            InterestCalculationService.class, InterestGroupTransactionBoundary.class,
+            AbendService.class})
+    @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = AccountRepository.class)
     @EntityScan(basePackageClasses = Account.class)
     static class JobContext {
@@ -430,6 +563,33 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
         @Bean
         Clock systemClock() {
             return Clock.systemUTC();
+        }
+
+        /**
+         * Keeps this PostgreSQL-focused job test deterministic at the object-store edge. The store
+         * implementation itself and the listener's publication path remain real; only the external S3
+         * service is replaced here, while {@link BatchAwsIntegrationIT} proves the same operations
+         * against LocalStack.
+         *
+         * @return an object-store edge that accepts uploads and reports no older generations
+         */
+        @Bean
+        S3Operations objectStore() {
+            final S3Operations objectStore = mock(S3Operations.class);
+            when(objectStore.listObjects(anyString(), anyString())).thenReturn(List.of());
+            return objectStore;
+        }
+
+        /**
+         * Prevents an unrelated notification endpoint from becoming a prerequisite of this
+         * PostgreSQL-focused test. The notification contract is exercised against LocalStack by
+         * {@link BatchAwsIntegrationIT}.
+         *
+         * @return a successful notification edge
+         */
+        @Bean
+        SnsOperations notifications() {
+            return mock(SnsOperations.class);
         }
     }
 }

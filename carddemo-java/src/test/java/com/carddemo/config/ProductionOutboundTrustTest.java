@@ -70,7 +70,7 @@ class ProductionOutboundTrustTest {
     private static final String ACCOUNT = "000000000000";
 
     /** The canonical bare queue name, which is the preferred and safest form. */
-    private static final String BARE_QUEUE = "carddemo-jobs.fifo";
+    private static final String BARE_QUEUE = "JOBS.fifo";
 
     /** Constructs the fixture. */
     ProductionOutboundTrustTest() {
@@ -208,7 +208,7 @@ class ProductionOutboundTrustTest {
         void theReportedExploitIsRefused() {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator.validateOutboundTrust(
-                            withDestination("http://attacker.internal/carddemo-jobs.fifo")));
+                            withDestination("http://attacker.internal/JOBS.fifo")));
         }
 
         @Test
@@ -295,11 +295,11 @@ class ProductionOutboundTrustTest {
 
         @ParameterizedTest(name = "arn = {0}")
         @ValueSource(strings = {
-            "arn:not-a-partition:sqs:eu-west-2:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sns:eu-west-2:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sqs:eu-west-2:0000:carddemo-jobs.fifo",
-            "arn:aws:sqs:eu-west-2:000000000000:carddemo-jobs",
+            "arn:not-a-partition:sqs:eu-west-2:000000000000:JOBS.fifo",
+            "arn:aws:sns:eu-west-2:000000000000:JOBS.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo",
+            "arn:aws:sqs:eu-west-2:0000:JOBS.fifo",
+            "arn:aws:sqs:eu-west-2:000000000000:JOBS",
             "arn:aws:sqs:eu-west-2:000000000000"})
         @DisplayName("an ARN whose partition, service, region, account or queue name this deployment "
                 + "cannot have meant is refused")
@@ -364,7 +364,7 @@ class ProductionOutboundTrustTest {
         void explainsWhyShapeIsNotEnough() {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> ProductionConfigurationValidator.validateOutboundTrust(
-                            withDestination("http://attacker.internal/carddemo-jobs.fifo")))
+                            withDestination("http://attacker.internal/JOBS.fifo")))
                     .withMessageContaining("shape");
         }
     }

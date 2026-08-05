@@ -37,7 +37,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
@@ -268,7 +267,7 @@ class CardDetailServiceTest {
     private static CardDetailService.CardDetailScreenInput reSubmission(final String accountFilter,
             final String cardFilter, final String attentionIdentifier) {
         return new CardDetailService.CardDetailScreenInput(accountFilter, cardFilter,
-                attentionIdentifier, NavigationContext.empty().withReEntry());
+                attentionIdentifier, ScreenNavigationState.empty().withReEntry());
     }
 
     private String recordedLogText() {
@@ -348,7 +347,7 @@ class CardDetailServiceTest {
         void theSendRaisesTheReEnterGate() {
             final CardDetailService.CardDetailResult result = service.processCardDetail(
                     new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            NavigationContext.empty().withFirstEntry()));
+                            ScreenNavigationState.empty().withFirstEntry()));
 
             assertThat(result.reEnterFlag()).isTrue();
             assertThat(result.navigationContext().reEntry()).isTrue();
@@ -363,7 +362,7 @@ class CardDetailServiceTest {
         void theHeaderIsAssembledFromTheInjectedClock() {
             final CardDetailService.CardDetailResult result = service.processCardDetail(
                     new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            NavigationContext.empty().withFirstEntry()));
+                            ScreenNavigationState.empty().withFirstEntry()));
 
             final CardDetailService.ScreenHeader header = result.header();
             assertThat(header.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
@@ -379,9 +378,9 @@ class CardDetailServiceTest {
         void aHandOffFromTheCardListScreenSkipsTheEdits() {
             Mockito.when(cardRepository.findById(CARD_LOW))
                     .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            final NavigationContext handOff = new NavigationContext(
+            final ScreenNavigationState handOff = new ScreenNavigationState(
                     "CCLI", CARD_LIST_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.ENTER, null, null, null, null,
+                    ScreenNavigationState.ProgramContext.ENTER, null, null, null, null,
                     ACCOUNT, null, CARD_LOW, "CCRDSLA", CARD_LIST_MAPSET);
 
             final CardDetailService.CardDetailResult result = service.processCardDetail(
@@ -492,7 +491,7 @@ class CardDetailServiceTest {
         void theDecorationMarkerAppearsOnlyOnAReSubmission() {
             final CardDetailService.CardDetailResult firstEntry = service.processCardDetail(
                     new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            NavigationContext.empty().withFirstEntry()));
+                            ScreenNavigationState.empty().withFirstEntry()));
             assertThat(firstEntry.screen().accountIdFilter()).doesNotContain("*");
             assertThat(firstEntry.screen().accountIdHighlighted()).isFalse();
 
@@ -633,8 +632,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("an absent result is the not-found outcome, not an exception and not an index error")
         void anAbsentResultIsTheNotFoundOutcome() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.empty());
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of());
 
             final CardDetailService.CardDetailResult probe =
                     service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
@@ -650,26 +649,27 @@ class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("the finder resolves the non-unique key to one row, so no collection is indexed")
-        void theFinderResolvesTheNonUniqueKeyToOneRow() {
-            // Two cards share the account; the declared finder orders on the card number and returns
-            // the first, so the lower card number is the one the screen must present.
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            Mockito.when(cardRepository.findById(CARD_HIGH))
-                    .thenReturn(Optional.of(activeCard(CARD_HIGH)));
-
+        @DisplayName("the SERVICE resolves the non-unique key to the lowest base key, whatever order "
+                + "the repository hands the rows over in")
+        void theServiceResolvesTheNonUniqueKeyToTheLowestBaseKey() {
+            // Two cards share the account, and the repository declares no ordering, so the rows are
+            // deliberately handed over HIGHEST FIRST. A keyed read of the duplicate-bearing path
+            // returns the first record in ascending BASE-key order, and the base key is the card
+            // number, so the service must present the LOWER card number - which it can only do by
+            // selecting the minimum rather than by taking element zero.
             assertThat(CARD_LOW).isLessThan(CARD_HIGH);
-            final Optional<Card> first =
-                    cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
-            assertThat(first).isPresent();
-            assertThat(first.get().getCardNum()).isEqualTo(CARD_LOW);
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of(activeCard(CARD_HIGH), activeCard(CARD_LOW)));
 
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-            assertThat(result.card().cardNumber()).isEqualTo(CARD_LOW);
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+            service.getCardByAcct(state, ACCOUNT);
+            final CardDetailService.CardDetailResult presented = service.toResult(state);
+
+            assertThat(presented.card()).isNotNull();
+            assertThat(presented.card().cardNumber())
+                    .as("taking the first element of the returned list would have presented %s",
+                            CARD_HIGH)
+                    .isEqualTo(CARD_LOW);
         }
 
         @Test
@@ -756,7 +756,7 @@ class CardDetailServiceTest {
         void anAbsentIdentifierIsTreatedAsUnrecognised() {
             final CardDetailService.CardDetailResult result = service.processCardDetail(
                     new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW, null,
-                            NavigationContext.empty().withReEntry()));
+                            ScreenNavigationState.empty().withReEntry()));
 
             assertThat(result.message()).isEqualTo(MSG_INVALID_KEY);
             assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
@@ -950,7 +950,7 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("the input record carries its four components verbatim")
         void theInputRecordCarriesItsComponentsVerbatim() {
-            final NavigationContext context = NavigationContext.empty().withReEntry();
+            final ScreenNavigationState context = ScreenNavigationState.empty().withReEntry();
             final CardDetailService.CardDetailScreenInput input =
                     new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW, "DFHPF3", context);
 
@@ -1017,8 +1017,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("the account-keyed read presents the one card the non-unique index resolves to")
         void theAccountKeyedReadPresentsTheResolvedCard() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of(activeCard(CARD_LOW)));
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             service.getCardByAcct(state, ACCOUNT);
@@ -1029,16 +1029,16 @@ class CardDetailServiceTest {
             assertThat(result.errorFlag()).isFalse();
             assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS);
             assertThat(result.message()).isEmpty();
-            // The finder is single-valued by construction, so no collection is ever indexed.
-            Mockito.verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
+            // The account path is read exactly once and the selection happens in the service.
+            Mockito.verify(cardRepository).findByCardAcctId(ACCOUNT);
             Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
         }
 
         @Test
         @DisplayName("an empty result faults ONE field and sets its own text UNGATED")
         void anEmptyResultFaultsOneFieldAndSetsItsTextUngated() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.empty());
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of());
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             // Pre-set a summary message: this arm must OVERWRITE it, unlike the card-number arm, which
@@ -1059,8 +1059,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("its message overwrites an earlier one, where the card-number read's would not")
         void itsMessageOverwritesAnEarlierOne() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.empty());
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of());
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             service.getCardByAcct(state, ACCOUNT);
@@ -1074,8 +1074,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("a record that violates its layout takes the catch-all and names CARDAIX")
         void aViolatingRecordNamesTheAlternateIndex() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(card(CARD_LOW, CVV_WITH_LEADING_ZEROS,
+            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
+                    .thenReturn(List.of(card(CARD_LOW, CVV_WITH_LEADING_ZEROS,
                             EMBOSSED_NAME_WITH_SPACE, EXPIRY, "Q")));
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
@@ -1144,9 +1144,9 @@ class CardDetailServiceTest {
         void stateNamingTheMenuWithTheGateDownIsDiscarded() {
             // The second arm of the test at COCRDSLC lines 269 to 270. Honouring only the first arm
             // would carry a stale selection into a screen the operator has just entered.
-            final NavigationContext staleFromMenu = new NavigationContext(
+            final ScreenNavigationState staleFromMenu = new ScreenNavigationState(
                     "CM00", USER_MENU_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.ENTER, null, null, null, null,
+                    ScreenNavigationState.ProgramContext.ENTER, null, null, null, null,
                     ACCOUNT, null, CARD_LOW, "CCRDSLA", "COCRDSL");
 
             final CardDetailService.CardDetailResult result = service.processCardDetail(
@@ -1166,9 +1166,9 @@ class CardDetailServiceTest {
         void theSameStateWithTheGateUpIsKept() {
             Mockito.when(cardRepository.findById(CARD_LOW))
                     .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            final NavigationContext liveFromMenu = new NavigationContext(
+            final ScreenNavigationState liveFromMenu = new ScreenNavigationState(
                     "CM00", USER_MENU_PROGRAM, null, null, "USER0001", "U",
-                    NavigationContext.ProgramContext.REENTER, null, null, null, null,
+                    ScreenNavigationState.ProgramContext.REENTER, null, null, null, null,
                     ACCOUNT, null, CARD_LOW, "CCRDSLA", "COCRDSL");
 
             final CardDetailService.CardDetailResult result = service.processCardDetail(

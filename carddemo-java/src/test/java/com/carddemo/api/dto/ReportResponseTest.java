@@ -1710,14 +1710,25 @@ class ReportResponseTest {
     class ImmutabilityAndValueSemantics {
 
         @Test
-        @DisplayName("returns the same value from every repeated read")
+        @DisplayName("returns the value it was built from on every repeated read")
         void returnsTheSameValueFromEveryRepeatedRead() {
-            ReportResponse response = everyComponentPresent();
+            // Each expectation is authored here from the value the constructor was handed rather than
+            // read back from the instance: a component compared with itself passes even when the stored
+            // value is wrong, so it proves nothing about this contract. The nested state's identity claim
+            // is anchored to a reference captured before the reads.
+            NavigationContext nested = navigation();
+            ReportResponse response = new ReportResponse(SELECTION_MARK, SELECTION_MARK, SELECTION_MARK,
+                    ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
+                    "Y", "CR00", TITLE_UPPER, "07/19/22", "CORPT00C", TITLE_LOWER, "19:27:53",
+                    ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false,
+                    ReportResponse.FIELD_MONTHLY_SELECTION, "/api/v1/reports", nested);
 
-            assertThat(response.message()).isEqualTo(response.message());
-            assertThat(response.reportPeriod()).isSameAs(response.reportPeriod());
-            assertThat(response.navigationContext()).isSameAs(response.navigationContext());
-            assertThat(response.generalError()).isEqualTo(response.generalError());
+            for (int read = 0; read < 2; read++) {
+                assertThat(response.message()).isEqualTo(ACCEPTED_CUSTOM);
+                assertThat(response.reportPeriod()).isSameAs(ReportPeriod.CUSTOM);
+                assertThat(response.navigationContext()).isSameAs(nested);
+                assertThat(response.generalError()).isFalse();
+            }
         }
 
         @Test

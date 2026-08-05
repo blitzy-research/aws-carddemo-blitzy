@@ -85,7 +85,7 @@ class JpaAuditConfigTest {
 
     private static final String EXPECTED_JDBC_TIME_ZONE = "UTC";
 
-    private static final String MIGRATION_NAME = "db/migration/schema/V1__create_schema.sql";
+    private static final String MIGRATION_NAME = "db/migration/V1__create_schema.sql";
 
     private static final List<String> FORBIDDEN_AUDIT_COLUMNS =
             List.of("created_at", "created_by", "modified_at", "modified_by", "last_updated");

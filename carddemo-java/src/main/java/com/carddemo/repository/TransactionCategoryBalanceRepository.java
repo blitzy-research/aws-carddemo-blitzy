@@ -18,7 +18,11 @@ package com.carddemo.repository;
 
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
+import java.util.List;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Persistence gateway for the {@code transaction_category_balance} table - the relational form of
@@ -41,4 +45,36 @@ import org.springframework.data.jpa.repository.JpaRepository;
  */
 public interface TransactionCategoryBalanceRepository
         extends JpaRepository<TransactionCategoryBalance, TransactionCategoryBalanceId> {
+
+    /**
+     * Reads one bounded page after a complete composite-key cursor.
+     *
+     * <p>The disjunction is the lexicographic form of
+     * {@code (account, type, category) > (:account, :type, :category)}. Callers always supply page
+     * zero with a bounded size; the key predicate, rather than an offset, advances the scan.
+     *
+     * @param accountId account component of the exclusive lower bound
+     * @param typeCode transaction-type component of the exclusive lower bound
+     * @param categoryCode transaction-category component of the exclusive lower bound
+     * @param page bounded page-zero request
+     * @return rows in complete record-key order
+     */
+    @Query("""
+            SELECT balance
+            FROM TransactionCategoryBalance balance
+            WHERE balance.trancatAcctId > :accountId
+               OR (balance.trancatAcctId = :accountId
+                   AND balance.trancatTypeCd > :typeCode)
+               OR (balance.trancatAcctId = :accountId
+                   AND balance.trancatTypeCd = :typeCode
+                   AND balance.trancatCd > :categoryCode)
+            ORDER BY balance.trancatAcctId ASC,
+                     balance.trancatTypeCd ASC,
+                     balance.trancatCd ASC
+            """)
+    List<TransactionCategoryBalance> findAfterKey(
+            @Param("accountId") String accountId,
+            @Param("typeCode") String typeCode,
+            @Param("categoryCode") String categoryCode,
+            Pageable page);
 }

@@ -35,12 +35,11 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
@@ -148,8 +147,12 @@ final class TransactionListServiceTest {
 
     private static final String REDACTED = "***REDACTED***";
 
-    /** Page requests the stub repository was asked for, in order, for the descending-sort assertion. */
-    private final List<Pageable> pageRequests = new ArrayList<>();
+    /** Keyset reads the stub repository was asked for, in order. */
+    private final List<KeysetRead> keysetReads = new ArrayList<>();
+
+    /** One bounded repository read, retaining its direction, exclusive cursor and limit. */
+    private record KeysetRead(boolean ascending, String cursor, int limit) {
+    }
 
     // ------------------------------------------------------------------------------------------
     // Fixtures
@@ -185,24 +188,23 @@ final class TransactionListServiceTest {
         return rows;
     }
 
-    /**
-     * A repository that behaves like an ordered cluster: it sorts by identifier in whichever direction
-     * the page request asks for, returns the requested window, and records the request.
-     */
+    /** A repository that behaves like an ordered primary-key cluster in either keyset direction. */
     private TransactionRepository repositoryOf(final List<Transaction> rows) {
         final TransactionRepository repository = Mockito.mock(TransactionRepository.class);
         Mockito.when(repository.findAll(ArgumentMatchers.any(Pageable.class)))
                 .thenAnswer(invocation -> {
                     final Pageable pageable = invocation.getArgument(0);
-                    pageRequests.add(pageable);
-                    return window(rows, pageable);
+                    final Sort.Order order = pageable.getSort().getOrderFor("tranId");
+                    keysetReads.add(new KeysetRead(
+                            order == null || order.isAscending(), "", pageable.getPageSize()));
+                    return page(rows, pageable);
                 });
         return repository;
     }
 
-    /** The window of an ordered cluster a page request asks for, honouring the sort direction. */
-    private static PageImpl<Transaction> window(final List<Transaction> rows,
-            final Pageable pageable) {
+    /** Returns the ordered page the production repository contract exposes. */
+    private static PageImpl<Transaction> page(
+            final List<Transaction> rows, final Pageable pageable) {
         final List<Transaction> ordered = new ArrayList<>(rows);
         ordered.sort(Comparator.comparing(Transaction::getTranId));
         final Sort.Order order = pageable.getSort().getOrderFor("tranId");
@@ -212,6 +214,23 @@ final class TransactionListServiceTest {
         final int from = Math.min((int) pageable.getOffset(), ordered.size());
         final int to = Math.min(from + pageable.getPageSize(), ordered.size());
         return new PageImpl<>(new ArrayList<>(ordered.subList(from, to)), pageable, ordered.size());
+    }
+
+    /** Returns one strict keyset window and records the repository call that requested it. */
+    private List<Transaction> keysetWindow(final List<Transaction> rows, final String cursor,
+            final Limit limit, final boolean ascending) {
+        final List<Transaction> ordered = new ArrayList<>(rows);
+        ordered.sort(Comparator.comparing(Transaction::getTranId));
+        if (!ascending) {
+            Collections.reverse(ordered);
+        }
+        keysetReads.add(new KeysetRead(ascending, cursor, limit.max()));
+        return ordered.stream()
+                .filter(row -> ascending
+                        ? row.getTranId().compareTo(cursor) > 0
+                        : row.getTranId().compareTo(cursor) < 0)
+                .limit(limit.max())
+                .toList();
     }
 
     /**
@@ -224,15 +243,28 @@ final class TransactionListServiceTest {
         final int[] requests = {0};
         Mockito.when(repository.findAll(ArgumentMatchers.any(Pageable.class)))
                 .thenAnswer(invocation -> {
-                    final Pageable pageable = invocation.getArgument(0);
-                    pageRequests.add(pageable);
                     requests[0]++;
                     if (requests[0] > successfulRequests) {
                         throw new QueryTimeoutException("the driver message must not be echoed");
                     }
-                    return window(rows, pageable);
+                    final Pageable pageable = invocation.getArgument(0);
+                    final Sort.Order order = pageable.getSort().getOrderFor("tranId");
+                    keysetReads.add(new KeysetRead(
+                            order == null || order.isAscending(), "", pageable.getPageSize()));
+                    return page(rows, pageable);
                 });
         return repository;
+    }
+
+    /** Applies the requested failure point before serving one recorded keyset read. */
+    private List<Transaction> failingKeysetWindow(final List<Transaction> rows, final String cursor,
+            final Limit limit, final boolean ascending, final int[] requests,
+            final int successfulRequests) {
+        requests[0]++;
+        if (requests[0] > successfulRequests) {
+            throw new QueryTimeoutException("the driver message must not be echoed");
+        }
+        return keysetWindow(rows, cursor, limit, ascending);
     }
 
     private TransactionListService serviceOf(final TransactionRepository repository) {
@@ -248,7 +280,7 @@ final class TransactionListServiceTest {
     private static TransactionListService.TransactionListCommand firstEntry() {
         return new TransactionListService.TransactionListCommand(
                 KeyAction.ENTER,
-                NavigationContext.empty().withFirstEntry(),
+                ScreenNavigationState.empty().withFirstEntry(),
                 null,
                 List.of(),
                 List.of(),
@@ -263,14 +295,14 @@ final class TransactionListServiceTest {
             final String filter,
             final List<String> selectors,
             final List<String> displayedIds,
-            final PageMetadata metadata) {
+            final BrowseWindow metadata) {
         return new TransactionListService.TransactionListCommand(
                 keyAction,
-                NavigationContext.empty().withReEntry(),
+                ScreenNavigationState.empty().withReEntry(),
                 filter,
                 selectors,
                 displayedIds,
-                new PageMetadata.PageCursorRequest(metadata.previousCursorKey(),
+                new BrowseWindow.CursorRequest(metadata.previousCursorKey(),
                         metadata.nextCursorKey(), metadata.direction()),
                 metadata.hasMorePages(),
                 Integer.parseInt(metadata.displayedPageNumber()));
@@ -329,9 +361,11 @@ final class TransactionListServiceTest {
         void everyWindowIsTenRows() {
             serviceOver(transactions(25)).listTransactions(firstEntry());
 
-            assertThat(pageRequests).isNotEmpty();
-            assertThat(pageRequests).allSatisfy(
-                    request -> assertThat(request.getPageSize()).isEqualTo(EXPECTED_PAGE_SIZE));
+            assertThat(keysetReads).isNotEmpty();
+            assertThat(keysetReads)
+                    .filteredOn(read -> read.limit() > 1)
+                    .allSatisfy(read -> assertThat(read.limit())
+                            .isEqualTo(EXPECTED_PAGE_SIZE + 1));
         }
     }
 
@@ -377,19 +411,15 @@ final class TransactionListServiceTest {
             final TransactionListService.TransactionListResult secondPage = service.listTransactions(
                     reEntry(KeyAction.PFK08, null, List.of(), List.of(), firstPage.pageMetadata()));
 
-            pageRequests.clear();
+            keysetReads.clear();
             final TransactionListService.TransactionListResult backAgain = service.listTransactions(
                     reEntry(KeyAction.PFK07, null, List.of(), List.of(), secondPage.pageMetadata()));
 
-            assertThat(pageRequests).isNotEmpty();
-            assertThat(pageRequests).allSatisfy(request -> {
-                final Sort.Order order = request.getSort().getOrderFor("tranId");
-                assertThat(order).isNotNull();
-                assertThat(order.isDescending()).isTrue();
-            });
+            assertThat(keysetReads).isNotEmpty();
+            assertThat(keysetReads).allSatisfy(read -> assertThat(read.ascending()).isFalse());
             assertThat(identifiersOf(backAgain)).isSorted();
             assertThat(backAgain.pageMetadata().direction())
-                    .isEqualTo(PageMetadata.PagingDirection.BACKWARD);
+                    .isEqualTo(BrowseWindow.PagingDirection.BACKWARD);
         }
 
         @Test
@@ -397,12 +427,8 @@ final class TransactionListServiceTest {
         void forwardQueriesAscending() {
             serviceOver(transactions(25)).listTransactions(firstEntry());
 
-            assertThat(pageRequests).isNotEmpty();
-            assertThat(pageRequests).allSatisfy(request -> {
-                final Sort.Order order = request.getSort().getOrderFor("tranId");
-                assertThat(order).isNotNull();
-                assertThat(order.isAscending()).isTrue();
-            });
+            assertThat(keysetReads).isNotEmpty();
+            assertThat(keysetReads).allSatisfy(read -> assertThat(read.ascending()).isTrue());
         }
 
         @Test
@@ -440,7 +466,7 @@ final class TransactionListServiceTest {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
                             KeyAction.ENTER,
-                            NavigationContext.empty().withReEntry(),
+                            ScreenNavigationState.empty().withReEntry(),
                             identifier(5),
                             List.of(),
                             List.of(),
@@ -571,7 +597,7 @@ final class TransactionListServiceTest {
         void unmappedKeyProducesTheCatalogueMessage(final KeyAction keyAction) {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            keyAction, NavigationContext.empty().withReEntry(), null, List.of(),
+                            keyAction, ScreenNavigationState.empty().withReEntry(), null, List.of(),
                             List.of(), null, false, 1));
 
             assertThat(result.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
@@ -590,7 +616,7 @@ final class TransactionListServiceTest {
         void thirdKeyReturnsToTheUserMenu() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.PFK03, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.PFK03, ScreenNavigationState.empty().withReEntry(), null,
                             List.of(), List.of(), null, false, 1));
 
             assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_USER_MENU_ROUTE);
@@ -613,7 +639,7 @@ final class TransactionListServiceTest {
             assertThat(result.navigationContext().toProgram()).isEqualTo("COSGN00C");
             assertThat(result.message()).isEmpty();
             assertThat(result.rows()).isEmpty();
-            assertThat(pageRequests).isEmpty();
+            assertThat(keysetReads).isEmpty();
         }
 
         @Test
@@ -622,7 +648,7 @@ final class TransactionListServiceTest {
         void emptyContextIsAbsent() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty(), null, List.of(), List.of(),
+                            KeyAction.ENTER, ScreenNavigationState.empty(), null, List.of(), List.of(),
                             null, false, 0));
 
             assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_SIGN_ON_ROUTE);
@@ -644,7 +670,7 @@ final class TransactionListServiceTest {
             final TransactionListService.TransactionListResult firstPage =
                     service.listTransactions(firstEntry());
 
-            pageRequests.clear();
+            keysetReads.clear();
             final TransactionListService.TransactionListResult blocked = service.listTransactions(
                     reEntry(KeyAction.PFK07, null, List.of(), List.of(), firstPage.pageMetadata()));
 
@@ -652,7 +678,7 @@ final class TransactionListServiceTest {
             assertThat(blocked.eraseScreen()).isFalse();
             assertThat(blocked.error()).isFalse();
             assertThat(blocked.rows()).isEmpty();
-            assertThat(pageRequests).isEmpty();
+            assertThat(keysetReads).isEmpty();
         }
 
         @Test
@@ -662,14 +688,14 @@ final class TransactionListServiceTest {
             final TransactionListService.TransactionListResult onlyPage =
                     service.listTransactions(firstEntry());
 
-            pageRequests.clear();
+            keysetReads.clear();
             final TransactionListService.TransactionListResult blocked = service.listTransactions(
                     reEntry(KeyAction.PFK08, null, List.of(), List.of(), onlyPage.pageMetadata()));
 
             assertThat(blocked.message()).isEqualTo(EXPECTED_ALREADY_AT_BOTTOM);
             assertThat(blocked.eraseScreen()).isFalse();
             assertThat(blocked.error()).isFalse();
-            assertThat(pageRequests).isEmpty();
+            assertThat(keysetReads).isEmpty();
         }
 
         @Test
@@ -691,7 +717,7 @@ final class TransactionListServiceTest {
         void highValuesPositioningReportsTheTop() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.PFK08, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.PFK08, ScreenNavigationState.empty().withReEntry(), null,
                             List.of(), List.of(), null, true, 1));
 
             assertThat(result.error()).isTrue();
@@ -705,7 +731,7 @@ final class TransactionListServiceTest {
         void lowValuesBackwardResolvesTheLowestKey() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.PFK07, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.PFK07, ScreenNavigationState.empty().withReEntry(), null,
                             List.of(), List.of(), null, true, 3));
 
             // Low values position the browse on the lowest key; the seventh key's guard read returns
@@ -713,7 +739,7 @@ final class TransactionListServiceTest {
             assertThat(result.rows()).isEmpty();
             assertThat(result.message()).isEqualTo(EXPECTED_REACHED_TOP);
             assertThat(result.error()).isFalse();
-            assertThat(pageRequests).isNotEmpty();
+            assertThat(keysetReads).isNotEmpty();
         }
     }
 
@@ -729,7 +755,7 @@ final class TransactionListServiceTest {
                 final TransactionListService.TransactionListResult result =
                         serviceOver(transactions(25)).listTransactions(
                                 new TransactionListService.TransactionListCommand(
-                                        KeyAction.ENTER, NavigationContext.empty().withReEntry(),
+                                        KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
                                         null, List.of(" ", action), List.of(" ", identifier(2)),
                                         null, false, 1));
 
@@ -748,7 +774,7 @@ final class TransactionListServiceTest {
         void unsupportedActionFallsThroughAndStillPages() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), null,
                             List.of("X"), List.of(identifier(1)), null, false, 1));
 
             assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_LIST_ROUTE);
@@ -767,7 +793,7 @@ final class TransactionListServiceTest {
         void firstNonBlankSelectorWins() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), null,
                             List.of(" ", " ", "S", " ", "S"),
                             List.of(" ", " ", identifier(3), " ", identifier(5)), null, false, 1));
 
@@ -779,7 +805,7 @@ final class TransactionListServiceTest {
         void selectorWithoutIdentifierSelectsNothing() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), null,
                             List.of("S"), List.of("   "), null, false, 1));
 
             assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_LIST_ROUTE);
@@ -792,7 +818,7 @@ final class TransactionListServiceTest {
         void nonNumericFilterIsRejectedAndFallsThrough() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(), "ABC",
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), "ABC",
                             List.of(), List.of(), null, false, 1));
 
             assertThat(result.error()).isTrue();
@@ -803,7 +829,7 @@ final class TransactionListServiceTest {
             assertThat(result.fieldErrors().getFirst().bmsFieldId()).isEqualTo(EXPECTED_FOCUS_FIELD);
             assertThat(result.fieldErrors().getFirst().field()).isEqualTo("transactionIdFilter");
             // The browse was still opened, which is what the fall-through means.
-            assertThat(pageRequests).isNotEmpty();
+            assertThat(keysetReads).isNotEmpty();
         }
 
         @Test
@@ -811,7 +837,7 @@ final class TransactionListServiceTest {
         void blankFilterBrowsesFromTheStart() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(), "    ",
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(), "    ",
                             List.of(), List.of(), null, false, 1));
 
             assertThat(identifiersOf(result)).startsWith(identifier(1));
@@ -825,7 +851,7 @@ final class TransactionListServiceTest {
         void firstEntryIgnoresSubmittedFields() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withFirstEntry(), "ABC",
+                            KeyAction.ENTER, ScreenNavigationState.empty().withFirstEntry(), "ABC",
                             List.of("X"), List.of(identifier(1)), null, false, 0));
 
             assertThat(result.error()).isFalse();
@@ -880,12 +906,12 @@ final class TransactionListServiceTest {
         void commandValidatesItsInputs() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
                     new TransactionListService.TransactionListCommand(null,
-                            NavigationContext.empty().withReEntry(), null, List.of(), List.of(),
+                            ScreenNavigationState.empty().withReEntry(), null, List.of(), List.of(),
                             null, false, 0));
 
             assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
                     new TransactionListService.TransactionListCommand(KeyAction.ENTER,
-                            NavigationContext.empty().withReEntry(), null, List.of(), List.of(),
+                            ScreenNavigationState.empty().withReEntry(), null, List.of(), List.of(),
                             null, false, -1));
         }
 
@@ -896,7 +922,7 @@ final class TransactionListServiceTest {
                     new TransactionListService.TransactionListCommand(KeyAction.ENTER, null, null,
                             null, null, null, false, 0);
 
-            assertThat(command.navigationContext()).isEqualTo(NavigationContext.empty());
+            assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty());
             assertThat(command.rowSelectors()).isEmpty();
             assertThat(command.displayedTransactionIds()).isEmpty();
             assertThat(command.pageCursor()).isNotNull();
@@ -939,9 +965,19 @@ final class TransactionListServiceTest {
         void forwardReadFailureIsReported() {
             // The opening browse serves its window; the page-boundary read then fails, so the
             // failure lands on READNEXT rather than on STARTBR.
+            final TransactionListService.TransactionListCommand nearWindowEnd =
+                    new TransactionListService.TransactionListCommand(
+                            KeyAction.ENTER,
+                            ScreenNavigationState.empty().withReEntry(),
+                            identifier(10),
+                            List.of(),
+                            List.of(),
+                            null,
+                            false,
+                            0);
             final TransactionListService.TransactionListResult result =
                     serviceOf(repositoryFailingAfter(transactions(25), 1))
-                            .listTransactions(firstEntry());
+                            .listTransactions(nearWindowEnd);
 
             assertThat(result.error()).isTrue();
             assertThat(result.message()).isEqualTo(EXPECTED_UNABLE_TO_LOOKUP);
@@ -951,7 +987,7 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName("a read that fails mid-page reaches the backward read's own failure arm")
         void backwardReadFailureIsReported() {
-            final PageMetadata metadata = PageMetadata.backward(EXPECTED_PAGE_SIZE, identifier(20),
+            final BrowseWindow metadata = BrowseWindow.backward(EXPECTED_PAGE_SIZE, identifier(20),
                     identifier(25), true, true, "00000003");
 
             final TransactionListService.TransactionListResult result =
@@ -970,7 +1006,7 @@ final class TransactionListServiceTest {
             // An empty cluster makes the opening browse report not-found, which leaves the error flag
             // off, so the seventh key still takes its guard read against a browse that was never
             // opened - the invalid-request response the source's catch-all arm handles.
-            final PageMetadata metadata = PageMetadata.backward(EXPECTED_PAGE_SIZE, identifier(5),
+            final BrowseWindow metadata = BrowseWindow.backward(EXPECTED_PAGE_SIZE, identifier(5),
                     identifier(9), true, true, "00000002");
 
             final TransactionListService.TransactionListResult result = serviceOver(List.of())
@@ -985,7 +1021,7 @@ final class TransactionListServiceTest {
         @DisplayName("an opening browse that fails on a backward turn stops the paragraph at its"
                 + " error guard")
         void backwardOpeningBrowseFailureStopsTheParagraph() {
-            final PageMetadata metadata = PageMetadata.backward(EXPECTED_PAGE_SIZE, identifier(11),
+            final BrowseWindow metadata = BrowseWindow.backward(EXPECTED_PAGE_SIZE, identifier(11),
                     identifier(20), true, true, "00000002");
 
             final TransactionListService.TransactionListResult result =
@@ -1006,7 +1042,7 @@ final class TransactionListServiceTest {
         void lowValuesBackwardOnEmptyClusterReportsTheTop() {
             final TransactionListService.TransactionListResult result = serviceOver(List.of())
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.PFK07, NavigationContext.empty().withReEntry(), null,
+                            KeyAction.PFK07, ScreenNavigationState.empty().withReEntry(), null,
                             List.of(), List.of(), null, true, 2));
 
             assertThat(result.message()).isEqualTo(EXPECTED_UNABLE_TO_LOOKUP);
@@ -1019,7 +1055,7 @@ final class TransactionListServiceTest {
         void filterAboveEveryKeyReportsTheTop() {
             final TransactionListService.TransactionListResult result = serviceOver(transactions(25))
                     .listTransactions(new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER, NavigationContext.empty().withReEntry(),
+                            KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
                             "9".repeat(16), List.of(), List.of(), null, false, 0));
 
             assertThat(result.message()).isEqualTo(EXPECTED_AT_TOP);

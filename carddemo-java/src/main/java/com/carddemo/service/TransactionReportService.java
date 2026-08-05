@@ -19,14 +19,12 @@ package com.carddemo.service;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,9 +37,9 @@ import com.carddemo.domain.id.TransactionCategoryId;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
-import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.util.ReportLineFormatter;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -213,6 +211,22 @@ public class TransactionReportService {
     /** Diagnostic for the invalid-key condition of the cross-reference read. */
     private static final String DIAG_INVALID_CARDXREF = "INVALID CARD NUMBER";
 
+    /**
+     * Fixed stand-in emitted in place of the key of a failed cross-reference read.
+     *
+     * <p>That key is a primary account number. On a mainframe the equivalent diagnostic reached an
+     * operator-only console inside the same security boundary as the data; this one reaches an aggregated
+     * log that is read, forwarded and retained outside it, so the value is withheld while the diagnostic
+     * keeps its wording and its field set.
+     *
+     * <p>A constant rather than any transformation of the value, and not a partial mask: a fragment of a
+     * sixteen-character numeric key is recoverable by enumeration, so a truncated primary account number is
+     * still cardholder data. The same stand-in, for the same reason, that the screen services use. Nothing
+     * about the report itself changes - the card number stays in the 133-byte report line, which is a file
+     * record and a byte-parity obligation, not a diagnostic.
+     */
+    private static final String REDACTED_CARD_NUMBER = "***REDACTED***";
+
     /** Diagnostic for the invalid-key condition of the transaction type read. */
     private static final String DIAG_INVALID_TRANTYPE = "INVALID TRANSACTION TYPE";
 
@@ -239,8 +253,6 @@ public class TransactionReportService {
 
     private static final Logger LOG = LoggerFactory.getLogger(TransactionReportService.class);
 
-    private final TransactionRepository transactionRepository;
-
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
     private final TransactionTypeRepository transactionTypeRepository;
@@ -254,9 +266,6 @@ public class TransactionReportService {
      * static file and subprogram linkage. No setter and no field injection exists, so a partially
      * built instance is not representable.
      *
-     * @param transactionRepository the ordered range reader that stands in for the sequential
-     *                              transaction input; it owns the module's only expression of the
-     *                              inclusive processing-date predicate
      * @param cardCrossReferenceRepository the random reader that resolves a card number to its
      *                                     owning account, standing in for the indexed
      *                                     cross-reference cluster
@@ -266,14 +275,12 @@ public class TransactionReportService {
      *                     environment abort routine became
      * @throws NullPointerException if any collaborator is absent
      */
-    public TransactionReportService(final TransactionRepository transactionRepository,
+    public TransactionReportService(
                                     final CardCrossReferenceRepository cardCrossReferenceRepository,
                                     final TransactionTypeRepository transactionTypeRepository,
                                     final TransactionCategoryRepository
                                             transactionCategoryRepository,
                                     final AbendService abendService) {
-        this.transactionRepository = Objects.requireNonNull(transactionRepository,
-                "transactionRepository must not be null");
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
                 "cardCrossReferenceRepository must not be null");
         this.transactionTypeRepository = Objects.requireNonNull(transactionTypeRepository,
@@ -334,16 +341,18 @@ public class TransactionReportService {
      * <p>Both bounds are <strong>inclusive</strong>, and both stay ten-character strings for the
      * whole of the run. No temporal type is constructed anywhere.
      *
+     * @param transactionSource the frozen ordered generation produced by the report job's sort step
      * @param startDate the inclusive lower bound, ten characters
      * @param endDate   the inclusive upper bound, ten characters
      * @return the ordered report content and the run's observations
-     * @throws NullPointerException     if either bound is absent
+     * @throws NullPointerException     if the source or either bound is absent
      * @throws IllegalArgumentException if either bound is not printable US-ASCII
      */
     @Transactional(readOnly = true)
-    public TransactionReportResult generateReport(final String startDate, final String endDate) {
-        return runProcedureDivision(
-                ReportLineFormatter.buildDateParameterRecord(startDate, endDate));
+    public TransactionReportResult generateReport(final ReportTransactionSource transactionSource,
+            final String startDate, final String endDate) {
+        return runProcedureDivision(ReportLineFormatter.buildDateParameterRecord(startDate, endDate),
+                transactionSource);
     }
 
     /**
@@ -354,16 +363,18 @@ public class TransactionReportService {
      * legacy read reports as end of file: the driving loop then never iterates and the report is
      * empty, which is precisely what the legacy program produces in that case.
      *
+     * @param transactionSource the frozen ordered generation produced by the report job's sort step
      * @param dateParameterCard the twenty-one-byte structured record or the eighty-byte card image;
      *                          {@code null} for an empty parameter dataset
      * @return the ordered report content and the run's observations
+     * @throws NullPointerException if {@code transactionSource} is absent
      * @throws IllegalArgumentException if the card is present but measures neither of the two legal
      *                                  widths, or is not printable US-ASCII
      */
     @Transactional(readOnly = true)
     public TransactionReportResult generateReportFromDateParameterCard(
-            final String dateParameterCard) {
-        return runProcedureDivision(dateParameterCard);
+            final ReportTransactionSource transactionSource, final String dateParameterCard) {
+        return runProcedureDivision(dateParameterCard, transactionSource);
     }
 
     /**
@@ -374,12 +385,14 @@ public class TransactionReportService {
      * structured log events.
      *
      * @param dateParameterCard the parameter card, possibly {@code null}
+     * @param transactionSource the frozen ordered generation; must not be {@code null}
      * @return the sealed result
      */
-    private TransactionReportResult runProcedureDivision(final String dateParameterCard) {
+    private TransactionReportResult runProcedureDivision(final String dateParameterCard,
+            final ReportTransactionSource transactionSource) {
         LOG.info("START OF EXECUTION OF PROGRAM {}", PROGRAM_NAME);
 
-        final ReportRun run = new ReportRun(dateParameterCard);
+        final ReportRun run = new ReportRun(dateParameterCard, transactionSource);
 
         tranfileOpen(run);
         reptfileOpen(run);
@@ -390,12 +403,10 @@ public class TransactionReportService {
 
         dateparmRead(run);
 
-        // The legacy open of the sequential transaction input carries no selection, so the bounds
-        // are not needed at line 161. Here the input IS the ordered range, so the single repository
-        // call can only be made once the parameter record has supplied the bounds. That is the one
-        // ordering divergence from the legacy opens and it is recorded in the decision log. When
-        // the parameter read reported end of file there is no range to acquire and no read will be
-        // attempted, so the finder is not called at all.
+        // The preceding batch step has already applied the inclusive range and the job-local zoned
+        // decimal ordering. Acquiring the supplied source here resets only this run's sequential
+        // position; it never performs a second live query and it cannot observe master-data changes
+        // made after the filtered generation was written.
         if (!run.isEndOfFile()) {
             acquireTransactionInput(run);
         }
@@ -442,9 +453,10 @@ public class TransactionReportService {
                     //
                     // This break is that behaviour, faithfully. It is NOT a per-record skip and
                     // must not be "fixed" into one. In this target the arm is unreachable in
-                    // practice: the range predicate is applied once, in the repository, so every
-                    // record reaching here already satisfies both bounds. The arm is kept because
-                    // the legacy semantics are the contract, not because it is expected to fire.
+                    // practice: the preceding batch step applied the range predicate before freezing
+                    // the ordered generation, so every record reaching here already satisfies both
+                    // bounds. The arm is kept because the legacy semantics are the contract, not
+                    // because it is expected to fire.
                     break;
                 }
                 // The matching arm is the CONTINUE at line 175: fall through to the next sentence.
@@ -463,16 +475,18 @@ public class TransactionReportService {
      *
      * <p>Extracted from the loop for legibility only; it performs exactly the statements of that arm
      * in exactly their order. The console dump of the whole 350-byte record image at line 180
-     * becomes a structured debug event over the entity, whose own text form carries the identifier,
-     * type and category and <strong>not</strong> the card number or any merchant field. That
-     * narrowing is a deliberate improvement on the legacy diagnostic, which printed the primary
-     * account number to the job log, and it is recorded in the decision log as such.
+     * becomes a field-free record-progress event. Even the entity's narrowed text form carries a
+     * transaction identifier, and identifiers must not become protected debug telemetry merely
+     * because the local profile raises this package's level.
      *
      * @param run the per-invocation state
      */
     private void processTransaction(final ReportRun run) {
         final Transaction transaction = run.currentTransaction();
-        LOG.debug("Reporting transaction {}", transaction);
+        LOG.debug("Reporting next transaction record");
+        LOG.debug("Reporting transaction transactionRef={} type={} category={}",
+                SensitiveLogRedactor.redact(transaction.getTranId()),
+                transaction.getTranTypeCd(), transaction.getTranCatCd());
 
         // Card-number break at line 181. The legacy sentinel is a spaces-filled sixteen-byte field,
         // which no sixteen-digit card number can equal, so the first record always breaks; an unset
@@ -531,8 +545,7 @@ public class TransactionReportService {
             LOG.debug("End of file reached with no transaction read; no stale amount to re-add");
         } else {
             final BigDecimal amount = ZonedDecimalCodec.toMonetaryScale(stale.getTranAmt());
-            LOG.debug("End of file: re-adding stale amount {} of transaction {} (legacy anomaly)",
-                    amount, stale.getTranId());
+            LOG.debug("End of file: re-adding the stale transaction amount (legacy anomaly)");
             run.addToPageTotal(amount);
             run.addToAccountTotal(amount);
         }
@@ -550,8 +563,8 @@ public class TransactionReportService {
      * whole timestamp, which is exactly equivalent and, unlike a slice, restates no field width:
      * all fixed-width knowledge in this feature lives in the utility layer.
      *
-     * <p>The equivalence is the same asymmetry the repository's declared query relies on, and it is
-     * worth stating because the two halves look different for a reason:
+     * <p>The equivalence is the same asymmetry the batch step's character predicate relies on, and
+     * it is worth stating because the two halves look different for a reason:
      *
      * <ul>
      *   <li><strong>lower bound</strong> - comparing the bare twenty-six-character timestamp against
@@ -564,10 +577,11 @@ public class TransactionReportService {
      *       inclusive rather than exclusive.</li>
      * </ul>
      *
-     * <p>The predicate is already applied once, in the repository. This test restates the source's
-     * guard without becoming a second, competing filter: it excludes nothing the repository
-     * admitted. No temporal type is involved anywhere - both bounds and the timestamp are character
-     * data, which is what the legacy comparison operated on.
+     * <p>The predicate is already applied once, before the batch layer freezes the sorted generation.
+     * This test restates the source's guard without becoming a second, competing input selection: it
+     * excludes nothing the filtered generation admitted. No temporal type is involved anywhere -
+     * both bounds and the timestamp are character data, which is what the legacy comparison operated
+     * on.
      *
      * @param run the per-invocation state
      * @return whether the current record's processing date lies within both bounds
@@ -591,35 +605,20 @@ public class TransactionReportService {
     }
 
     /**
-     * Acquires the ordered transaction input for the run with a single repository call.
+     * Acquires the ordered transaction input supplied by the batch step.
      *
-     * <p>This is the target's expression of the legacy sequential input. The repository owns the
-     * module's only statement of the inclusive processing-date predicate and returns the range
-     * already ordered by card number ascending, which is the order the report's account grouping
-     * depends on and the order the legacy external sort produced. The result is consumed
-     * <strong>as supplied</strong>: it is never re-filtered, never re-sorted and never converted to
-     * a temporal type, because doing any of those would duplicate - and eventually diverge from -
-     * the predicate and the ordering the repository already fixes.
-     *
-     * <p>The call is unpaged, so it is made exactly once and the slice is the whole range. The guard
-     * on a further slice is structurally unreachable for an unpaged request and exists so that a
-     * later change to a paged request cannot silently truncate a report.
+     * <p>This is the target's expression of the legacy sequential input. The preceding job step owns
+     * the inclusive date predicate and the report-specific zoned-decimal card-number ordering, then
+     * freezes the resulting generation before this service starts. This method deliberately performs
+     * no repository access, filtering, sorting or temporal conversion; it only arms the zero-based
+     * sequential position used by the read paragraph.
      *
      * @param run the per-invocation state
      */
-    private void acquireTransactionInput(final ReportRun run) {
-        final Slice<Transaction> range = this.transactionRepository.findByProcessingDateRange(
-                run.startDate(), run.endDate(), Pageable.unpaged());
-
-        if (range.hasNext()) {
-            throw new IllegalStateException("The transaction range was requested unpaged and must"
-                    + " therefore be complete, but the repository reported a further slice; a paged"
-                    + " request here would silently truncate the report.");
-        }
-
-        run.transactionCursor(range.getContent().iterator());
-        LOG.debug("Acquired {} transactions for the range {} to {}",
-                range.getContent().size(), run.startDate(), run.endDate());
+    private static void acquireTransactionInput(final ReportRun run) {
+        run.rewindTransactionSource();
+        LOG.debug("Acquired the frozen ordered transaction generation rangeRef={}",
+                reportRangeReference(run));
     }
 
     /**
@@ -649,7 +648,7 @@ public class TransactionReportService {
         run.applResult(normaliseSequentialReadStatus(rawStatus));
 
         if (run.applResult().isAok()) {
-            LOG.info("Reporting from {} to {}", run.startDate(), run.endDate());
+            LOG.info("Reporting range accepted rangeRef={}", reportRangeReference(run));
             return;
         }
         if (run.applResult().isEof()) {
@@ -681,10 +680,10 @@ public class TransactionReportService {
      * @param run the per-invocation state
      */
     private void tranfileGetNext(final ReportRun run) {
-        final Iterator<Transaction> cursor = run.transactionCursor();
+        final Transaction transaction = run.readNextTransaction();
         final String rawStatus;
-        if (cursor != null && cursor.hasNext()) {
-            run.currentTransaction(cursor.next());
+        if (transaction != null) {
+            run.currentTransaction(transaction);
             rawStatus = FileStatusException.STATUS_SUCCESS;
         } else {
             rawStatus = FileStatusException.STATUS_END_OF_FILE;
@@ -932,15 +931,15 @@ public class TransactionReportService {
     /**
      * Paragraph unit 11 of 27: {@code 0000-TRANFILE-OPEN} at line 376.
      *
-     * <p>Opens the transaction input. In the target that resource is the ordered range reader, whose
-     * presence is enforced at construction, so the observed status is success and the failure arm is
-     * structurally unreachable. The arm is kept, and routed through the shared open handling, because
-     * the legacy program abends on a failed open and that path must exist where the legacy put it.
+     * <p>Opens the transaction input. In the target that resource is the frozen ordered generation
+     * supplied by the batch layer, whose presence is enforced at the run boundary. The failure arm is
+     * kept, and routed through the shared open handling, because the legacy program abends on a failed
+     * open and that path must exist where the legacy put it.
      *
      * @param run the per-invocation state
      */
     private void tranfileOpen(final ReportRun run) {
-        openResource(run, DD_TRANFILE, resourceStatusOf(this.transactionRepository),
+        openResource(run, DD_TRANFILE, resourceStatusOf(run.transactionSource()),
                 DIAG_OPEN_TRANFILE);
     }
 
@@ -1012,8 +1011,9 @@ public class TransactionReportService {
      * the faithful equivalent.
      *
      * <p>An absent record is the legacy invalid-key condition of lines 486-490: the source reports the
-     * offending card number, moves the record-not-found status into its status field and abends. It
-     * does <strong>not</strong> continue with a placeholder, so neither does this method - inventing a
+     * offending card number, moves the record-not-found status into its status field and abends. The
+     * target preserves the status and abend but withholds the primary account number from the exported
+     * diagnostic. It does <strong>not</strong> continue with a placeholder, because inventing a
      * substitute account identifier would put a record in the report that the legacy report never
      * contained.
      *
@@ -1025,7 +1025,8 @@ public class TransactionReportService {
                 .orElse(null);
 
         if (crossReference == null) {
-            LOG.error("{} key={}", DIAG_INVALID_CARDXREF, run.xrefCardNumberKey());
+            LOG.error("{} cardRef={}", DIAG_INVALID_CARDXREF,
+                    redactedCardNumber(run.xrefCardNumberKey(), REDACTED_CARD_NUMBER));
             displayIoStatus(STATUS_RECORD_NOT_FOUND, OPERATION_READ, DD_CARDXREF);
             abendProgram(DIAG_INVALID_CARDXREF, STATUS_RECORD_NOT_FOUND, OPERATION_READ,
                     DD_CARDXREF);
@@ -1085,6 +1086,15 @@ public class TransactionReportService {
         }
 
         run.transactionCategoryDescription(category.getTranCatTypeDesc());
+    }
+
+    private static String reportRangeReference(final ReportRun run) {
+        return SensitiveLogRedactor.redact(run.startDate() + "|" + run.endDate());
+    }
+
+    private static String redactedCardNumber(final String value, final String standIn) {
+        Objects.requireNonNull(standIn, "standIn");
+        return SensitiveLogRedactor.redact(value);
     }
 
     /**
@@ -1397,13 +1407,15 @@ public class TransactionReportService {
 
         private final String dateParameterCard;
 
+        private final ReportTransactionSource transactionSource;
+
         private final List<String> reportOutput = new ArrayList<>();
 
         private String startDate;
 
         private String endDate;
 
-        private Iterator<Transaction> transactionCursor;
+        private int transactionPosition;
 
         private Transaction currentTransaction;
 
@@ -1443,8 +1455,10 @@ public class TransactionReportService {
 
         private int accountBreakCount;
 
-        ReportRun(final String card) {
+        ReportRun(final String card, final ReportTransactionSource source) {
             this.dateParameterCard = card;
+            this.transactionSource = Objects.requireNonNull(source,
+                    "transactionSource must not be null");
         }
 
         String dateParameterCard() {
@@ -1480,16 +1494,27 @@ public class TransactionReportService {
             this.applResult = result;
         }
 
-        Iterator<Transaction> transactionCursor() {
-            return this.transactionCursor;
+        ReportTransactionSource transactionSource() {
+            return this.transactionSource;
         }
 
-        void transactionCursor(final Iterator<Transaction> cursor) {
-            this.transactionCursor = cursor;
+        void rewindTransactionSource() {
+            this.transactionPosition = 0;
         }
 
         void releaseTransactionCursor() {
-            this.transactionCursor = null;
+            this.transactionPosition = 0;
+        }
+
+        Transaction readNextTransaction() {
+            final Optional<Transaction> next = Objects.requireNonNull(
+                    this.transactionSource.readAt(this.transactionPosition),
+                    "transactionSource.readAt must report an Optional, never null");
+            if (next.isEmpty()) {
+                return null;
+            }
+            this.transactionPosition++;
+            return next.get();
         }
 
         Transaction currentTransaction() {

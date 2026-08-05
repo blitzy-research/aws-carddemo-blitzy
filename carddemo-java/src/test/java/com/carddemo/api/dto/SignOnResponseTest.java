@@ -1544,14 +1544,24 @@ class SignOnResponseTest {
         }
 
         @Test
-        @DisplayName("returns a stable value from every accessor, however often it is asked")
+        @DisplayName("returns the value it was built from on every accessor, however often it is asked")
         void returnsAStableValueFromEveryAccessor() {
+            // Each expectation is the independent oracle this suite already carries - the stored-width
+            // courtesy message, the successor conversation state, the sample identifier and the raised
+            // flag - rather than a second call of the accessor under test. Comparing an accessor with
+            // itself would pass on a stable but wrong value and would protect no part of the sign-on
+            // contract.
             SignOnResponse response = fullyPopulatedWith(ORACLE_MSG_THANK_YOU_STORED);
 
-            assertThat(response.message()).isSameAs(response.message());
-            assertThat(response.navigationContext()).isSameAs(response.navigationContext());
-            assertThat(response.userId()).isSameAs(response.userId());
-            assertThat(response.generalError()).isEqualTo(response.generalError());
+            for (int read = 0; read < 2; read++) {
+                assertThat(response.message()).isEqualTo(ORACLE_MSG_THANK_YOU_STORED);
+                assertThat(response.navigationContext())
+                        .isEqualTo(successorState(CODE_ADMINISTRATOR));
+                assertThat(response.userId()).isEqualTo(SAMPLE_USER_ID);
+                assertThat(response.generalError())
+                        .as("the arm this instance represents raises the flag")
+                        .isTrue();
+            }
         }
 
         @Test

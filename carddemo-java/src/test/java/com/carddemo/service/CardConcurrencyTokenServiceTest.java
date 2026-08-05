@@ -26,6 +26,7 @@ import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.StringJoiner;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -133,6 +134,16 @@ class CardConcurrencyTokenServiceTest {
     }
 
     /**
+     * The complete card-update before-image in its declared component order.
+     *
+     * @return a fresh carried image fixture
+     */
+    private static CardUpdateService.CarriedCardImage carriedImage() {
+        return new CardUpdateService.CarriedCardImage(
+                ACCOUNT_ID, CARD_NUMBER, CVV, EMBOSSED_NAME, "2027", "12", EXPIRY_DAY, "Y");
+    }
+
+    /**
      * Rebuilds the fixture with the named field replaced, so a mutation test changes exactly one thing.
      *
      * @param field    which field to replace
@@ -166,6 +177,42 @@ class CardConcurrencyTokenServiceTest {
                             OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE);
                     assertThat(conflict.entityName()).isEqualTo("Card");
                 });
+    }
+
+    /**
+     * Asserts that a conversation continuation is refused through the single conflict arm.
+     *
+     * @param token the token to open
+     */
+    private void assertContinuationRefused(String token) {
+        assertThatExceptionOfType(OptimisticLockConflictException.class)
+                .isThrownBy(() -> service.openContinuation(token))
+                .withMessage(LEGACY_CONFLICT_MESSAGE)
+                .satisfies(conflict -> {
+                    assertThat(conflict.conflictKind()).isEqualTo(
+                            OptimisticLockConflictException.ConflictKind
+                                    .RECORD_CHANGED_BEFORE_UPDATE);
+                    assertThat(conflict.entityName()).isEqualTo("Card");
+                    assertThat(conflict.key()).isEmpty();
+                });
+    }
+
+    /**
+     * Seals a deliberately composed continuation payload under the correct binding.
+     *
+     * @param scheme the payload scheme
+     * @param action the change-action name
+     * @param fields the already marked carried-image fields
+     * @return the protected token
+     */
+    private String protectedContinuation(String scheme, String action, String... fields) {
+        final StringJoiner payload = new StringJoiner(String.valueOf('\u001F'));
+        payload.add(scheme).add(action);
+        for (String field : fields) {
+            payload.add(field);
+        }
+        return encryption.protect(
+                CardConcurrencyTokenService.CONTINUATION_TOKEN_FIELD, payload.toString());
     }
 
     @Nested
@@ -681,6 +728,136 @@ class CardConcurrencyTokenServiceTest {
 
             assertThat(presented.toString()).doesNotContain(minted);
             assertThat(echoed.toString()).doesNotContain(minted);
+        }
+    }
+
+    @Nested
+    @DisplayName("The server-sealed conversation continuation")
+    class TheServerSealedConversationContinuation {
+
+        @Test
+        @DisplayName("every declared change action and all eight image values survive a seal-open round trip")
+        void everyStateAndImageValueSurvivesARoundTrip() {
+            for (CardUpdateService.ChangeAction action : CardUpdateService.ChangeAction.values()) {
+                final String token = service.sealContinuation(action, carriedImage());
+
+                assertThat(service.openContinuation(token))
+                        .isEqualTo(new CardConcurrencyTokenService.Continuation(
+                                action, carriedImage()));
+            }
+        }
+
+        @Test
+        @DisplayName("the literal image count equals the record shape and the sealed order is pinned")
+        void theImageCountAndSealOrderMatchTheRecord() throws ReflectiveOperationException {
+            final var countField = CardConcurrencyTokenService.class
+                    .getDeclaredField("CONTINUATION_IMAGE_FIELD_COUNT");
+            countField.setAccessible(true);
+
+            assertThat(countField.getInt(null))
+                    .isEqualTo(CardUpdateService.CarriedCardImage.class.getRecordComponents().length)
+                    .isEqualTo(8);
+
+            final String token = service.sealContinuation(
+                    CardUpdateService.ChangeAction.SHOW_DETAILS, carriedImage());
+            final String payload = encryption.reveal(
+                    CardConcurrencyTokenService.CONTINUATION_TOKEN_FIELD, token);
+
+            assertThat(payload.split(String.valueOf('\u001F'), -1)).containsExactly(
+                    CardConcurrencyTokenService.CONTINUATION_SCHEME,
+                    CardUpdateService.ChangeAction.SHOW_DETAILS.name(),
+                    "+" + ACCOUNT_ID,
+                    "+" + CARD_NUMBER,
+                    "+" + CVV,
+                    "+" + EMBOSSED_NAME,
+                    "+2027",
+                    "+12",
+                    "+" + EXPIRY_DAY,
+                    "+Y");
+        }
+
+        @Test
+        @DisplayName("an absent or blank token is exactly the first-entry state")
+        void anAbsentOrBlankTokenIsFirstEntry() {
+            final CardConcurrencyTokenService.Continuation expected =
+                    CardConcurrencyTokenService.Continuation.firstEntry();
+
+            assertThat(service.openContinuation(null)).isEqualTo(expected);
+            assertThat(service.openContinuation("")).isEqualTo(expected);
+            assertThat(service.openContinuation(" \t")).isEqualTo(expected);
+            assertThat(expected.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
+            assertThat(expected.carriedImage()).isEqualTo(CardUpdateService.CarriedCardImage.empty());
+        }
+
+        @Test
+        @DisplayName("an unauthenticated token and a token sealed under another binding are refused")
+        void unauthenticatedAndForeignBoundTokensAreRefused() {
+            assertContinuationRefused("not-a-protected-token");
+            assertContinuationRefused(encryption.protect(
+                    SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, "999887777"));
+        }
+
+        @Test
+        @DisplayName("a foreign scheme and a payload with the wrong part count are refused")
+        void foreignSchemeAndWrongPartCountAreRefused() {
+            final String[] fields = {
+                "+" + ACCOUNT_ID, "+" + CARD_NUMBER, "+" + CVV, "+" + EMBOSSED_NAME,
+                "+2027", "+12", "+" + EXPIRY_DAY, "+Y",
+            };
+            assertContinuationRefused(protectedContinuation(
+                    "FOREIGN", CardUpdateService.ChangeAction.SHOW_DETAILS.name(), fields));
+            assertContinuationRefused(protectedContinuation(
+                    CardConcurrencyTokenService.CONTINUATION_SCHEME,
+                    CardUpdateService.ChangeAction.SHOW_DETAILS.name(),
+                    "+" + ACCOUNT_ID, "+" + CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("an unknown action and an unreadable image marker are refused")
+        void unknownActionAndUnreadableImageMarkerAreRefused() {
+            assertContinuationRefused(protectedContinuation(
+                    CardConcurrencyTokenService.CONTINUATION_SCHEME,
+                    "CLIENT_CHOSEN_STATE",
+                    "+" + ACCOUNT_ID, "+" + CARD_NUMBER, "+" + CVV, "+" + EMBOSSED_NAME,
+                    "+2027", "+12", "+" + EXPIRY_DAY, "+Y"));
+            assertContinuationRefused(protectedContinuation(
+                    CardConcurrencyTokenService.CONTINUATION_SCHEME,
+                    CardUpdateService.ChangeAction.SHOW_DETAILS.name(),
+                    "?" + ACCOUNT_ID, "+" + CARD_NUMBER, "+" + CVV, "+" + EMBOSSED_NAME,
+                    "+2027", "+12", "+" + EXPIRY_DAY, "+Y"));
+        }
+
+        @Test
+        @DisplayName("a continuation sealed under another environment key is refused")
+        void aContinuationCannotCrossEnvironmentKeys() {
+            final CardConcurrencyTokenService otherEnvironment =
+                    new CardConcurrencyTokenService(
+                            new SensitiveFieldEncryptionService(OTHER_BASE64_KEY));
+            final String foreign = otherEnvironment.sealContinuation(
+                    CardUpdateService.ChangeAction.SHOW_DETAILS, carriedImage());
+
+            assertContinuationRefused(foreign);
+        }
+
+        @Test
+        @DisplayName("sealing requires both state and image, while rendering reveals neither image nor token")
+        void sealingRequiresBothValuesAndRenderingRedactsTheImage() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> service.sealContinuation(null, carriedImage()))
+                    .withMessageContaining("changeAction");
+            assertThatNullPointerException()
+                    .isThrownBy(() -> service.sealContinuation(
+                            CardUpdateService.ChangeAction.SHOW_DETAILS, null))
+                    .withMessageContaining("carriedImage");
+
+            final CardConcurrencyTokenService.Continuation continuation =
+                    new CardConcurrencyTokenService.Continuation(
+                            CardUpdateService.ChangeAction.SHOW_DETAILS, carriedImage());
+            assertThat(continuation.toString())
+                    .contains("changeAction=SHOW_DETAILS")
+                    .contains("carriedImage=***REDACTED***")
+                    .doesNotContain(CARD_NUMBER, ACCOUNT_ID, CVV, EMBOSSED_NAME);
         }
     }
 

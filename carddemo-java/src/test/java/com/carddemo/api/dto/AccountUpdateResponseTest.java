@@ -2475,14 +2475,25 @@ class AccountUpdateResponseTest {
     class ImmutabilityAndDiagnostics {
 
         @Test
-        @DisplayName("hands back the same values on every read, so nothing shifts underneath")
+        @DisplayName("hands back the value it was built from on every read, so nothing shifts underneath")
         void handsBackTheSameValuesOnEveryRead() {
+            // Each component is compared against the value the constructor was handed, restated here
+            // rather than read back from the instance: comparing an accessor with itself would pass on a
+            // stable but wrong value, which proves neither the contract nor immutability. The repeated
+            // read is then asserted against the same independent expectation, which is what turns "the
+            // value does not shift" into a claim that can fail.
             final AccountUpdateResponse response = populated();
+            final List<ErrorResponse.FieldError> expectedErrors =
+                    List.of(new ErrorResponse.FieldError("stateCode", "ACSSTTE",
+                            ErrorResponse.FieldState.INVALID,
+                            "OR" + AccountUpdateResponse.SUFFIX_STATE_NOT_VALID));
 
-            assertThat(response.accountId()).isEqualTo(response.accountId());
-            assertThat(response.creditLimit()).isEqualTo(response.creditLimit());
-            assertThat(response.fieldErrors()).isEqualTo(response.fieldErrors());
-            assertThat(response.navigationContext()).isEqualTo(response.navigationContext());
+            for (int read = 0; read < 2; read++) {
+                assertThat(response.accountId()).isEqualTo(LEADING_ZERO_ACCOUNT_ID);
+                assertThat(response.creditLimit()).isEqualTo(new BigDecimal("5000.00"));
+                assertThat(response.fieldErrors()).isEqualTo(expectedErrors);
+                assertThat(response.navigationContext()).isEqualTo(populatedNavigation());
+            }
         }
 
         @Test
@@ -2551,6 +2562,92 @@ class AccountUpdateResponseTest {
             assertThat(blank().build().toString())
                     .contains("error=false")
                     .contains("fieldErrorCount=0");
+        }
+    }
+
+    @Nested
+    @DisplayName("the regulated-value copy factory the boundary gates through")
+    class RegulatedValueCopyFactory {
+
+        @Test
+        @DisplayName("replaces exactly the eight regulated components and carries every other one across "
+                + "by value, so the gate substitutes values and edits nothing else")
+        void replacesExactlyTheEightRegulatedComponents() {
+            AccountUpdateResponse composed = populated();
+
+            AccountUpdateResponse gated = composed.withRegulatedValues(
+                    "***", "**", "1234", "****", "**", "**",
+                    "*".repeat("FICTIONAL-GOVT-ID-01".length()),
+                    "*".repeat("4471902856".length()));
+
+            assertThat(gated.ssnPart1()).isEqualTo("***");
+            assertThat(gated.ssnPart2()).isEqualTo("**");
+            assertThat(gated.ssnPart3()).isEqualTo("1234");
+            assertThat(gated.dateOfBirthYear()).isEqualTo("****");
+            assertThat(gated.dateOfBirthMonth()).isEqualTo("**");
+            assertThat(gated.dateOfBirthDay()).isEqualTo("**");
+            assertThat(gated.governmentIssuedId()).isEqualTo("********************");
+            assertThat(gated.eftAccountId()).isEqualTo("**********");
+
+            assertThat(gated.transactionName()).isEqualTo(composed.transactionName());
+            assertThat(gated.accountId()).isEqualTo(composed.accountId());
+            assertThat(gated.customerId()).isEqualTo(composed.customerId());
+            assertThat(gated.creditLimit()).isEqualTo(composed.creditLimit());
+            assertThat(gated.currentBalance()).isEqualTo(composed.currentBalance());
+            assertThat(gated.ficoScore()).isEqualTo(composed.ficoScore());
+            assertThat(gated.firstName()).isEqualTo(composed.firstName());
+            assertThat(gated.addressLine2()).isEqualTo(composed.addressLine2());
+            assertThat(gated.phone1AreaCode()).isEqualTo(composed.phone1AreaCode());
+            assertThat(gated.phone2LineNumber()).isEqualTo(composed.phone2LineNumber());
+            assertThat(gated.primaryCardHolderIndicator())
+                    .isEqualTo(composed.primaryCardHolderIndicator());
+            assertThat(gated.infoMessage()).isEqualTo(composed.infoMessage());
+            assertThat(gated.errorMessage()).isEqualTo(composed.errorMessage());
+            assertThat(gated.error()).isEqualTo(composed.error());
+            assertThat(gated.focusScreenFieldId()).isEqualTo(composed.focusScreenFieldId());
+            assertThat(gated.nextRoute()).isEqualTo(composed.nextRoute());
+            assertThat(gated.navigationContext()).isEqualTo(composed.navigationContext());
+            assertThat(gated.fieldErrors()).isEqualTo(composed.fieldErrors());
+            assertThat(gated.concurrencyToken()).isEqualTo(composed.concurrencyToken());
+        }
+
+        @Test
+        @DisplayName("leaves the original untouched, so a caller cannot gate a screen in place and end "
+                + "up publishing a half-gated one")
+        void leavesTheOriginalUntouched() {
+            AccountUpdateResponse composed = populated();
+
+            composed.withRegulatedValues("***", "**", "1234", "****", "**", "**", "*", "*");
+
+            assertThat(composed.ssnPart1()).isEqualTo("900");
+            assertThat(composed.governmentIssuedId()).isEqualTo("FICTIONAL-GOVT-ID-01");
+            assertThat(composed.eftAccountId()).isEqualTo("4471902856");
+        }
+
+        @Test
+        @DisplayName("accepts absent values, because an absent regulated component stays absent rather "
+                + "than becoming a mask")
+        void acceptsAbsentValues() {
+            AccountUpdateResponse gated = populated()
+                    .withRegulatedValues(null, null, null, null, null, null, null, null);
+
+            assertThat(gated.ssnPart1()).isNull();
+            assertThat(gated.dateOfBirthYear()).isNull();
+            assertThat(gated.governmentIssuedId()).isNull();
+            assertThat(gated.eftAccountId()).isNull();
+            assertThat(gated.accountId()).isEqualTo(LEADING_ZERO_ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("re-runs the canonical constructor on the copy, so the monetary scales are checked "
+                + "again rather than assumed to have survived")
+        void reRunsTheCanonicalConstructorOnTheCopy() {
+            AccountUpdateResponse gated = populated()
+                    .withRegulatedValues("***", "**", "1234", "****", "**", "**", "*", "*");
+
+            assertThat(gated.creditLimit().scale()).isEqualTo(AccountUpdateResponse.MONEY_SCALE);
+            assertThat(gated.currentBalance().scale()).isEqualTo(AccountUpdateResponse.MONEY_SCALE);
+            assertThat(gated.fieldErrors()).isUnmodifiable();
         }
     }
 }

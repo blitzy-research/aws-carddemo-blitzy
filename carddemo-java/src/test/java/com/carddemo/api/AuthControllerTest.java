@@ -16,6 +16,10 @@
  */
 package com.carddemo.api;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.config.SecurityConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
@@ -24,7 +28,7 @@ import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
-import com.carddemo.service.SessionTokenIssuer;
+import com.carddemo.util.SessionTokenIssuer;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
@@ -37,14 +41,18 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -69,7 +77,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * documented POST operation is mapped at the one route the security rules exempt - which is the property
  * the review found missing. The rest asserts the behaviour that makes the route usable and safe:
  * <ul>
- *   <li><strong>Every outcome answers {@code 200}.</strong> All seven are screens the legacy program
+ *   <li><strong>Every outcome answers {@code 200}.</strong> All nine are screens the legacy program
  *       successfully composed, rejections included, so the outcome is read from the body exactly as an
  *       operator read it from the screen.</li>
  *   <li><strong>Only an admitted turn is issued a session.</strong> Asserted for the admitted turn and for
@@ -122,6 +130,13 @@ class AuthControllerTest {
     /** Standalone servlet harness over that controller. */
     private MockMvc mockMvc;
 
+    /** Captures only controller diagnostics, not the service diagnostics beneath it. */
+    private ListAppender<ILoggingEvent> controllerLogCapture;
+
+    private Logger controllerLogger;
+
+    private Level previousControllerLogLevel;
+
     /** Assembles the controller over a real service and a stubbed issuer. */
     @BeforeEach
     void setUp() {
@@ -139,6 +154,27 @@ class AuthControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
+
+        controllerLogger = (Logger) LoggerFactory.getLogger(AuthController.class);
+        previousControllerLogLevel = controllerLogger.getLevel();
+        controllerLogger.setLevel(Level.TRACE);
+        controllerLogCapture = new ListAppender<>();
+        controllerLogCapture.start();
+        controllerLogger.addAppender(controllerLogCapture);
+    }
+
+    @AfterEach
+    void tearDown() {
+        controllerLogger.detachAppender(controllerLogCapture);
+        controllerLogger.setLevel(previousControllerLogLevel);
+        controllerLogCapture.stop();
+        meterRegistry.close();
+    }
+
+    private List<String> controllerLogMessages() {
+        return controllerLogCapture.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
     }
 
     /**
@@ -207,22 +243,25 @@ class AuthControllerTest {
         }
 
         @Test
-        @DisplayName("exactly one handler is published, it accepts and produces JSON, and it is documented, "
-                + "so the published document describes a real operation rather than a bare path")
-        void oneDocumentedJsonHandlerIsPublished() {
-            final List<Method> handlers = Arrays.stream(AuthController.class.getDeclaredMethods())
+        @DisplayName("one documented JSON POST serves both initial entry and submitted turns")
+        void bothDocumentedJsonOperationsArePublished() {
+            final List<Method> postHandlers = Arrays.stream(AuthController.class.getDeclaredMethods())
                     .filter(method -> method.getAnnotation(PostMapping.class) != null)
                     .toList();
 
-            assertThat(handlers).hasSize(1);
-            final Method handler = handlers.get(0);
-            final PostMapping post = handler.getAnnotation(PostMapping.class);
+            assertThat(postHandlers).hasSize(1);
+            final Method postHandler = postHandlers.get(0);
+            final PostMapping post = postHandler.getAnnotation(PostMapping.class);
             assertThat(post.consumes()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
             assertThat(post.produces()).containsExactly(MediaType.APPLICATION_JSON_VALUE);
-            assertThat(handler.getAnnotation(Operation.class))
+            assertThat(postHandler.getAnnotation(Operation.class))
                     .as("an undocumented operation publishes a path with no description")
                     .isNotNull();
-            assertThat(handler.getAnnotation(ApiResponses.class)).isNotNull();
+            assertThat(postHandler.getAnnotation(ApiResponses.class)).isNotNull();
+
+            assertThat(Arrays.stream(AuthController.class.getDeclaredMethods())
+                    .filter(method -> method.getAnnotation(GetMapping.class) != null))
+                    .isEmpty();
         }
 
         @Test
@@ -270,6 +309,25 @@ class AuthControllerTest {
     class TheRouteServesAndIssuesCarefully {
 
         @Test
+        @DisplayName("an empty POST returns the cleared screen with USERID focused before a key can "
+                + "be evaluated")
+        void firstEntryReturnsTheBlankScreen() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message").doesNotExist())
+                    .andExpect(jsonPath("$.generalError").value(false))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"))
+                    .andExpect(jsonPath("$.nextRoute").doesNotExist())
+                    .andExpect(jsonPath("$.navigationContext").doesNotExist());
+
+            verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
         @DisplayName("an admitted sign-on answers 200 with the route, the derived context and a bearer "
                 + "session in the header rather than in the body")
         void anAdmittedSignOnCarriesABearerHeader() throws Exception {
@@ -291,6 +349,35 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.generalError").value(false));
 
             verify(sessionTokenIssuer).issue(ADMIN_USER_ID, UserType.ADMIN);
+            assertThat(controllerLogMessages())
+                    .contains("Sign-on session issued: outcome=issued")
+                    .noneMatch(message -> message.contains(ADMIN_USER_ID));
+        }
+
+        @Test
+        @DisplayName("an issuer that refuses to mint answers a neutral server error rather than a "
+                + "credential-less success, and discloses nothing about why")
+        void anIssuerThatRefusesToMintAnswersNeutrally() throws Exception {
+            // The issuer refuses when the credential record has gone, or no longer carries the role being
+            // minted, between verification and minting - a concurrent administrative change. The route
+            // must not answer 200 with no session, because a client reading an admitted turn would then
+            // proceed unauthenticated; and the answer must not describe the condition, because the subject
+            // of a credential being minted is in it.
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN))
+                    .thenThrow(new IllegalStateException(
+                            "The user-security record no longer carries the user type a session was "
+                                    + "requested for; no session is issued"));
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                            .as("a refusal to mint names neither the identity nor the reason")
+                            .doesNotContain(ADMIN_USER_ID)
+                            .doesNotContain("user type"));
         }
 
         @Test
@@ -344,6 +431,26 @@ class AuthControllerTest {
                     .andExpect(status().isOk())
                     .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
                     .andExpect(jsonPath("$.message").value("User not found. Try again ..."))
+                    .andExpect(jsonPath("$.generalError").value(true))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
+
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("an unavailable credential store answers the exact unable-to-verify screen instead of "
+                + "escaping to the generic server-error boundary")
+        void anUnavailableCredentialStoreAnswersUnableToVerify() throws Exception {
+            when(repository.findById(ADMIN_USER_ID))
+                    .thenThrow(new DataAccessResourceFailureException("store unavailable"));
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message").value("Unable to verify the User ..."))
                     .andExpect(jsonPath("$.generalError").value(true))
                     .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
 
@@ -408,6 +515,27 @@ class AuthControllerTest {
         }
 
         @Test
+        @DisplayName("an undeclared stored role code is admitted to the main menu with standard authority "
+                + "while the raw code remains in the screen contract")
+        void anUndeclaredRoleUsesTheStandardBranch() throws Exception {
+            givenStoredOperator("USER0001", "X");
+            when(sessionTokenIssuer.issue("USER0001", UserType.USER)).thenReturn(ISSUED_TOKEN);
+
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("USER0001", SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(HttpHeaders.AUTHORIZATION,
+                            SessionTokenIssuer.BEARER_PREFIX + ISSUED_TOKEN))
+                    .andExpect(jsonPath("$.nextRoute")
+                            .value(NavigationService.Route.USER_MENU.getRouteValue()))
+                    .andExpect(jsonPath("$.userType").value("X"))
+                    .andExpect(jsonPath("$.navigationContext.userType").value("X"));
+
+            verify(sessionTokenIssuer).issue("USER0001", UserType.USER);
+        }
+
+        @Test
         @DisplayName("a lower-case submission is admitted, so the fold the program applies to both fields "
                 + "survives all the way to the wire")
         void aLowerCaseSubmissionIsAdmitted() throws Exception {
@@ -460,6 +588,50 @@ class AuthControllerTest {
         }
 
         @Test
+        @DisplayName("a control character in the identifier is rejected before any credential lookup")
+        void aControlCharacterInTheIdentifierIsRejectedBeforeLookup() throws Exception {
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"userId\":\"ADM\\n001\",\"password\":\"PASSWORD\","
+                                    + "\"keyAction\":\"ENTER\"}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("userId"));
+
+            verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("session issuance logs only a fixed outcome and never the identifier or token")
+        void sessionIssuanceLogContainsNoIdentityOrToken() throws Exception {
+            givenStoredOperator(ADMIN_USER_ID, "A");
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+
+            final Logger logger = (Logger) LoggerFactory.getLogger(AuthController.class);
+            final Level previousLevel = logger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            logger.setLevel(Level.DEBUG);
+            logger.addAppender(recorder);
+            try {
+                mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                        .andExpect(status().isOk());
+            } finally {
+                logger.detachAppender(recorder);
+                logger.setLevel(previousLevel);
+                recorder.stop();
+            }
+
+            assertThat(recorder.list).extracting(ILoggingEvent::getFormattedMessage)
+                    .contains("Sign-on session issued: outcome=issued")
+                    .allSatisfy(message -> assertThat(message)
+                            .doesNotContain(ADMIN_USER_ID, ISSUED_TOKEN, "userId=", "\n", "\r"));
+        }
+
+        @Test
         @DisplayName("each turn is timed and tagged by the outcome it reached, so a rise in one rejection "
                 + "can be told from a rise in another")
         void eachTurnIsTimedAndTaggedByOutcome() throws Exception {
@@ -469,6 +641,9 @@ class AuthControllerTest {
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(body(ADMIN_USER_ID, SEEDED_SECRET)))
+                    .andExpect(status().isOk());
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON))
                     .andExpect(status().isOk());
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -484,6 +659,11 @@ class AuthControllerTest {
                     .tag("outcome", AuthenticationService.Decision.WRONG_PASSWORD.name())
                     .timer())
                     .as("one aggregate timer would hide which outcome the traffic actually reached")
+                    .isNotNull()
+                    .satisfies(timer -> assertThat(timer.count()).isEqualTo(1));
+            assertThat(meterRegistry.find("carddemo.online.signon.turn")
+                    .tag("outcome", AuthenticationService.Decision.INITIAL_ENTRY.name())
+                    .timer())
                     .isNotNull()
                     .satisfies(timer -> assertThat(timer.count()).isEqualTo(1));
         }

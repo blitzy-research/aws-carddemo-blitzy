@@ -16,9 +16,11 @@
  */
 package com.carddemo.batch;
 
+import com.carddemo.service.BatchJobCatalog;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,6 +46,7 @@ import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.JobScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
@@ -54,18 +57,26 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.AbstractCobolStep;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.StatementProcessor;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
-import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementTransactionSource;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.ExternalStringSorter;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.FixedWidthFieldReader;
+import com.carddemo.util.StatementWorkRecordMapper;
+import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TransactionRecordMapper;
 
 /**
@@ -111,16 +122,16 @@ import com.carddemo.util.TransactionRecordMapper;
  * test <em>bypasses</em> the step it guards when the test is true, and the measured test on all three
  * gated steps asks whether zero is not equal to the highest return code so far. It therefore bypasses
  * whenever any earlier step returned anything other than zero, which is to say the guarded step
- * <em>executes only when every earlier step returned zero</em>. That is the strict form. The backup
- * job's single gate is measurably looser - it admits a warning - and that looser form must never be
- * copied here; {@link com.carddemo.config.BatchConfig.ConditionCodeGate} carries both forms as
- * distinct constants for exactly that reason.
+ * <em>executes only when every earlier step returned zero</em>. That is the strict form, and it is the
+ * form the plan defines for every one of the estate's four gates, including the sibling backup job's
+ * single one; {@link com.carddemo.config.BatchConfig.ConditionCodeGate} therefore carries that one
+ * constant and no looser alternative beside it.
  *
  * <p><strong>Why the strict ceiling is expressed as three step transitions rather than three
  * placements of that shared constant.</strong> The constant is an enumeration singleton, and the
  * framework's flow builder keys the flow state it creates by the object handed to it, so one singleton
  * placed at three points of one flow yields one shared decision state with contradictory outgoing
- * transitions rather than three independent gates. The sibling backup job places its constant exactly
+ * transitions rather than three independent gates. The sibling backup job places the constant exactly
  * once and can therefore use it directly; this job needs three, so each gate is expressed as a
  * failure-ending transition out of the step it follows, paired with a catch-all transition to the step
  * it guards. The semantics are the measured ones: a step that did not complete successfully ends the
@@ -307,8 +318,15 @@ public final class CreateStatementJobConfig {
     // configuration exposes, so these names are part of this file's published contract.
     // -----------------------------------------------------------------------------------------------
 
-    /** Registered name of the job. */
-    public static final String JOB_NAME = "createStatementJob";
+    /**
+     * Registered name of the job.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
+     */
+    public static final String JOB_NAME = BatchJobCatalog.CREATE_STATEMENT_JOB_NAME;
 
     /** Name of the first step: order the master and reproject every record. */
     public static final String ORDER_AND_REPROJECT_STEP_NAME =
@@ -365,7 +383,7 @@ public final class CreateStatementJobConfig {
     // -----------------------------------------------------------------------------------------------
 
     /** Declared record length of the work resource, fixed, in encoded bytes. */
-    public static final int WORK_RECORD_LENGTH = TransactionRecordMapper.RECORD_LENGTH;
+    public static final int WORK_RECORD_LENGTH = StatementWorkRecordMapper.RECORD_LENGTH;
 
     /** One-based position of the first ordering key, the card number. */
     public static final int CARD_NUMBER_SORT_POSITION =
@@ -387,7 +405,8 @@ public final class CreateStatementJobConfig {
      * <p>Expressed as the card number's own offset rather than as a number, because that offset
      * <em>is</em> the width of everything preceding it.
      */
-    public static final int LEADING_SEGMENT_LENGTH = TransactionRecordMapper.TRAN_CARD_NUM_OFFSET;
+    public static final int LEADING_SEGMENT_LENGTH =
+            StatementWorkRecordMapper.LEADING_SEGMENT_LENGTH;
 
     /**
      * Width of the reprojection's third segment, exactly as the specification declares it.
@@ -395,21 +414,22 @@ public final class CreateStatementJobConfig {
      * <p>Fifty bytes against a 26-byte origination timestamp followed by a 26-byte processing
      * timestamp, which is what causes the truncation this file reproduces.
      */
-    public static final int TIMESTAMP_SEGMENT_LENGTH = 50;
+    public static final int TIMESTAMP_SEGMENT_LENGTH =
+            StatementWorkRecordMapper.TIMESTAMP_SEGMENT_LENGTH;
 
     /** Projected content width: the three segments added up. */
     public static final int PROJECTED_CONTENT_LENGTH =
-            CARD_NUMBER_SORT_LENGTH + LEADING_SEGMENT_LENGTH + TIMESTAMP_SEGMENT_LENGTH;
+            StatementWorkRecordMapper.PROJECTED_CONTENT_LENGTH;
 
     /** Blank pad that carries the projected content back out to the declared record length. */
-    public static final int BLANK_PAD_LENGTH = WORK_RECORD_LENGTH - PROJECTED_CONTENT_LENGTH;
+    public static final int BLANK_PAD_LENGTH = StatementWorkRecordMapper.BLANK_PAD_LENGTH;
 
     /** Zero-based offset of the work resource's key, as its cluster definition declares it. */
-    public static final int WORK_RESOURCE_KEY_OFFSET = 0;
+    public static final int WORK_RESOURCE_KEY_OFFSET =
+            TransactionRecordMapper.STATEMENT_WORK_CARD_NUM_OFFSET;
 
     /** Declared key length of the work resource: the card number then the transaction identifier. */
-    public static final int WORK_RESOURCE_KEY_LENGTH =
-            CARD_NUMBER_SORT_LENGTH + TRANSACTION_ID_SORT_LENGTH;
+    public static final int WORK_RESOURCE_KEY_LENGTH = StatementWorkRecordMapper.KEY_LENGTH;
 
     /**
      * Processing-timestamp bytes the reprojection truncates.
@@ -419,8 +439,7 @@ public final class CreateStatementJobConfig {
      * timestamp's own declared length is the truncation. Two bytes, at input positions 329 and 330.
      */
     public static final int TRUNCATED_PROCESSING_TIMESTAMP_BYTES =
-            TransactionRecordMapper.TRAN_PROC_TS_LENGTH
-                    - (TIMESTAMP_SEGMENT_LENGTH - TransactionRecordMapper.TRAN_ORIG_TS_LENGTH);
+            TransactionRecordMapper.STATEMENT_WORK_TRUNCATED_PROCESSING_TIMESTAMP_LENGTH;
 
     /** Trailing filler run the reprojection drops entirely. */
     public static final int DROPPED_TRAILING_FILLER_LENGTH = TransactionRecordMapper.FILLER_LENGTH;
@@ -470,7 +489,7 @@ public final class CreateStatementJobConfig {
     private static final String DD_LOAD_OUTPUT = "OUTFILE";
 
     /** Layout name the projected record reports in diagnostics. */
-    private static final String WORK_ARTEFACT = "TRNX-RECORD (COSTM01)";
+    private static final String WORK_ARTEFACT = TransactionRecordMapper.STATEMENT_WORK_ARTEFACT;
 
     /** Legacy field name of the first ordering key. */
     private static final String FIELD_TRAN_CARD_NUM = "TRAN-CARD-NUM";
@@ -478,17 +497,8 @@ public final class CreateStatementJobConfig {
     /** Legacy field name of the second ordering key. */
     private static final String FIELD_TRAN_ID = "TRAN-ID";
 
-    /** Diagnostic label of the reprojection's second segment. */
-    private static final String FIELD_LEADING_SEGMENT = "TRAN-RECORD-LEADING-SEGMENT";
-
     /** Diagnostic label of the reprojection's third segment. */
     private static final String FIELD_TIMESTAMP_SEGMENT = "TRAN-ORIG-TS-THROUGH-TRAN-PROC-TS";
-
-    /** Diagnostic label of the projected key. */
-    private static final String FIELD_WORK_KEY = "TRNX-KEY";
-
-    /** Diagnostic label of the projected remainder. */
-    private static final String FIELD_WORK_REST = "TRNX-REST";
 
     /** Line terminator written after each fixed-width record of a staged sequential resource. */
     private static final String RECORD_SEPARATOR = "\n";
@@ -520,14 +530,7 @@ public final class CreateStatementJobConfig {
             Comparator.<String, String>comparing(CreateStatementJobConfig::cardNumberSortField)
                     .thenComparing(CreateStatementJobConfig::transactionIdSortField);
 
-    /**
-     * Key sequence the first step reads the transaction master in, which is that cluster's own key and
-     * therefore the sequence the legacy sort received its input in.
-     *
-     * <p>Not the ordering this job applies. The ordering is the comparator above, and reading the input
-     * in its own key sequence is what makes the stable sort's tie-breaking reproducible.
-     */
-    private static final Sort MASTER_KEY_SEQUENCE = Sort.by(Sort.Direction.ASC, "tranId");
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
     // -----------------------------------------------------------------------------------------------
     // Collaborators. Constructor injection only; every field final; not one of them accumulates, so no
@@ -549,8 +552,8 @@ public final class CreateStatementJobConfig {
      */
     private final JobParametersIncrementer jobRunIncrementer;
 
-    /** The transaction master, which the first step reads in cluster-key sequence. */
-    private final TransactionRepository transactionRepository;
+    /** Bounded sequential-read view kept separate from the frozen online repository surface. */
+    private final TransactionScanRepository transactionScanRepository;
 
     /** The statement generator the fourth step's stage delegates one whole run to. */
     private final StatementGenerationService statementGenerationService;
@@ -598,7 +601,7 @@ public final class CreateStatementJobConfig {
      * @param transactionManager the manager each step runs under; must not be {@code null}
      * @param jobBoundaryListener the shared job-boundary diagnostic; must not be {@code null}
      * @param jobRunIncrementer the shared run incrementer; must not be {@code null}
-     * @param transactionRepository the transaction master; must not be {@code null}
+     * @param transactionScanRepository bounded sequential-read view of the transaction master
      * @param statementGenerationService the statement generator; must not be {@code null}
      * @param fieldEncryption owner of the field-protection policy; must not be {@code null}
      * @param meterRegistry the registry every step is timed on; must not be {@code null}
@@ -614,12 +617,14 @@ public final class CreateStatementJobConfig {
             final PlatformTransactionManager transactionManager,
             @Qualifier("batchJobBoundaryListener") final JobExecutionListener jobBoundaryListener,
             @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer jobRunIncrementer,
-            final TransactionRepository transactionRepository,
+            final TransactionScanRepository transactionScanRepository,
             final StatementGenerationService statementGenerationService,
             final SensitiveFieldEncryptionService fieldEncryption,
             final MeterRegistry meterRegistry,
             final Clock clock,
-            @Value("${carddemo.batch.create-statement.staging-directory:${java.io.tmpdir}}")
+            @Value("${carddemo.batch.create-statement.staging-directory:${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
             @Value("${carddemo.batch.create-statement.transaction-work-sequential:"
                     + "AWS.M2.CARDDEMO.TRXFL.SEQ}") final String transactionWorkSequentialName,
@@ -632,8 +637,8 @@ public final class CreateStatementJobConfig {
         this.transactionManager = Objects.requireNonNull(transactionManager, "transactionManager");
         this.jobBoundaryListener = Objects.requireNonNull(jobBoundaryListener, "jobBoundaryListener");
         this.jobRunIncrementer = Objects.requireNonNull(jobRunIncrementer, "jobRunIncrementer");
-        this.transactionRepository =
-                Objects.requireNonNull(transactionRepository, "transactionRepository");
+        this.transactionScanRepository = Objects.requireNonNull(
+                transactionScanRepository, "transactionScanRepository");
         this.statementGenerationService =
                 Objects.requireNonNull(statementGenerationService, "statementGenerationService");
         this.fieldEncryption = Objects.requireNonNull(fieldEncryption, "fieldEncryption");
@@ -641,10 +646,13 @@ public final class CreateStatementJobConfig {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stagingDirectory = requireResourceName(stagingDirectory, "stagingDirectory");
         this.transactionWorkSequentialName =
-                requireResourceName(transactionWorkSequentialName, "transactionWorkSequentialName");
-        this.statementOutputName = requireResourceName(statementOutputName, "statementOutputName");
+                StagedResourceNames.requireSimpleName(transactionWorkSequentialName,
+                        "transactionWorkSequentialName");
+        this.statementOutputName =
+                StagedResourceNames.requireSimpleName(statementOutputName, "statementOutputName");
         this.htmlStatementOutputName =
-                requireResourceName(htmlStatementOutputName, "htmlStatementOutputName");
+                StagedResourceNames.requireSimpleName(htmlStatementOutputName,
+                        "htmlStatementOutputName");
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -801,7 +809,8 @@ public final class CreateStatementJobConfig {
 
         Objects.requireNonNull(workResource, "workResource");
         return new StepBuilder(LOAD_WORK_RESOURCE_STEP_NAME, this.jobRepository)
-                .tasklet((contribution, chunkContext) -> loadWorkResource(workResource),
+                .tasklet((contribution, chunkContext) ->
+                        loadWorkResource(workResource, chunkContext),
                         this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
@@ -834,27 +843,30 @@ public final class CreateStatementJobConfig {
     /**
      * The fourth step: generate both statement forms and write each record at its declared width.
      *
-     * <p>Gated. The item handed to the stage is the data-definition name of the work resource, because
-     * the measured step carries no parameter and the only thing distinguishing one run from another is
-     * the content the three preceding steps built. All statement logic - the dispatcher, its six
-     * clauses, the bounded card table and both literal layouts - belongs to the generator and its
+     * <p>Gated. The item handed to the stage is a frozen source over the work resource's projected
+     * records, because the measured step carries no parameter and the only thing distinguishing one run
+     * from another is the content the three preceding steps built. All statement logic - the dispatcher,
+     * its six clauses, the bounded card table and both literal layouts - belongs to the generator and its
      * stage; this step composes them and proves the width of every record that reaches a destination.
      *
      * @param statementProcessor the fourth step's stage; must not be {@code null}
      * @param workResource the per-execution work resource this step names as its input; must not be
      *                     {@code null}
+     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@value #GENERATE_STATEMENTS_STEP_NAME}, never {@code null}
      */
     @Bean
     public Step createStatementGenerateStatementsStep(
             @Qualifier(STATEMENT_PROCESSOR_BEAN_NAME) final StatementProcessor statementProcessor,
-            @Qualifier(WORK_RESOURCE_BEAN_NAME) final TransactionWorkResource workResource) {
+            @Qualifier(WORK_RESOURCE_BEAN_NAME) final TransactionWorkResource workResource,
+            final BatchStagingArea stagingArea) {
 
         Objects.requireNonNull(statementProcessor, "statementProcessor");
         Objects.requireNonNull(workResource, "workResource");
         return new StepBuilder(GENERATE_STATEMENTS_STEP_NAME, this.jobRepository)
                 .tasklet((contribution, chunkContext) ->
-                        generateStatements(statementProcessor, workResource), this.transactionManager)
+                        generateStatements(statementProcessor, workResource, chunkContext),
+                        this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -881,7 +893,11 @@ public final class CreateStatementJobConfig {
     RepeatStatus orderAndReprojectTransactions(final StepContribution contribution,
             final ChunkContext chunkContext) {
 
-        newOrderAndReprojectProgram(transactionWorkSequentialResource()).run();
+        final long executionId = jobExecutionIdOf(chunkContext);
+        final Path resource = transactionWorkSequentialResource(executionId);
+        final Path working = StagedGenerationStore.workingPath(resource);
+        newOrderAndReprojectProgram(working).run();
+        StagedGenerationStore.completeWorkingFile(working, resource);
         return RepeatStatus.FINISHED;
     }
 
@@ -889,10 +905,14 @@ public final class CreateStatementJobConfig {
      * Runs the work-resource load for one step execution.
      *
      * @param workResource the work resource this execution loads; must not be {@code null}
+     * @param chunkContext framework chunk context naming the execution-scoped sequential input
      * @return {@link RepeatStatus#FINISHED} always
      */
-    RepeatStatus loadWorkResource(final TransactionWorkResource workResource) {
-        newLoadWorkResourceProgram(transactionWorkSequentialResource(), workResource).run();
+    RepeatStatus loadWorkResource(final TransactionWorkResource workResource,
+            final ChunkContext chunkContext) {
+        newLoadWorkResourceProgram(
+                transactionWorkSequentialResource(jobExecutionIdOf(chunkContext)),
+                workResource).run();
         return RepeatStatus.FINISHED;
     }
 
@@ -915,12 +935,28 @@ public final class CreateStatementJobConfig {
      *
      * @param statementProcessor the stage one whole run is delegated to; must not be {@code null}
      * @param workResource the work resource this step names as its input; must not be {@code null}
+     * @param chunkContext framework chunk context naming this execution's two output generations
      * @return {@link RepeatStatus#FINISHED} always
      */
     RepeatStatus generateStatements(final StatementProcessor statementProcessor,
-            final TransactionWorkResource workResource) {
+            final TransactionWorkResource workResource, final ChunkContext chunkContext) {
+        final long executionId = jobExecutionIdOf(chunkContext);
+        final Path statementGeneration = statementOutputGeneration(executionId);
+        final Path htmlGeneration = htmlStatementOutputGeneration(executionId);
+        final Path statementWorking = StagedGenerationStore.workingPath(statementGeneration);
+        final Path htmlWorking = StagedGenerationStore.workingPath(htmlGeneration);
 
-        newGenerateStatementsProgram(statementProcessor, workResource).run();
+        newGenerateStatementsProgram(statementProcessor, workResource,
+                statementWorking, htmlWorking).run();
+        StagedGenerationStore.completeWorkingFile(statementWorking, statementGeneration);
+        StagedGenerationStore.completeWorkingFile(htmlWorking, htmlGeneration);
+        final StepExecution stepExecution = stepExecutionOf(chunkContext);
+        StagedGenerationStore.register(stepExecution, this.statementOutputName,
+                statementGeneration, StagedGenerationStore.STANDARD_RETENTION_LIMIT,
+                statementOutputResource());
+        StagedGenerationStore.register(stepExecution, this.htmlStatementOutputName,
+                htmlGeneration, StagedGenerationStore.STANDARD_RETENTION_LIMIT,
+                htmlStatementOutputResource());
         return RepeatStatus.FINISHED;
     }
 
@@ -938,7 +974,7 @@ public final class CreateStatementJobConfig {
      */
     OrderAndReprojectProgram newOrderAndReprojectProgram(final Path projectedResource) {
         return new OrderAndReprojectProgram(this.meterRegistry, this.clock,
-                this.transactionRepository, projectedResource);
+                this.transactionScanRepository, projectedResource);
     }
 
     /**
@@ -972,14 +1008,35 @@ public final class CreateStatementJobConfig {
      * Builds one statement-generation lifecycle.
      *
      * @param statementProcessor the stage one whole run is delegated to; must not be {@code null}
-     * @param workResource the work resource named as the input; must not be {@code null}
+     * @param workResource the work resource supplying the frozen projected input; must not be
+     *                     {@code null}
      * @return a fresh lifecycle, never {@code null}
      */
     GenerateStatementsProgram newGenerateStatementsProgram(
             final StatementProcessor statementProcessor, final TransactionWorkResource workResource) {
 
+        return newGenerateStatementsProgram(statementProcessor, workResource,
+                statementOutputResource(), htmlStatementOutputResource());
+    }
+
+    /**
+     * Builds one statement-generation lifecycle over explicitly selected output resources.
+     *
+     * <p>The production tasklet supplies execution-scoped working paths. The two-argument overload
+     * remains the direct parity-test surface over the fixed logical names; both reach the same lifecycle
+     * and therefore the same width and ordering checks.</p>
+     *
+     * @param statementProcessor stage one whole run is delegated to
+     * @param workResource work resource named as the input
+     * @param statementResource plain-text output path
+     * @param htmlResource HTML output path
+     * @return a fresh lifecycle
+     */
+    GenerateStatementsProgram newGenerateStatementsProgram(
+            final StatementProcessor statementProcessor, final TransactionWorkResource workResource,
+            final Path statementResource, final Path htmlResource) {
         return new GenerateStatementsProgram(this.meterRegistry, this.clock, statementProcessor,
-                workResource, statementOutputResource(), htmlStatementOutputResource());
+                workResource, statementResource, htmlResource);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -1002,12 +1059,29 @@ public final class CreateStatementJobConfig {
     }
 
     /**
+     * Execution-scoped ordered sequential resource shared only by this execution's first two steps.
+     *
+     * @param jobExecutionId owning job execution
+     * @return completed transient sequential resource
+     */
+    Path transactionWorkSequentialResource(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.transactionWorkSequentialName, jobExecutionId);
+    }
+
+    /**
      * The plain-text statement output, whose records are {@value #STATEMENT_RECORD_LENGTH} bytes.
      *
      * @return the resolved resource, never {@code null}
      */
     Path statementOutputResource() {
         return resolve(this.statementOutputName);
+    }
+
+    /** Execution-scoped durable plain-text statement generation. */
+    Path statementOutputGeneration(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.statementOutputName, jobExecutionId);
     }
 
     /**
@@ -1018,6 +1092,26 @@ public final class CreateStatementJobConfig {
      */
     Path htmlStatementOutputResource() {
         return resolve(this.htmlStatementOutputName);
+    }
+
+    /** Execution-scoped durable HTML statement generation. */
+    Path htmlStatementOutputGeneration(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(Path.of(this.stagingDirectory),
+                this.htmlStatementOutputName, jobExecutionId);
+    }
+
+    /** Reads the current step execution from a tasklet context. */
+    private static StepExecution stepExecutionOf(final ChunkContext chunkContext) {
+        Objects.requireNonNull(chunkContext, "chunkContext");
+        return Objects.requireNonNull(chunkContext.getStepContext().getStepExecution(),
+                "the framework must have opened a step execution before its tasklet runs");
+    }
+
+    /** Reads the framework identifier that makes every local resource execution-scoped. */
+    private static long jobExecutionIdOf(final ChunkContext chunkContext) {
+        return Objects.requireNonNull(stepExecutionOf(chunkContext).getJobExecutionId(),
+                "the framework must have assigned a job execution identifier before a step runs")
+                .longValue();
     }
 
     /**
@@ -1033,6 +1127,12 @@ public final class CreateStatementJobConfig {
     /**
      * Validates a configured logical name, because an absent or blank one would resolve to the staging
      * directory itself and a step would then write over a directory rather than a resource.
+     *
+     * <p><strong>This governs the staging root only.</strong> A dataset name resolved against that root
+     * is screened by {@link StagedResourceNames#requireSimpleName(String, String)}, which additionally
+     * refuses an absolute value, a path separator and a directory reference - none of which a blank
+     * check catches, and each of which would resolve outside the root. The root itself is legitimately
+     * a multi-segment path and may be absolute, so the stricter rule cannot be applied to it.
      *
      * @param value the configured value
      * @param name the property's role, for the diagnostic
@@ -1135,28 +1235,7 @@ public final class CreateStatementJobConfig {
      *         {@code null}
      */
     static String reproject(final String recordImage) {
-        Objects.requireNonNull(recordImage, "recordImage");
-        final FixedWidthFieldReader source = FixedWidthFieldReader
-                .of(TransactionRecordMapper.ARTEFACT, recordImage, WORK_RECORD_LENGTH);
-
-        return FixedWidthFieldReader.builder(WORK_ARTEFACT, WORK_RECORD_LENGTH)
-                .putAlphanumeric(FIELD_TRAN_CARD_NUM, WORK_RESOURCE_KEY_OFFSET,
-                        CARD_NUMBER_SORT_LENGTH,
-                        source.field(FIELD_TRAN_CARD_NUM,
-                                TransactionRecordMapper.TRAN_CARD_NUM_OFFSET,
-                                CARD_NUMBER_SORT_LENGTH))
-                .putAlphanumeric(FIELD_LEADING_SEGMENT, CARD_NUMBER_SORT_LENGTH,
-                        LEADING_SEGMENT_LENGTH,
-                        source.field(FIELD_LEADING_SEGMENT, TransactionRecordMapper.TRAN_ID_OFFSET,
-                                LEADING_SEGMENT_LENGTH))
-                .putAlphanumeric(FIELD_TIMESTAMP_SEGMENT,
-                        CARD_NUMBER_SORT_LENGTH + LEADING_SEGMENT_LENGTH, TIMESTAMP_SEGMENT_LENGTH,
-                        source.field(FIELD_TIMESTAMP_SEGMENT,
-                                TransactionRecordMapper.TRAN_ORIG_TS_OFFSET,
-                                TIMESTAMP_SEGMENT_LENGTH))
-                .putSpaceFiller(PROJECTED_CONTENT_LENGTH, BLANK_PAD_LENGTH)
-                .build()
-                .image();
+        return StatementWorkRecordMapper.fromTransactionRecord(recordImage);
     }
 
     /**
@@ -1178,9 +1257,7 @@ public final class CreateStatementJobConfig {
      * @return the key, exactly {@value #WORK_RESOURCE_KEY_LENGTH} characters, never {@code null}
      */
     static String workResourceKey(final String projectedImage) {
-        Objects.requireNonNull(projectedImage, "projectedImage");
-        return FixedWidthFieldReader.of(WORK_ARTEFACT, projectedImage, WORK_RECORD_LENGTH)
-                .key(WORK_RESOURCE_KEY_LENGTH);
+        return StatementWorkRecordMapper.key(projectedImage);
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -1219,8 +1296,9 @@ public final class CreateStatementJobConfig {
             // regulated customer column leaves exactly one possibility. The first attempt's report is
             // retained as the cause so a value bound to neither column is still explicable.
             LOGGER.debug("{} {}: a regulated identifier is bound to the government-issued column"
-                            + " rather than the national one", StatementProcessor.LEGACY_JOB,
-                    StatementProcessor.LEGACY_STATEMENT_STEP, notTheNationalIdentifier);
+                            + " rather than the national one; failureChain={}",
+                    StatementProcessor.LEGACY_JOB, StatementProcessor.LEGACY_STATEMENT_STEP,
+                    FailureDiagnostics.failureChainOf(notTheNationalIdentifier));
             return this.fieldEncryption.reveal(
                     SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD, envelope);
         }
@@ -1337,7 +1415,8 @@ public final class CreateStatementJobConfig {
             handle.close();
         } catch (final Exception release) {
             LOGGER.warn("HANDLE ON {} COULD NOT BE RELEASED AFTER A FAILURE; THE RUN HAS ALREADY"
-                    + " REPORTED ITS OWN DIAGNOSTIC", resource, release);
+                    + " REPORTED ITS OWN DIAGNOSTIC; failureChain={}", resource,
+                    FailureDiagnostics.failureChainOf(release));
         }
     }
 
@@ -1397,6 +1476,17 @@ public final class CreateStatementJobConfig {
          * @return the count, never negative
          */
         int recordCount();
+
+        /**
+         * Freezes the current key-sequenced contents for statement generation.
+         *
+         * <p>The returned source is detached from subsequent loads, so STEP040 observes exactly the
+         * snapshot materialised by STEP020 even if the mutable work-resource object is later changed by
+         * a test or a faulty caller.
+         *
+         * @return an immutable-position source over the projected records currently held
+         */
+        StatementTransactionSource snapshot();
     }
 
     /**
@@ -1445,6 +1535,20 @@ public final class CreateStatementJobConfig {
         @Override
         public int recordCount() {
             return this.records.size();
+        }
+
+        @Override
+        public StatementTransactionSource snapshot() {
+            final List<String> frozenRecords = List.copyOf(this.records.values());
+            return position -> {
+                if (position < 0) {
+                    throw new IllegalArgumentException(
+                            "statement transaction position must not be negative: " + position);
+                }
+                return position < frozenRecords.size()
+                        ? Optional.of(frozenRecords.get(position))
+                        : Optional.empty();
+            };
         }
     }
 
@@ -1495,13 +1599,13 @@ public final class CreateStatementJobConfig {
     static final class OrderAndReprojectProgram extends AbstractCobolStep<Transaction> {
 
         /** The transaction master being ordered. */
-        private final TransactionRepository transactionRepository;
+        private final TransactionScanRepository transactionScanRepository;
 
         /** The ordered, reprojected sequential resource this execution writes. */
         private final Path projectedResource;
 
-        /** The work area, standing in for the sort utility's own work dataset. */
-        private final List<String> sortWorkArea = new ArrayList<>();
+        /** Disk-backed bounded work area, standing in for the sort utility's work datasets. */
+        private ExternalStringSorter sorter;
 
         /** Read position over the master, in cluster-key sequence. */
         private Iterator<Transaction> masterCursor;
@@ -1515,28 +1619,35 @@ public final class CreateStatementJobConfig {
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
-         * @param transactionRepository the transaction master; must not be {@code null}
+         * @param transactionScanRepository bounded transaction-master scan; must not be {@code null}
          * @param projectedResource the resource to write; must not be {@code null}
          */
         OrderAndReprojectProgram(final MeterRegistry meterRegistry, final Clock clock,
-                final TransactionRepository transactionRepository, final Path projectedResource) {
+                final TransactionScanRepository transactionScanRepository,
+                final Path projectedResource) {
 
             super(StatementProcessor.LEGACY_SORT_STEP, meterRegistry, clock);
-            this.transactionRepository =
-                    Objects.requireNonNull(transactionRepository, "transactionRepository");
+            this.transactionScanRepository = Objects.requireNonNull(
+                    transactionScanRepository, "transactionScanRepository");
             this.projectedResource = Objects.requireNonNull(projectedResource, "projectedResource");
         }
 
         @Override
         protected void openResources() {
             openResource(DD_SORT_INPUT, () -> {
-                this.masterCursor =
-                        this.transactionRepository.findAll(MASTER_KEY_SEQUENCE).iterator();
+                this.masterCursor = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                        (cursor, size) -> this.transactionScanRepository
+                                .findByTranIdGreaterThanOrderByTranIdAsc(
+                                        cursor, Limit.of(size.intValue())),
+                        Transaction::getTranId, Comparator.naturalOrder());
                 return FileStatus.SUCCESS.getCode();
             });
 
             openResource(DD_SORT_OUTPUT, () -> {
                 this.writer = openForWriting(this.projectedResource);
+                this.sorter = new ExternalStringSorter(
+                        CARD_NUMBER_THEN_TRANSACTION_ID_CHARACTER_ASCENDING,
+                        ExternalStringSorter.DEFAULT_RECORDS_PER_RUN);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -1558,7 +1669,7 @@ public final class CreateStatementJobConfig {
             // specification orders the input record and reprojects afterwards.
             final String image = TransactionRecordMapper.toRecord(record);
             requireEncodedWidth(image, WORK_RECORD_LENGTH, DD_SORT_INPUT);
-            this.sortWorkArea.add(image);
+            this.sorter.add(image);
         }
 
         @Override
@@ -1570,20 +1681,7 @@ public final class CreateStatementJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
 
-            // Two keys, both ascending, both character-typed, applied by a stable sort so that two
-            // records agreeing on both keep the sequence the master delivered them in.
-            this.sortWorkArea.sort(CARD_NUMBER_THEN_TRANSACTION_ID_CHARACTER_ASCENDING);
-
-            for (final String ordered : this.sortWorkArea) {
-                writeRecord(DD_SORT_OUTPUT, () -> {
-                    final String projected = reproject(ordered);
-                    requireEncodedWidth(projected, WORK_RECORD_LENGTH, DD_SORT_OUTPUT);
-                    this.writer.write(projected);
-                    this.writer.write(RECORD_SEPARATOR);
-                    this.recordsProjected++;
-                    return FileStatus.SUCCESS.getCode();
-                });
-            }
+            this.sorter.writeTo(this::writeProjectedRecord);
 
             closeResource(DD_SORT_OUTPUT, () -> {
                 this.writer.flush();
@@ -1594,7 +1692,7 @@ public final class CreateStatementJobConfig {
             LOGGER.info("{} ORDERED {} RECORD(S) BY {} AT POSITION {} FOR {} BYTE(S) ASCENDING THEN"
                             + " {} AT POSITION {} FOR {} BYTE(S) ASCENDING, BOTH AS CHARACTER DATA,"
                             + " AND WROTE {} RECORD(S) OF {} CONTENT BYTE(S) WITHIN {} BYTE(S) TO {}",
-                    StatementProcessor.LEGACY_SORT_STEP, this.sortWorkArea.size(),
+                    StatementProcessor.LEGACY_SORT_STEP, this.recordsProjected,
                     FIELD_TRAN_CARD_NUM, CARD_NUMBER_SORT_POSITION, CARD_NUMBER_SORT_LENGTH,
                     FIELD_TRAN_ID, TRANSACTION_ID_SORT_POSITION, TRANSACTION_ID_SORT_LENGTH,
                     this.recordsProjected, PROJECTED_CONTENT_LENGTH, WORK_RECORD_LENGTH,
@@ -1608,16 +1706,33 @@ public final class CreateStatementJobConfig {
         @Override
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_SORT_OUTPUT);
+            releaseQuietly(this.sorter, "SORTWK");
+        }
+
+        private void writeProjectedRecord(final String ordered) {
+            writeRecord(DD_SORT_OUTPUT, () -> {
+                final String projected = reproject(ordered);
+                requireEncodedWidth(projected, WORK_RECORD_LENGTH, DD_SORT_OUTPUT);
+                this.writer.write(projected);
+                this.writer.write(RECORD_SEPARATOR);
+                this.recordsProjected++;
+                return FileStatus.SUCCESS.getCode();
+            });
         }
 
         /**
-         * The ordered, unprojected record images of this pass, for a caller that drives the lifecycle
+         * The ordered, projected record images of this pass, for a caller that drives the lifecycle
          * directly.
          *
          * @return the images in ordering sequence, never {@code null}
          */
         List<String> orderedRecords() {
-            return List.copyOf(this.sortWorkArea);
+            try {
+                return Files.readAllLines(this.projectedResource, StandardCharsets.US_ASCII);
+            } catch (final IOException failure) {
+                throw new UncheckedIOException(
+                        "unable to read the projected statement work generation", failure);
+            }
         }
 
         /**
@@ -1876,13 +1991,13 @@ public final class CreateStatementJobConfig {
     // -----------------------------------------------------------------------------------------------
 
     /**
-     * One statement generation: open both outputs, hand the work resource's data-definition name to the
-     * stage, and write every record of both streams at its declared width.
+     * One statement generation: open both outputs, hand a frozen snapshot of the projected work resource
+     * to the stage, and write every record of both streams at its declared width.
      *
      * <p>The two outputs are the only resources this lifecycle opens, because the program it stands in
      * for declares only those two in its own file section: all four of its inputs are opened by the
-     * called subprogram through the dispatched phase name. That is also why the item is a resource
-     * <em>name</em> rather than a record - one item is one whole run.
+     * called subprogram through the dispatched phase name. The one item is therefore the complete frozen
+     * transaction source rather than an individual record.
      *
      * <p>The read loop therefore delivers exactly one item and then reports end of file, which is what
      * the program does with a driving loop that lives inside the generator rather than out here.
@@ -1895,21 +2010,22 @@ public final class CreateStatementJobConfig {
      * <p>An empty run is a legitimate outcome and is not converted into a failure: a cross-reference file
      * with no records produces the two empty outputs the legacy program produces for it.
      */
-    static final class GenerateStatementsProgram extends AbstractCobolStep<String> {
+    static final class GenerateStatementsProgram extends AbstractCobolStep<StatementTransactionSource> {
 
         /** The stage one whole run is delegated to. */
         private final StatementProcessor statementProcessor;
 
         /**
-         * The work resource this step names as its input.
+         * The work resource whose contents this step snapshots as its input.
          *
-         * <p>Its content reaches the generator through that generator's own data-access collaborator,
-         * which reads the transaction table in the same two keys and the same directions this job's
-         * ordering declares - so the sequence the first two steps established is the sequence the
-         * generation sees. This lifecycle holds the resource in order to report what those two steps
-         * built, and reads no record out of it itself.
+         * <p>Its projected records reach the generator through the frozen source captured below and the
+         * generator's own data-access collaborator. No live transaction query occurs after STEP010:
+         * the sequence the first two steps established is the exact sequence generation sees.
          */
         private final TransactionWorkResource workResource;
+
+        /** Frozen projected input captured after STEP020 completed and before generation starts. */
+        private final StatementTransactionSource transactionSource;
 
         /** The plain-text statement output this execution writes. */
         private final Path statementResource;
@@ -1923,8 +2039,8 @@ public final class CreateStatementJobConfig {
         /** Handle on the HTML output. */
         private BufferedWriter htmlWriter;
 
-        /** Whether the one item has been served. */
-        private boolean workResourceNameServed;
+        /** Whether the one frozen source item has been served. */
+        private boolean transactionSourceServed;
 
         /** The run the stage produced, retained for the completion diagnostic. */
         private StatementRun run;
@@ -1939,7 +2055,7 @@ public final class CreateStatementJobConfig {
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
          * @param statementProcessor the stage one whole run is delegated to; must not be {@code null}
-         * @param workResource the work resource named as the input; must not be {@code null}
+         * @param workResource the work resource supplying the frozen input; must not be {@code null}
          * @param statementResource the plain-text output to write; must not be {@code null}
          * @param htmlResource the HTML output to write; must not be {@code null}
          */
@@ -1952,6 +2068,8 @@ public final class CreateStatementJobConfig {
             this.statementProcessor =
                     Objects.requireNonNull(statementProcessor, "statementProcessor");
             this.workResource = Objects.requireNonNull(workResource, "workResource");
+            this.transactionSource = Objects.requireNonNull(workResource.snapshot(),
+                    "workResource snapshot");
             this.statementResource = Objects.requireNonNull(statementResource, "statementResource");
             this.htmlResource = Objects.requireNonNull(htmlResource, "htmlResource");
         }
@@ -1970,22 +2088,23 @@ public final class CreateStatementJobConfig {
         }
 
         @Override
-        protected Optional<String> readNextRecord() {
-            return this.<String>readRecord(StatementProcessor.INPUT_DD_TRNXFILE, () -> {
-                if (this.workResourceNameServed) {
+        protected Optional<StatementTransactionSource> readNextRecord() {
+            return this.<StatementTransactionSource>readRecord(
+                    StatementProcessor.INPUT_DD_TRNXFILE, () -> {
+                if (this.transactionSourceServed) {
                     return IoResult.endOfFile();
                 }
-                this.workResourceNameServed = true;
+                this.transactionSourceServed = true;
                 return IoResult.of(FileStatus.SUCCESS.getCode(),
-                        StatementProcessor.INPUT_DD_TRNXFILE);
+                        this.transactionSource);
             });
         }
 
         @Override
-        protected void processRecord(final String record) {
-            this.run = Objects.requireNonNull(this.statementProcessor.process(record),
+        protected void processRecord(final StatementTransactionSource source) {
+            this.run = Objects.requireNonNull(this.statementProcessor.process(source),
                     () -> StatementGenerationService.PROGRAM_NAME + " reported no result for the "
-                            + record + " work resource");
+                            + StatementProcessor.INPUT_DD_TRNXFILE + " work resource");
 
             for (final String statementRecord : this.run.statementRecords()) {
                 writeRecord(StatementProcessor.OUTPUT_DD_STMTFILE, () -> {

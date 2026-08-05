@@ -152,6 +152,16 @@
     <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <!-- Reproducible-build clock. The fallback is the upstream estate's release date expressed as
+         epoch seconds; CI and container builds override source.date.epoch with the current source
+         commit's author timestamp. Maven accepts epoch seconds for project.build.outputTimestamp,
+         and every archive/build-info producer reads this one value. -->
+    <source.date.epoch>1658188800</source.date.epoch>
+    <project.build.outputTimestamp>${source.date.epoch}</project.build.outputTimestamp>
+    <!-- A plain Maven build has no trustworthy Git context, so it says so. Container and CI builds
+         override this with the exact commit they are packaging and verify the generated build-info
+         value before an image can be emitted. -->
+    <build.revision>not-supplied</build.revision>
 
     <!-- ==============================================================
          Third party versions the Spring Boot bill of materials does not manage. These three are
@@ -349,18 +359,23 @@
 
     <!-- Container engine client used by the container testing library,
          reached only through that library and therefore test scope
-         only. Its transport artifact ships a relocated copy of an HTTP
-         core library, so the copy cannot be replaced by managing that
-         library's own coordinate; the transport artifact itself has to
-         move. The version selected here is the newest on the line the
-         container testing library is built against, and it relocates
-         an HTTP core release that carries neither of the two 7.5
-         findings the previous relocation carried. All three
-         coordinates of this family move together so the client model,
-         the transport contract and the transport implementation stay
-         mutually consistent. This is the override that allowed the
-         supply chain scan to stop excluding test scoped artifacts. -->
+         only. All coordinates of this family move together so the
+         client model, transport contract and transport implementation
+         remain mutually consistent. -->
     <docker-java.version>3.7.1</docker-java.version>
+
+    <!-- HTTP Core used by the non-shaded Docker transport below. The
+         former zerodep transport embedded 5.3.6 inside its own jar,
+         beyond dependency management's reach, where CVE-2026-54399 and
+         CVE-2026-54428 both scored 7.5. Excluding that shaded transport
+         and selecting the ordinary HttpClient 5 transport makes this
+         fixed 5.4.3 release govern both core and HTTP/2 modules. -->
+    <httpcomponents-core5.version>5.4.3</httpcomponents-core5.version>
+
+    <!-- Annotation-only companion required to read the Docker transport's
+         published signatures under -Xlint:all. The processor-bearing
+         `org.immutables:value` artifact is deliberately not added. -->
+    <immutables.version>2.10.1</immutables.version>
 
     <!-- ==============================================================
          Declared plugin versions, one property per declared plugin. Plugins the parent
@@ -408,48 +423,13 @@
          report that it cannot run when Maven is offline. -->
     <dependency-check.skip>false</dependency-check.skip>
 
-    <!-- Scan coverage across dependency scopes. Stated explicitly
-         rather than left unset, because the value has to be pinned to
-         be trusted, and stated as TRUE: the gate scans the compile and
-         runtime graph - the code that actually ships - and not the test
-         graph. This is the plugin's own documented default; stating it
-         here makes the choice reviewable instead of inherited.
-
-         THIS WAS false, AND THE CHANGE IS THE POINT RATHER THAN A
-         RELAXATION. Widening the scan to test scope pulled in the
-         container-testing transport, whose relocated copy of an HTTP
-         core library carries two findings at 7.5 HIGH. Those findings
-         are real: the vulnerable classes were confirmed physically
-         present inside the shaded artifact, so no false-match argument
-         was available. They were also unfixable in place - the copy is
-         relocated, so no managed coordinate can reach it; the transport
-         is the only one the container-testing library will construct,
-         so it cannot be excluded or substituted; its own newest
-         published release still embeds the same version; and moving to the next major
-         line of the container-testing library is excluded by this
-         module's dependency inventory.
-
-         The gate therefore had exactly two honest options: scan a scope
-         it cannot remediate and suppress the result, or scan the scope
-         it can stand behind and say so. Suppressing a real HIGH records
-         an accepted risk while reporting a clean gate, which is the one
-         outcome the acceptance criteria forbid. Narrowing the scope
-         reports a clean gate over a smaller claim that is TRUE.
-
-         WHAT MAKES THE NARROWER CLAIM VERIFIABLE RATHER THAN ASSERTED:
-         the scope boundary is asserted by an executed test.
-         DeployableSupplyChainIT opens the repackaged jar and fails if
-         any test-scoped artifact - the container transport by name -
-         appears among its bundled libraries. Without that test this
-         property would be a promise; with it, the claim that the
-         unscanned graph does not ship is checked on every run.
-
-         The residual exposure is stated rather than hidden: the test
-         transport still executes on developer machines and hosted
-         runners, so it remains part of the surface the BUILD presents,
-         and this gate no longer reports on it. It is not part of the
-         surface the PRODUCT presents, which is what Gate 8 is about. -->
-    <dependency-check.skipTestScope>true</dependency-check.skipTestScope>
+    <!-- Scan every dependency the build loads, including the test graph.
+         The test graph executes privileged container-engine code on
+         developer and CI hosts, so excluding it would hide risk in the
+         build even when none of those jars ships in the product. The
+         former shaded Docker transport has been replaced rather than
+         suppressed, making this full-scope claim enforceable. -->
+    <dependency-check.skipTestScope>false</dependency-check.skipTestScope>
 
     <!-- Vulnerability database location. Resolved from the build
          user's home directory so the same value works on a developer
@@ -582,18 +562,11 @@
       </dependency>
 
       <!-- Container engine client, reached only through the container
-           testing library and therefore only ever test scoped. The
-           three coordinates are pinned as a set rather than
-           individually: the transport implementation is what carries
-           the relocated HTTP core copy that had to move, the transport
-           contract is the interface that implementation satisfies, and
-           the client model is the surface the testing library calls.
-           Moving one without the others would pair a new
-           implementation with an old contract. No new artifact enters
-           the graph here and no artifact leaves it; these entries only
-           change which release of an already present family resolves,
-           which is why the container testing library stays at the
-           version the framework parent manages. -->
+           testing library and therefore only ever test scoped. The API,
+           transport contract and non-shaded HttpClient implementation
+           are pinned as one family so their binary surfaces cannot
+           drift. The shaded zerodep implementation is intentionally not
+           managed because it is excluded from the graph. -->
       <dependency>
         <groupId>com.github.docker-java</groupId>
         <artifactId>docker-java-api</artifactId>
@@ -606,8 +579,18 @@
       </dependency>
       <dependency>
         <groupId>com.github.docker-java</groupId>
-        <artifactId>docker-java-transport-zerodep</artifactId>
+        <artifactId>docker-java-transport-httpclient5</artifactId>
         <version>${docker-java.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5</artifactId>
+        <version>${httpcomponents-core5.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5-h2</artifactId>
+        <version>${httpcomponents-core5.version}</version>
       </dependency>
 
     </dependencies>
@@ -886,6 +869,32 @@
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers</artifactId>
       <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.github.docker-java</groupId>
+          <artifactId>docker-java-transport-zerodep</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- Non-shaded Docker transport. Unlike zerodep, its HTTP Core
+         dependency remains visible to dependency management and to the
+         full-scope vulnerability scan. -->
+    <dependency>
+      <groupId>com.github.docker-java</groupId>
+      <artifactId>docker-java-transport-httpclient5</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The non-shaded transport's API is annotated with Immutables
+         metadata that its own POM marks provided. Supplying the
+         annotation-only artifact prevents missing-annotation warnings
+         without introducing an annotation processor. -->
+    <dependency>
+      <groupId>org.immutables</groupId>
+      <artifactId>value-annotations</artifactId>
+      <version>${immutables.version}</version>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -910,6 +919,60 @@
       <groupId>org.testcontainers</groupId>
       <artifactId>localstack</artifactId>
       <scope>test</scope>
+    </dependency>
+
+    <!-- ==============================================================
+         DECLARED SO THE VULNERABILITY GATE CAN SEE IT, AND FOR NO
+         OTHER REASON. Nothing in this module compiles or tests
+         against it.
+         ==============================================================
+         The repackaging step writes this library into BOOT-INF/lib of
+         the deployable jar, and the container image then EXECUTES it:
+         Dockerfile runs `java -Djarmode=tools -jar <jar> extract` to
+         split the archive into its layers, so the library is both
+         shipped and run. It is a supply-chain input by every
+         meaningful test.
+
+         It was nevertheless invisible to the scan, and the reason is
+         worth stating because it is not the obvious one. This
+         artifact is NOT a resolved dependency that someone forgot to
+         declare - it is a RESOURCE EMBEDDED INSIDE THE BUILD TOOL.
+         spring-boot-loader-tools carries it at
+         META-INF/jarmode/spring-boot-jarmode-tools.jar, and the
+         repackage goal copies that resource out of itself into the
+         archive; the byte streams are identical. So it never passed
+         through dependency resolution at all, and no amount of
+         reading this project's graph could have found it. Measured
+         before this declaration: 178 of the 179 bundled libraries
+         resolved from the repository and exactly this one did not.
+
+         SCOPE IS runtime, DELIBERATELY, and it is the narrowest
+         scope that does the whole job. The library must SHIP, because
+         the container image executes it, and `runtime` is what the
+         repackaging step bundles; it must be SCANNED, and the gate
+         scans the runtime graph while skipping only the test graph.
+         Nothing compiles against it, so `compile` would widen the
+         compile classpath for no reason. `provided` was tried first
+         and is wrong on both counts: the repackaging step includes
+         provided-scope libraries too, so the collision below still
+         occurred, and a provided library that the image genuinely
+         runs is a misdescription of how it reaches the runtime.
+         The plugin's own includeTools extraction is turned off in the
+         build section so that this declaration is the single writer
+         of the library - see the note there, which records the
+         "Duplicate library" refusal that forced the choice.
+
+         Version comes from the parent, which manages
+         spring-boot-jarmode-tools at the same 3.5.16 the plugin
+         embeds, so the scanned coordinate and the shipped bytes
+         cannot drift apart. DeployableSupplyChainIT asserts that
+         every bundled library resolves, so a future library arriving
+         by this same embedded-resource route fails the build instead
+         of quietly leaving the report one short. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-jarmode-tools</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
   </dependencies>
@@ -1021,6 +1084,17 @@
             <include>**/*E2ETest.java</include>
             <include>**/e2e/**/*Test.java</include>
           </includes>
+          <systemPropertyVariables>
+            <!-- Handed to the integration tier so DeployableSupplyChainIT can check that every
+                 library bundled inside the deployable jar came out of dependency resolution.
+                 That is the property the vulnerability gate depends on and cannot verify for
+                 itself: it scans the resolved graph, so a library reaching the archive by any
+                 other route - a resource copied out of a build tool, for instance - ships
+                 unscanned and the report is simply one short with nothing reporting the
+                 shortfall. Resolving the location from the running build rather than guessing
+                 the conventional path keeps the check correct under a custom repository. -->
+            <carddemo.maven.repository>${settings.localRepository}</carddemo.maven.repository>
+          </systemPropertyVariables>
         </configuration>
         <executions>
           <execution>
@@ -1071,22 +1145,15 @@
            come from the primary vulnerability database and that the
            remediations, not this switch, are what cleared the gate.
 
-           Test scoped artifacts are OUTSIDE the scan, which is this
-           plugin's own default and is now stated deliberately rather
-           than overridden. An earlier revision widened the scan to
-           include them, on the reasoning that a dependency the build
-           executes is a dependency the build trusts. That reasoning is
-           sound as far as it goes, and it is why the residual exposure
-           is recorded rather than dismissed - but it produced a gate
-           that could see two findings at 7.5 HIGH which it had no means
-           whatsoever to remediate, in a relocated copy of an HTTP core
-           library embedded in the container testing transport. The only
-           way to keep the wider scope was to suppress real HIGH
-           findings, which reports a clean gate while accepting the risk
-           it was meant to surface. The scope property near the top of
-           this file sets out the full reasoning, the four independent
-           reasons the finding is unreachable by any version change, and
-           the executed test that keeps the narrower scope honest.
+           Test scoped artifacts are INCLUDED. They execute privileged
+           container-engine code on developer and hosted-runner machines,
+           so treating them as outside the supply chain would be a false
+           product-only claim about a build gate. The former shaded
+           Docker transport embedded a vulnerable HTTP Core release
+           beyond dependency management's reach. It is now excluded and
+           replaced by the ordinary HttpClient 5 transport, whose visible
+           HTTP Core dependency is pinned to the fixed release declared
+           above. No suppression and no scope exception is involved.
 
            WHAT THIS GATE CLAIMS, AND IT IS NOW THE STRONG CLAIM
 
@@ -1116,30 +1183,15 @@
            whenever the integration tier exercised the transport, and
            that notice is now absent.
 
-           The two HTTP core findings, CVE-2026-54399 and
-           CVE-2026-54428, were closed by scope rather than by version,
-           because no version could reach them: the vulnerable classes
-           are physically present inside a relocated copy embedded in
-           the container testing transport, so no managed coordinate
-           addresses them; that transport is the only one the container
-           testing library will construct, so it cannot be excluded or
-           substituted; its own newest published release still embeds
-           the same copy; and the next major line of the container testing
-           library is excluded by this module's dependency inventory.
-           The gate now scans the compile and runtime graph - what
-           ships - and says so, instead of scanning a scope it cannot
-           remediate and suppressing the result. The reasoning behind
-           that choice, and the residual exposure it leaves, are set out
-           at the scope property above.
+           The two HTTP Core findings, CVE-2026-54399 and
+           CVE-2026-54428, were closed by replacing the shaded transport
+           and pinning visible `httpcore5` and `httpcore5-h2` coordinates
+           at 5.4.3. The full test graph is scanned, so a future transport
+           regression is a failing gate rather than residual exposure.
 
-           WHAT KEEPS THE NARROWER SCOPE FROM BECOMING A LOOPHOLE: it
-           is checked by an executed test rather than promised.
-           DeployableSupplyChainIT opens the repackaged jar in the
-           integration tier and fails if any test scoped artifact - the
-           container transport by name - is bundled inside it. It also
-           asserts that the jar really is repackaged and really does
-           bundle the libraries it should, so the exclusion sweep cannot
-           pass by inspecting an empty list.
+           DeployableSupplyChainIT remains useful for a separate claim:
+           test libraries do not enter the repackaged product. It no
+           longer justifies excluding those libraries from this scan.
 
            ONE finding remains, scoring 5.3, and it is ACCEPTED RATHER
            THAN SUPPRESSED - it is reported on every run and nothing
@@ -1399,6 +1451,43 @@
           <layers>
             <enabled>true</enabled>
           </layers>
+          <!-- THE JARMODE TOOLS LIBRARY COMES FROM THE DEPENDENCY
+               GRAPH, NOT FROM INSIDE THE BUILD TOOL. Set to false
+               deliberately, and the effect is a change of SOURCE
+               rather than a removal: the library still ships in
+               BOOT-INF/lib and the container image still runs
+               `java -Djarmode=tools -jar <jar> extract`.
+               Left at its default, the plugin extracts
+               META-INF/jarmode/spring-boot-jarmode-tools.jar out of
+               spring-boot-loader-tools and writes that resource into
+               the archive. A resource copied out of a build tool never
+               passes through dependency resolution, so the
+               vulnerability gate - which scans the resolved graph -
+               cannot see it, and a library that is both shipped and
+               executed went unscanned. Measured: 178 of the 179
+               bundled libraries resolved from the repository and
+               exactly this one did not.
+               Declaring the artifact fixes the visibility, and then
+               the two writers collide: the plugin refuses outright
+               with "Duplicate library
+               spring-boot-jarmode-tools-3.5.16.jar", which is correct
+               behaviour and is why this flag is set rather than the
+               declaration abandoned. Turning off the extraction
+               leaves exactly one writer - the graph - so the archive
+               carries the library once and the gate scans the
+               coordinate that produced it.
+               NOTHING ABOUT THE ARTEFACT CHANGES. The jar resolved
+               from the repository and the resource embedded in the
+               build tool are the same bytes, sha256
+               d05beb46a7eac0f1a06733c75828b190a1cb250076ce03be2213aca4a5c0f03f,
+               so the shipped bytes are identical either way and only
+               their provenance differs. DeployableSupplyChainIT
+               asserts the digest and the single copy rather than
+               assuming them, and it asserts that every bundled
+               library resolves - so a future library arriving by the
+               embedded-resource route fails the build instead of
+               quietly leaving the report one short. -->
+          <includeTools>false</includeTools>
         </configuration>
         <executions>
           <!-- This execution id is deliberately the one the parent already declares in its
@@ -1419,10 +1508,13 @@
                Binding the goal is what makes the claim true, and it is the only way to make it
                true, because the file is generated at build time and cannot be authored by hand
                without becoming stale.
-               The group, artifact, version and build timestamp are the whole payload. No
-               environment value is contributed: the info endpoint's environment contributor stays
-               disabled in configuration precisely so that a property whose name happens to begin
-               with the exposed prefix can never be published, and nothing here re-opens it.
+               The group, artifact, version, build timestamp and source revision are the whole
+               payload. A plain Maven build stamps the explicit non-claim "not-supplied"; a container
+               build overrides it with the Git commit passed by its caller and refuses to emit an image
+               unless the generated file carries that exact value. No environment value is
+               contributed implicitly: the info endpoint's environment contributor stays disabled in
+               configuration precisely so that a property whose name happens to begin with the
+               exposed prefix can never be published, and nothing here re-opens it.
                The published version is the module's own coordinate, which is also what the API
                documentation configuration reports once this file exists: that configuration reads
                the build properties when they are present and falls back to a constant when they
@@ -1433,6 +1525,12 @@
             <goals>
               <goal>build-info</goal>
             </goals>
+            <configuration>
+              <time>${project.build.outputTimestamp}</time>
+              <additionalProperties>
+                <source-revision>${build.revision}</source-revision>
+              </additionalProperties>
+            </configuration>
           </execution>
         </executions>
       </plugin>

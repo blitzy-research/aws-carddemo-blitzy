@@ -1045,6 +1045,128 @@ class CobolStringUtilsTest {
     }
 
     /**
+     * The ordinary alphanumeric {@code MOVE}: left-justify into a {@code PIC X(n)} receiver, space-fill
+     * the remainder, truncate on the right.
+     *
+     * <p>Its authority is the sign-on record layout {@code app/cpy/CSUSR01Y.cpy}, which declares
+     * {@code SEC-USR-ID} as {@code PIC X(08)} at offset 0, and the four user-maintenance members plus the
+     * sign-on member, every one of which moves an eight-position screen item straight into that field.
+     * The legacy move was invisible because a terminal already delivered eight positions; a REST caller
+     * delivers whatever it typed, so the move becomes explicit and has to be exact.
+     *
+     * <p><strong>The truncation direction is the trap and is asserted directly.</strong> This primitive
+     * truncates on the RIGHT and its neighbour {@link CobolStringUtils#rightJustifyZeroFill(String, int)}
+     * truncates on the LEFT, because that receiver carries {@code JUST RIGHT} and this one does not. An
+     * implementation that shared one helper between the two would be wrong for one of them, so the two
+     * are compared against each other here on the same input.
+     */
+    @Nested
+    @DisplayName("leftJustifySpaceFill - move into a PIC X(n) receiver, space-filled on the right")
+    class LeftJustifySpaceFill {
+
+        /** Width of the sign-on identifier, the only receiver this primitive currently serves. */
+        private static final int USER_ID_WIDTH = 8;
+
+        @Test
+        @DisplayName("a value already at the receiver's width is returned unchanged")
+        void anExactWidthValueIsUnchanged() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("ADMIN001", USER_ID_WIDTH))
+                    .as("every identifier read out of a record image is already eight positions wide")
+                    .isEqualTo("ADMIN001");
+        }
+
+        @Test
+        @DisplayName("a short value is left-justified and space-filled on the right, which is the "
+                + "whole reason a REST identifier can be looked up at all")
+        void aShortValueIsSpaceFilledOnTheRight() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("USER1", USER_ID_WIDTH))
+                    .isEqualTo("USER1   ")
+                    .hasSize(USER_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("a single character becomes one character followed by seven spaces")
+        void aSingleCharacterFillsTheRest() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("A", USER_ID_WIDTH))
+                    .isEqualTo("A       ")
+                    .hasSize(USER_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("an empty value becomes an all-space receiver, because a blank screen item and "
+                + "an absent one are the same legacy state")
+        void anEmptyValueBecomesAllSpaces() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("", USER_ID_WIDTH))
+                    .isEqualTo("        ")
+                    .hasSize(USER_ID_WIDTH);
+        }
+
+        @Test
+        @DisplayName("an all-space value stays all spaces rather than being trimmed away")
+        void anAllSpaceValueIsPreserved() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("  ", USER_ID_WIDTH))
+                    .isEqualTo("        ");
+        }
+
+        @Test
+        @DisplayName("an interior space is preserved, because a move copies positions and does not "
+                + "condense them")
+        void anInteriorSpaceIsPreserved() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("A B", USER_ID_WIDTH))
+                    .isEqualTo("A B     ");
+        }
+
+        @Test
+        @DisplayName("an over-long value loses its excess from the RIGHT, which is the opposite of "
+                + "the JUST RIGHT receiver's left truncation")
+        void anOverLongValueTruncatesOnTheRight() {
+            final String sender = "TOOLONGIDENTIFIER";
+
+            assertThat(CobolStringUtils.leftJustifySpaceFill(sender, USER_ID_WIDTH))
+                    .as("a plain MOVE keeps the leftmost positions")
+                    .isEqualTo("TOOLONGI");
+            assertThat(CobolStringUtils.rightJustifyZeroFill(sender, USER_ID_WIDTH))
+                    .as("the JUST RIGHT receiver keeps the rightmost positions instead, so the two "
+                            + "primitives disagree on the same input and must never share a helper")
+                    .isEqualTo("ENTIFIER");
+        }
+
+        @Test
+        @DisplayName("case is never folded here, because folding is a separate legacy statement "
+                + "applied in its own order")
+        void caseIsNotFolded() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("user1", USER_ID_WIDTH))
+                    .isEqualTo("user1   ");
+        }
+
+        @Test
+        @DisplayName("a width of one is honoured, so the primitive is not specialised to eight")
+        void aWidthOfOneIsHonoured() {
+            assertThat(CobolStringUtils.leftJustifySpaceFill("AB", 1)).isEqualTo("A");
+            assertThat(CobolStringUtils.leftJustifySpaceFill("", 1)).isEqualTo(" ");
+        }
+
+        @ParameterizedTest
+        @ValueSource(ints = {0, -1, Integer.MIN_VALUE})
+        @DisplayName("a non-positive width is refused, because a PIC X(n) receiver has at least one "
+                + "position")
+        void aNonPositiveWidthIsRefused(final int width) {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> CobolStringUtils.leftJustifySpaceFill("A", width))
+                    .withMessageContaining("width must be a positive");
+        }
+
+        @Test
+        @DisplayName("a null value is refused, because an absent field is not a blank field and the "
+                + "caller decides which it has")
+        void aNullValueIsRefused() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> CobolStringUtils.leftJustifySpaceFill(null, USER_ID_WIDTH))
+                    .withMessageStartingWith("value must not be null");
+        }
+    }
+
+    /**
      * The three signed-amount lexeme primitives, whose authority is paragraph
      * {@code 1250-EDIT-SIGNED-9V2} at {@code [app/cbl/COACTUPC.cbl:L2180-L2220]} and the map-move tests
      * that precede it at {@code [app/cbl/COACTUPC.cbl:L1073]} and its four peers.

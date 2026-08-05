@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import io.micrometer.core.annotation.Timed;
 import io.micrometer.core.aop.CountedAspect;
 import io.micrometer.core.aop.TimedAspect;
 import io.micrometer.core.instrument.Counter;
@@ -560,7 +559,7 @@ final class ObservabilityConfigTest {
 
     /**
      * The metrics half of the wiring, assembled from the framework's own auto-configuration so that the
-     * registry, the aspect support and the observation registry are the ones a deployment would get.
+     * registry and observation registry are the ones a deployment would get.
      */
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
@@ -577,7 +576,7 @@ final class ObservabilityConfigTest {
      * The same wiring with no auto-configuration at all behind it, so that a bean found is a bean the
      * configuration under test declared.
      *
-     * <p>The two registries the aspects need are supplied directly. Everything else the observability tier
+     * <p>The two registries are supplied directly. Everything else the observability tier
      * could contain &mdash; an exporter, a sampler, a filter, a readiness contributor &mdash; is therefore
      * absent unless this class put it there, which is what turns each assertion in the group below from a
      * statement about the framework into a statement about this module.</p>
@@ -591,25 +590,25 @@ final class ObservabilityConfigTest {
     final class TheBeansItPublishes {
 
         @Test
-        @DisplayName("publishes the customizer and both aspects over exactly one registry of each kind, so "
-                + "nothing is ambiguous and nothing is duplicated")
-        void publishesTheCustomizerAndBothAspects() {
+        @DisplayName("publishes only the registry customizer, leaving annotation aspects absent while "
+                + "retaining exactly one registry of each kind")
+        void publishesOnlyTheRegistryCustomizer() {
             runner.run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context)
                         .hasSingleBean(ObservabilityConfig.class)
                         .hasSingleBean(MeterRegistryCustomizer.class)
-                        .hasSingleBean(TimedAspect.class)
-                        .hasSingleBean(ObservedAspect.class)
                         .hasSingleBean(MeterRegistry.class)
                         .hasSingleBean(ObservationRegistry.class);
+                assertThat(context.getBeansOfType(TimedAspect.class)).isEmpty();
+                assertThat(context.getBeansOfType(ObservedAspect.class)).isEmpty();
             });
         }
 
         @Test
-        @DisplayName("the framework's own aspect definitions stand down rather than colliding, so switching "
-                + "its annotation support on later cannot produce a duplicate bean")
-        void theFrameworksOwnAspectDefinitionsStandDown() {
+        @DisplayName("the framework can supply its own aspects only when annotation support is explicitly "
+                + "enabled, so this configuration does not pre-empt a future deliberate choice")
+        void theFrameworkSuppliesAspectsOnlyWhenExplicitlyEnabled() {
             runner.withPropertyValues("management.observations.annotations.enabled=true").run(context -> {
                 assertThat(context).hasNotFailed();
                 assertThat(context)
@@ -634,10 +633,9 @@ final class ObservabilityConfigTest {
                     .withPropertyValues("spring.application.name=" + APPLICATION_NAME)
                     .run(context -> {
                         assertThat(context).hasNotFailed();
-                        assertThat(context)
-                                .hasSingleBean(TimedAspect.class)
-                                .hasSingleBean(ObservedAspect.class)
-                                .hasSingleBean(MeterRegistryCustomizer.class);
+                        assertThat(context).hasSingleBean(MeterRegistryCustomizer.class);
+                        assertThat(context.getBeansOfType(TimedAspect.class)).isEmpty();
+                        assertThat(context.getBeansOfType(ObservedAspect.class)).isEmpty();
                         assertThat(context.getBeansOfType(MeterFilter.class))
                                 .as("a filter here would drop, rename or re-bucket a series")
                                 .isEmpty();
@@ -801,43 +799,6 @@ final class ObservabilityConfigTest {
                             + "shipped configuration switches percentile histograms on for the timers the "
                             + "baseline reads, and does so as a document rather than in this wiring")
                     .isEmpty();
-        }
-    }
-
-    @Nested
-    @DisplayName("instrumentation driven by an annotation")
-    final class InstrumentationDrivenByAnAnnotation {
-
-        @Test
-        @DisplayName("turns an annotated method into a timer, which is also how the aspect weaving this "
-                + "depends on is proved to be genuinely on the class path")
-        void turnsAnAnnotatedMethodIntoATimer() {
-            runner.withUserConfiguration(AnnotatedBeans.class).run(context -> {
-                assertThat(context).hasNotFailed();
-                context.getBean(TimedTarget.class).work();
-
-                final MeterRegistry registry = context.getBean(MeterRegistry.class);
-                final Timer timer = registry.find(TimedTarget.TIMER_NAME).timer();
-                assertThat(timer)
-                        .as("without the timing aspect the annotation is silently inert")
-                        .isNotNull();
-                assertThat(timer.count()).isEqualTo(1L);
-                assertThat(timer.getId().getTag(APPLICATION_TAG_KEY)).isEqualTo(APPLICATION_NAME);
-            });
-        }
-
-        @Test
-        @DisplayName("records one measurement per invocation, so the timer counts calls rather than "
-                + "registrations")
-        void recordsOneMeasurementPerInvocation() {
-            runner.withUserConfiguration(AnnotatedBeans.class).run(context -> {
-                final TimedTarget target = context.getBean(TimedTarget.class);
-                target.work();
-                target.work();
-                target.work();
-                assertThat(context.getBean(MeterRegistry.class).find(TimedTarget.TIMER_NAME).timer().count())
-                        .isEqualTo(3L);
-            });
         }
     }
 
@@ -1130,8 +1091,8 @@ final class ObservabilityConfigTest {
                     "management.tracing.enabled=true",
                     "management.otlp.tracing.export.enabled=false")) {
                 assertThat(context.isRunning()).isTrue();
-                assertThat(context.getBeansOfType(TimedAspect.class)).hasSize(1);
-                assertThat(context.getBeansOfType(ObservedAspect.class)).hasSize(1);
+                assertThat(context.getBeansOfType(TimedAspect.class)).isEmpty();
+                assertThat(context.getBeansOfType(ObservedAspect.class)).isEmpty();
             }
         }
 
@@ -1491,25 +1452,4 @@ final class ObservabilityConfigTest {
         }
     }
 
-    /** Supplies a bean whose method carries the timing annotation. */
-    @Configuration(proxyBeanMethods = false)
-    static class AnnotatedBeans {
-
-        @Bean
-        TimedTarget timedTarget() {
-            return new TimedTarget();
-        }
-    }
-
-    /** A target the timing aspect can intercept, deliberately not final so that it can be proxied. */
-    static class TimedTarget {
-
-        /** The timer name the annotation declares, shared with the assertions so neither can drift. */
-        static final String TIMER_NAME = "test.timed.method";
-
-        @Timed(TIMER_NAME)
-        void work() {
-            // Nothing to compute: what is asserted is that the call was intercepted and measured.
-        }
-    }
 }

@@ -1604,12 +1604,12 @@ class TransactionListResponseTest {
     class SerializedForm {
 
         @Test
-        @DisplayName("publishes exactly the fifteen components the contract declares")
+        @DisplayName("publishes exactly the sixteen components the contract declares")
         void publishesExactlyFifteenComponents() throws JsonProcessingException {
             assertThat(published(populatedResponse())).containsOnlyKeys("rows", "pageMetadata",
-                    "navigationContext", "nextRoute", "transactionIdFilter", "displayedPageNumber",
-                    "message", "error", "focusScreenFieldId", "title01", "title02", "currentDate",
-                    "currentTime", "transactionName", "programName");
+                    "continuation", "navigationContext", "nextRoute", "transactionIdFilter",
+                    "displayedPageNumber", "message", "error", "focusScreenFieldId", "title01",
+                    "title02", "currentDate", "currentTime", "transactionName", "programName");
         }
 
         @Test

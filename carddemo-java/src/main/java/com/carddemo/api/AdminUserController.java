@@ -19,6 +19,7 @@ package com.carddemo.api;
 import com.carddemo.api.dto.UserRequest;
 import com.carddemo.api.dto.UserResponse;
 import com.carddemo.service.UserManagementService;
+import com.carddemo.util.ApiRoutePaths;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -207,7 +208,7 @@ public class AdminUserController {
      *
      * <p>A single compile-time constant, which is what allows it to appear in an annotation.
      */
-    public static final String USERS_PATH = "/api/admin/users";
+    public static final String USERS_PATH = ApiRoutePaths.ADMIN_USERS_PATH;
 
     /** Sub-path of the list turn, legacy transaction {@code CU00}. */
     public static final String LIST_SUBPATH = "/list";
@@ -266,23 +267,41 @@ public class AdminUserController {
     /** Outcome of a turn that neither completed a change nor was refused - a screen simply presented. */
     private static final String OUTCOME_PRESENTED = "presented";
 
+    /** Outcome of a turn that raised before composing a screen. */
+    private static final String OUTCOME_FAILED = "failed";
+
     /** The four user-maintenance transactions. */
     private final UserManagementService userManagementService;
+
+    /**
+     * The only permitted converter between the wire contract and the service-owned command and outcome.
+     *
+     * <p>All four transactions take the transmitted screen, and return the settled turn, in the forms the
+     * service layer owns, because nothing may depend upward on {@code api.dto}. This collaborator is where
+     * every crossing happens, and it converts positionally: no value, no selection character, no page of
+     * rows and no leading-zero page indicator is trimmed, padded, defaulted or reordered on the way
+     * through.
+     */
+    private final UserContractAdapter userContractAdapter;
 
     /** Registry the four turn timers are registered against. */
     private final MeterRegistry meterRegistry;
 
     /**
-     * Creates the controller over its two collaborators.
+     * Creates the controller over its three collaborators.
      *
      * @param userManagementService the four user-maintenance transactions
+     * @param userContractAdapter the converter between the wire contract and the service-owned types
      * @param meterRegistry the metrics registry
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if any argument is {@code null}
      */
     public AdminUserController(final UserManagementService userManagementService,
+                              final UserContractAdapter userContractAdapter,
                               final MeterRegistry meterRegistry) {
         this.userManagementService = Objects.requireNonNull(userManagementService,
                 "userManagementService must not be null");
+        this.userContractAdapter = Objects.requireNonNull(userContractAdapter,
+                "userContractAdapter must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -333,8 +352,16 @@ public class AdminUserController {
             @Validated({Default.class, UserRequest.ListOperation.class})
             @RequestBody final UserRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
-        final UserResponse body = this.userManagementService.listUsers(request);
-        return completed(sample, METRIC_LIST_TURN, LIST_TRANSACTION_ID, body);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final UserResponse body = this.userContractAdapter.toResponse(
+                    this.userManagementService.listUsers(this.userContractAdapter.toCommand(request)));
+            outcome = outcomeOf(body);
+            logCompletedTurn(LIST_TRANSACTION_ID, outcome);
+            return ResponseEntity.ok(body);
+        } finally {
+            recordTurn(sample, METRIC_LIST_TURN, LIST_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -376,8 +403,16 @@ public class AdminUserController {
             @Validated({Default.class, UserRequest.AddOperation.class})
             @RequestBody final UserRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
-        final UserResponse body = this.userManagementService.addUser(request);
-        return completed(sample, METRIC_ADD_TURN, ADD_TRANSACTION_ID, body);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final UserResponse body = this.userContractAdapter.toResponse(
+                    this.userManagementService.addUser(this.userContractAdapter.toCommand(request)));
+            outcome = outcomeOf(body);
+            logCompletedTurn(ADD_TRANSACTION_ID, outcome);
+            return ResponseEntity.ok(body);
+        } finally {
+            recordTurn(sample, METRIC_ADD_TURN, ADD_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -423,8 +458,16 @@ public class AdminUserController {
             @Validated({Default.class, UserRequest.UpdateOperation.class})
             @RequestBody final UserRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
-        final UserResponse body = this.userManagementService.updateUser(request);
-        return completed(sample, METRIC_UPDATE_TURN, UPDATE_TRANSACTION_ID, body);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final UserResponse body = this.userContractAdapter.toResponse(
+                    this.userManagementService.updateUser(this.userContractAdapter.toCommand(request)));
+            outcome = outcomeOf(body);
+            logCompletedTurn(UPDATE_TRANSACTION_ID, outcome);
+            return ResponseEntity.ok(body);
+        } finally {
+            recordTurn(sample, METRIC_UPDATE_TURN, UPDATE_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -475,8 +518,16 @@ public class AdminUserController {
             @Validated({Default.class, UserRequest.DeleteOperation.class})
             @RequestBody final UserRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
-        final UserResponse body = this.userManagementService.deleteUser(request);
-        return completed(sample, METRIC_DELETE_TURN, DELETE_TRANSACTION_ID, body);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final UserResponse body = this.userContractAdapter.toResponse(
+                    this.userManagementService.deleteUser(this.userContractAdapter.toCommand(request)));
+            outcome = outcomeOf(body);
+            logCompletedTurn(DELETE_TRANSACTION_ID, outcome);
+            return ResponseEntity.ok(body);
+        } finally {
+            recordTurn(sample, METRIC_DELETE_TURN, DELETE_TRANSACTION_ID, outcome);
+        }
     }
 
     /**
@@ -498,19 +549,20 @@ public class AdminUserController {
      * @param body the screen the turn produced
      * @return the screen, as a {@code 200} response
      */
-    private ResponseEntity<UserResponse> completed(final Timer.Sample sample, final String metricName,
-                                                  final String transactionId, final UserResponse body) {
-        final String outcome = outcomeOf(body);
+    private void recordTurn(final Timer.Sample sample, final String metricName,
+            final String transactionId, final String outcome) {
         sample.stop(Timer.builder(metricName)
                 .description("Elapsed time of one CardDemo administrative user turn, transaction "
                         + transactionId)
                 .tag(TAG_OUTCOME, outcome)
                 .register(this.meterRegistry));
+    }
+
+    private static void logCompletedTurn(final String transactionId, final String outcome) {
         // Both values are compile-time constants of this class, never caller-supplied text, so this
         // record cannot be made to carry a line break, a credential or any identifying value.
         LOG.debug("Administrative user turn completed: transaction={} outcome={}", transactionId,
                 outcome);
-        return ResponseEntity.ok(body);
     }
 
     /**

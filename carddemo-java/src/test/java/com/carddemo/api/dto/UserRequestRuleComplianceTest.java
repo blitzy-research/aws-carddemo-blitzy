@@ -439,8 +439,7 @@ class UserRequestRuleComplianceTest {
          * about.</p>
          */
         @Test
-        @DisplayName("nine of the twelve components are withheld, every one that names or describes a "
-                + "person, so a single log record over this request discloses no identity")
+        @DisplayName("ten of the thirteen components are withheld, including the page snapshot token")
         void nineComponentsAreWithheld() {
             final String rendered = aRequest(USER_ID, "PASSWORD", List.of("U"), KeyAction.PFK05,
                     NavigationContext.empty()).toString();
@@ -454,8 +453,9 @@ class UserRequestRuleComplianceTest {
                     "userType=" + REDACTION_PLACEHOLDER,
                     "firstUserIdOnPage=" + REDACTION_PLACEHOLDER,
                     "lastUserIdOnPage=" + REDACTION_PLACEHOLDER,
+                    "rowSnapshotToken=" + REDACTION_PLACEHOLDER,
                     "navigationContext=" + REDACTION_PLACEHOLDER);
-            assertThat(placeholderCount(rendered)).isEqualTo(9);
+            assertThat(placeholderCount(rendered)).isEqualTo(10);
             assertThat(rendered).doesNotContain(USER_ID, "FIRSTNAME", "LASTNAME", "USER0005");
             assertThat(rendered).endsWith("]");
         }
@@ -480,7 +480,7 @@ class UserRequestRuleComplianceTest {
         void theWithholdingIsUnconditional() {
             final String rendered = aRequestWithSelections(null).toString();
 
-            assertThat(placeholderCount(rendered)).isEqualTo(9);
+            assertThat(placeholderCount(rendered)).isEqualTo(10);
             assertThat(rendered).contains("password=" + REDACTION_PLACEHOLDER);
             assertThat(rendered).doesNotContain("userId=null", "password=null",
                     "navigationContext=null");
@@ -498,7 +498,7 @@ class UserRequestRuleComplianceTest {
             assertThat(withContext).doesNotContain("NavigationContext[");
             assertThat(placeholderCount(withContext))
                     .isEqualTo(placeholderCount(withoutContext))
-                    .isEqualTo(9);
+                    .isEqualTo(10);
         }
 
         @Test
@@ -548,16 +548,16 @@ class UserRequestRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the request declares twelve components, the identity block, the credential, the "
-                + "list block and the two control components")
+        @DisplayName("the request declares thirteen components including the protected page snapshot")
         void theRequestDeclaresTwelveComponents() {
             final List<String> declared = Arrays.stream(UserRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("userId", "searchUserId", "firstName", "lastName",
                     "password", "userType", "rowSelections", "displayedPageNumber",
-                    "firstUserIdOnPage", "lastUserIdOnPage", "keyAction", "navigationContext");
-            assertThat(declared).hasSize(12);
+                    "firstUserIdOnPage", "lastUserIdOnPage", "rowSnapshotToken", "keyAction",
+                    "navigationContext");
+            assertThat(declared).hasSize(13);
         }
 
         /**
@@ -584,7 +584,8 @@ class UserRequestRuleComplianceTest {
             assertThat(bounded).containsExactly("userId", "searchUserId", "firstName", "lastName",
                     "password", "userType", "displayedPageNumber", "firstUserIdOnPage",
                     "lastUserIdOnPage");
-            assertThat(bounded).doesNotContain("rowSelections", "keyAction", "navigationContext");
+            assertThat(bounded).doesNotContain("rowSelections", "rowSnapshotToken", "keyAction",
+                    "navigationContext");
         }
 
         @Test

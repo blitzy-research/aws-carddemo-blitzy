@@ -424,6 +424,76 @@ public final class CobolStringUtils {
     }
 
     /**
+     * Reproduces an ordinary COBOL {@code MOVE} of an alphanumeric sender into a {@code PIC X(n)}
+     * receiver: <b>left-justify into {@code width} character positions, space-fill the remainder, and
+     * truncate on the RIGHT anything that does not fit</b>.
+     *
+     * <p><strong>Why this is a required translation step and not defensive padding.</strong> Every
+     * identifier the estate keys a record on is a field of a fixed-width record, and every screen item
+     * that feeds one is declared at that same width, so the terminal delivered an eight-position value
+     * whether the operator typed eight characters or one. The sign-on identifier is the clearest case:
+     * the credential record declares {@code SEC-USR-PWD}'s sibling key {@code SEC-USR-ID} as
+     * {@code PIC X(08)} at {@code [app/cpy/CSUSR01Y.cpy:L1-L14]}, and the sign-on program moves the
+     * transmitted screen item straight into it before comparing. A REST caller has no terminal to
+     * space-fill for it, so a four-character identifier arrives four characters long. That value is not
+     * a shorter form of the key - it is a <em>different</em> key, and a store whose column is
+     * variable-length will not match it against the eight-position row, will not find it for an update
+     * or a delete, and will refuse it on insert against the declared-width constraint. This method is
+     * the one place that difference is resolved.
+     *
+     * <p><strong>Right truncation, deliberately.</strong> A plain {@code MOVE} into an alphanumeric
+     * receiver keeps the sender's <em>leftmost</em> characters and loses the excess from the right -
+     * the exact opposite of {@link #rightJustifyZeroFill(String, int)}, whose receiver carries
+     * {@code JUST RIGHT} and therefore truncates on the left. The two are not interchangeable and the
+     * asymmetry is the reason both exist.
+     *
+     * <p><strong>What it does not do.</strong> It does not trim, fold case, reject a blank, validate a
+     * character class or treat an absent value as a blank one. A blank or wholly-space sender is a
+     * legitimate value here and becomes an all-space receiver, because the legacy move behaves that way
+     * and because the emptiness tests that produce operator messages read the <em>raw</em> transmitted
+     * value before this transformation is applied - reversing that order would replace a "please enter"
+     * message with a fruitless lookup. Case folding, where a program performs one, is
+     * {@link #asciiUpperFold(String)} and is applied separately in the order the program applies it.
+     *
+     * <p>Worked examples at width eight: {@code "ADMIN001"} yields {@code "ADMIN001"} unchanged;
+     * {@code "USER1"} yields {@code "USER1   "}; {@code ""} and {@code "  "} yield eight spaces;
+     * {@code "TOOLONGIDENTIFIER"} yields {@code "TOOLONGI"} because the excess is lost from the right.
+     *
+     * <p><strong>Width is measured in {@code PIC X(n)} character positions.</strong> The receivers this
+     * serves are single-byte alphanumeric fields fed from single-byte terminal fields, so positions,
+     * characters and encoded bytes coincide for every value such a field can carry. No charset policy is
+     * applied here - that belongs to the fixed-width record layer.
+     *
+     * @param value the sending value; must not be {@code null}
+     * @param width the receiving field width in character positions; must be positive
+     * @return a string of exactly {@code width} characters, left-justified from {@code value} and
+     *         space-filled on the right
+     * @throws NullPointerException if {@code value} is {@code null}
+     * @throws IllegalArgumentException if {@code width} is not positive
+     */
+    public static String leftJustifySpaceFill(final String value, final int width) {
+        Objects.requireNonNull(value, "value must not be null: an absent field is not a blank field");
+        if (width <= 0) {
+            throw new IllegalArgumentException(
+                    "width must be a positive PIC X(n) character-position count but was " + width);
+        }
+        if (value.length() == width) {
+            // Already exactly the receiver's width, which is the case for every value that came out of
+            // a record image or out of the store. Returned as-is so the common path allocates nothing.
+            return value;
+        }
+        final char[] receiver = new char[width];
+        // A plain MOVE keeps the sender's LEFTMOST characters; anything that does not fit is lost from
+        // the RIGHT, and a short sender leaves the RIGHT of the receiver space-filled.
+        final int retained = Math.min(value.length(), width);
+        value.getChars(0, retained, receiver, 0);
+        for (int index = retained; index < width; index++) {
+            receiver[index] = SPACE;
+        }
+        return new String(receiver);
+    }
+
+    /**
      * Reports whether a signed-amount screen lexeme carries the legacy <em>not supplied</em> state, the
      * first of the three outcomes paragraph {@code 1250-EDIT-SIGNED-9V2} can reach
      * ({@code [app/cbl/COACTUPC.cbl:L2180-L2220]}).

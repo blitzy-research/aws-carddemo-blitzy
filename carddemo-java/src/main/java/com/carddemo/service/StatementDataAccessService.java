@@ -29,17 +29,15 @@ import org.springframework.stereotype.Service;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
-import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
-import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.AccountRecordMapper;
 import com.carddemo.util.CardXrefRecordMapper;
 import com.carddemo.util.CustomerRecordMapper;
 import com.carddemo.util.FixedWidthFieldReader;
-import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.util.StatementWorkRecordMapper;
 
 /**
  * The statement feature's file-handling subprogram, translated one paragraph at a time from
@@ -56,8 +54,10 @@ import com.carddemo.util.TransactionRecordMapper;
  * <p><strong>This class replaces 13 static call sites.</strong> Every one of them is a
  * {@code CALL 'CBSTM03B' USING LK-M03B-AREA} inside {@code [app/cbl/CBSTM03A.CBL]}, at L351, L377, L401,
  * L734, L746, L769, L787, L805, L835, L860, L877, L893 and L909. All 13 collapse into calls to
- * {@link #execute(StatementFileRequest)} from the statement generator, which is the sole consumer. This
- * class injects <strong>no other service</strong>: four repositories and nothing else.
+     * {@link #execute(StatementFileRequest, StatementTransactionSource)} from the statement generator,
+     * which is the sole consumer. This class injects <strong>no other service</strong>: the three
+     * persistent reference repositories only. The transaction file arrives as the frozen source
+     * materialised by the statement job, never as a second query of the live transaction master.
  *
  * <h2>The parameter object, and why the caller owns the state</h2>
  *
@@ -176,9 +176,9 @@ public final class StatementDataAccessService {
      *
      * <p>It is part of the parameter contract and is therefore declared, but it carries no behaviour
      * whatsoever and no write path exists. A request naming it takes the fall-through of
-     * {@link #execute(StatementFileRequest)} described on that method, exactly as any other operation the
-     * handlers do not test would. Inventing a write path here would be feature expansion; see the
-     * decision log.
+     * {@link #execute(StatementFileRequest, StatementTransactionSource)} described on that method,
+     * exactly as any other operation the handlers do not test would. Inventing a write path here would
+     * be feature expansion; see the decision log.
      */
     public static final String OPERATION_WRITE = "W";
 
@@ -246,22 +246,10 @@ public final class StatementDataAccessService {
     private static final String FIELD_FD_ACCT_ID = "FD-ACCT-ID";
 
     /**
-     * Key order of the transaction file, whose {@code RECORD KEY IS FD-TRNXS-ID} at
-     * {@code [app/cbl/CBSTM03B.CBL:L34]} is the card number followed by the transaction identifier
-     * ({@code [app/cbl/CBSTM03B.CBL:L60-L62]}). The statement job's own sort declares the same two keys
-     * in the same directions ({@code [app/jcl/CREASTMT.JCL:L53]}), and the reporting query on the same
-     * table orders identically, so three artifacts agree and this ordering is contract rather than
-     * inference.
-     */
-    private static final Sort TRANSACTION_KEY_ORDER = Sort.by(Sort.Direction.ASC, "tranCardNum", "tranId");
-
-    /**
      * Key order of the cross-reference file, whose {@code RECORD KEY IS FD-XREF-CARD-NUM} at
      * {@code [app/cbl/CBSTM03B.CBL:L40]} is the card number alone.
      */
     private static final Sort CROSS_REFERENCE_KEY_ORDER = Sort.by(Sort.Direction.ASC, "xrefCardNum");
-
-    private final TransactionRepository transactionRepository;
 
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
@@ -270,22 +258,18 @@ public final class StatementDataAccessService {
     private final AccountRepository accountRepository;
 
     /**
-     * Binds the four repositories that replace the four {@code SELECT} statements of
-     * {@code [app/cbl/CBSTM03B.CBL:L31-L53]}, one apiece and in the order the source declares them.
+     * Binds the three persistent repositories behind the reference-file reads.
      *
-     * @param transactionRepository        stands in for the transaction file; must not be {@code null}
      * @param cardCrossReferenceRepository stands in for the cross-reference file; must not be
      *                                     {@code null}
      * @param customerRepository           stands in for the customer file; must not be {@code null}
      * @param accountRepository            stands in for the account file; must not be {@code null}
      * @throws NullPointerException if any repository is {@code null}
      */
-    public StatementDataAccessService(final TransactionRepository transactionRepository,
+    public StatementDataAccessService(
                                       final CardCrossReferenceRepository cardCrossReferenceRepository,
                                       final CustomerRepository customerRepository,
                                       final AccountRepository accountRepository) {
-        this.transactionRepository =
-                Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
                 "cardCrossReferenceRepository must not be null");
         this.customerRepository =
@@ -560,17 +544,21 @@ public final class StatementDataAccessService {
      * @param request the parameter object, carrying the DD name, the operation, the status on entry, the
      *                key and its runtime length, the payload and the sequential position; must not be
      *                {@code null}
+     * @param transactionSource the frozen projected transaction-work source for this statement run;
+     *                          must not be {@code null}
      * @return the parameter object's written-back components: the raw two-character status, the payload
      *         and the sequential position
-     * @throws NullPointerException     if {@code request} is {@code null}
+     * @throws NullPointerException     if {@code request} or {@code transactionSource} is {@code null}
      * @throws IllegalArgumentException if a keyed read supplies a runtime key length that lies outside the
      *                                 key field, which is the bounds-checked analogue of the source's
      *                                 reference modification at {@code [app/cbl/CBSTM03B.CBL:L189, L214]}
      */
-    public StatementFileResponse execute(final StatementFileRequest request) {
+    public StatementFileResponse execute(final StatementFileRequest request,
+            final StatementTransactionSource transactionSource) {
         Objects.requireNonNull(request, "request must not be null");
+        Objects.requireNonNull(transactionSource, "transactionSource must not be null");
         return switch (request.ddName()) {
-            case DD_TRNXFILE -> performTransactionFileRange(request);
+            case DD_TRNXFILE -> performTransactionFileRange(request, transactionSource);
             case DD_XREFFILE -> performCrossReferenceFileRange(request);
             case DD_CUSTFILE -> performCustomerFileRange(request);
             case DD_ACCTFILE -> performAccountFileRange(request);
@@ -619,8 +607,9 @@ public final class StatementDataAccessService {
      * @param request the parameter object
      * @return the response the range leaves behind
      */
-    private StatementFileResponse performTransactionFileRange(final StatementFileRequest request) {
-        final FileAction action = transactionFileProc(request);
+    private StatementFileResponse performTransactionFileRange(final StatementFileRequest request,
+            final StatementTransactionSource transactionSource) {
+        final FileAction action = transactionFileProc(request, transactionSource);
         final String returnCode = transactionFileExit(request, action);
         return transactionFileTerminalExit(new StatementFileResponse(request.ddName(), returnCode,
                 action.payload(), action.sequentialPosition()));
@@ -641,12 +630,13 @@ public final class StatementDataAccessService {
      * @param request the parameter object
      * @return what the executed verb produced, or an action carrying no status when none executed
      */
-    private FileAction transactionFileProc(final StatementFileRequest request) {
+    private FileAction transactionFileProc(final StatementFileRequest request,
+            final StatementTransactionSource transactionSource) {
         if (request.hasOperation(OPERATION_OPEN)) {
             return openInput(request);
         }
         if (request.hasOperation(OPERATION_READ)) {
-            return readNextTransactionRecord(request);
+            return readNextTransactionRecord(request, transactionSource);
         }
         if (request.hasOperation(OPERATION_CLOSE)) {
             return closeFile(request);
@@ -959,29 +949,24 @@ public final class StatementDataAccessService {
      * {@code READ TRNX-FILE INTO LK-M03B-FLDT} at {@code [app/cbl/CBSTM03B.CBL:L141]} - the sequential
      * read of the transaction file.
      *
-     * <p>Sequential access over an indexed file returns records in record-key order, so the ordering is
-     * supplied explicitly here rather than left to the repository, which imposes none. One record is
-     * requested at the position the parameter object carries, which makes the page index an ordinal record
-     * position; exhausting the file yields the at-end status and leaves both the payload and the position
-     * alone, which is how the caller's read loop terminates at
+     * <p>The statement job's first two steps have already sorted and projected the transaction input.
+     * One frozen projected record is requested at the position the parameter object carries; exhausting
+     * that source yields the at-end status and leaves both the payload and the position alone, which is
+     * how the caller's read loop terminates at
      * {@code [app/cbl/CBSTM03A.CBL:L840-L841]}.
      *
-     * <p>The payload receives the canonical 350-byte transaction record image, rendered by the record
-     * mapper. The legacy statement job first reprojects that record with a sort so the card number leads;
-     * that reprojection is a property of the job step and belongs to the statement job's configuration, not
-     * to this file-handling service, which has no record-layout knowledge of its own by design.
+     * <p>The payload receives the projected 350-byte COSTM01 image unchanged. Parsing belongs to the
+     * statement generator through {@link StatementWorkRecordMapper}; this service performs no
+     * fixed-width slicing.
      *
      * @param request the parameter object, carrying the position to read from
+     * @param transactionSource the frozen projected source
      * @return an action carrying success and the record image, or the at-end status
      */
-    private FileAction readNextTransactionRecord(final StatementFileRequest request) {
-        return this.transactionRepository
-                .findAll(PageRequest.of(request.sequentialPosition(), SINGLE_RECORD_PAGE_SIZE,
-                        TRANSACTION_KEY_ORDER))
-                .stream()
-                .findFirst()
-                .map((Transaction transaction) ->
-                        sequentialReadSucceeded(request, TransactionRecordMapper.toRecord(transaction)))
+    private static FileAction readNextTransactionRecord(final StatementFileRequest request,
+            final StatementTransactionSource transactionSource) {
+        return transactionSource.readAt(request.sequentialPosition())
+                .map(record -> sequentialReadSucceeded(request, record))
                 .orElseGet(() -> atEnd(DD_TRNXFILE, request));
     }
 
@@ -1100,7 +1085,8 @@ public final class StatementDataAccessService {
      * every path out of a handler. What it yields depends on whether a verb executed: if one did, the
      * status that verb produced; if none did, <strong>the status the caller supplied on entry, returned
      * unchanged</strong>. The second case is the fall-through of the source's three unguarded tests, and
-     * preserving it is deliberate - see {@link #execute(StatementFileRequest)}.
+     * preserving it is deliberate - see
+     * {@link #execute(StatementFileRequest, StatementTransactionSource)}.
      *
      * @param ddName  the DD name, for the diagnostic only
      * @param request the parameter object, supplying the status carried on entry

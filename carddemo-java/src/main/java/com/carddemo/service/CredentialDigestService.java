@@ -73,10 +73,14 @@ import org.springframework.stereotype.Service;
  * length. Each digest embeds its own random salt, so encoding the same credential twice yields two
  * different digests and no equality test between digests is ever meaningful.
  *
- * <p>The cost factor is left at the encoder's own default rather than being exposed as a
- * configuration knob. The legacy system has no antecedent for a work factor and the migration
- * establishes no performance baseline to tune one against, so introducing a setting whose only
- * possible justification would be a figure this project does not have would be unwarranted.
+ * <p>The cost factor is <strong>{@value #HASHING_STRENGTH}</strong>, published by this class as
+ * {@link #HASHING_STRENGTH} and deliberately above the encoder library's own default, because the
+ * value it protects is a credential. It is not exposed as a configuration knob: the legacy system has
+ * no antecedent for a work factor and the migration establishes no performance baseline to tune one
+ * against, so a setting whose only possible justification would be a figure this project does not
+ * have would be unwarranted. It is a resistance parameter - each increment doubles the work of both a
+ * legitimate verification and an attacker's guess - and asserts no latency, throughput or service
+ * level of any kind.
  *
  * <h2>Not to be confused with field encryption</h2>
  *
@@ -95,9 +99,27 @@ import org.springframework.stereotype.Service;
  * password. Nothing here writes a credential, a digest or any fragment of either to a log.
  *
  * <p>This class holds one stateless encoder and is safe for concurrent use by any number of callers.
- * When the sign-on transaction and the security configuration named by the entity documentation are
- * written, they must obtain digests from this service rather than construct a second encoder, so
- * that one cost factor governs every credential in the module.
+ *
+ * <h2>One hashing policy, one constant, and where the other encoder comes from</h2>
+ *
+ * <p>The module publishes a second {@code PasswordEncoder} as a bean from its security
+ * configuration, because the administrative user-maintenance path writes digests through the
+ * framework's own abstraction rather than through this class. Two encoder <em>instances</em> are
+ * therefore live at once, and that is only safe if they cannot disagree about strength - a digest
+ * written at one cost and expected at another is not a verification failure, it is a silent policy
+ * split, and the weaker of the two becomes the module's real strength.
+ *
+ * <p>They cannot disagree, because there is exactly one place the strength is written down:
+ * {@link #HASHING_STRENGTH}, declared here. The configuration's encoder bean reads this constant
+ * rather than restating a number, which is the permitted direction - configuration may depend on a
+ * service and a service may never depend on configuration - so this class is the authority for the
+ * policy even where it is not the instance doing the work. Changing the strength is a one-line change
+ * here that both encoders follow.
+ *
+ * <p>Verification is unaffected by any past change of strength: a BCrypt digest carries its own cost
+ * factor, so a value written at an earlier strength keeps verifying, and
+ * {@link #isDigest(String)} accepts the whole declared range rather than only the current
+ * strength.
  *
  * <p>Provenance: repository SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
@@ -122,6 +144,24 @@ public final class CredentialDigestService {
     public static final int DIGEST_LENGTH = 60;
 
     /**
+     * The module's single credential-hashing strength, and the only place it is written down.
+     *
+     * <p>Published so that every encoder in the module reads one number. This class builds its own
+     * encoder at this strength, and the security configuration's {@code PasswordEncoder} bean is
+     * built at this strength too by reading this constant - which is what makes "one hashing policy"
+     * an enforced property rather than a coincidence of two literals that happen to agree today. The
+     * dependency runs configuration-to-service, the direction the module's layering permits; the
+     * reverse would not be allowed and is why the constant lives here rather than beside the bean.
+     *
+     * <p>The value is above the encoder library's own default because what it protects is a
+     * credential. It is a resistance parameter and not a latency, throughput or capacity figure, and
+     * it asserts no service level. Raising it later costs nothing to already-stored digests: each
+     * digest carries the cost it was produced at, so old values keep verifying and are simply
+     * rewritten at the current strength the next time the credential is set.
+     */
+    public static final int HASHING_STRENGTH = 12;
+
+    /**
      * Lowest cost factor a digest may declare. Package-private so the test in this package asserts
      * the accepted range against the same constant the check uses.
      */
@@ -143,16 +183,22 @@ public final class CredentialDigestService {
     private final BCryptPasswordEncoder encoder;
 
     /**
-     * Creates the service with the encoder's default cost factor.
+     * Creates the service at the module's single hashing strength.
      *
-     * <p>The constructor takes no configuration and reads no property, because there is no secret
-     * and no tunable involved: a BCrypt digest carries its own salt and its own cost factor inside
-     * the stored value, so nothing external has to be supplied to verify one later.
+     * <p>The strength is {@link #HASHING_STRENGTH} rather than the encoder library's default, so that
+     * a digest produced here and a digest produced by the security configuration's encoder bean - the
+     * other live encoder in the module - are produced at the same cost. Leaving this at the library
+     * default was the defect that made the module carry two hashing policies at once, the weaker of
+     * which would have been its real strength.
+     *
+     * <p>The constructor takes no configuration and reads no property, because there is no secret and
+     * no tunable involved: a BCrypt digest carries its own salt and its own cost factor inside the
+     * stored value, so nothing external has to be supplied to verify one later.
      */
     public CredentialDigestService() {
-        this.encoder = new BCryptPasswordEncoder();
-        LOG.info("CREDENTIAL DIGESTS CONFIGURED FOR THE {}-CHARACTER BCRYPT FORM ON {}",
-                DIGEST_LENGTH, USER_SECURITY_PWD_FIELD);
+        this.encoder = new BCryptPasswordEncoder(HASHING_STRENGTH);
+        LOG.info("CREDENTIAL DIGESTS CONFIGURED FOR THE {}-CHARACTER BCRYPT FORM AT STRENGTH {} ON {}",
+                DIGEST_LENGTH, HASHING_STRENGTH, USER_SECURITY_PWD_FIELD);
     }
 
     /**

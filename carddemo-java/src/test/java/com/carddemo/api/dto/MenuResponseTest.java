@@ -16,7 +16,7 @@
  */
 package com.carddemo.api.dto;
 
-import com.carddemo.service.MenuOptionCatalog;
+import com.carddemo.config.MenuOptionCatalog;
 import com.carddemo.service.MessageCatalogService;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -53,13 +53,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * application produces.
  *
  * <p><strong>Every expectation is an independent oracle.</strong> The constants below are restated
- * from the legacy artefacts rather than read back from the class under test, so a change to the
- * contract fails a test instead of quietly redefining the expectation: {@code app/cpy/COTTL01Y.cpy}
- * for the three forty-character titles, {@code app/cpy/CSMSG01Y.cpy} for the two fifty-character
- * common messages, {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} for the two option
- * catalogs and their counts, {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} for
- * the header items and their widths, and {@code app/cbl/COMEN01C.cbl} with
- * {@code app/cbl/COADM01C.cbl} for the message texts and the two screen identities.
+ * from the legacy artefacts rather than read back from the class under test <em>or from any other
+ * production class</em>, so a change to the contract fails a test instead of quietly redefining the
+ * expectation: {@code app/cpy/COTTL01Y.cpy} for the three forty-character titles,
+ * {@code app/cpy/CSMSG01Y.cpy} for the two fifty-character common messages,
+ * {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} for the two option catalogs and their
+ * counts, {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} for the header items and
+ * their widths, and {@code app/cbl/COMEN01C.cbl} with {@code app/cbl/COADM01C.cbl} for the message
+ * texts and the two screen identities. The module's own producers of this content -
+ * {@link MessageCatalogService} for the titles and {@link MenuOptionCatalog} for the rows - are read in
+ * exactly one group, {@code CrossComponentAgreement}, and only ever as the <em>subject</em> of an
+ * equality against these literals. Deriving an expectation from either would make it agree by
+ * construction and let a defect shared by producer and projection pass.
  *
  * <h2>Contract, not defect</h2>
  *
@@ -118,9 +123,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h2>Deliberate exclusions</h2>
  *
- * <p>This test imports no configuration-layer type, so the option catalog bean is never reached for:
- * this package sits above the configuration layer in the dependency direction and importing it would
- * invert the layering. It imports no domain enumeration, so the option row's user-type byte is treated
+ * <p>This test imports no configuration-layer type: the two owners it does read both sit in the
+ * service layer, and reaching into the configuration layer would invert the dependency direction this
+ * package sits above. It imports no domain enumeration, so the option row's user-type byte is treated
  * as the raw character it is. It imports no string utility, because the legacy blank-to-zero fill over
  * the right-justified two-character entry field belongs to the menu service and is asserted absent
  * here instead. It imports no date or time type, because every rendered header item crosses as text at
@@ -141,41 +146,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MenuResponseTest {
 
     /*
-     * THE CANONICAL OWNERS, READ HERE RATHER THAN RE-DECLARED.
+     * WHERE THE EXPECTATIONS COME FROM, AND WHERE THEY DELIBERATELY DO NOT.
      *
-     * The response contract deliberately declares no title text and no option catalogue: the titles
-     * are owned by com.carddemo.service.MessageCatalogService and the rows by
-     * com.carddemo.service.MenuOptionCatalog, and a second declaration anywhere would be a second
-     * authority that can drift from the first. This suite therefore takes its expectations from those
-     * owners, which is what makes an assertion here evidence about the module rather than evidence
-     * about a copy of it. A test may read any layer; the contract under test may not.
-     */
-
-    /** The first screen title line, as its owner publishes it at its full declared width. */
-    private static final String SCREEN_TITLE_LINE_1 = MessageCatalogService.CCDA_TITLE01;
-
-    /** The second screen title line, as its owner publishes it at its full declared width. */
-    private static final String SCREEN_TITLE_LINE_2 = MessageCatalogService.CCDA_TITLE02;
-
-    /** The forty-character acknowledgement of the title copybook, as its owner publishes it. */
-    private static final String SCREEN_TITLE_THANK_YOU = MessageCatalogService.CCDA_THANK_YOU;
-
-    /**
-     * The ten user rows projected exactly as the producer projects them: number and label only.
+     * The response contract declares no title text and no option catalogue: the titles are owned by
+     * com.carddemo.service.MessageCatalogService and the rows by
+     * com.carddemo.config.MenuOptionCatalog. It is tempting to take this suite's expectations from
+     * those owners, because they are the module's single authority and a second declaration looks
+     * like a second authority that can drift. That temptation is refused here, and the reason is
+     * exactly the one that makes a test worth running: an expectation derived from a production class
+     * agrees with that class by construction, so a defect present in both the producer and this DTO's
+     * projection of it would pass unnoticed. Every expectation below is therefore restated from the
+     * legacy artefact - app/cpy/COTTL01Y.cpy for the titles, app/cpy/COMEN02Y.cpy and
+     * app/cpy/COADM02Y.cpy for the two catalogues - and read back from nothing.
      *
-     * <p>The target program name and the one-character user-type code the catalogue also holds are
-     * dispatch and authorization inputs, so they stay behind and are not published on the wire.</p>
+     * The two production owners are still compared against, in one place: see
+     * CrossComponentAgreement below, where their published values are asserted to equal these
+     * independent oracles. That keeps the drift detection the coupling was there for, as an
+     * assertion, without ever letting a production class generate an expected value.
      */
-    private static final List<MenuResponse.UserMenuOption> CANONICAL_USER_MENU_OPTIONS =
-            new MenuOptionCatalog().userMenuOptions().stream()
-                    .map(row -> new MenuResponse.UserMenuOption(row.number(), row.label()))
-                    .toList();
-
-    /** The four administrative rows projected the same way, number and label only. */
-    private static final List<MenuResponse.AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS =
-            new MenuOptionCatalog().adminMenuOptions().stream()
-                    .map(row -> new MenuResponse.AdminMenuOption(row.number(), row.label()))
-                    .toList();
 
     // ---------------------------------------------------------------------------------------------
     // Independent oracles: the forty-character title family, app/cpy/COTTL01Y.cpy
@@ -267,6 +255,40 @@ class MenuResponseTest {
 
     /** The label of option 8 at its declared width, to prove a padded value is not re-trimmed. */
     private static final String ORACLE_OPTION_EIGHT_LABEL_PADDED = "Transaction Add                    ";
+
+    // ---------------------------------------------------------------------------------------------
+    // The values handed to the contract under test, all taken from the oracles declared above
+    //
+    // These are the arguments the factory methods are called with throughout the suite. They are
+    // aliases of the independent oracles rather than reads of MessageCatalogService or
+    // MenuOptionCatalog, so a response is always built from a value this file authored. Declared here,
+    // below the oracles they alias, because a static initialiser runs in textual order and a forward
+    // reference by simple name does not compile.
+    // ---------------------------------------------------------------------------------------------
+
+    /** The first screen title line, at its full declared width, as the screens display it. */
+    private static final String SCREEN_TITLE_LINE_1 = ORACLE_TITLE_LINE_1;
+
+    /** The second screen title line, at its full declared width. */
+    private static final String SCREEN_TITLE_LINE_2 = ORACLE_TITLE_LINE_2;
+
+    /** The forty-character acknowledgement of the title copybook. */
+    private static final String SCREEN_TITLE_THANK_YOU = ORACLE_TITLE_THANK_YOU;
+
+    /**
+     * The ten user rows projected as the producer projects them: number and label only.
+     *
+     * <p>The target program name and the one-character user-type code the catalogue also holds are
+     * dispatch and authorization inputs, so they stay behind and are not published on the wire. The
+     * rows are built from {@link #ORACLE_USER_LABELS}, numbered from one in declaration order, so the
+     * projection asserted anywhere in this suite is one this file composed.</p>
+     */
+    private static final List<MenuResponse.UserMenuOption> CANONICAL_USER_MENU_OPTIONS =
+            oracleUserOptions();
+
+    /** The four administrative rows projected the same way, number and label only. */
+    private static final List<MenuResponse.AdminMenuOption> CANONICAL_ADMIN_MENU_OPTIONS =
+            oracleAdminOptions();
 
     // ---------------------------------------------------------------------------------------------
     // Independent oracles: the two screen identities and the header widths
@@ -492,6 +514,23 @@ class MenuResponseTest {
         return List.copyOf(rows);
     }
 
+    /**
+     * The option numbers a catalog of the given size must carry: one through the count, in order.
+     *
+     * <p>Both copybooks number their rows from one in declaration order, and neither skips a number,
+     * so the expected sequence is composed here rather than read from a catalog.</p>
+     *
+     * @param count how many rows the catalog declares
+     * @return the expected numbers in order
+     */
+    private static List<Integer> numbersFromOne(int count) {
+        List<Integer> numbers = new ArrayList<>();
+        for (int number = 1; number <= count; number++) {
+            numbers.add(number);
+        }
+        return List.copyOf(numbers);
+    }
+
     /** A user collection of an arbitrary size, so a wrong size can be offered deliberately. */
     private static List<MenuResponse.UserMenuOption> userOptionsSized(int size) {
         List<MenuResponse.UserMenuOption> rows = new ArrayList<>();
@@ -562,17 +601,30 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("publishes the declared title width and all three title values unaltered")
+        @DisplayName("publishes the declared title width and hands all three title values back unaltered")
         void publishesAllThreeTitlesAtTheDeclaredWidth() {
+            // The values are asserted where they have actually crossed the contract - built into a
+            // response and read back out - rather than by comparing two constants of this file, which
+            // would prove nothing about MenuResponse. Whether the module's own title producer still
+            // agrees with the copybook is a separate claim, made once in CrossComponentAgreement.
             assertThat(MenuResponse.SCREEN_TITLE_WIDTH).isEqualTo(ORACLE_SCREEN_TITLE_WIDTH);
 
-            assertThat(SCREEN_TITLE_LINE_1)
+            MenuResponse carried = MenuResponse.forUserMenu(ORACLE_TITLE_LINE_1, ORACLE_TITLE_LINE_2,
+                    RENDERED_DATE, RENDERED_TIME, oracleUserOptions(), null,
+                    ORACLE_TITLE_THANK_YOU, MenuResponse.MessageSeverity.INFORMATIONAL, false, null,
+                    null, navigationState());
+
+            assertThat(carried.title01())
+                    .as("the first title crosses at its declared width with its padding intact")
                     .isEqualTo(ORACLE_TITLE_LINE_1)
                     .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
-            assertThat(SCREEN_TITLE_LINE_2)
+            assertThat(carried.title02())
+                    .as("the active second title crosses unaltered")
                     .isEqualTo(ORACLE_TITLE_LINE_2)
                     .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
-            assertThat(SCREEN_TITLE_THANK_YOU)
+            assertThat(carried.message())
+                    .as("a forty-character title placed in the message field is neither re-padded to "
+                            + "the message width nor trimmed")
                     .isEqualTo(ORACLE_TITLE_THANK_YOU)
                     .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
         }
@@ -1836,14 +1888,29 @@ class MenuResponseTest {
         @DisplayName("is immutable by construction: no component can be replaced in place")
         void isImmutableByConstruction() {
             // Demonstrated by construction rather than by inspecting the type. A record has no mutator
-            // to call, so the proof available at runtime is that repeated reads agree, that a
-            // "modified" value requires a wholly new instance, and that the original is unaffected by
-            // producing one. The collections were already shown detached and unmodifiable above.
+            // to call, so the proof available at runtime is that repeated reads return the value the
+            // instance was built from, that no read hands back a fresh object, that a "modified" value
+            // requires a wholly new instance, and that the original is unaffected by producing one. The
+            // collections were already shown detached and unmodifiable above.
+            //
+            // Each read is anchored to a reference captured before it, never to a second call of the
+            // same accessor: an accessor compared with itself would agree even if it returned a wrong
+            // value on every call, and would therefore prove neither the stored value nor the absence
+            // of a copy.
             MenuResponse original = populatedUserMenu();
+            String heldTitle = original.title01();
+            List<MenuResponse.UserMenuOption> heldRows = original.userMenuOptions();
+            NavigationContext heldContext = original.navigationContext();
 
-            assertThat(original.title01()).isSameAs(original.title01());
-            assertThat(original.userMenuOptions()).isSameAs(original.userMenuOptions());
-            assertThat(original.navigationContext()).isSameAs(original.navigationContext());
+            assertThat(heldTitle).isEqualTo(ORACLE_TITLE_LINE_1);
+            assertThat(heldRows).containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
+            assertThat(heldContext).isEqualTo(navigationState());
+
+            assertThat(original.title01())
+                    .as("a repeated read hands back the very same value, so no copy is made on read")
+                    .isSameAs(heldTitle);
+            assertThat(original.userMenuOptions()).isSameAs(heldRows);
+            assertThat(original.navigationContext()).isSameAs(heldContext);
 
             MenuResponse rebuilt = MenuResponse.forUserMenu(SCREEN_TITLE_LINE_1, SCREEN_TITLE_LINE_2,
                     original.currentDate(),
@@ -1990,15 +2057,28 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("publishes both canonical lists unmodifiable and equal to the hand-built oracles")
+        @DisplayName("carries both option shapes with the copybook's own labels and numbers, and the "
+                + "collections handed in cannot be grown afterwards")
         void publishesBothCanonicalListsUnmodifiable() {
             MenuResponse.UserMenuOption extraUserMenuRow = new MenuResponse.UserMenuOption(11, "Extra");
             MenuResponse.AdminMenuOption extraAdminRow = new MenuResponse.AdminMenuOption(5, "Extra");
 
+            // The content claim is made against the copybook labels and the numbering rule, both
+            // authored in this file, so it can fail; comparing the composed rows with a second
+            // composition of the same rows could not.
             assertThat(CANONICAL_USER_MENU_OPTIONS)
-                    .containsExactlyElementsOf(oracleUserOptions());
+                    .extracting(MenuResponse.UserMenuOption::label)
+                    .containsExactlyElementsOf(ORACLE_USER_LABELS);
+            assertThat(CANONICAL_USER_MENU_OPTIONS)
+                    .extracting(MenuResponse.UserMenuOption::number)
+                    .containsExactlyElementsOf(numbersFromOne(ORACLE_USER_MENU_OPTION_COUNT));
             assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
-                    .containsExactlyElementsOf(oracleAdminOptions());
+                    .extracting(MenuResponse.AdminMenuOption::label)
+                    .containsExactlyElementsOf(ORACLE_ADMIN_LABELS);
+            assertThat(CANONICAL_ADMIN_MENU_OPTIONS)
+                    .extracting(MenuResponse.AdminMenuOption::number)
+                    .containsExactlyElementsOf(numbersFromOne(ORACLE_ADMIN_MENU_OPTION_COUNT));
+
             assertThatThrownBy(() -> CANONICAL_USER_MENU_OPTIONS.add(extraUserMenuRow))
                     .isInstanceOf(UnsupportedOperationException.class);
             assertThatThrownBy(() -> CANONICAL_ADMIN_MENU_OPTIONS.add(extraAdminRow))
@@ -2050,6 +2130,96 @@ class MenuResponseTest {
                     .isEqualTo(ORACLE_OPTION_EIGHT_LABEL);
             assertThat(payloadOf(paddedRow).get("label").asText())
                     .isEqualTo(ORACLE_OPTION_EIGHT_LABEL_PADDED);
+        }
+    }
+
+    /**
+     * The one place the two production owners of this screen's content are read, and they are
+     * <em>compared against</em> here rather than trusted to supply an expectation.
+     *
+     * <p>The titles belong to {@link MessageCatalogService} and the option rows to
+     * {@link MenuOptionCatalog}. Every other assertion in this suite is authored from the legacy
+     * artefacts, which is what keeps it capable of failing; this group closes the remaining question -
+     * whether the module's own producers still agree with those artefacts - by asserting the agreement
+     * as a property of the two producers. The direction matters and is the whole point: an expectation
+     * <em>derived</em> from a producer agrees with it by construction and would pass even if producer
+     * and projection were wrong together, whereas an equality asserted <em>between</em> a producer and
+     * an independent literal fails the moment either one moves.</p>
+     */
+    @Nested
+    @DisplayName("Cross-component agreement with the two production owners of this content")
+    class CrossComponentAgreement {
+
+        @Test
+        @DisplayName("the message catalog publishes the three titles exactly as the copybook writes "
+                + "them, at their declared width")
+        void theMessageCatalogAgreesWithTheTitleCopybook() {
+            assertThat(MessageCatalogService.CCDA_TITLE01)
+                    .as("app/cpy/COTTL01Y.cpy line 19, six leading and seven trailing spaces intact")
+                    .isEqualTo(ORACLE_TITLE_LINE_1)
+                    .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
+            assertThat(MessageCatalogService.CCDA_TITLE02)
+                    .as("app/cpy/COTTL01Y.cpy line 22, the active alternative of the pair")
+                    .isEqualTo(ORACLE_TITLE_LINE_2)
+                    .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
+            assertThat(MessageCatalogService.CCDA_THANK_YOU)
+                    .as("app/cpy/COTTL01Y.cpy line 24, ending in one significant trailing space")
+                    .isEqualTo(ORACLE_TITLE_THANK_YOU)
+                    .hasSize(ORACLE_SCREEN_TITLE_WIDTH);
+            assertThat(MessageCatalogService.CCDA_TITLE02)
+                    .as("the alternative commented out at line 21 never became the contract")
+                    .isNotEqualTo(ORACLE_INACTIVE_TITLE_LINE_2);
+        }
+
+        @Test
+        @DisplayName("the option catalog publishes the ten user rows and the four administrative rows "
+                + "the two copybooks declare, in declaration order")
+        void theOptionCatalogAgreesWithTheTwoOptionCopybooks() {
+            MenuOptionCatalog catalog = new MenuOptionCatalog();
+
+            assertThat(catalog.userMenuOptions())
+                    .as("app/cpy/COMEN02Y.cpy declares ten rows within a larger table view")
+                    .hasSize(ORACLE_USER_MENU_OPTION_COUNT)
+                    .extracting(row -> row.label())
+                    .containsExactlyElementsOf(ORACLE_USER_LABELS);
+            assertThat(catalog.userMenuOptions())
+                    .extracting(row -> row.number())
+                    .containsExactlyElementsOf(numbersFromOne(ORACLE_USER_MENU_OPTION_COUNT));
+
+            assertThat(catalog.adminMenuOptions())
+                    .as("app/cpy/COADM02Y.cpy declares four rows within a larger table view")
+                    .hasSize(ORACLE_ADMIN_MENU_OPTION_COUNT)
+                    .extracting(row -> row.label())
+                    .containsExactlyElementsOf(ORACLE_ADMIN_LABELS);
+            assertThat(catalog.adminMenuOptions())
+                    .extracting(row -> row.number())
+                    .containsExactlyElementsOf(numbersFromOne(ORACLE_ADMIN_MENU_OPTION_COUNT));
+        }
+
+        @Test
+        @DisplayName("the option catalog's row for option 8 carries the active label and never the "
+                + "commented-out administrator-only alternative")
+        void theOptionCatalogNeverRevivesTheInactiveLabel() {
+            assertThat(new MenuOptionCatalog().userMenuOptions())
+                    .extracting(row -> row.label())
+                    .doesNotContain(ORACLE_INACTIVE_OPTION_EIGHT_LABEL)
+                    .contains(ORACLE_OPTION_EIGHT_LABEL);
+        }
+
+        @Test
+        @DisplayName("projecting the catalog's rows onto the wire shape yields exactly the rows this "
+                + "suite builds by hand, so the projection loses nothing and invents nothing")
+        void projectingTheCatalogYieldsTheHandBuiltRows() {
+            MenuOptionCatalog catalog = new MenuOptionCatalog();
+
+            assertThat(catalog.userMenuOptions().stream()
+                    .map(row -> new MenuResponse.UserMenuOption(row.number(), row.label()))
+                    .toList())
+                    .containsExactlyElementsOf(CANONICAL_USER_MENU_OPTIONS);
+            assertThat(catalog.adminMenuOptions().stream()
+                    .map(row -> new MenuResponse.AdminMenuOption(row.number(), row.label()))
+                    .toList())
+                    .containsExactlyElementsOf(CANONICAL_ADMIN_MENU_OPTIONS);
         }
     }
 }

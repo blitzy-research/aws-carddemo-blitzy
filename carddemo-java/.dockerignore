@@ -324,16 +324,15 @@ core.[0-9]*
 !src/main/resources/logback-spring.xml
 !src/main/resources/banner.txt
 
-# Schema migrations - all four, across the two sibling locations that carry them - and the externalised
-# validation lookup tables. The single recursive re-include below covers both: db/migration/schema
-# holds V1 and V2 and is resolved by every profile, db/migration/seed holds V3 and V4 and is resolved
-# by the local and test profiles only, and their shared parent holds no script at all.
+# Schema migrations - all four, flat in the one location that carries them - and the externalised
+# validation lookup tables. The single recursive re-include below covers the whole set: db/migration
+# holds V1 through V4 side by side, with no subdirectory, and every profile resolves that one location.
 #
 # The two seed scripts are included deliberately: an image is run under the local and test profiles
 # as well as production, so they must be present on the image class path for those profiles to find
 # them. Production does not reach them, and it does not rely on their absence from the image to
-# achieve that - it resolves the schema location alone, with FlywayConfig refusing it the seed location
-# outright and additionally refusing a ceiling that reaches a seed version, and
+# achieve that - it stops at version 2, with FlywayConfig refusing a ceiling that reaches a seed
+# version and refusing any location other than the packaged one, and
 # ProductionSeedRejectionCallback refusing a start-up whose database has ever had one applied.
 # Excluding them from the image would be a control that only looks like one, because it would break
 # local and test instead. See docs/decision-log.md DL-127.

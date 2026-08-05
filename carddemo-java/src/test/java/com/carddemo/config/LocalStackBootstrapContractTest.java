@@ -112,7 +112,7 @@ final class LocalStackBootstrapContractTest {
     private static final String BUCKET = "carddemo-batch-staging";
 
     /** The canonical queue. The suffix is required by the service, not decoration. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /** The suffix a first-in-first-out queue name must carry. */
     private static final String FIFO_SUFFIX = ".fifo";
@@ -126,8 +126,12 @@ final class LocalStackBootstrapContractTest {
     /** The canonical region. */
     private static final String REGION = "us-east-1";
 
-    /** The emulator image tag, pinned identically in the stack definition and in the test harness. */
-    private static final String EMULATOR_IMAGE = "localstack/localstack:4.14.0";
+    /** The readable emulator tag shared with the Testcontainers harness. */
+    private static final String EMULATOR_IMAGE_TAG = "localstack/localstack:4.14.0";
+
+    /** The immutable image reference used by Compose. */
+    private static final String EMULATOR_IMAGE = EMULATOR_IMAGE_TAG
+            + "@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a";
 
     /** The exact attribute pair the queue is created with. */
     private static final String QUEUE_ATTRIBUTES = "FifoQueue=true,ContentBasedDeduplication=false";
@@ -303,7 +307,7 @@ final class LocalStackBootstrapContractTest {
         @CsvSource({
             "AWS_DEFAULT_REGION,            us-east-1",
             "CARDDEMO_S3_BUCKET,            carddemo-batch-staging",
-            "CARDDEMO_SQS_QUEUE,            carddemo-jobs.fifo",
+            "CARDDEMO_SQS_QUEUE,            JOBS.fifo",
             "CARDDEMO_SQS_MESSAGE_GROUP_ID, carddemo-job-submission",
             "CARDDEMO_SNS_TOPIC,            carddemo-job-notifications",
         })
@@ -335,7 +339,7 @@ final class LocalStackBootstrapContractTest {
                             + "- because what the plan freezes for this resource is the target name it "
                             + "prescribes, while the legacy name is carried by the operator-visible "
                             + "failure message, which is the contract actually compared byte for byte")
-                    .isEqualTo("carddemo-jobs");
+                    .isEqualTo("JOBS");
             assertThat(executableBody()).contains(QUEUE);
         }
     }
@@ -596,7 +600,7 @@ final class LocalStackBootstrapContractTest {
         @ParameterizedTest(name = "{0}")
         @ValueSource(strings = {
             "carddemo-batch-staging",
-            "carddemo-jobs.fifo",
+            "JOBS.fifo",
             "carddemo-job-submission",
             "carddemo-job-notifications",
         })
@@ -672,8 +676,9 @@ final class LocalStackBootstrapContractTest {
                     .as("the stack definition must pin the emulator image")
                     .contains("image: " + EMULATOR_IMAGE);
             assertThat(read("src/test/java/com/carddemo/support/AbstractLocalStackIT.java"))
-                    .as("the integration harness must pin the same tag as the stack definition")
-                    .contains("\"" + EMULATOR_IMAGE + "\"");
+                    .as("the integration harness must pin the same readable tag; Compose adds the "
+                            + "immutable digest because it is a deployable stack definition")
+                    .contains("\"" + EMULATOR_IMAGE_TAG + "\"");
         }
 
         @Test
@@ -920,12 +925,22 @@ final class LocalStackBootstrapContractTest {
             // The port has to be movable because more than one stack may run on one host. Both halves
             // of the address are environment-substituted with the canonical default, and the stack
             // definition maps the same variable onto the container's fixed edge port.
+            //
+            // This expectation used to be the whole mapping, "${LOCALSTACK_PORT:-4566}:4566". That shape
+            // published the edge port on EVERY host interface, which handed a network peer an emulator
+            // holding this module's staged batch files and its job-submission queue. The mapping now
+            // carries a host address as well, so the assertion is written as the two properties it
+            // actually cares about - the port is still redirectable through the same variable, and the
+            // binding is loopback by default - rather than as one literal that conflates them and goes
+            // stale the moment either changes. LocalValidationStackExposureTest owns the binding rule for
+            // every service; this asserts it for the one whose endpoint contract lives in this file.
             assertThat(EMULATOR_ENDPOINT)
                     .contains("${LOCALSTACK_HOST:localhost}")
                     .contains("${LOCALSTACK_PORT:4566}");
             assertThat(read(COMPOSE_PATH))
-                    .as("the stack definition must publish the edge port through the same variable")
-                    .contains("\"${LOCALSTACK_PORT:-4566}:4566\"");
+                    .as("the stack definition must publish the edge port through the same variable, "
+                            + "bound to the loopback interface by default")
+                    .contains("\"${LOCALSTACK_BIND_ADDRESS:-127.0.0.1}:${LOCALSTACK_PORT:-4566}:4566\"");
         }
 
         @Test

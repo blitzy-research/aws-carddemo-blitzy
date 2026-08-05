@@ -17,8 +17,13 @@
 package com.carddemo.service;
 
 import java.math.BigDecimal;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -38,12 +43,17 @@ import org.springframework.data.domain.Sort;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Card;
+import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.AccountRepository;
+import com.carddemo.repository.AccountScanRepository;
+import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.CardCrossReferenceScanRepository;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.CardScanRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 
@@ -58,8 +68,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Verifies {@code FileMaintenanceService}, the four sequential readers and the two-level I/O status model
- * that every batch member of the estate shares.
+ * Verifies {@code FileMaintenanceService}, the four member-owned sequential readers, the neutral
+ * category-balance unload and the two-level I/O status model that the batch estate shares.
  *
  * <p>Four legacy members converge on the class under test: {@code app/cbl/CBACT01C.cbl} with six
  * paragraphs, and {@code app/cbl/CBACT02C.cbl}, {@code app/cbl/CBACT03C.cbl} and
@@ -88,7 +98,7 @@ import static org.mockito.Mockito.when;
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  */
-@DisplayName("FileMaintenanceService: four sequential readers over one two-level status model")
+@DisplayName("FileMaintenanceService: four member readers and one unload over one status model")
 final class FileMaintenanceServiceTest {
 
     /** The raw status a failed repository operation reports; source-observed, unlike 22 and 35. */
@@ -102,7 +112,15 @@ final class FileMaintenanceServiceTest {
 
     private AccountRepository accountRepository;
 
+    private AccountScanRepository accountScanRepository;
+
     private CardRepository cardRepository;
+
+    private CardScanRepository cardScanRepository;
+
+    private CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    private CardCrossReferenceScanRepository cardCrossReferenceScanRepository;
 
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
@@ -121,11 +139,58 @@ final class FileMaintenanceServiceTest {
     @BeforeEach
     void setUp() {
         this.accountRepository = mock(AccountRepository.class);
+        this.accountScanRepository = (cursor, limit) ->
+                afterCursor(
+                        this.accountRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "acctId")),
+                        cursor, limit.max(), Account::getAcctId);
         this.cardRepository = mock(CardRepository.class);
-        this.transactionCategoryBalanceRepository = mock(TransactionCategoryBalanceRepository.class);
-        this.customerRepository = mock(CustomerRepository.class);
-        this.service = new FileMaintenanceService(this.accountRepository, this.cardRepository,
-                this.transactionCategoryBalanceRepository, this.customerRepository, new AbendService());
+        this.cardScanRepository = (cursor, limit) ->
+                afterCursor(
+                        this.cardRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "cardNum")),
+                        cursor, limit.max(), Card::getCardNum);
+        this.cardCrossReferenceRepository = mock(CardCrossReferenceRepository.class);
+        this.cardCrossReferenceScanRepository = (cursor, limit) ->
+                afterCursor(
+                        this.cardCrossReferenceRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "xrefCardNum")),
+                        cursor, limit.max(), CardCrossReference::getXrefCardNum);
+        this.transactionCategoryBalanceRepository = mock(
+                TransactionCategoryBalanceRepository.class, invocation -> {
+                    if (invocation.getMethod().getName().equals("findAfterKey")) {
+                        final String cursor = (String) invocation.getArgument(0)
+                                + invocation.getArgument(1) + invocation.getArgument(2);
+                        final org.springframework.data.domain.Pageable page =
+                                invocation.getArgument(3);
+                        return afterCursor(
+                                this.transactionCategoryBalanceRepository.findAll(
+                                        Sort.by(Sort.Direction.ASC, "trancatAcctId",
+                                                "trancatTypeCd", "trancatCd")),
+                                cursor, page.getPageSize(),
+                                balance -> balance.getTrancatAcctId()
+                                        + balance.getTrancatTypeCd() + balance.getTrancatCd());
+                    }
+                    return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+                });
+        this.customerRepository = mock(CustomerRepository.class, invocation -> {
+            if (invocation.getMethod().getName()
+                    .equals("findByCustIdGreaterThanOrderByCustIdAsc")) {
+                final String cursor = invocation.getArgument(0);
+                final org.springframework.data.domain.Limit limit = invocation.getArgument(1);
+                return afterCursor(
+                        this.customerRepository.findAll(
+                                Sort.by(Sort.Direction.ASC, "custId")),
+                        cursor, limit.max(), Customer::getCustId);
+            }
+            return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+        });
+        this.service = new FileMaintenanceService(
+                this.accountRepository, this.accountScanRepository,
+                this.cardRepository, this.cardScanRepository,
+                this.cardCrossReferenceRepository, this.cardCrossReferenceScanRepository,
+                this.transactionCategoryBalanceRepository, this.customerRepository,
+                new AbendService());
 
         this.appender = new ListAppender<>();
         this.appender.start();
@@ -135,6 +200,17 @@ final class FileMaintenanceServiceTest {
         this.serviceLogger.setLevel(Level.TRACE);
         this.serviceLogger.addAppender(this.appender);
         this.abendLogger.addAppender(this.appender);
+    }
+
+    private static <T> List<T> afterCursor(
+            final List<T> rows,
+            final String cursor,
+            final int limit,
+            final Function<T, String> keyExtractor) {
+        return rows.stream()
+                .filter(row -> keyExtractor.apply(row).compareTo(cursor) > 0)
+                .limit(limit)
+                .toList();
     }
 
     @AfterEach
@@ -167,6 +243,10 @@ final class FileMaintenanceServiceTest {
         return new Account(acctId, "Y", new BigDecimal("1.05"), new BigDecimal("2.00"),
                 new BigDecimal("3.00"), "2020-01-01", "2030-01-01", "2025-01-01",
                 new BigDecimal("4.00"), new BigDecimal("5.00"), "12345", "GROUP01");
+    }
+
+    private static CardCrossReference crossReference(final String cardNumber) {
+        return new CardCrossReference(cardNumber, "000000001", "00000000001");
     }
 
     private static DataAccessResourceFailureException unreachable() {
@@ -293,16 +373,20 @@ final class FileMaintenanceServiceTest {
                     () -> assertThat(messages()).anyMatch(line -> line.contains("applResult=8")),
                     () -> assertThat(messages()).anyMatch(line -> line.contains("fileStatus=31")
                             && line.contains("statusName=PERMANENT_ERROR")),
-                    () -> assertThat(this.underlyingFailureWasRecorded()).isTrue());
+                    () -> assertThat(messages()).anyMatch(line -> line.contains(
+                            "failureChain=DataAccessResourceFailureException")),
+                    () -> assertThat(messages()).noneMatch(
+                            line -> line.contains("the cluster could not be reached")),
+                    () -> assertThat(this.noThrowableWasHandedToTheAppender()).isTrue());
         }
 
-        private boolean underlyingFailureWasRecorded() {
+        private boolean noThrowableWasHandedToTheAppender() {
             for (ILoggingEvent event : appender.list) {
                 if (event.getThrowableProxy() != null) {
-                    return true;
+                    return false;
                 }
             }
-            return false;
+            return true;
         }
 
         @Test
@@ -421,6 +505,19 @@ final class FileMaintenanceServiceTest {
         }
 
         @Test
+        @DisplayName("the cross-reference reader orders by the sixteen-character card-number key")
+        void crossReferenceReaderOrdersByCardNumber() {
+            when(cardCrossReferenceRepository.count()).thenReturn(0L);
+            when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenReturn(List.of());
+
+            service.readCardCrossReferenceFile();
+
+            ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
+            verify(cardCrossReferenceRepository).findAll(sort.capture());
+            assertThat(sort.getValue()).isEqualTo(Sort.by(Sort.Direction.ASC, "xrefCardNum"));
+        }
+
+        @Test
         @DisplayName("the category balance reader orders by all three parts of its composite key")
         void categoryBalanceReaderOrdersByTheWholeCompositeKey() {
             when(transactionCategoryBalanceRepository.count()).thenReturn(0L);
@@ -470,8 +567,25 @@ final class FileMaintenanceServiceTest {
         }
 
         @Test
-        @DisplayName("the category balance reader reports its own member and resource")
-        void categoryBalanceReaderReportsItsOwnIdentity() {
+        @DisplayName("the cross-reference reader reports CBACT03C and XREFFILE")
+        void crossReferenceReaderReportsItsOwnIdentity() {
+            when(cardCrossReferenceRepository.count()).thenReturn(1L);
+            when(cardCrossReferenceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(crossReference("4111111111111111")));
+
+            FileMaintenanceService.FileReadSummary summary =
+                    service.readCardCrossReferenceFile();
+
+            assertAll(
+                    () -> assertThat(summary.programName()).isEqualTo("CBACT03C"),
+                    () -> assertThat(summary.resourceName()).isEqualTo("XREFFILE"),
+                    () -> assertThat(summary.recordsRead()).isEqualTo(1L),
+                    () -> assertThat(summary.endedAtEndOfFile()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the category-balance unload reports the copy step rather than inventing a member")
+        void categoryBalanceUnloadReportsItsStepAndResource() {
             when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
             when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     new TransactionCategoryBalance("00000000001", "01", "0005",
@@ -481,7 +595,7 @@ final class FileMaintenanceServiceTest {
                     service.readTransactionCategoryBalanceFile();
 
             assertAll(
-                    () -> assertThat(summary.programName()).isEqualTo("CBACT03C"),
+                    () -> assertThat(summary.programName()).isEqualTo("STEP05R"),
                     () -> assertThat(summary.resourceName()).isEqualTo("TCATBALF"),
                     () -> assertThat(summary.recordsRead()).isEqualTo(1L));
         }
@@ -504,6 +618,7 @@ final class FileMaintenanceServiceTest {
         @DisplayName("every reader abends under its own member name and its own open literal")
         void everyReaderAbendsUnderItsOwnLiteral() {
             when(cardRepository.count()).thenThrow(unreachable());
+            when(cardCrossReferenceRepository.count()).thenThrow(unreachable());
             when(transactionCategoryBalanceRepository.count()).thenThrow(unreachable());
             when(customerRepository.count()).thenThrow(unreachable());
 
@@ -515,9 +630,15 @@ final class FileMaintenanceServiceTest {
                                 assertThat(abend.reason()).isEqualTo("ERROR OPENING CARDFILE");
                             }),
                     () -> assertThatExceptionOfType(AbendException.class)
-                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile())
+                            .isThrownBy(() -> service.readCardCrossReferenceFile())
                             .satisfies(abend -> {
                                 assertThat(abend.culprit()).isEqualTo("CBACT03C");
+                                assertThat(abend.reason()).isEqualTo("ERROR OPENING XREFFILE");
+                            }),
+                    () -> assertThatExceptionOfType(AbendException.class)
+                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile())
+                            .satisfies(abend -> {
+                                assertThat(abend.culprit()).isEqualTo("STEP05R");
                                 assertThat(abend.reason()).isEqualTo("ERROR OPENING TCATBALF");
                             }),
                     () -> assertThatExceptionOfType(AbendException.class)
@@ -533,6 +654,8 @@ final class FileMaintenanceServiceTest {
         void everyReaderAbendsUnderItsOwnReadLiteral() {
             when(cardRepository.count()).thenReturn(1L);
             when(cardRepository.findAll(any(Sort.class))).thenThrow(unreachable());
+            when(cardCrossReferenceRepository.count()).thenReturn(1L);
+            when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenThrow(unreachable());
             when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
             when(transactionCategoryBalanceRepository.findAll(any(Sort.class)))
                     .thenThrow(unreachable());
@@ -545,6 +668,10 @@ final class FileMaintenanceServiceTest {
                             .satisfies(abend -> assertThat(abend.reason())
                                     .isEqualTo("ERROR READING CARDFILE")),
                     () -> assertThatExceptionOfType(AbendException.class)
+                            .isThrownBy(() -> service.readCardCrossReferenceFile())
+                            .satisfies(abend -> assertThat(abend.reason())
+                                    .isEqualTo("ERROR READING XREFFILE")),
+                    () -> assertThatExceptionOfType(AbendException.class)
                             .isThrownBy(() -> service.readTransactionCategoryBalanceFile())
                             .satisfies(abend -> assertThat(abend.reason())
                                     .isEqualTo("ERROR READING TCATBALF")),
@@ -556,12 +683,96 @@ final class FileMaintenanceServiceTest {
     }
 
     @Nested
-    @DisplayName("the account display paragraph: eleven labelled fields in the source's own order")
+    @DisplayName("CBACT03C reads XREFFILE with its own observable paragraph behaviour")
+    class CrossReferenceReaderFidelity {
+
+        @Test
+        @DisplayName("the reader opens, reads to end of file, closes and emits each record twice")
+        void readsToEndOfFileAndReproducesTheDoubleEmission() {
+            when(cardCrossReferenceRepository.count()).thenReturn(2L);
+            when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenReturn(List.of(
+                    crossReference("4111111111111111"),
+                    crossReference("4111111111111112")));
+
+            FileMaintenanceService.FileReadSummary summary =
+                    service.readCardCrossReferenceFile();
+
+            long recordImages = messages().stream()
+                    .filter(line -> line.startsWith("recordType=card-cross-reference recordRef="))
+                    .count();
+            assertAll(
+                    () -> assertThat(summary.programName()).isEqualTo("CBACT03C"),
+                    () -> assertThat(summary.resourceName()).isEqualTo("XREFFILE"),
+                    () -> assertThat(summary.recordsRead()).isEqualTo(2L),
+                    () -> assertThat(summary.endedAtEndOfFile()).isTrue(),
+                    () -> assertThat(recordImages)
+                            .as("line 96 and line 78 each emit every successful record")
+                            .isEqualTo(4L),
+                    () -> assertThat(messages())
+                            .anyMatch(line -> line.contains("operation=CLOSING")
+                                    && line.contains("resource=XREFFILE")),
+                    () -> assertThat(messages())
+                            .anyMatch(line -> line.contains("END OF EXECUTION OF PROGRAM CBACT03C")));
+        }
+
+        @Test
+        @DisplayName("the two record emissions reveal none of the three cross-reference identifiers")
+        void bothRecordEmissionsRemainRedacted() {
+            when(cardCrossReferenceRepository.count()).thenReturn(1L);
+            when(cardCrossReferenceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(crossReference("4111111111111111")));
+
+            service.readCardCrossReferenceFile();
+
+            assertAll(
+                    () -> assertThat(messages())
+                            .filteredOn(line ->
+                                    line.startsWith("recordType=card-cross-reference recordRef="))
+                            .hasSize(2)
+                            .allMatch(line -> line.matches(
+                                    "recordType=card-cross-reference "
+                                            + "recordRef=\\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(messages())
+                            .noneMatch(line -> line.contains("4111111111111111")),
+                    () -> assertThat(messages())
+                            .noneMatch(line -> line.contains("000000001")),
+                    () -> assertThat(messages())
+                            .noneMatch(line -> line.contains("00000000001")));
+        }
+
+        @Test
+        @DisplayName("the defensive close arm carries CBACT03C's exact XREFFILE literal")
+        void closeArmCarriesTheExactLegacyLiteral() throws ReflectiveOperationException {
+            Class<?> cursorType =
+                    Class.forName(FileMaintenanceService.class.getName() + "$SequentialCursor");
+            Constructor<?> constructor =
+                    cursorType.getDeclaredConstructor(String.class, String.class, Supplier.class);
+            constructor.setAccessible(true);
+            Supplier<List<CardCrossReference>> orderedRead = List::of;
+            Object unopenedCursor = constructor.newInstance("CBACT03C", "XREFFILE", orderedRead);
+            Method closeMethod =
+                    FileMaintenanceService.class.getDeclaredMethod("closeXrefFile", cursorType);
+            closeMethod.setAccessible(true);
+
+            assertThatExceptionOfType(InvocationTargetException.class)
+                    .isThrownBy(() -> closeMethod.invoke(service, unopenedCursor))
+                    .satisfies(failure -> assertThat(failure.getCause())
+                            .isInstanceOfSatisfying(AbendException.class, abend -> assertAll(
+                                    () -> assertThat(abend.culprit()).isEqualTo("CBACT03C"),
+                                    () -> assertThat(abend.reason())
+                                            .isEqualTo("ERROR CLOSING XREFFILE"),
+                                    () -> assertThat(abend.code())
+                                            .isEqualTo(AbendException.BATCH_ABEND_CODE))));
+        }
+    }
+
+    @Nested
+    @DisplayName("the account display paragraph preserves its unit without publishing its fields")
     class AccountDisplayParagraph {
 
         @Test
-        @DisplayName("every one of the eleven labels is emitted, the misspelled one included")
-        void everyLabelIsEmittedIncludingTheMisspelledOne() {
+        @DisplayName("only a correlation token and the non-sensitive status label are emitted")
+        void onlyCorrelationAndStatusAreEmitted() {
             when(accountRepository.count()).thenReturn(1L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
@@ -570,19 +781,20 @@ final class FileMaintenanceServiceTest {
 
             List<String> rendered = messages();
             assertAll(
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-ID                 :00000000001")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-ACTIVE-STATUS      :Y")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-CURR-BAL           :1.05")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-CREDIT-LIMIT       :2.00")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-CASH-CREDIT-LIMIT  :3.00")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-OPEN-DATE          :2020-01-01")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-EXPIRAION-DATE     :2030-01-01")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-REISSUE-DATE       :2025-01-01")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-CURR-CYC-CREDIT    :4.00")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-CURR-CYC-DEBIT     :5.00")),
-                    () -> assertThat(rendered).anyMatch(l -> l.contains("ACCT-GROUP-ID           :GROUP01")),
-                    () -> assertThat(rendered).anyMatch(l ->
-                            l.equals("-------------------------------------------------")));
+                    () -> assertThat(rendered).anyMatch(line -> line.matches(
+                            "recordType=account recordRef=\\[REDACTED] ref=[0-9a-f]{24} "
+                                    + "status=Y")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("00000000001")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("1.05")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("2.00")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("3.00")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("2020-01-01")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("2030-01-01")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("2025-01-01")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("4.00")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("5.00")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("GROUP01")),
+                    () -> assertThat(rendered).noneMatch(line -> line.contains("ACCT-CURR-BAL")));
         }
 
         @Test
@@ -629,25 +841,50 @@ final class FileMaintenanceServiceTest {
 
             assertAll(
                     () -> assertThat(messages()).noneMatch(line -> line.contains("4111111111111111")),
-                    () -> assertThat(messages()).noneMatch(line -> line.contains("987")),
-                    () -> assertThat(messages()).anyMatch(line -> line.contains("***REDACTED***")));
+                    () -> assertThat(messages()).noneMatch(line ->
+                            java.util.regex.Pattern.compile(
+                                    "(?<![0-9A-Fa-f])987(?![0-9A-Fa-f])")
+                                    .matcher(line)
+                                    .find()),
+                    () -> assertThat(messages()).anyMatch(line -> line.matches(
+                            "recordType=card recordRef=\\[REDACTED] ref=[0-9a-f]{24}")));
         }
 
         @Test
-        @DisplayName("the customer diagnostic carries the identifier and no personal field at all")
-        void onlyTheCustomerIdentifierIsEmitted() {
+        @DisplayName("the customer diagnostic carries only a correlation token")
+        void onlyTheCustomerCorrelationTokenIsEmitted() {
             when(customerRepository.count()).thenReturn(1L);
             when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of(customer()));
 
             service.readCustomerFile();
 
             assertAll(
-                    () -> assertThat(messages()).anyMatch(line -> line.contains("custId=000000123")),
+                    () -> assertThat(messages()).anyMatch(line -> line.matches(
+                            "recordType=customer recordRef=\\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(messages()).noneMatch(line -> line.contains("000000123")),
                     () -> assertThat(messages()).noneMatch(line -> line.contains("GRACE")),
                     () -> assertThat(messages()).noneMatch(line -> line.contains("HOPPER")),
                     () -> assertThat(messages()).noneMatch(line -> line.contains("1906-12-09")),
                     () -> assertThat(messages()).noneMatch(line -> line.contains("5551234567")),
                     () -> assertThat(messages()).noneMatch(line -> line.contains("1 NAVY YARD")));
+        }
+
+        @Test
+        @DisplayName("the category-balance unload withholds its account key and balance")
+        void categoryBalanceUnloadWithholdsKeyAndBalance() {
+            when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
+                    new TransactionCategoryBalance("00000000001", "01", "0005",
+                            new BigDecimal("98765.43"))));
+
+            service.readTransactionCategoryBalanceFile();
+
+            assertAll(
+                    () -> assertThat(messages()).anyMatch(line -> line.matches(
+                            "recordType=transaction-category-balance "
+                                    + "recordRef=\\[REDACTED] ref=[0-9a-f]{24}")),
+                    () -> assertThat(messages()).noneMatch(line -> line.contains("00000000001")),
+                    () -> assertThat(messages()).noneMatch(line -> line.contains("98765.43")));
         }
     }
 
@@ -660,21 +897,65 @@ final class FileMaintenanceServiceTest {
         void everyCollaboratorIsRequired() {
             assertAll(
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> new FileMaintenanceService(null, cardRepository,
+                            () -> new FileMaintenanceService(
+                                    null, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
                                     transactionCategoryBalanceRepository, customerRepository,
                                     new AbendService())),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> new FileMaintenanceService(accountRepository, null,
+                            () -> new FileMaintenanceService(
+                                    accountRepository, null,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
                                     transactionCategoryBalanceRepository, customerRepository,
                                     new AbendService())),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> new FileMaintenanceService(accountRepository, cardRepository, null,
-                                    customerRepository, new AbendService())),
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    null, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
+                                    transactionCategoryBalanceRepository, customerRepository,
+                                    new AbendService())),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> new FileMaintenanceService(accountRepository, cardRepository,
-                                    transactionCategoryBalanceRepository, null, new AbendService())),
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, null,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
+                                    transactionCategoryBalanceRepository, customerRepository,
+                                    new AbendService())),
                     () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
-                            () -> new FileMaintenanceService(accountRepository, cardRepository,
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    null, cardCrossReferenceScanRepository,
+                                    transactionCategoryBalanceRepository, customerRepository,
+                                    new AbendService())),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, null,
+                                    transactionCategoryBalanceRepository, customerRepository,
+                                    new AbendService())),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
+                                    null, customerRepository, new AbendService())),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
+                                    transactionCategoryBalanceRepository, null,
+                                    new AbendService())),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new FileMaintenanceService(
+                                    accountRepository, accountScanRepository,
+                                    cardRepository, cardScanRepository,
+                                    cardCrossReferenceRepository, cardCrossReferenceScanRepository,
                                     transactionCategoryBalanceRepository, customerRepository, null)));
         }
 

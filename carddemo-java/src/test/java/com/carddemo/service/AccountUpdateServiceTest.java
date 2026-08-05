@@ -33,20 +33,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.dao.OptimisticLockingFailureException;
 
-import com.carddemo.api.dto.AccountUpdateRequest;
-import com.carddemo.api.dto.AccountUpdateResponse;
-import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.OptimisticLockConflictException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
@@ -134,7 +132,7 @@ class AccountUpdateServiceTest {
         this.service = new AccountUpdateService(this.accountRepository, this.customerRepository,
                 this.crossReferenceRepository, new DateValidationService(), this.lookupService,
                 new MessageCatalogService(), new NavigationService(), new AbendService(),
-                this.tokenService, encryption,
+                this.tokenService, encryption, new OnlineTransactionBoundary(),
                 Clock.fixed(Instant.parse("2024-05-06T07:08:09Z"), ZoneOffset.UTC));
     }
 
@@ -156,8 +154,8 @@ class AccountUpdateServiceTest {
 
     private void seedRecords() {
         Mockito.when(this.crossReferenceRepository
-                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                        .findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                         ACCOUNT_ID)));
         Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
                 .thenReturn(Optional.of(seededAccount()));
@@ -165,13 +163,13 @@ class AccountUpdateServiceTest {
                 .thenReturn(Optional.of(seededCustomer()));
     }
 
-    private static NavigationContext reEntered() {
-        return NavigationContext.empty().withReEntry();
+    private static ScreenNavigationState reEntered() {
+        return ScreenNavigationState.empty().withReEntry();
     }
 
     /** A detail turn that mirrors the seeded records exactly, so nothing reads as changed. */
-    private AccountUpdateRequest unchangedDetailTurn(final String token, final KeyAction key) {
-        return new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020", "01", "15", "5000.00", "2029",
+    private AccountUpdateCommand unchangedDetailTurn(final String token, final KeyAction key) {
+        return new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020", "01", "15", "5000.00", "2029",
                 "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
                 "50.00", CUSTOMER_ID, null, null, null, "1980", "02", "03", "700", "Aniya Von",
                 "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA",
@@ -180,8 +178,8 @@ class AccountUpdateServiceTest {
     }
 
     /** The same turn with one detail changed, so the edits run. */
-    private AccountUpdateRequest changedDetailTurn(final String token, final KeyAction key) {
-        return new AccountUpdateRequest(ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029",
+    private AccountUpdateCommand changedDetailTurn(final String token, final KeyAction key) {
+        return new AccountUpdateCommand(ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029",
                 "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
                 "50.00", CUSTOMER_ID, "123", "45", "6789", "1980", "02", "03", "700",
                 "Aniya Von", "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001",
@@ -193,8 +191,8 @@ class AccountUpdateServiceTest {
         return this.tokenService.mint(seededAccount(), seededCustomer());
     }
 
-    private static List<String> screenFieldIdsOf(final AccountUpdateResponse response) {
-        return response.fieldErrors().stream().map(ErrorResponse.FieldError::screenFieldId).toList();
+    private static List<String> screenFieldIdsOf(final AccountUpdateOutcome response) {
+        return response.fieldErrors().stream().map(ValidationException.FieldError::bmsFieldId).toList();
     }
 
     /* ---------------------------------------------------------------------------------------- */
@@ -206,13 +204,13 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("a fresh entry prompts for the key and decorates nothing")
         void freshEntryPrompts() {
-            final AccountUpdateRequest request = new AccountUpdateRequest(null, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.ENTER, null, null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_SEARCH_KEYS);
             assertThat(response.fieldErrors()).isEmpty();
@@ -229,13 +227,13 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("a blank key claims the not-provided text, which wins over the no-input text")
         void blankKeyClaimsNotProvided() {
-            final AccountUpdateRequest request = new AccountUpdateRequest("   ", null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand("   ", null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_NOT_PROVIDED);
             assertThat(response.error()).isTrue();
@@ -245,13 +243,13 @@ class AccountUpdateServiceTest {
         @ValueSource(strings = {"1234", "0000000000A", "00000000000"})
         @DisplayName("a key that is short, non-numeric or zero claims the composed malformed text")
         void malformedKey(final String keyed) {
-            final AccountUpdateRequest request = new AccountUpdateRequest(keyed, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(keyed, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED);
             assertThat(response.error()).isTrue();
@@ -261,13 +259,13 @@ class AccountUpdateServiceTest {
         @DisplayName("a valid key resolves the cross-reference, both records, and shows the detail")
         void validKeyShowsDetails() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
             assertThat(response.accountId()).isEqualTo(ACCOUNT_ID);
@@ -292,15 +290,15 @@ class AccountUpdateServiceTest {
         @DisplayName("an unresolvable cross-reference claims the declared not-found text")
         void crossReferenceMissing() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.errorMessage())
                     .isEqualTo("Did not find this account in account card xref file");
@@ -319,7 +317,7 @@ class AccountUpdateServiceTest {
         void orderIsPreserved() {
             seedRecords();
             // Every editable field left blank, so every edited field reports.
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, CUSTOMER_ID, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
@@ -343,23 +341,23 @@ class AccountUpdateServiceTest {
         @DisplayName("distinguish a missing field from an invalid one")
         void missingAndInvalidAreDistinct() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "999", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
                     "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.fieldErrors())
                     .anySatisfy(error -> {
-                        assertThat(error.screenFieldId()).isEqualTo("ACSTTUS");
-                        assertThat(error.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+                        assertThat(error.bmsFieldId()).isEqualTo("ACSTTUS");
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
                     })
                     .anySatisfy(error -> {
-                        assertThat(error.screenFieldId()).isEqualTo("ACSTFCO");
-                        assertThat(error.state()).isEqualTo(ErrorResponse.FieldState.INVALID);
+                        assertThat(error.bmsFieldId()).isEqualTo("ACSTFCO");
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.INVALID);
                     });
         }
 
@@ -367,12 +365,12 @@ class AccountUpdateServiceTest {
         @DisplayName("are suppressed on a first entry, because the macro fires only on re-entry")
         void firstEntryIsNotDecorated() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, CUSTOMER_ID, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, KeyAction.ENTER,
-                    NavigationContext.empty().withFirstEntry().reconciledWith("USER0001", null),
+                    ScreenNavigationState.empty().withFirstEntry().reconciledWith("USER0001", null),
                     mintedToken());
 
             assertThat(service.handle(request).fieldErrors()).isEmpty();
@@ -391,7 +389,7 @@ class AccountUpdateServiceTest {
         @DisplayName("never fire for the middle name or address line 2, whatever is keyed")
         void twoFieldsAreNeverValidated() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "%%% 12 !!", "Smith", "1 High Street",
@@ -399,7 +397,7 @@ class AccountUpdateServiceTest {
                     "202", "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(),
                     mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).doesNotContain("ACSMNAM", "ACSADL2");
             assertThat(response.middleName()).isEqualTo("%%% 12 !!");
@@ -411,10 +409,10 @@ class AccountUpdateServiceTest {
     @DisplayName("the telephone cascade")
     class TelephoneCascade {
 
-        private AccountUpdateResponse withPhoneOne(final String area, final String prefix,
+        private AccountUpdateOutcome withPhoneOne(final String area, final String prefix,
                 final String line) {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
@@ -429,13 +427,13 @@ class AccountUpdateServiceTest {
             // Every part supplied and every part malformed. All three must be keyed, because a wholly
             // blank telephone is not an error at all - the source says so at line 2233, "Not mandatory
             // to enter a phone number".
-            final AccountUpdateResponse response = withPhoneOne("12", "1", "1");
+            final AccountUpdateOutcome response = withPhoneOne("12", "1", "1");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSPH1A", "ACSPH1B", "ACSPH1C");
             assertThat(response.fieldErrors())
-                    .filteredOn(error -> error.screenFieldId().startsWith("ACSPH1"))
+                    .filteredOn(error -> error.bmsFieldId().startsWith("ACSPH1"))
                     .allSatisfy(error -> assertThat(error.state())
-                            .isEqualTo(ErrorResponse.FieldState.INVALID));
+                            .isEqualTo(ValidationException.FieldState.INVALID));
             // One summary message, and it is the first failure's - the area code's.
             assertThat(response.errorMessage())
                     .isEqualTo("Phone Number 1" + SUFFIX_AREA_CODE_NOT_3_DIGITS);
@@ -444,7 +442,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("treats a wholly unkeyed telephone as acceptable, because it is not mandatory")
         void anUnkeyedTelephoneIsAccepted() {
-            final AccountUpdateResponse response = withPhoneOne("   ", "   ", "    ");
+            final AccountUpdateOutcome response = withPhoneOne("   ", "   ", "    ");
 
             assertThat(screenFieldIdsOf(response))
                     .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C");
@@ -453,7 +451,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("keeps the first failure's message when a later stage also fails")
         void firstErrorWinsTheSummarySlot() {
-            final AccountUpdateResponse response = withPhoneOne("201", "  ", "  ");
+            final AccountUpdateOutcome response = withPhoneOne("201", "  ", "  ");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSPH1B", "ACSPH1C")
                     .doesNotContain("ACSPH1A");
@@ -464,15 +462,15 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reaches the line-number stage even when the two before it failed")
         void lineNumberStageAlwaysRuns() {
-            final AccountUpdateResponse response = withPhoneOne("00", "00", "  ");
+            final AccountUpdateOutcome response = withPhoneOne("00", "00", "  ");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSPH1A", "ACSPH1B", "ACSPH1C");
             assertThat(response.errorMessage())
                     .isEqualTo("Phone Number 1" + SUFFIX_AREA_CODE_NOT_3_DIGITS);
             assertThat(response.fieldErrors())
                     .anySatisfy(error -> {
-                        assertThat(error.screenFieldId()).isEqualTo("ACSPH1C");
-                        assertThat(error.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+                        assertThat(error.bmsFieldId()).isEqualTo("ACSPH1C");
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
                     });
         }
 
@@ -499,7 +497,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("the reproduced defect accepts a keyed line number when both parts before are blank")
         void allBlankShortcutTestsTheWrongSubField() {
-            final AccountUpdateResponse response = withPhoneOne("   ", "   ", "0100");
+            final AccountUpdateOutcome response = withPhoneOne("   ", "   ", "0100");
 
             assertThat(screenFieldIdsOf(response))
                     .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C");
@@ -512,9 +510,9 @@ class AccountUpdateServiceTest {
     @DisplayName("the credit-score range")
     class CreditScoreRange {
 
-        private AccountUpdateResponse withScore(final String score) {
+        private AccountUpdateOutcome withScore(final String score) {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", score, "Aniya Von", "Q", "Smith", "1 High Street", "NY",
@@ -534,7 +532,7 @@ class AccountUpdateServiceTest {
         @ValueSource(strings = {"299", "851", "001"})
         @DisplayName("rejects a score outside the bounds with the exact text and no full stop")
         void outsideBoundsRejected(final String score) {
-            final AccountUpdateResponse response = withScore(score);
+            final AccountUpdateOutcome response = withScore(score);
             assertThat(screenFieldIdsOf(response)).contains("ACSTFCO");
             assertThat(response.errorMessage())
                     .isEqualTo("FICO Score" + SUFFIX_FICO_OUT_OF_RANGE);
@@ -543,7 +541,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("does not re-edit a score that already failed the numeric edit")
         void alreadyInvalidScoreIsNotReEdited() {
-            final AccountUpdateResponse response = withScore("abc");
+            final AccountUpdateOutcome response = withScore("abc");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSTFCO");
             assertThat(response.errorMessage()).isEqualTo("FICO Score must be all numeric.");
@@ -566,14 +564,14 @@ class AccountUpdateServiceTest {
         @DisplayName("an unknown state code is rejected with the exact text and no full stop")
         void unknownStateRejected() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "AA",
                     "Flat 2", "34001", "Springfield", "USA", "201", "555", "0100", null, "202",
                     "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).contains("ACSSTTE");
             assertThat(response.errorMessage()).isEqualTo("State" + SUFFIX_STATE_NOT_VALID);
@@ -583,14 +581,14 @@ class AccountUpdateServiceTest {
         @DisplayName("a bad composite sets both flags and emits the unprefixed message")
         void badCompositeSetsBothFlags() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "99999", "Springfield", "USA", "201", "555", "0100", null, "202",
                     "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).contains("ACSSTTE", "ACSZIPC");
             assertThat(response.errorMessage()).isEqualTo(MSG_INVALID_ZIP_FOR_STATE);
@@ -606,7 +604,7 @@ class AccountUpdateServiceTest {
         @DisplayName("accept an embedded space, because the legacy idiom blanks and trims")
         void embeddedSpacesPass(final String name) {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", name, "Q", "Smith", "1 High Street", "NY", "Flat 2",
@@ -620,14 +618,14 @@ class AccountUpdateServiceTest {
         @DisplayName("reject a digit in a required alphabetic field")
         void digitsRejected() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Mary2", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
                     "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).contains("ACSFNAM");
             assertThat(response.errorMessage())
@@ -645,54 +643,88 @@ class AccountUpdateServiceTest {
             seedRecords();
             Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.saveAndFlush(ArgumentMatchers.any(Customer.class)))
-                    .thenAnswer(invocation -> invocation.getArgument(0));
+            Mockito.when(customerRepository.compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
+                    .thenReturn(1);
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
 
             assertThat(response.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
             Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository).saveAndFlush(ArgumentMatchers.any(Customer.class));
+            final ArgumentCaptor<Customer> before = ArgumentCaptor.forClass(Customer.class);
+            final ArgumentCaptor<Customer> after = ArgumentCaptor.forClass(Customer.class);
+            Mockito.verify(customerRepository).compareAndSet(before.capture(), after.capture());
+            assertThat(before.getValue().getCustSsn())
+                    .as("the held row remains the unchanged compare image")
+                    .isNull();
+            assertThat(after.getValue().getCustSsn())
+                    .as("the replacement carries the operator's newly protected value")
+                    .isNotNull();
+            assertThat(after.getValue().getCustId()).isEqualTo(before.getValue().getCustId());
         }
 
         @Test
-        @DisplayName("the account arm reports the failure and never forces a rollback of its own")
-        void accountArmDoesNotRollBack() {
+        @DisplayName("the account arm reports the failure after the inner unit has rolled back")
+        void accountArmReturnsTheLegacyFailure() {
             seedRecords();
             Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
                     .thenThrow(new OptimisticLockingFailureException("account moved"));
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
 
             assertThat(response.errorMessage()).isEqualTo(MSG_UPDATE_FAILED);
             assertThat(response.error()).isTrue();
             Mockito.verify(customerRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Customer.class));
+                    .compareAndSet(ArgumentMatchers.any(Customer.class),
+                            ArgumentMatchers.any(Customer.class));
         }
 
         @Test
-        @DisplayName("the customer arm raises the recoverable conflict and never abends")
-        void customerArmRaisesTheConflict() {
+        @DisplayName("the customer arm returns the same legacy failure after rolling back the account")
+        void customerArmReturnsTheLegacyFailure() {
             seedRecords();
             Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
                     .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.saveAndFlush(ArgumentMatchers.any(Customer.class)))
+            Mockito.when(customerRepository.compareAndSet(
+                            ArgumentMatchers.any(Customer.class),
+                            ArgumentMatchers.any(Customer.class)))
                     .thenThrow(new OptimisticLockingFailureException("customer moved"));
 
-            final AccountUpdateRequest confirming = changedDetailTurn(mintedToken(),
+            final AccountUpdateCommand confirming = changedDetailTurn(mintedToken(),
                     KeyAction.PFK05);
 
-            assertThatExceptionOfType(OptimisticLockConflictException.class)
-                    .isThrownBy(() -> service.handle(confirming))
-                    .satisfies(conflict -> {
-                        assertThat(conflict.getMessage()).isEqualTo(MSG_UPDATE_FAILED);
-                        assertThat(conflict.entityName()).isEqualTo("Customer");
-                        assertThat(conflict.conflictKind()).isEqualTo(
-                                OptimisticLockConflictException.ConflictKind
-                                        .UPDATE_FAILED_AFTER_LOCK);
-                    });
+            final AccountUpdateOutcome response = service.handle(confirming);
+
+            assertThat(response.errorMessage()).isEqualTo(MSG_UPDATE_FAILED);
+            assertThat(response.error()).isTrue();
+            Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
+            Mockito.verify(customerRepository).compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
+        }
+
+        @Test
+        @DisplayName("a customer-only change after token verification rolls back the account rewrite")
+        void customerCompareAndSetMissUsesTheChangedRecordArm() {
+            seedRecords();
+            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            Mockito.when(customerRepository.compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
+                    .thenReturn(0);
+
+            final AccountUpdateOutcome response =
+                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+
+            assertThat(response.errorMessage()).isEqualTo(MSG_RECORD_CHANGED);
+            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
+            assertThat(response.error()).isTrue();
+            Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
+            Mockito.verify(customerRepository).compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
+            Mockito.verify(customerRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Customer.class));
         }
 
         @Test
@@ -700,7 +732,7 @@ class AccountUpdateServiceTest {
         void changeBeforeUpdateShowsDetails() {
             seedRecords();
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(changedDetailTurn("not-a-valid-token", KeyAction.PFK05));
 
             assertThat(response.errorMessage()).isEqualTo(MSG_RECORD_CHANGED);
@@ -713,8 +745,8 @@ class AccountUpdateServiceTest {
         @DisplayName("an account that cannot be held reports the lock text")
         void accountCannotBeHeld() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(seededCustomer()));
@@ -724,7 +756,7 @@ class AccountUpdateServiceTest {
                     .thenReturn(Optional.of(seededAccount()))
                     .thenReturn(Optional.empty());
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
 
             assertThat(response.errorMessage())
@@ -736,7 +768,7 @@ class AccountUpdateServiceTest {
         void unchangedTurnSkipsTheEdits() {
             seedRecords();
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(unchangedDetailTurn(mintedToken(), KeyAction.ENTER));
 
             assertThat(response.fieldErrors()).isEmpty();
@@ -752,7 +784,7 @@ class AccountUpdateServiceTest {
         void changedCleanTurnAdvancesToConfirmation() {
             seedRecords();
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(changedDetailTurn(mintedToken(), KeyAction.ENTER));
 
             assertThat(response.fieldErrors()).isEmpty();
@@ -768,31 +800,31 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("the exit key resolves the caller's destination through the navigation service")
         void exitKeyRoutesBack() {
-            final AccountUpdateRequest request = new AccountUpdateRequest(null, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.PFK03, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.nextRoute()).isEqualTo("user-menu");
             assertThat(response.navigationContext().fromTransactionId()).isEqualTo("CAUP");
             assertThat(response.navigationContext().fromProgram()).isEqualTo("COACTUPC");
             assertThat(response.navigationContext().programContext())
-                    .isEqualTo(NavigationContext.ProgramContext.ENTER);
+                    .isEqualTo(ScreenNavigationState.ProgramContext.ENTER);
         }
 
         @Test
         @DisplayName("keys 13 to 24 fold onto keys 1 to 12, so the exit key is reached either way")
         void highFunctionKeysFold() {
-            final AccountUpdateRequest request = new AccountUpdateRequest(null, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse folded = service.handle(request, "DFHPF15");
+            final AccountUpdateOutcome folded = service.handle(request, "DFHPF15");
 
             assertThat(folded.nextRoute()).isEqualTo("user-menu");
         }
@@ -800,13 +832,13 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("an unmapped identifier claims the fifty-character invalid-key text, untrimmed")
         void unmappedIdentifierClaimsTheCatalogueText() {
-            final AccountUpdateRequest request = new AccountUpdateRequest(null, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request, "DFHNOSUCH");
+            final AccountUpdateOutcome response = service.handle(request, "DFHNOSUCH");
 
             assertThat(response.errorMessage()).hasSize(50);
             assertThat(response.errorMessage()).isEqualTo(
@@ -819,7 +851,7 @@ class AccountUpdateServiceTest {
         void outOfContextSaveKeyBecomesEnter() {
             seedRecords();
 
-            final AccountUpdateResponse response =
+            final AccountUpdateOutcome response =
                     service.handle(unchangedDetailTurn(mintedToken(), KeyAction.PFK12));
 
             assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
@@ -830,13 +862,13 @@ class AccountUpdateServiceTest {
         void omittedAttentionKeyDefaultsToEnter() {
             // No raw identifier and no key on the request: the work area carries nothing, so the
             // fallback supplies the enter key exactly as an unmodified 3270 read would.
-            final AccountUpdateRequest request = new AccountUpdateRequest(null, null, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.nextRoute()).isEqualTo("account-update");
             assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_NOT_PROVIDED);
@@ -855,12 +887,12 @@ class AccountUpdateServiceTest {
     class RemainingEdits {
 
         /** A detail turn with one substituted value, so a change is always seen and the edits run. */
-        private AccountUpdateResponse turnWith(final String status, final String ssn1,
+        private AccountUpdateOutcome turnWith(final String status, final String ssn1,
                 final String ssn2, final String ssn3, final String zip, final String eft,
                 final String priCardHolder, final String creditLimit, final String dobYear,
                 final String dobMonth, final String dobDay) {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, status, "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, status, "2020",
                     "01", "15", creditLimit, "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, ssn1, ssn2, ssn3,
                     dobYear, dobMonth, dobDay, "700", "Aniya Von", "Q", "Smith", "1 High Street",
@@ -873,7 +905,7 @@ class AccountUpdateServiceTest {
         @ValueSource(strings = {"666", "900", "999"})
         @DisplayName("reject an excluded national-identifier first part")
         void excludedSsnFirstPart(final String part1) {
-            final AccountUpdateResponse response = turnWith("Y", part1, "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", part1, "45", "6789", "10001",
                     "1234567890", "Y", "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACTSSN1");
@@ -887,7 +919,7 @@ class AccountUpdateServiceTest {
             // 000 is in the excluded range too, but the required-numeric edit runs first and its
             // non-zero test claims the summary slot. The range check is gated on the flag still being
             // valid, so it never re-edits the field. Both the ordering and the gate are the contract.
-            final AccountUpdateResponse response = turnWith("Y", "000", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "000", "45", "6789", "10001",
                     "1234567890", "Y", "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACTSSN1");
@@ -905,7 +937,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reject a non-numeric postcode through the required-numeric edit")
         void nonNumericZip() {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "1000X",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "1000X",
                     "1234567890", "Y", "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSZIPC");
@@ -915,7 +947,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reject a non-numeric transfer-account identifier")
         void nonNumericEftAccount() {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
                     "123456789X", "Y", "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSEFTC");
@@ -926,7 +958,7 @@ class AccountUpdateServiceTest {
         @ValueSource(strings = {"X", "1", "y"})
         @DisplayName("reject a primary-cardholder flag that is neither Y nor N")
         void badPrimaryCardHolderFlag(final String flag) {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
                     "1234567890", flag, "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSPFLG");
@@ -944,7 +976,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reject an account status that is neither Y nor N")
         void badAccountStatus() {
-            final AccountUpdateResponse response = turnWith("X", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("X", "123", "45", "6789", "10001",
                     "1234567890", "Y", "5000.00", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACSTTUS");
@@ -954,7 +986,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reject a malformed monetary amount")
         void malformedAmount() {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
                     "1234567890", "Y", "12.3.4", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACRDLIM");
@@ -964,7 +996,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("reject an amount whose magnitude exceeds the record's ten integer digits")
         void oversizedAmount() {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
                     "1234567890", "Y", "99999999999.99", "1980", "02", "03");
 
             assertThat(screenFieldIdsOf(response)).contains("ACRDLIM");
@@ -975,14 +1007,14 @@ class AccountUpdateServiceTest {
         @DisplayName("delegate the date cascade, so a bad month reports against the month field")
         void badMonthReportsThroughTheCascade() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "13", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
                     "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).contains("OPNMON");
             assertThat(response.error()).isTrue();
@@ -991,7 +1023,7 @@ class AccountUpdateServiceTest {
         @Test
         @DisplayName("delegate the date-of-birth check through its own separate entry point")
         void badDateOfBirthReportsThroughItsOwnEntryPoint() {
-            final AccountUpdateResponse response = turnWith("Y", "123", "45", "6789", "10001",
+            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
                     "1234567890", "Y", "5000.00", "1980", "02", "31");
 
             assertThat(screenFieldIdsOf(response))
@@ -1003,14 +1035,14 @@ class AccountUpdateServiceTest {
         @DisplayName("reject a blank mandatory address line 1")
         void blankAddressLine1() {
             seedRecords();
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020",
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
                     "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "   ", "NY", "Flat 2",
                     "10001", "Springfield", "USA", "201", "555", "0100", null, "202", "555",
                     "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(screenFieldIdsOf(response)).contains("ACSADL1");
             assertThat(response.errorMessage()).isEqualTo("Address Line 1 must be supplied.");
@@ -1020,17 +1052,17 @@ class AccountUpdateServiceTest {
         @DisplayName("report an account the master does not hold")
         void accountAbsentFromMaster() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.errorMessage())
                     .isEqualTo("Did not find this account in account master file");
@@ -1042,19 +1074,19 @@ class AccountUpdateServiceTest {
         @DisplayName("report a customer the master does not hold")
         void customerAbsentFromMaster() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(seededAccount()));
             Mockito.when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.empty());
-            final AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, null, null,
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, KeyAction.ENTER, reEntered(), null);
 
-            final AccountUpdateResponse response = service.handle(request);
+            final AccountUpdateOutcome response = service.handle(request);
 
             assertThat(response.errorMessage())
                     .isEqualTo("Did not find associated customer in master file");
@@ -1138,13 +1170,20 @@ class AccountUpdateServiceTest {
                     .isThrownBy(() -> new AccountUpdateService(null, customerRepository,
                             crossReferenceRepository, new DateValidationService(), lookupService,
                             new MessageCatalogService(), new NavigationService(), new AbendService(),
-                            tokenService, encryption, Clock.systemUTC()));
+                            tokenService, encryption, new OnlineTransactionBoundary(),
+                            Clock.systemUTC()));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new AccountUpdateService(accountRepository,
                             customerRepository, crossReferenceRepository,
                             new DateValidationService(), lookupService, new MessageCatalogService(),
                             new NavigationService(), new AbendService(), tokenService, encryption,
-                            null));
+                            null, Clock.systemUTC()));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> new AccountUpdateService(accountRepository,
+                            customerRepository, crossReferenceRepository,
+                            new DateValidationService(), lookupService, new MessageCatalogService(),
+                            new NavigationService(), new AbendService(), tokenService, encryption,
+                            new OnlineTransactionBoundary(), null));
         }
     }
 }

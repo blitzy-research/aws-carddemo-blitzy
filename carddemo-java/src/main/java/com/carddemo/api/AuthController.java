@@ -19,7 +19,8 @@ package com.carddemo.api;
 import com.carddemo.api.dto.SignOnRequest;
 import com.carddemo.api.dto.SignOnResponse;
 import com.carddemo.service.AuthenticationService;
-import com.carddemo.service.SessionTokenIssuer;
+import com.carddemo.util.ApiRoutePaths;
+import com.carddemo.util.SessionTokenIssuer;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
@@ -28,6 +29,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import jakarta.validation.Valid;
 import java.util.Objects;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -80,12 +82,11 @@ import org.springframework.web.bind.annotation.RestController;
  *       neither resolves nor rewrites it.</li>
  * </ul>
  *
- * <p><strong>Why the route constant is declared here.</strong> The security rules exempt exactly one path
- * from authentication, and that exemption and this mapping have to name one authority or a mapping typo
- * becomes an unauthenticated surface. The constant therefore lives with the controller that serves it and
- * the security configuration reads it from here. The direction matters: configuration is permitted to
- * depend on the boundary, and the boundary is not permitted to depend on configuration, so declaring it
- * the other way round would invert the module's layering.
+ * <p><strong>Why the route constant comes from the neutral route contract.</strong> The security rules
+ * exempt exactly one path from authentication, and that exemption and this mapping have to name one
+ * authority or a mapping typo becomes an unauthenticated surface. Both this boundary and configuration
+ * therefore read {@link ApiRoutePaths#SIGN_ON_PATH}; neither imports the other, so the package dependency
+ * remains downward in both cases.
  *
  * <p><strong>Why the token travels in a header.</strong> The screen contract declares fifteen components
  * and none of them is a credential. Placing a token in the body would add a sixteenth to a contract that
@@ -93,7 +94,7 @@ import org.springframework.web.bind.annotation.RestController;
  * response header instead. An unsuccessful turn is issued nothing at all, which is the property worth
  * stating: the header is present only when the credential verified.
  *
- * <p><strong>Why the response status is always {@code 200}.</strong> Every one of the eight outcomes is a
+ * <p><strong>Why the response status is always {@code 200}.</strong> Every one of the nine outcomes is a
  * screen the legacy program successfully composed and sent, including the rejections. The transaction
  * completed on the mainframe in all of them, so it completes here, and the outcome is read from the
  * body exactly as an operator read it from the screen. Reporting a rejected sign-on as a client or server
@@ -105,10 +106,10 @@ import org.springframework.web.bind.annotation.RestController;
  * <p><strong>Why the turn is timed the way the batch tier times a step.</strong> The elapsed time is
  * taken with an explicit sample rather than an annotation, which is this module's established practice
  * and needs no aspect, no proxy and therefore no reflection. The sample is stopped in a {@code finally}
- * so that a turn which fails in flight is still measured - a sign-on that throws because the credential
- * master is unreachable is the single most interesting turn to have a timing for, and the alternative
- * records nothing at all for it. No latency, throughput or memory figure is asserted anywhere in this
- * class: the meter establishes the baseline rather than testing against one.
+ * so that an unforeseen turn failure is still measured. Credential-store failures are ordinary screen
+ * outcomes translated by the service and therefore receive the bounded {@code UNABLE_TO_VERIFY} tag rather
+ * than escaping through this failure path. No latency, throughput or memory figure is asserted anywhere
+ * in this class: the meter establishes the baseline rather than testing against one.
  *
  * <p>Provenance: {@code app/cbl/COSGN00C.cbl} and {@code app/csd/CARDDEMO.CSD}, whose transaction
  * definition binds {@code CC00} to the sign-on program, read as read-only reference at commit SHA
@@ -128,7 +129,7 @@ public final class AuthController {
      * controller mapped to any other path would be caught by the catch-all authentication rule and would
      * fail closed, which is the safe direction for that mistake to fail in.
      */
-    public static final String SIGN_ON_PATH = "/api/auth/signon";
+    public static final String SIGN_ON_PATH = ApiRoutePaths.SIGN_ON_PATH;
 
     /** Diagnostic channel. */
     private static final Logger LOG = LoggerFactory.getLogger(AuthController.class);
@@ -140,7 +141,7 @@ public final class AuthController {
     private static final String METRIC_SIGN_ON_TURN_DESCRIPTION =
             "Elapsed time of one CardDemo sign-on turn, transaction CC00";
 
-    /** Tag naming which of the eight outcomes the turn reached. */
+    /** Tag naming which of the nine outcomes the turn reached. */
     private static final String TAG_OUTCOME = "outcome";
 
     /**
@@ -186,7 +187,26 @@ public final class AuthController {
     }
 
     /**
-     * Serves one turn of the sign-on screen.
+     * Serves the first entry to the sign-on screen.
+     *
+     * <p>The source tests the communication-area length before it evaluates the attention key. In the REST
+     * contract an HTTP GET with no request body is that distinct state: it returns the cleared screen with
+     * the user-id field focused and cannot be mistaken for an absent or unmapped key.
+     *
+     * @return the blank first-entry screen
+     */
+    @SecurityRequirements
+    @Operation(summary = "Initialize the CardDemo sign-on screen",
+            description = "The first entry to legacy transaction CC00. Returns the cleared sign-on "
+                    + "screen with USERID focused before any attention key is evaluated.")
+    @ApiResponse(responseCode = "200",
+            description = "The blank first-entry screen, with no bearer session.")
+    public ResponseEntity<SignOnResponse> initialEntry() {
+        return serveTurn(this.authenticationService::initialEntry);
+    }
+
+    /**
+     * Serves one submitted turn of the sign-on screen.
      *
      * <p>Binds the request, delegates once, and answers what came back. The request reaches the service
      * exactly as the client sent it, because every rule that would alter it belongs to the service.
@@ -215,14 +235,29 @@ public final class AuthController {
                         + "message and the field the cursor returns to."),
         @ApiResponse(responseCode = "400",
                 description = "The request exceeded the widths the sign-on map declares.")})
-    public ResponseEntity<SignOnResponse> signOn(@Valid @RequestBody final SignOnRequest request) {
+    public ResponseEntity<SignOnResponse> signOn(
+            @Valid @RequestBody(required = false) final SignOnRequest request) {
+        if (request == null) {
+            return initialEntry();
+        }
+        return serveTurn(() -> this.authenticationService.handle(
+                request.keyAction(), request.userId(), request.password()));
+    }
+
+    /**
+     * Times, projects and answers one already-selected sign-on operation.
+     *
+     * @param operation service operation for the requested turn
+     * @return the published response
+     */
+    private ResponseEntity<SignOnResponse> serveTurn(
+            final Supplier<AuthenticationService.SignOnScreen> operation) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         // Assumed failed until the turn has been served end to end, so a turn that throws is recorded
         // as a failure rather than as whichever decision it had reached before it threw.
         String outcome = OUTCOME_FAILED;
         try {
-            final AuthenticationService.SignOnScreen screen = this.authenticationService.handle(
-                    request.keyAction(), request.userId(), request.password());
+            final AuthenticationService.SignOnScreen screen = operation.get();
             final ResponseEntity<SignOnResponse> answer = answerFor(screen);
             outcome = screen.decision().name();
             return answer;
@@ -241,6 +276,14 @@ public final class AuthController {
      * already taken rather than taking one: whether a session is earned is exactly whether the service
      * admitted the operator, and no other property of the turn is consulted.
      *
+     * <p><strong>An issuer that refuses is not caught here, deliberately.</strong> The issuer refuses when
+     * the credential record has gone, or no longer carries the role being minted, between the service's
+     * verification and the mint - a concurrent administrative change to that record. Answering the turn as
+     * a success without a session would leave a client reading an admitted turn and proceeding
+     * unauthenticated, so the refusal is allowed to reach the boundary's failure handling, which renders
+     * the module's own neutral summary and records only a failure chain. Nothing about the condition, and
+     * nothing about the identity, reaches the caller.
+     *
      * @param screen the turn the service served
      * @return the answer, carrying a bearer session only when the operator was admitted
      */
@@ -252,7 +295,7 @@ public final class AuthController {
         // Only an admitted turn is issued a session. The service's own invariant guarantees that an
         // admitted turn names both the operator and the resolved role, so neither argument can be absent.
         final String token = this.sessionTokenIssuer.issue(screen.userId(), screen.userType());
-        LOG.debug("Sign-on session issued: userId={}", screen.userId());
+        LOG.debug("Sign-on session issued: outcome=issued");
         return ResponseEntity.ok()
                 .header(HttpHeaders.AUTHORIZATION, SessionTokenIssuer.BEARER_PREFIX + token)
                 .body(body);

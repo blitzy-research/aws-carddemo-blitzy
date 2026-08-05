@@ -16,6 +16,10 @@
  */
 package com.carddemo.api;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.config.FixedLocaleMessageInterpolator;
 import com.carddemo.exception.AbendException;
@@ -51,6 +55,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.core.DefaultParameterNameDiscoverer;
@@ -404,6 +409,38 @@ class GlobalExceptionHandlerTest {
         }
 
         @Test
+        @DisplayName("an abend log omits a caller-carried culprit, including embedded line controls")
+        void anAbendLogOmitsTheCallerCarriedCulprit() {
+            final String unsafeCulprit = "BAD\nAPP";
+            final AbendException abend = new AbendException(
+                    AbendException.ONLINE_ABEND_CODE,
+                    unsafeCulprit,
+                    "record was changed",
+                    "UPDATE ABANDONED, RECORD WAS CHANGED");
+            final Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+            final Level previousLevel = logger.getLevel();
+            final ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+            recorder.start();
+            logger.setLevel(Level.ERROR);
+            logger.addAppender(recorder);
+            try {
+                handler.handleAbend(abend);
+            } finally {
+                logger.detachAppender(recorder);
+                logger.setLevel(previousLevel);
+                recorder.stop();
+            }
+
+            assertThat(recorder.list).singleElement().satisfies(event -> {
+                assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+                assertThat(event.getFormattedMessage())
+                        .contains("abendCode=" + AbendException.ONLINE_ABEND_CODE)
+                        .contains("reason=record was changed")
+                        .doesNotContain(unsafeCulprit, "culprit=", "\n", "\r");
+            });
+        }
+
+        @Test
         @DisplayName("an abend under any code other than the online one answers with the terminal "
                 + "literal instead of its own message, because only the online routine put its text "
                 + "in front of a person - the batch sites call CEE3ABD with a code and no message and "
@@ -546,7 +583,7 @@ class GlobalExceptionHandlerTest {
         @DisplayName("a failed job-submission publish answers 200 with the frozen failure literal, because "
                 + "the legacy destination ignores write errors and the transaction completes")
         void aFailedJobSubmissionAnswersTwoHundredWithTheFrozenLiteral() {
-            JobSubmissionException failure = new JobSubmissionException("carddemo-jobs.fifo",
+            JobSubmissionException failure = new JobSubmissionException("JOBS.fifo",
                     "QueueDoesNotExistException", "the queue does not exist", 3,
                     new IllegalStateException("transport failure"));
 
@@ -558,7 +595,7 @@ class GlobalExceptionHandlerTest {
             assertThat(body).isNotNull();
             assertThat(body.message()).isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
             // The diagnostic codes belong on the log line, exactly where the legacy put them.
-            assertThat(body.message()).doesNotContain("QueueDoesNotExistException", "carddemo-jobs.fifo");
+            assertThat(body.message()).doesNotContain("QueueDoesNotExistException", "JOBS.fifo");
             assertThat(body.fieldErrors()).isEmpty();
         }
     }

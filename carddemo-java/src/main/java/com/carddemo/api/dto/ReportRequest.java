@@ -30,32 +30,12 @@ import jakarta.validation.constraints.Size;
  * branch - reached when none is set - produces a validation message rather than a fourth period.
  * Collapsing them would make that branch unreachable.
  *
- * <p>The six date parts stay separate and stay text. The legacy screen receives month, day and year
- * independently for each end of the range, and reassembly plus the ordered fourteen-stage date
- * cascade - which validates the year, then the month, then the day, then their combination - belongs
- * to the service, whose stage order is the contract.
- *
  * <p>The inbound group declares seventeen value items. Ten of them are typed by the operator: three
- * single-character report-type markers, six date parts and one confirmation position. Those ten
- * become the eight components below - the three markers collapsing into one period component and the
- * remaining seven positions keeping one component each - and together with the attention key and the
- * echoed navigation state they are the entire content of this contract.
- *
- * <p><strong>The six date parts stay separate, and stay text.</strong> Each part is validated on its
- * own and reports its own message naming that part, so a merged value could not say which part failed;
- * leading zeros are contractual, and a numeric component type would drop them and change the text that
- * is ultimately submitted; and the shape the operator types is not the shape the batch tier receives,
- * which is one assembled ten-character value. That assembly is the report-request service's work, so
- * this record performs no assembly, separator insertion, parsing, calendar arithmetic or range
- * derivation and names no date-and-time type.
- *
- * <p><strong>The confirmation position is one character of text, not a two-state marker</strong>,
- * because it has four outcomes rather than two: unmarked prompts and re-displays the screen, so it is
- * neither acceptance nor refusal; the yes characters proceed; the no characters reset the screen and
- * raise the error flag with <em>no message text at all</em>, which is observable precisely because it
- * is silent; and any other value is quoted back to the operator inside its own message, so the exact
- * character typed must survive as far as the response. It is carried exactly as submitted - not
- * re-cased, not trimmed, not defaulted - and the branch that reads it belongs to the service.
+ * single-character report-type markers, six date parts and one confirmation position. Each of those ten
+ * positions keeps a component of its own here, and together with the attention key and the echoed
+ * navigation state they are the twelve components of this contract and its entire content. Each is
+ * documented at its own declaration below; the sections that follow give the reasoning that a component
+ * comment is too small to carry.
  *
  * <h2>The three selection markers stay three markers</h2>
  *
@@ -65,12 +45,11 @@ import jakarta.validation.constraints.Size;
  * line 72; mapset line 108, row 11). This contract carries all three, each at its declared
  * one-character width and each exactly as transmitted.
  *
- * <p><strong>Why three components and not one derived period.</strong> An earlier revision of this
- * record collapsed the three into a single enum-valued component, on the grounds that the three
- * positions are mutually exclusive and that a multiply-marked submission ought to be unrepresentable.
- * Both grounds are mistaken, and the service that consumes this contract says so in as many words: a
- * derived report-type enumeration "would collapse three independently markable screen fields into one
- * value and lose the first-match-wins behaviour when an operator marks more than one".
+ * <p><strong>Why three components and not one derived period.</strong> A single enum-valued component
+ * would rest on two premises that do not hold: that the three positions are mutually exclusive, and
+ * that a multiply-marked submission ought to be unrepresentable. A derived report-type enumeration
+ * would collapse three independently markable screen fields into one value and lose the
+ * first-match-wins behaviour when an operator marks more than one.
  *
  * <ul>
  *   <li><strong>The positions are not mutually exclusive on the screen.</strong> The mapset declares
@@ -126,13 +105,9 @@ import jakarta.validation.constraints.Size;
  * <h2>The six date parts stay separate, and stay text</h2>
  *
  * <p>The start date and the end date are each three separate inbound items, in the screen order
- * month, day, year: {@code SDTMMI} (symbolic map line 78; mapset line 127, two characters at row 13
- * column 29), {@code SDTDDI} (line 84; mapset line 138, column 34) and {@code SDTYYYYI} (line 90;
- * mapset line 149, four characters at column 39), with {@code EDTMMI} (line 96; mapset line 166),
- * {@code EDTDDI} (line 102; mapset line 177) and {@code EDTYYYYI} (line 108; mapset line 188)
- * occupying the row below at the same columns.
- *
- * <p>They stay separate, and they stay text, for three reasons.
+ * month, day, year: {@code SDTMMI}, {@code SDTDDI} and {@code SDTYYYYI} (symbolic map lines 78, 84 and
+ * 90), with {@code EDTMMI}, {@code EDTDDI} and {@code EDTYYYYI} (lines 96, 102 and 108) occupying the
+ * row below at the same columns. They stay separate, and they stay text, for three reasons.
  *
  * <ul>
  *   <li>Each part is validated on its own and reports its own message naming that part. A merged
@@ -153,66 +128,37 @@ import jakarta.validation.constraints.Size;
  *
  * <h2>The confirmation position is one character of text, not a two-state marker</h2>
  *
- * <p>The confirmation position {@code CONFIRMI} (symbolic map line 114; mapset line 206, one
- * character at row 19 column 66) is carried as one character of text rather than as a two-state
- * marker, because the position has four distinct outcomes rather than two, and two of those four
- * depend on information a two-state marker cannot hold.
- *
- * <ul>
- *   <li>An unmarked position is not a refusal. The program prompts for confirmation and re-displays
- *       the screen at line 464, so the request is neither accepted nor rejected.</li>
- *   <li>{@code Y} and {@code y} proceed, at line 478.</li>
- *   <li>{@code N} and {@code n} reset the screen and raise the error flag with no message text at
- *       all, at lines 480 to 483. That silent rejection is observable precisely because it produces
- *       no message, and a two-state marker would erase the distinction between it and the prompted
- *       state.</li>
- *   <li>Any other value is quoted back to the operator inside its own message, whose fragments sit
- *       at lines 486 and 488. The exact character the operator typed must therefore survive as far
- *       as the response, which a two-state marker would have discarded before the message could be
- *       built.</li>
- * </ul>
+ * <p>{@code CONFIRMI} (symbolic map line 114) is carried as one character of text because the position
+ * has four distinct outcomes, two of which depend on information a two-state marker cannot hold: an
+ * unmarked position is a prompt and a re-display at line 464, neither acceptance nor refusal;
+ * {@code Y} and {@code y} proceed at line 478; {@code N} and {@code n} reset the screen and raise the
+ * error flag with no message text at all at lines 480 to 483, a silent rejection observable precisely
+ * because it produces no message; and any other value is quoted back to the operator inside its own
+ * message, whose fragments sit at lines 486 and 488, so the exact character typed must survive as far
+ * as the response.
  *
  * <p>The character is carried exactly as submitted - not re-cased, not trimmed, not defaulted - and
  * the branch that reads it belongs to the report-request service.
  *
  * <h2>The ordered fourteen-stage date cascade belongs to the service</h2>
  *
- * <p>When the custom period is selected the program runs a strictly ordered fourteen-stage
- * validation over the six date parts, and the first failing stage decides both the message and the
- * item the cursor lands on. The order, with each stage's citation in {@code app/cbl/CORPT00C.cbl}:
- *
- * <ol>
- *   <li>start month absent - line 261</li>
- *   <li>start day absent - line 268</li>
- *   <li>start year absent - line 275</li>
- *   <li>end month absent - line 282</li>
- *   <li>end day absent - line 289</li>
- *   <li>end year absent - line 296</li>
- *   <li>start month not numeric, or above its upper bound - line 331</li>
- *   <li>start day not numeric, or above its upper bound - line 340</li>
- *   <li>start year not numeric - line 348</li>
- *   <li>end month not numeric, or above its upper bound - line 357</li>
- *   <li>end day not numeric, or above its upper bound - line 366</li>
- *   <li>end year not numeric - line 374</li>
- *   <li>start date not a valid calendar date - line 400</li>
- *   <li>end date not a valid calendar date - line 420</li>
- * </ol>
+ * <p>When the custom period is selected the program runs a strictly ordered fourteen-stage validation
+ * over the six date parts - the six absence stages first, then the six numeric-and-bound stages, then
+ * the two calendar-validity stages - and the first failing stage decides both the message and the item
+ * the cursor lands on. That order is the contract, and it is reproduced stage by stage, with each
+ * stage's {@code app/cbl/CORPT00C.cbl} line citation, in the report-request service that owns it.
  *
  * <p>Three casing patterns run through those fourteen texts, and every one of them is contract
  * rather than accident: the six absence stages spell the negation word entirely in capitals, the six
  * range stages capitalise the calendar-unit word, and the two closing stages spell the calendar word
  * entirely in lower case. None of the three may be regularised. The texts themselves belong to the
- * response contract, so not one of them is declared in this file; only their order and their
- * citations are recorded here.
+ * response contract, so not one of them is declared in this file.
  *
  * <p>The two closing stages are decided by the date utility the program calls at lines 392 and 412,
- * under a two-level acceptance test: a severity check first, at lines 396 and 416, then an exemption
- * for one specific message number, at lines 399 and 419. That logic belongs to the module's
- * date-validation service; it is neither replicated nor referenced here.
- *
- * <p>The monthly and yearly periods never enter the cascade. They derive their own ranges from the
- * current date at lines 215 to 236 and 241 to 253 respectively, which is service work for the same
- * reason.
+ * under a two-level acceptance test: a severity check first, then an exemption for one specific message
+ * number. That logic belongs to the module's date-validation service. The monthly and yearly periods
+ * never enter the cascade at all; they derive their own ranges from the current date, which is service
+ * work for the same reason.
  *
  * <h2>Why no presence, format or calendar constraint appears here</h2>
  *
@@ -321,23 +267,20 @@ public record ReportRequest(
               tested FIRST by the ordered evaluation at CORPT00C line 213.
 
               THE THREE MARKERS ARE THREE COMPONENTS, NOT ONE ENUMERATION, AND THAT IS THE CONTRACT.
-              An earlier revision collapsed these three positions into a single enum-valued component
-              on the stated grounds that they are mutually exclusive and that a multiply-marked
-              submission should be unrepresentable. Neither premise holds. The mapset declares three
-              independently markable one-character fields, so a 3270 submission carrying two or three
-              marks is a state the legacy screen can actually produce; and the program does not treat
-              that state as an error - it resolves it by ORDER, taking the month-to-date arm at line
-              213, then the year-to-date arm at line 239, then the operator-range arm at line 256,
-              first non-blank winning. An enumeration cannot express "monthly and custom were both
-              marked", so it cannot reproduce the resolution either: it forces the client to pick, and
-              a client that picked differently from the legacy order would change the report produced.
-              Collapsing them also discarded the marker characters themselves, which are carried
-              verbatim because the program tests only that a field is non-blank and never which
-              character it holds.
+              The mapset declares three independently markable one-character fields, so a 3270
+              submission carrying two or three marks is a state the legacy screen can produce; and the
+              program does not treat that state as an error - it resolves it by ORDER, taking the
+              month-to-date arm at line 213, then the year-to-date arm at line 239, then the
+              operator-range arm at line 256, first non-blank winning. An enumeration cannot express
+              "monthly and custom were both marked", so it cannot reproduce that resolution: it would
+              force the client to pick, and a client that picked differently from the legacy order would
+              change the report produced. It would also discard the marker characters themselves, which
+              are carried verbatim because the program tests only that a field is non-blank and never
+              which character it holds.
 
-              The resolved period is not lost - it is simply produced rather than supplied. The service
-              performs the ordered evaluation and publishes what it resolved on ReportResponse, which is
-              where a resolved value belongs. */
+              The resolved period is produced rather than supplied: the service performs the ordered
+              evaluation and publishes what it resolved on ReportResponse, which is where a
+              server-derived value belongs. */
         @Size(max = 1) String monthlySelection,
 
         /* 2. YEARLYI, width 1 - the year-to-date marker (symbolic map line 66, mapset line 94),
@@ -386,7 +329,7 @@ public record ReportRequest(
                service-tier cascade this file describes is untouched. */
         @Valid NavigationContext navigationContext) {
 
-    // No member is declared beyond the ten components above, and the omission is deliberate rather
+    // No member is declared beyond the twelve components above, and the omission is deliberate rather
     // than unfinished work. Every remaining concern of transaction CR00 - the ordered fourteen-stage
     // validation, the monthly and yearly range derivation, the three-part to single-value date
     // conversion, the confirmation branch, the downstream hand-over and every response text - sits

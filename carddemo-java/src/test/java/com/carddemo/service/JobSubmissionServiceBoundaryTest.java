@@ -94,7 +94,7 @@ import static org.mockito.Mockito.when;
 class JobSubmissionServiceBoundaryTest {
 
     /** The canonical first-in-first-out queue name the module configures. */
-    private static final String QUEUE = "carddemo-jobs.fifo";
+    private static final String QUEUE = "JOBS.fifo";
 
     /** The canonical message group the cards are appended to, preserving their order. */
     private static final String MESSAGE_GROUP = "carddemo-job-submission";
@@ -288,7 +288,7 @@ class JobSubmissionServiceBoundaryTest {
         }
 
         @ParameterizedTest(name = "the non-ordered queue name [{0}] is refused")
-        @ValueSource(strings = {"carddemo-jobs", "carddemo-jobs.FIFO", "carddemo-jobs.fifo-queue",
+        @ValueSource(strings = {"jobs", "JOBS.FIFO", "JOBS.fifo-queue",
             "JOBS"})
         @DisplayName("a queue that is not first-in-first-out is refused, because order is contractual")
         void aNonOrderedQueueIsRefused(String candidate) {
@@ -299,9 +299,9 @@ class JobSubmissionServiceBoundaryTest {
         }
 
         @ParameterizedTest(name = "the malformed queue name [{0}] is refused")
-        @ValueSource(strings = {"carddemo-jobs.fifo ", " carddemo-jobs.fifo",
-            "carddemo jobs.fifo", "carddemo-jobs\u00e9.fifo", "carddemo/jobs.fifo",
-            "carddemo:jobs.fifo", ".fifo"})
+        @ValueSource(strings = {"JOBS.fifo ", " JOBS.fifo",
+            "JOB S.fifo", "JOBS\u00e9.fifo", "JOB/S.fifo",
+            "JOB:S.fifo", ".fifo"})
         @DisplayName("a queue name the queue service could not carry is refused before the suffix rule")
         void aMalformedQueueNameIsRefused(String candidate) {
             // These are the values the previous contract admitted: it looked only for printable text
@@ -328,11 +328,11 @@ class JobSubmissionServiceBoundaryTest {
         }
 
         @ParameterizedTest(name = "the configured destination [{0}] is accepted")
-        @ValueSource(strings = {"carddemo-jobs.fifo",
-            "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs.fifo",
-            "http://localhost:4566/000000000000/carddemo-jobs.fifo",
-            "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/carddemo-jobs.fifo",
-            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo"})
+        @ValueSource(strings = {"JOBS.fifo",
+            "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS.fifo",
+            "http://localhost:4566/000000000000/JOBS.fifo",
+            "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/JOBS.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo"})
         @DisplayName("all three forms a deployment may configure the queue as are accepted")
         void everyConfigurableDestinationFormIsAccepted(String candidate) {
             // A tightened contract that refused a form the producer has always accepted would be a
@@ -924,7 +924,7 @@ class JobSubmissionServiceBoundaryTest {
         @Test
         @DisplayName("a complete submission is complete and not partial")
         void aCompleteSubmissionIsCompleteAndNotPartial() {
-            SubmissionResult result = new SubmissionResult(CARD_COUNT, CARD_COUNT, false, "");
+            SubmissionResult result = new SubmissionResult(SUBMISSION, CARD_COUNT, CARD_COUNT, false, "");
 
             assertThat(result.complete()).isTrue();
             assertThat(result.partial()).isFalse();
@@ -934,7 +934,7 @@ class JobSubmissionServiceBoundaryTest {
         @Test
         @DisplayName("a failure after some cards is partial and not complete")
         void aFailureAfterSomeCardsIsPartial() {
-            SubmissionResult result = new SubmissionResult(CARD_COUNT, 8, true, "");
+            SubmissionResult result = new SubmissionResult(SUBMISSION, CARD_COUNT, 8, true, "");
 
             assertThat(result.complete()).isFalse();
             assertThat(result.partial()).isTrue();
@@ -943,7 +943,7 @@ class JobSubmissionServiceBoundaryTest {
         @Test
         @DisplayName("a failure before any card is neither complete nor partial")
         void aFailureBeforeAnyCardIsNeitherCompleteNorPartial() {
-            SubmissionResult result = new SubmissionResult(CARD_COUNT, 0, true, "");
+            SubmissionResult result = new SubmissionResult(SUBMISSION, CARD_COUNT, 0, true, "");
 
             assertThat(result.complete()).isFalse();
             assertThat(result.partial()).isFalse();
@@ -952,25 +952,25 @@ class JobSubmissionServiceBoundaryTest {
         @Test
         @DisplayName("a failure with no message supplied takes the legacy message")
         void aFailureWithNoMessageTakesTheLegacyMessage() {
-            assertThat(new SubmissionResult(CARD_COUNT, 0, true, "").failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION, CARD_COUNT, 0, true, "").failureMessage())
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
-            assertThat(new SubmissionResult(CARD_COUNT, 0, true, null).failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION, CARD_COUNT, 0, true, null).failureMessage())
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
         }
 
         @Test
         @DisplayName("a failure with its own message keeps it")
         void aFailureWithItsOwnMessageKeepsIt() {
-            assertThat(new SubmissionResult(CARD_COUNT, 0, true, "bespoke").failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION, CARD_COUNT, 0, true, "bespoke").failureMessage())
                     .isEqualTo("bespoke");
         }
 
         @Test
         @DisplayName("a success discards any supplied message, because there is nothing to report")
         void aSuccessDiscardsAnySuppliedMessage() {
-            assertThat(new SubmissionResult(CARD_COUNT, CARD_COUNT, false, "ignored")
+            assertThat(new SubmissionResult(SUBMISSION, CARD_COUNT, CARD_COUNT, false, "ignored")
                     .failureMessage()).isEmpty();
-            assertThat(new SubmissionResult(CARD_COUNT, CARD_COUNT, false, null)
+            assertThat(new SubmissionResult(SUBMISSION, CARD_COUNT, CARD_COUNT, false, null)
                     .failureMessage()).isEmpty();
         }
 
@@ -978,7 +978,7 @@ class JobSubmissionServiceBoundaryTest {
         @DisplayName("a negative requested count is refused")
         void aNegativeRequestedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(-1, 0, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION, -1, 0, false, ""))
                     .withMessageContaining("cardsRequested must not be negative");
         }
 
@@ -986,7 +986,7 @@ class JobSubmissionServiceBoundaryTest {
         @DisplayName("a negative published count is refused")
         void aNegativePublishedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(CARD_COUNT, -1, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION, CARD_COUNT, -1, false, ""))
                     .withMessageContaining("cardsPublished must not be negative");
         }
 
@@ -994,7 +994,7 @@ class JobSubmissionServiceBoundaryTest {
         @DisplayName("more cards published than requested is refused")
         void moreCardsPublishedThanRequestedIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(CARD_COUNT, CARD_COUNT + 1, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION, CARD_COUNT, CARD_COUNT + 1, false, ""))
                     .withMessageContaining("must not")
                     .withMessageContaining("exceed cardsRequested");
         }
@@ -1002,7 +1002,7 @@ class JobSubmissionServiceBoundaryTest {
         @Test
         @DisplayName("a zero-card submission is admitted, because the record is a plain carrier")
         void aZeroCardSubmissionIsAdmitted() {
-            assertThat(new SubmissionResult(0, 0, false, "").complete()).isTrue();
+            assertThat(new SubmissionResult(SUBMISSION, 0, 0, false, "").complete()).isTrue();
         }
     }
 }

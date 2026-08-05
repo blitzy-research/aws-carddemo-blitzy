@@ -21,31 +21,28 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.DateFormat;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ZonedDecimalCodec;
-
-import jakarta.persistence.EntityExistsException;
 
 /**
  * The transaction-add screen: the online path by which an operator writes a new row into the
@@ -164,10 +161,13 @@ import jakarta.persistence.EntityExistsException;
  * <p>The browse is realised with the inherited paged, descending lookup and <strong>not</strong> with
  * the repository's maximum-identifier query: this member needs the whole highest-keyed
  * <em>record</em>, because the copy-last-transaction path at lines 481 to 492 populates eleven screen
- * fields from it. Identifier generation by maximum-key-plus-one over the key alone belongs to the
- * bill-payment service. No database sequence, no generated value and no random identifier is used
- * anywhere: a sequence never reuses a value it has handed out, whereas this rule always reuses a gap,
- * and the first rollback after an identifier is consumed would make a sequence diverge permanently.
+ * fields from it. The allocating path takes the repository's transaction-scoped advisory lock before
+ * that browse and holds it through the flushed insert, so the full-record read remains serial without
+ * turning the identifier rule into a sequence. Identifier generation by maximum-key-plus-one over the
+ * key alone belongs to the bill-payment service. No database sequence, no generated value and no
+ * random identifier is used anywhere: a sequence never reuses a value it has handed out, whereas this
+ * rule always reuses a gap, and the first rollback after an identifier is consumed would make a
+ * sequence diverge permanently.
  *
  * <h2>Relationships are explicit repository calls</h2>
  * There are no persistence associations anywhere in this module and no foreign keys on the
@@ -227,25 +227,14 @@ import jakarta.persistence.EntityExistsException;
  * per-invocation state object, so two concurrent turns cannot observe one another and no identifier
  * is ever cached between calls.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The screen turn is non-transactional. Identifier lock, highest-key read and insert execute
+ * together inside {@link OnlineTransactionBoundary}, so duplicate or write failures are translated
+ * only after that unit has rolled back.
  *
  * @since 1.0.0
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class TransactionAddService {
+public final class TransactionAddService {
 
     /** Diagnostic channel replacing the four {@code DISPLAY} statements at lines 598, 631, 662, 691. */
     private static final Logger LOG = LoggerFactory.getLogger(TransactionAddService.class);
@@ -674,6 +663,22 @@ public class TransactionAddService {
     /** The increment applied at line 449. */
     private static final long IDENTIFIER_INCREMENT = 1L;
 
+    /**
+     * How many times the allocate-and-write span of lines 444 to 466 is performed before the duplicate
+     * arm reports: two, so the highest key is re-read under the allocation lock exactly once more.
+     *
+     * <p><strong>The bound belongs to this service and not to the repository</strong>, which states the
+     * obligation and explains why only the holder of the transactional boundary can decide how many
+     * attempts are reasonable - see {@link TransactionRepository#lockIdentifierAllocation(long)}. Two is
+     * what that contract asks for: <em>re-read the maximum under the lock and try once more</em>.
+     *
+     * <p><strong>A retry is needed at all only against a writer that reached the transaction master
+     * without taking the allocation lock</strong> - a bulk load, a migration script, or a future caller
+     * that forgot. Two allocators that both take the lock are serialised by it and cannot collide, so
+     * between them the first attempt always succeeds and this bound is never consumed.
+     */
+    private static final int IDENTIFIER_ALLOCATION_ATTEMPTS = 2;
+
     /** The one row a backward read consumes: the browse reads exactly one record. */
     private static final int SINGLE_RECORD = 1;
 
@@ -685,6 +690,12 @@ public class TransactionAddService {
 
     /** The record type named in a not-found diagnostic. */
     private static final String CROSS_REFERENCE_RECORD = "CardCrossReference";
+
+    /** Which part of the lock-read-insert unit was active when persistence failed. */
+    private enum PersistenceStage {
+        ALLOCATION,
+        INSERT
+    }
 
     // ==========================================================================================
     // Collaborators, all constructor injected
@@ -712,6 +723,9 @@ public class TransactionAddService {
      */
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    /** Owns the lock-read-insert unit so failures return after rollback. */
+    private final OnlineTransactionBoundary transactionBoundary;
+
     /** The clock standing in for {@code FUNCTION CURRENT-DATE} at line 554. */
     private final Clock clock;
 
@@ -723,6 +737,7 @@ public class TransactionAddService {
      * @param navigationService            the navigation rules; mandatory
      * @param transactionRepository        the transaction master; mandatory
      * @param cardCrossReferenceRepository the card cross reference; mandatory
+     * @param transactionBoundary          the independent identifier-allocation and insert unit
      * @param clock                        the clock the screen header reads; mandatory
      * @throws NullPointerException if any collaborator is {@code null}
      */
@@ -731,6 +746,7 @@ public class TransactionAddService {
             final NavigationService navigationService,
             final TransactionRepository transactionRepository,
             final CardCrossReferenceRepository cardCrossReferenceRepository,
+            final OnlineTransactionBoundary transactionBoundary,
             final Clock clock) {
         this.dateValidationService =
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
@@ -742,6 +758,8 @@ public class TransactionAddService {
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
                 "cardCrossReferenceRepository must not be null");
+        this.transactionBoundary = Objects.requireNonNull(transactionBoundary,
+                "transactionBoundary must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -803,7 +821,7 @@ public class TransactionAddService {
                                             String confirm,
                                             String selectedTransaction,
                                             KeyAction keyAction,
-                                            NavigationContext navigationContext) {
+                                            ScreenNavigationState navigationContext) {
     }
 
     /**
@@ -961,7 +979,7 @@ public class TransactionAddService {
      * @param screen               the fourteen screen fields as the turn leaves them
      */
     public record TransactionAddResult(NavigationService.Route route,
-                                       NavigationContext navigationContext,
+                                       ScreenNavigationState navigationContext,
                                        String reArmedTransactionId,
                                        TransactionProjection transaction,
                                        String message,
@@ -995,19 +1013,15 @@ public class TransactionAddService {
      * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are wholly
      * independent and no identifier is ever cached.
      *
-     * <p><strong>The whole turn is transactional</strong>, which is what makes the backward browse and
-     * the insert a single read-modify-write and stops two concurrent adds from both observing the same
-     * highest key. The write ordering of the source is preserved exactly and <strong>no rollback is
-     * forced</strong>: this member contains no rollback site, the estate's only explicit rollback being
-     * in the account-update program, so a duplicate key or a failed insert is reported to the operator
-     * through the returned value and the turn completes normally.
+     * <p>The turn remains outside a transaction until the allocating write paragraph. That paragraph
+     * takes the advisory lock, reads the highest key and flushes the insert in one independent unit;
+     * duplicate or write failures are mapped here only after rollback.
      *
      * @param input the transmitted screen, the decoded attention key and the echoed navigation state;
      *              must not be {@code null}
      * @return the outcome of the turn, never {@code null}
      * @throws NullPointerException if {@code input} is {@code null}
      */
-    @Transactional
     public TransactionAddResult processTransactionAdd(final TransactionAddScreenInput input) {
         Objects.requireNonNull(input, "input must not be null");
 
@@ -1067,7 +1081,7 @@ public class TransactionAddService {
             // IF EIBCALEN = 0 at line 115, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 116. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written here as a literal.
-            state.context = withNominatedProgram(NavigationContext.empty(),
+            state.context = withNominatedProgram(ScreenNavigationState.empty(),
                     navigationService.resolveAbsentContextRoute().getLegacyProgramName());
             returnToPrevScreen(state);
             return;
@@ -1565,7 +1579,18 @@ public class TransactionAddService {
      * key, the browse is started, one record is read backward, the browse is ended, what was found is
      * moved into a sixteen-digit numeric work field and one is added. No sequence, no generated value and
      * no random identifier is involved. The backward read's end-of-file arm moves zeros into the key, so
-     * an empty table seeds zero and the first identifier is {@code 0000000000000001}.
+     * an empty table seeds zero and the first identifier is {@code 0000000000000001}. The
+     * transaction-scoped advisory lock is taken before the browse and remains held through the flushed
+     * insert, preventing another allocator from reading the same highest key.
+     *
+     * <p><strong>The allocation lock is taken here, before the browse, and the span is bounded-retried.</strong>
+     * The legacy region held its browse position across the read, the increment and the write, and a
+     * relational store expresses that hold as {@link TransactionRepository#lockIdentifierAllocation(long)}:
+     * transaction-scoped, so it covers the whole turn, and taken once because it is re-entrant. Lines 444
+     * to 466 are then performed up to {@link #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an identifier
+     * taken by a writer that reached the table <em>without</em> the lock is re-minted from a re-read
+     * highest key rather than refused. The copy-last-transaction path takes no lock, because it mints
+     * nothing.
      *
      * <p><strong>Field assignment, lines 450 to 465, in the source's order and no other.</strong> The
      * record is initialised, then the key, type code, category code, source, description, amount, card
@@ -1585,15 +1610,22 @@ public class TransactionAddService {
      * @param state the turn's working storage
      */
     private void addTransaction(final TurnState state) {
+        // The write paragraph owns the proxied transaction boundary so the advisory lock, the
+        // backward maximum-key read and the insert cannot be split across transactions.
+        writeTransactFile(state);
+    }
+
+    /**
+     * Performs the source-ordered identifier allocation and record assembly inside the write
+     * paragraph's transaction.
+     *
+     * @param state the turn's working storage
+     * @return the record to insert, or {@code null} only on the defensive invalid-amount arm
+     */
+    private Transaction allocateTransactionRecord(final TurnState state) {
         // MOVE HIGH-VALUES TO TRAN-ID at line 444, then the three browse paragraphs at lines 445 to 447.
-        startbrTransactFile(state);
-        if (state.screenSent) {
-            return;
-        }
+        state.browseCursor = highestTransactionWindow();
         readprevTransactFile(state);
-        if (state.screenSent) {
-            return;
-        }
         endbrTransactFile(state);
 
         // MOVE TRAN-ID TO WS-TRAN-ID-N at line 448 and ADD 1 TO WS-TRAN-ID-N at line 449. The work field
@@ -1619,7 +1651,7 @@ public class TransactionAddService {
             // rather than writing a record with no amount.
             faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_AMOUNT, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
-            return;
+            return null;
         }
 
         final String tranCardNum = moveToField(state.cardNumber, CARD_NUMBER_WIDTH);
@@ -1646,9 +1678,7 @@ public class TransactionAddService {
                 tranCardNum,
                 tranOrigTs,
                 tranProcTs);
-
-        // PERFORM WRITE-TRANSACT-FILE at line 466.
-        writeTransactFile(state);
+        return state.pending;
     }
 
     // ==========================================================================================
@@ -1948,11 +1978,12 @@ public class TransactionAddService {
     private void readCxacaixFile(final TurnState state) {
         final Optional<CardCrossReference> located;
         try {
-            located = cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.xrefAccountId);
+            located = firstXrefByBaseKey(
+                    cardCrossReferenceRepository.findByXrefAcctId(state.xrefAccountId));
         } catch (final RuntimeException lookupFailure) {
             // WHEN OTHER at lines 597 to 603, including the DISPLAY at line 598.
-            LOG.error("Alternate-index lookup of the {} failed", CROSS_REFERENCE_RECORD, lookupFailure);
+            LOG.error("Alternate-index lookup of the {} failed: failureChain={}",
+                    CROSS_REFERENCE_RECORD, FailureDiagnostics.failureChainOf(lookupFailure));
             faultField(state, MSG_XREF_AIX_LOOKUP_FAILED, PROPERTY_ACCOUNT_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
             return;
@@ -1994,7 +2025,8 @@ public class TransactionAddService {
             located = cardCrossReferenceRepository.findById(state.xrefCardNumber);
         } catch (final RuntimeException lookupFailure) {
             // WHEN OTHER at lines 630 to 636, including the DISPLAY at line 631.
-            LOG.error("Base-cluster lookup of the {} failed", CROSS_REFERENCE_RECORD, lookupFailure);
+            LOG.error("Base-cluster lookup of the {} failed: failureChain={}",
+                    CROSS_REFERENCE_RECORD, FailureDiagnostics.failureChainOf(lookupFailure));
             faultField(state, MSG_XREF_LOOKUP_FAILED, PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
                     ValidationException.FieldState.INVALID);
             return;
@@ -2043,16 +2075,29 @@ public class TransactionAddService {
         // MOVE HIGH-VALUES TO TRAN-ID at the call sites, lines 444 and 475: the browse is positioned at
         // the end of the key sequence, which a descending order expresses directly.
         try {
-            state.browseCursor = transactionRepository
-                    .findAll(PageRequest.of(FIRST_PAGE, SINGLE_RECORD,
-                            Sort.by(Sort.Direction.DESC, TRAN_ID_ATTRIBUTE)))
-                    .getContent();
+            state.browseCursor = highestTransactionWindow();
         } catch (final RuntimeException browseFailure) {
             // WHEN OTHER at lines 661 to 667, including the DISPLAY at line 662.
-            LOG.error("Positioning the transaction browse at the highest key failed", browseFailure);
+            LOG.error("Positioning the transaction browse at the highest key failed:"
+                    + " failureChain={}", FailureDiagnostics.failureChainOf(browseFailure));
             faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
         }
+    }
+
+    /**
+     * Reads the highest transaction-key window without translating a persistence failure.
+     *
+     * <p>The copy-last path calls it through {@link #startbrTransactFile(TurnState)}, which maps a
+     * failure immediately because no write transaction exists. The add path calls it inside
+     * {@link OnlineTransactionBoundary}; allowing a failure to escape there is what guarantees the
+     * transaction rolls back before the outer screen arm maps it.
+     */
+    private List<Transaction> highestTransactionWindow() {
+        return transactionRepository
+                .findAll(PageRequest.of(FIRST_PAGE, SINGLE_RECORD,
+                        Sort.by(Sort.Direction.DESC, TRAN_ID_ATTRIBUTE)))
+                .getContent();
     }
 
     // ==========================================================================================
@@ -2131,29 +2176,77 @@ public class TransactionAddService {
      * &mdash; reports {@value #MSG_TRAN_ID_ALREADY_EXISTS}, and anything else reports
      * {@value #MSG_UNABLE_TO_ADD}; both position the cursor on the account field.
      *
-     * <p><strong>No rollback is forced.</strong> This member contains no rollback site: the estate's only
-     * explicit rollback is in the account-update program. A failed insert therefore reports to the
-     * operator and the turn completes, and the enclosing transaction is left to the outcome the
-     * persistence layer already determined.
+     * <p>The transaction boundary includes the advisory lock and highest-key read that precede this
+     * paragraph. A failed allocation or insert therefore rolls back before this method translates it
+     * into the matching legacy response arm; no rollback-only failure can replace the screen result at
+     * method exit.
      *
      * @param state the turn's working storage
      */
     private void writeTransactFile(final TurnState state) {
         final Transaction saved;
         try {
-            saved = transactionRepository.save(state.pending);
+            saved = transactionBoundary.execute(() -> {
+                state.persistenceStage = PersistenceStage.ALLOCATION;
+                transactionRepository.lockIdentifierAllocation(
+                        TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+                for (int attempt = 1; attempt <= IDENTIFIER_ALLOCATION_ATTEMPTS; attempt++) {
+                    state.finalAllocationAttempt = attempt == IDENTIFIER_ALLOCATION_ATTEMPTS;
+                    final Transaction pending = allocateTransactionRecord(state);
+                    if (pending == null) {
+                        return null;
+                    }
+                    if (transactionRepository.existsById(pending.getTranId())) {
+                        state.identifierAlreadyTaken = true;
+                        if (!state.finalAllocationAttempt) {
+                            LOG.info("Transaction-add identifier is already present; re-reading the"
+                                    + " locked maximum attempt={}", attempt + 1);
+                            continue;
+                        }
+                        return null;
+                    }
+                    state.identifierAlreadyTaken = false;
+                    state.persistenceStage = PersistenceStage.INSERT;
+                    return transactionRepository.insertAndFlush(pending);
+                }
+                return null;
+            });
         } catch (final RuntimeException writeFailure) {
+            if (state.persistenceStage == PersistenceStage.ALLOCATION) {
+                LOG.error("Positioning the transaction browse at the highest key failed:"
+                                + " file=TRANSACT failureChain={}",
+                        FailureDiagnostics.failureChainOf(writeFailure));
+                faultField(state, MSG_TRANSACTION_LOOKUP_FAILED, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+                        ValidationException.FieldState.INVALID);
+                return;
+            }
             if (isDuplicateKeyFailure(writeFailure)) {
-                // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 735 to 741.
-                LOG.warn("The transaction master already holds the minted identifier", writeFailure);
+                // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 735 to 741. No re-mint follows: a
+                // refused flush leaves the surrounding transaction marked for rollback, so a further
+                // attempt inside it could not commit.
+                LOG.warn("The transaction master already holds the minted identifier: file=TRANSACT"
+                        + " failureChain={}", FailureDiagnostics.failureChainOf(writeFailure));
                 faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
                         ValidationException.FieldState.INVALID);
                 return;
             }
             // WHEN OTHER at lines 742 to 748, including the DISPLAY at line 743.
-            LOG.error("Writing the transaction failed", writeFailure);
+            LOG.error("Writing the transaction failed: file=TRANSACT failureChain={}",
+                    FailureDiagnostics.failureChainOf(writeFailure));
             faultField(state, MSG_UNABLE_TO_ADD, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
                     ValidationException.FieldState.INVALID);
+            return;
+        }
+        if (state.identifierAlreadyTaken) {
+            // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 735 to 741, reached without asking the
+            // store to merge a record whose assigned key is already present.
+            LOG.warn("The transaction master already holds the minted identifier and the allocation"
+                    + " attempts are exhausted: file=TRANSACT");
+            faultField(state, MSG_TRAN_ID_ALREADY_EXISTS, PROPERTY_TRAN_ID, FIELD_ACCOUNT_ID,
+                    ValidationException.FieldState.INVALID);
+            return;
+        }
+        if (saved == null) {
             return;
         }
 
@@ -2300,7 +2393,7 @@ public class TransactionAddService {
      * @param context the navigation state echoed by the client
      * @return the program name to nominate
      */
-    private static String resolveExitProgramName(final NavigationContext context) {
+    private static String resolveExitProgramName(final ScreenNavigationState context) {
         if (isBlankField(context.fromProgram())) {
             // MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM at line 138.
             return NavigationService.Route.USER_MENU.getLegacyProgramName();
@@ -2556,14 +2649,7 @@ public class TransactionAddService {
      * @return {@code true} when the failure is a duplicate key
      */
     private static boolean isDuplicateKeyFailure(final RuntimeException failure) {
-        for (Throwable candidate = failure; candidate != null; candidate = candidate.getCause()) {
-            if (candidate instanceof EntityExistsException
-                    || candidate instanceof DuplicateKeyException
-                    || candidate instanceof DataIntegrityViolationException) {
-                return true;
-            }
-        }
-        return false;
+        return RecordWriter.isDuplicateKey(failure);
     }
 
     /**
@@ -2605,9 +2691,9 @@ public class TransactionAddService {
      * @param programName the destination program name to nominate
      * @return a new state differing only in its nominated-destination program
      */
-    private static NavigationContext withNominatedProgram(final NavigationContext context,
+    private static ScreenNavigationState withNominatedProgram(final ScreenNavigationState context,
             final String programName) {
-        return new NavigationContext(context.fromTransactionId(),
+        return new ScreenNavigationState(context.fromTransactionId(),
                 context.fromProgram(),
                 context.toTransactionId(),
                 programName,
@@ -2632,8 +2718,8 @@ public class TransactionAddService {
      * @param context the state to copy
      * @return a new state differing only in its originating transaction and program
      */
-    private static NavigationContext withOriginatingProgram(final NavigationContext context) {
-        return new NavigationContext(WS_TRANID,
+    private static ScreenNavigationState withOriginatingProgram(final ScreenNavigationState context) {
+        return new ScreenNavigationState(WS_TRANID,
                 WS_PGMNAME,
                 context.toTransactionId(),
                 context.toProgram(),
@@ -2744,8 +2830,32 @@ public class TransactionAddService {
         /** The record assembled at lines 450 to 465 and handed to the write at line 466. */
         private Transaction pending;
 
+        /** The durable operation active inside the independent transaction boundary. */
+        private PersistenceStage persistenceStage = PersistenceStage.ALLOCATION;
+
         /** The projection of what the write stored, or {@code null} when nothing was written. */
         private TransactionProjection written;
+
+        /**
+         * Whether the identifier the allocate-and-write span minted was found already stored, so the span
+         * is performed again from a re-read highest key.
+         *
+         * <p>Not a legacy field: the legacy browse held its position across the read, the increment and
+         * the write, so no legacy statement can observe this state. It exists because a relational store
+         * expresses that hold as an advisory lock plus an existence probe, and the probe needs somewhere
+         * to report from. Raised only while a further attempt remains, so the write paragraph's own
+         * duplicate arm still reports on the last one.
+         */
+        private boolean identifierAlreadyTaken;
+
+        /**
+         * Whether the attempt now running is the last the allocation bound allows.
+         *
+         * <p>Also not a legacy field. It is what makes the bound observable from inside the write
+         * paragraph, which is the only place that can tell a duplicate from a successful write, and it is
+         * what stops the deferral above from becoming an unbounded loop.
+         */
+        private boolean finalAllocationAttempt;
 
         /** {@code TITLE01O}. */
         private String title01 = NO_MESSAGE;
@@ -2790,7 +2900,7 @@ public class TransactionAddService {
         private boolean screenSent;
 
         /** {@code CARDDEMO-COMMAREA}, the navigation state the turn carries and hands back. */
-        private NavigationContext context = NavigationContext.empty();
+        private ScreenNavigationState context = ScreenNavigationState.empty();
 
         /** The destination the turn leads to; this screen's own unless a transfer replaced it. */
         private NavigationService.Route route = NavigationService.Route.TRANSACTION_ADD;
@@ -2896,8 +3006,8 @@ public class TransactionAddService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -2912,7 +3022,7 @@ public class TransactionAddService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }
@@ -2924,5 +3034,27 @@ public class TransactionAddService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
+    }
+
+    /**
+     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
+     * with the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
+     * number. That is a property of the read being reproduced rather than of the index, so
+     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
+     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
+     *
+     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
+     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
+     * coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when the account has none
+     */
+    private static Optional<CardCrossReference> firstXrefByBaseKey(
+            final List<CardCrossReference> candidates) {
+        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

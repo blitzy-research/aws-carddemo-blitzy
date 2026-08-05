@@ -16,6 +16,8 @@
 
 package com.carddemo.config;
 
+import com.carddemo.api.PublishedContractTypeRoster;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Properties;
@@ -153,7 +155,8 @@ final class OpenApiConfigBaselineTest {
      * @return the configuration
      */
     private static OpenApiConfig configuredFromPublishedVersion(final String versionValue) {
-        return new OpenApiConfig(new StubBuildPropertiesProvider(buildInformationReporting(versionValue)));
+        return new OpenApiConfig(new StubBuildPropertiesProvider(buildInformationReporting(versionValue)),
+                new PublishedContractTypeRoster());
     }
 
     /**
@@ -162,7 +165,8 @@ final class OpenApiConfigBaselineTest {
      * @return the configuration
      */
     private static OpenApiConfig configuredWithoutBuildInformation() {
-        return new OpenApiConfig(new StubBuildPropertiesProvider(null));
+        return new OpenApiConfig(new StubBuildPropertiesProvider(null),
+                new PublishedContractTypeRoster());
     }
 
     /**
@@ -543,10 +547,8 @@ final class OpenApiConfigBaselineTest {
         }
 
         @Test
-        @DisplayName("the components block hand-writes nothing: every schema name is the simple name of a "
-                + "declaring request or response type, and no response, parameter, request body or header "
-                + "is authored here in competition with the derived shapes")
-        void theComponentsBlockHandWritesNothing() {
+        @DisplayName("the components block derives schemas and declares only the shared response contracts")
+        void theComponentsBlockCarriesOnlySharedContracts() {
             final Components components = configuredWithoutBuildInformation().cardDemoOpenApi()
                     .getComponents();
 
@@ -558,10 +560,24 @@ final class OpenApiConfigBaselineTest {
                             .as("a derived name is the declaring type's simple name; a hand-authored key "
                                     + "would be free to be anything at all")
                             .matches("[A-Z][A-Za-z0-9]*"));
-            assertThat(components.getResponses()).isNull();
+            assertThat(components.getResponses())
+                    .containsOnlyKeys(
+                            OpenApiConfig.BAD_REQUEST_RESPONSE,
+                            OpenApiConfig.UNAUTHORIZED_RESPONSE,
+                            OpenApiConfig.FORBIDDEN_RESPONSE,
+                            OpenApiConfig.NOT_FOUND_RESPONSE,
+                            OpenApiConfig.CONFLICT_RESPONSE,
+                            OpenApiConfig.INTERNAL_SERVER_ERROR_RESPONSE)
+                    .allSatisfy((name, response) -> {
+                        assertThat(response.getDescription()).as(name).isNotBlank();
+                        assertThat(response.getContent()).as(name)
+                                .containsKey(org.springframework.http.MediaType
+                                        .APPLICATION_JSON_VALUE);
+                    });
             assertThat(components.getParameters()).isNull();
             assertThat(components.getRequestBodies()).isNull();
-            assertThat(components.getHeaders()).isNull();
+            assertThat(components.getHeaders())
+                    .containsOnlyKeys(OpenApiConfig.AUTHORIZATION_HEADER_COMPONENT);
             assertThat(components.getSecuritySchemes()).hasSize(1);
         }
     }

@@ -75,11 +75,25 @@ class CredentialDigestServiceTest {
     /** A second synthetic credential, used to prove a digest verifies against one input only. */
     private static final String OTHER_CREDENTIAL = "a-different-synthetic-credential";
 
-    /** The seven-character header of a well-formed digest at the encoder's default cost. */
-    private static final String DEFAULT_HEADER = "$2a$10$";
+    /**
+     * A well-formed seven-character digest header, used to build candidates whose shape can be asserted
+     * without a random salt.
+     *
+     * <p>The cost factor in it is fixture data and is deliberately <em>not</em> the module's hashing
+     * strength: what these shape assertions test is the recogniser, which accepts the whole declared cost
+     * range rather than one value. The strength the service actually hashes at is asserted separately, off
+     * a digest it produced, by {@link DigestProduction#hashesAtTheModulesOneStrength()}.</p>
+     */
+    private static final String SAMPLE_HEADER = "$2a$10$";
 
     /** Length of the combined salt and hash that follows the header. */
     private static final int REMAINDER_LENGTH = 53;
+
+    /**
+     * Index of the cost factor among a digest's dollar-delimited fields: an empty leading field, the
+     * variant, the cost, then the remainder.
+     */
+    private static final int COST_FIELD_INDEX = 2;
 
     private CredentialDigestService service;
 
@@ -122,6 +136,22 @@ class CredentialDigestServiceTest {
             assertThat(CredentialDigestService.MINIMUM_COST).isEqualTo(4);
             assertThat(CredentialDigestService.MAXIMUM_COST).isEqualTo(31);
         }
+
+        @Test
+        @DisplayName("publishes the module's one hashing strength, above the encoder library's default, "
+                + "so that every encoder in the module can read one number instead of restating one")
+        void publishesTheModulesOneHashingStrength() {
+            assertThat(CredentialDigestService.HASHING_STRENGTH)
+                    .as("the security configuration's encoder bean is built from this constant; two "
+                            + "encoders at two strengths is a silent policy split in which the weaker "
+                            + "becomes the module's real strength")
+                    .isEqualTo(12);
+            assertThat(CredentialDigestService.HASHING_STRENGTH)
+                    .as("and it stays inside the range a digest may declare, or nothing it produced could "
+                            + "be recognised as a digest")
+                    .isBetween(CredentialDigestService.MINIMUM_COST,
+                            CredentialDigestService.MAXIMUM_COST);
+        }
     }
 
     @Nested
@@ -138,6 +168,20 @@ class CredentialDigestServiceTest {
         @DisplayName("produces a value it recognises as a digest")
         void producesARecognisedDigest() {
             assertThat(service.isDigest(service.encode(CREDENTIAL))).isTrue();
+        }
+
+        @Test
+        @DisplayName("hashes at the module's one strength, read out of the digest it produced rather than "
+                + "off the encoder it was built with")
+        void hashesAtTheModulesOneStrength() {
+            // Read from the produced value, so an encoder built at one strength and hashing at another
+            // would be caught. Leaving this at the library's default was the defect: the administrative
+            // write path hashes through the configuration's encoder at the published strength, so a digest
+            // produced here would have been the weaker of two live policies.
+            final String[] fields = service.encode(CREDENTIAL).split("\\$");
+
+            assertThat(Integer.parseInt(fields[COST_FIELD_INDEX]))
+                    .isEqualTo(CredentialDigestService.HASHING_STRENGTH);
         }
 
         @Test
@@ -264,7 +308,7 @@ class CredentialDigestServiceTest {
         @Test
         @DisplayName("refuses to authenticate against a value that only looks like a digest")
         void refusesAMerelyDigestLikeValue() {
-            assertThat(service.matches(CREDENTIAL, shaped(DEFAULT_HEADER))).isFalse();
+            assertThat(service.matches(CREDENTIAL, shaped(SAMPLE_HEADER))).isFalse();
         }
     }
 
@@ -310,7 +354,7 @@ class CredentialDigestServiceTest {
         @Test
         @DisplayName("rejects a candidate one character short of the column width")
         void rejectsFiftyNineCharacters() {
-            final String short59 = shaped(DEFAULT_HEADER).substring(0, 59);
+            final String short59 = shaped(SAMPLE_HEADER).substring(0, 59);
             assertThat(short59).hasSize(59);
             assertThat(service.isDigest(short59)).isFalse();
         }
@@ -318,7 +362,7 @@ class CredentialDigestServiceTest {
         @Test
         @DisplayName("rejects a candidate one character over the column width")
         void rejectsSixtyOneCharacters() {
-            final String long61 = shaped(DEFAULT_HEADER) + "a";
+            final String long61 = shaped(SAMPLE_HEADER) + "a";
             assertThat(long61).hasSize(61);
             assertThat(service.isDigest(long61)).isFalse();
         }
@@ -327,7 +371,7 @@ class CredentialDigestServiceTest {
         @ValueSource(chars = {'+', '=', '$', ' ', '-', '_', '!', '\u00e9', '\u0000'})
         @DisplayName("rejects a remainder character outside the BCrypt radix-64 alphabet")
         void rejectsANonRadix64Remainder(final char intruder) {
-            final String tainted = shaped(DEFAULT_HEADER).substring(0, 59) + intruder;
+            final String tainted = shaped(SAMPLE_HEADER).substring(0, 59) + intruder;
             assertThat(tainted).hasSize(60);
             assertThat(service.isDigest(tainted)).isFalse();
         }
@@ -339,9 +383,9 @@ class CredentialDigestServiceTest {
                     + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                     + "abcdefghijklmnopqrstuvwxyz";
             assertThat(alphabet).hasSize(64);
-            assertThat(service.isDigest(DEFAULT_HEADER + alphabet.substring(0, REMAINDER_LENGTH)))
+            assertThat(service.isDigest(SAMPLE_HEADER + alphabet.substring(0, REMAINDER_LENGTH)))
                     .isTrue();
-            assertThat(service.isDigest(DEFAULT_HEADER + alphabet.substring(64 - REMAINDER_LENGTH)))
+            assertThat(service.isDigest(SAMPLE_HEADER + alphabet.substring(64 - REMAINDER_LENGTH)))
                     .isTrue();
         }
 

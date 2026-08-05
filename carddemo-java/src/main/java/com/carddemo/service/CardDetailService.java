@@ -19,6 +19,7 @@ package com.carddemo.service;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -28,14 +29,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.PfKeyTranslator;
 
 /**
@@ -644,7 +644,7 @@ public class CardDetailService {
     public record CardDetailScreenInput(String accountIdFilter,
                                         String cardNumberFilter,
                                         String attentionKeyIdentifier,
-                                        NavigationContext navigationContext) {
+                                        ScreenNavigationState navigationContext) {
     }
 
     /**
@@ -824,8 +824,8 @@ public class CardDetailService {
      * @param screen               the screen body as the turn leaves it
      */
     public record CardDetailResult(NavigationService.Route route,
-                                   NavigationContext navigationContext,
-                                   ScreenWorkArea workArea,
+                                   ScreenNavigationState navigationContext,
+                                   ScreenInputState workArea,
                                    String reArmedTransactionId,
                                    CardProjection card,
                                    String message,
@@ -947,7 +947,7 @@ public class CardDetailService {
         private int reasonCode;
 
         /** {@code CARDDEMO-COMMAREA}, the state the turn hands back. */
-        private NavigationContext context = NavigationContext.empty();
+        private ScreenNavigationState context = ScreenNavigationState.empty();
 
         /** The destination, always resolved through the navigation authority. */
         private NavigationService.Route route = NavigationService.Route.CARD_DETAIL;
@@ -1143,7 +1143,7 @@ public class CardDetailService {
         return new CardDetailResult(
                 state.route,
                 state.context,
-                new ScreenWorkArea(
+                new ScreenInputState(
                         state.keyAction,
                         state.nextProgram,
                         state.nextMapset,
@@ -1245,10 +1245,10 @@ public class CardDetailService {
         // SET WS-RETURN-MSG-OFF TO TRUE at line 264.
         state.returnMessage = NO_MESSAGE;
 
-        final NavigationContext inbound = input.navigationContext();
+        final ScreenNavigationState inbound = input.navigationContext();
         if (isNavigationStateAbsent(inbound) || arrivedFreshFromMenu(inbound)) {
             // INITIALIZE CARDDEMO-COMMAREA and WS-THIS-PROGCOMMAREA at lines 271 to 272.
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
         } else {
             // MOVE DFHCOMMAREA(1:LENGTH OF CARDDEMO-COMMAREA) TO CARDDEMO-COMMAREA at lines 274 to
             // 278. The trailing program-private area holds only the originating program and
@@ -1350,7 +1350,7 @@ public class CardDetailService {
      * @return {@code true} when the state names the user menu as originator and the re-enter gate is
      *         down
      */
-    private static boolean arrivedFreshFromMenu(final NavigationContext inbound) {
+    private static boolean arrivedFreshFromMenu(final ScreenNavigationState inbound) {
         return inbound != null
                 && NavigationService.Route.USER_MENU.getLegacyProgramName()
                         .equals(trimmedProgramName(inbound.fromProgram()))
@@ -1363,7 +1363,7 @@ public class CardDetailService {
      * @param context the navigation state
      * @return {@code true} when the originating program is the card-list member
      */
-    private static boolean arrivedFromCardList(final NavigationContext context) {
+    private static boolean arrivedFromCardList(final ScreenNavigationState context) {
         return LIT_CCLISTPGM.equals(trimmedProgramName(context.fromProgram()));
     }
 
@@ -2167,12 +2167,14 @@ public class CardDetailService {
      * because wiring it would add a flow the legacy does not have. Package-private rather than public
      * for the same reason: it is exercisable without becoming part of this service's contract.
      *
-     * <p><strong>The alternate index is non-unique, so first-match selection is the contract.</strong>
-     * The legacy direct read of a duplicate-bearing path returns one record, not a set, and never raises
-     * a too-many-results condition. The declared repository finder reproduces that by resolving the
-     * ambiguity in the query - lowest card number first, one row - which is the deterministic form of
-     * "take the first" and is strictly better than picking an element out of an unordered collection. An
-     * absent result is the analogue of the legacy not-found response and is not an error.
+     * <p><strong>The alternate index is non-unique, so first-match selection is the contract, and it
+     * is applied here rather than in the query.</strong> The legacy direct read of a duplicate-bearing
+     * path returns one record, not a set, and never raises a too-many-results condition; the record it
+     * returns is the first in ascending BASE-key order, and the base key of this cluster is the card
+     * number. That rule is a property of the READ being reproduced rather than of the index, so the
+     * repository returns every matching row and {@link #firstByBaseKey(java.util.List)} selects the one
+     * with the lowest card number. An absent result is the analogue of the legacy not-found response and
+     * is not an error.
      *
      * <p><strong>This not-found arm is deliberately different from the card-number read's.</strong> At
      * lines 796 to 799 it faults <em>only</em> the account filter and it sets its message
@@ -2190,8 +2192,10 @@ public class CardDetailService {
         state.errorOperation = OPERATION_READ;
 
         // EXEC CICS READ FILE(LIT-CARDFILENAME-ACCT-PATH) RIDFLD(WS-CARD-RID-ACCT-ID), 783 to 791.
+        // A keyed read of the non-unique path yields the first record in ascending base-key order, so
+        // every matching row is fetched and the lowest card number selected here.
         final Optional<Card> found =
-                cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(state.cardAccountKey);
+                firstByBaseKey(cardRepository.findByCardAcctId(state.cardAccountKey));
 
         if (found.isEmpty()) {
             // WHEN DFHRESP(NOTFND) at lines 796 to 799. Ungated message, single field faulted.
@@ -2231,6 +2235,26 @@ public class CardDetailService {
      */
     private void getCardByAcctExit(final TurnState state) {
         paragraphExit(state, "9150-GETCARD-BYACCT-EXIT", 810);
+    }
+
+    /**
+     * Selects the record a keyed read of the non-unique account path would have returned: the one with
+     * the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the card cluster is the card number. That
+     * rule belongs to the read rather than to the index, which is why the repository returns every
+     * matching row and the selection happens here, at the site whose behaviour depends on it.
+     *
+     * <p>The comparison is on the raw sixteen-character value and is neither trimmed nor numeric:
+     * every stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric
+     * order coincide, and trimming would change the order of a value the mapper never trims.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or {@link Optional#empty()} when there is none
+     */
+    private static Optional<Card> firstByBaseKey(final List<Card> candidates) {
+        return candidates.stream().min(Comparator.comparing(Card::getCardNum));
     }
 
     // ==============================================================================================
@@ -2412,9 +2436,9 @@ public class CardDetailService {
 
         // EMIT FIRST. MOVE LIT-THISPGM TO ABEND-CULPRIT at line 863, then the terminal send at 865.
         LOG.error("ABENDING TRANSACTION {}: culprit={} fileStatus={} resource={} operation={}"
-                        + " reason={}",
-                LIT_THISTRANID, LIT_THISPGM, rawStatus, resource, OPERATION_READ,
-                state.abendMessage, failure);
+                                + " reason={} failureChain={}", LIT_THISTRANID, LIT_THISPGM, rawStatus,
+                        resource, OPERATION_READ, state.abendMessage,
+                        FailureDiagnostics.failureChainOf(failure));
 
         // THEN RAISE. EXEC CICS ABEND ABCODE('9999') at lines 875 to 877; the abend service owns the
         // code and the context layout, so neither is restated here.
@@ -2707,7 +2731,7 @@ public class CardDetailService {
      * @param lastMapset        {@code CDEMO-LAST-MAPSET}
      * @return the rebuilt state, never {@code null}
      */
-    private static NavigationContext contextWith(final NavigationContext base,
+    private static ScreenNavigationState contextWith(final ScreenNavigationState base,
             final String fromTransactionId,
             final String fromProgram,
             final String toTransactionId,
@@ -2717,7 +2741,7 @@ public class CardDetailService {
             final String cardNumber,
             final String lastMap,
             final String lastMapset) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 fromTransactionId,
                 fromProgram,
                 toTransactionId,
@@ -2749,8 +2773,8 @@ public class CardDetailService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -2765,7 +2789,7 @@ public class CardDetailService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

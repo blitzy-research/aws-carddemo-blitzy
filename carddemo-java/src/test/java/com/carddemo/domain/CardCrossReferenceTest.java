@@ -649,31 +649,26 @@ class CardCrossReferenceTest {
     }
 
     /**
-     * The diagnostic rendering, and the primary account number it withholds.
+     * The diagnostic rendering, and the three identifiers it withholds.
      *
-     * <p><strong>A divergence between this suite's brief and the class it tests, recorded here rather
-     * than left implicit.</strong> The contract summary this suite was written against anticipated that
-     * the entity might publish no diagnostic rendering at all, and directed that none be assumed. The
-     * class as actually written does publish one, and it is not incidental: it deliberately withholds
+     * <p>The entity publishes a diagnostic rendering, and that rendering is not incidental: it withholds
      * the card number, because that value is a primary account number and a rendering escapes into a
-     * failed assertion message, a provider diagnostic or a log event without anybody choosing to
-     * disclose it. The class is authoritative on what it declares, so the member is exercised here.
+     * failed assertion message, a provider diagnostic or a log event without anybody choosing to disclose
+     * it. These assertions are confined to the disclosure guarantee the class documents - that NONE of the
+     * three identifiers reaches the rendering, whole or in fragment, while each attribute's population
+     * state does.
      *
-     * <p>What is asserted is confined to the disclosure guarantee the class documents: that NONE of the
-     * three identifiers reaches the rendering, whole or in fragment, and that each attribute's
-     * population state does. The customer and account identifiers were once rendered in full here, on
-     * the reasoning that an internal key discloses nothing on its own. That reasoning does not survive
-     * the fact that this row exists to LINK the two - a rendering carrying both publishes the
-     * association - nor the fact that the module's own {@code AccountViewResponse} already redacts both
-     * of those identifiers, which made the entity the wider of two inconsistent contracts. The
-     * assertions below are the inverted form of the two that encoded the earlier reading.
+     * <p>The customer and account identifiers are withheld as well, for two reasons that apply to this row
+     * specifically. This row exists to LINK the two, so a rendering carrying both publishes the
+     * association rather than either key on its own; and the module's own {@code AccountViewResponse}
+     * redacts both, so disclosing them here would make the entity the wider of two inconsistent contracts.
      *
      * <p>The exact wording and punctuation are deliberately <em>not</em> pinned: they are a presentation
      * choice that may change without changing behaviour, and an assertion over them would break on a
      * harmless edit while proving nothing about the guarantee that matters. The stand-in text IS pinned,
      * because it is the same literal the card entity and the account-view response use and one grep over
-     * it is how a reviewer finds every redaction in the module. Nothing here is compared against a
-     * captured earlier output.
+     * it is how a reviewer finds every redaction in the module. No assertion here compares against a
+     * captured rendering.
      */
     @Nested
     @DisplayName("diagnostic rendering")

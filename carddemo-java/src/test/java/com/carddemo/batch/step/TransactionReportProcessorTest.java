@@ -33,9 +33,10 @@ import com.carddemo.domain.id.TransactionCategoryId;
 import com.carddemo.exception.AbendException;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
-import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.service.AbendService;
+import com.carddemo.service.ReportTransactionInput;
+import com.carddemo.service.ReportTransactionSource;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.service.TransactionReportService.TransactionReportResult;
 import com.carddemo.util.ReportLineFormatter;
@@ -48,9 +49,6 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
-import org.springframework.data.domain.SliceImpl;
 
 /**
  * Verifies the per-item contract of the transaction detail report stage: that one date-parameter
@@ -59,12 +57,12 @@ import org.springframework.data.domain.SliceImpl;
  * program survive the delegation, and that every record handed on is exactly
  * {@link ReportLineFormatter#REPORT_RECORD_WIDTH} encoded US-ASCII bytes wide.
  *
- * <p>The suite drives a <strong>real</strong> {@link TransactionReportService} over mocked
- * repositories rather than a mocked service, because the properties under test - bound inclusivity,
- * header order, the page break and the accumulation chain - are properties of the report that the
- * processor is required to preserve, and a mocked generator would assert nothing about them. A
- * mocked generator is used only where a real one cannot reach the condition: the width and purity
- * postconditions, an absent result and a failed generation.
+ * <p>The suite drives a <strong>real</strong> {@link TransactionReportService} over a frozen
+ * transaction source and mocked lookup repositories rather than a mocked service, because the
+ * properties under test - bound inclusivity, header order, the page break and the accumulation chain
+ * - are properties of the report that the processor is required to preserve, and a mocked generator
+ * would assert nothing about them. A mocked generator is used only where a real one cannot reach the
+ * condition: the width and purity postconditions, an absent result and a failed generation.
  *
  * <p>Widths are asserted on <strong>encoded bytes</strong> and never on character counts, because a
  * report record is a byte contract: a single character outside the seven-bit range satisfies a
@@ -119,8 +117,6 @@ class TransactionReportProcessorTest {
     private static final int DETAILS_ON_FIRST_PAGE =
             ReportLineFormatter.PAGE_SIZE - ReportLineFormatter.HEADER_BLOCK_RECORD_COUNT;
 
-    private final TransactionRepository transactions = mock(TransactionRepository.class);
-
     private final CardCrossReferenceRepository crossReferences =
             mock(CardCrossReferenceRepository.class);
 
@@ -132,23 +128,30 @@ class TransactionReportProcessorTest {
     private final AbendService abendService = mock(AbendService.class);
 
     private final TransactionReportService service = new TransactionReportService(
-            transactions, crossReferences, types, categories, abendService);
+            crossReferences, types, categories, abendService);
 
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
     private final TransactionReportProcessor processor =
             new TransactionReportProcessor(service, registry);
 
+    private List<Transaction> reportTransactions = List.of();
+
     /** The twenty-one byte structured form of the date-parameter card. */
-    private static String structuredCard() {
+    private static String structuredCardImage() {
         return ReportLineFormatter.buildDateParameterRecord(START, END);
     }
 
+    /** Complete processor input using the structured parameter record. */
+    private ReportTransactionInput structuredCard() {
+        return input(structuredCardImage());
+    }
+
     /** The eighty-column card image form, whose leading bytes are the structured form. */
-    private static String cardImage() {
-        return structuredCard() + " ".repeat(
+    private ReportTransactionInput cardImage() {
+        return input(structuredCardImage() + " ".repeat(
                 ReportLineFormatter.DATE_PARAMETER_CARD_WIDTH
-                        - ReportLineFormatter.DATE_PARAMETER_STRUCTURED_WIDTH);
+                        - ReportLineFormatter.DATE_PARAMETER_STRUCTURED_WIDTH));
     }
 
     /**
@@ -184,11 +187,23 @@ class TransactionReportProcessorTest {
                 Optional.of(new TransactionCategory(TYPE_CODE, CATEGORY_CODE, "RESTAURANT")));
     }
 
-    /** Stubs the ordered range as one complete slice, which is what an unpaged request yields. */
+    /** Supplies the frozen ordered report generation consumed by the processor. */
     private void stubRange(final List<Transaction> content) {
-        Slice<Transaction> slice = new SliceImpl<>(content, Pageable.unpaged(), false);
-        when(transactions.findByProcessingDateRange(eq(START), eq(END), any(Pageable.class)))
-                .thenReturn(slice);
+        this.reportTransactions = List.copyOf(content);
+    }
+
+    /** Creates one complete processor item over a detached snapshot of the current fixture records. */
+    private ReportTransactionInput input(final String dateParameterCard) {
+        final List<Transaction> snapshot = List.copyOf(this.reportTransactions);
+        final ReportTransactionSource source = position -> {
+            if (position < 0) {
+                throw new IllegalArgumentException("position must not be negative: " + position);
+            }
+            return position < snapshot.size()
+                    ? Optional.of(snapshot.get(position))
+                    : Optional.empty();
+        };
+        return new ReportTransactionInput(dateParameterCard, source);
     }
 
     /** {@code count} transactions of one currency unit each, all on one card and one date. */
@@ -237,7 +252,8 @@ class TransactionReportProcessorTest {
     /** A generator that yields exactly the supplied records, used for postcondition tests. */
     private TransactionReportProcessor processorYielding(final List<String> reportLines) {
         TransactionReportService stubbed = mock(TransactionReportService.class);
-        when(stubbed.generateReportFromDateParameterCard(any())).thenReturn(
+        when(stubbed.generateReportFromDateParameterCard(
+                any(ReportTransactionSource.class), any())).thenReturn(
                 new TransactionReportResult(reportLines, BigDecimal.ZERO, 0, 0L, 0));
         return new TransactionReportProcessor(stubbed, registry);
     }
@@ -262,7 +278,8 @@ class TransactionReportProcessorTest {
                     new TransactionReportProcessor(untouched, registry);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> guarded.process(START + " " + END.substring(0, 9)));
+                    .isThrownBy(() -> guarded.process(
+                            input(START + " " + END.substring(0, 9))));
 
             verifyNoInteractions(untouched);
         }
@@ -304,7 +321,8 @@ class TransactionReportProcessorTest {
         @DisplayName("a generator that reports no result at all is a breach, not an empty report")
         void absentResultIsRejected() {
             TransactionReportService silent = mock(TransactionReportService.class);
-            when(silent.generateReportFromDateParameterCard(any())).thenReturn(null);
+            when(silent.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), any())).thenReturn(null);
 
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionReportProcessor(silent, registry)
@@ -749,7 +767,8 @@ class TransactionReportProcessorTest {
         void failedGenerationIsTimedAsFailure() {
             TransactionReportService failing = mock(TransactionReportService.class);
             IllegalStateException raised = new IllegalStateException("range unavailable");
-            when(failing.generateReportFromDateParameterCard(any())).thenThrow(raised);
+            when(failing.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), any())).thenThrow(raised);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> new TransactionReportProcessor(failing, registry)

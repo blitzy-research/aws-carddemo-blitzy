@@ -20,10 +20,10 @@
 # itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# Four gates, every one of which ends the run where it is not satisfied - directly, by failing its
-# own step, with nothing recording a failure and carrying on. The first three properties below are
-# all carried by the build gate, because all three are bound to the one verify phase it invokes; the
-# remaining three are a gate each:
+# Five linear gates, every one of which ends the run where it is not satisfied - directly, by failing
+# its own step, with nothing recording a failure and carrying on. The first three properties below
+# are carried by the Maven build gate because they are bound to its verify phase; the remaining
+# runtime properties have explicit steps:
 #
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
@@ -45,29 +45,23 @@
 #                        Maven build touches that script, so without this gate the one file the
 #                        container-backed tiers and the whole local gate runbook depend on
 #                        would be the only executable artifact here that nothing verified.
-#   deployability      : the repackaged jar is started and observed to report healthy before it
-#                        is published, so the only artifact this workflow uploads is one that
-#                        was seen to run.
+#   reproducibility    : a second package build with the same revision and source epoch is compared
+#                        byte for byte with the verified jar.
+#   deployability      : the digest-pinned image and complete Compose stack are built, scanned,
+#                        started and queried through application, Prometheus, Grafana and Jaeger
+#                        endpoints before the artifact is published.
 #
 # Stopping at package instead of verify would run none of the build-phase gates and a green run
 # would prove nothing, so the build invocation below always goes all the way to verify.
 #
-# WHY THE GATES ARE INVOKED SEPARATELY
-# The supply chain gate is invoked by itself rather than riding along inside the build. Both are
-# bound to the same build phase, and a phase stops at its first failure, so whichever gate runs
-# second is only reached when the first one passes. That made the supply chain scan conditional
-# on the coverage floor: a run under the floor never reached the scan and produced no scan
-# report at all, which is precisely the run whose supply chain position most needs recording.
-#
-# Two independent changes fix that, and both are needed. The module build now orders the scan
-# ahead of the coverage check and produces every report before either gate runs, so evidence is
-# never conditional on a verdict. This workflow then invokes each gate on its own, so a build,
-# test or coverage failure does not stop the scan from happening at all.
-#
-# Neither gate is softened by the split. Each step records its own real result, the uploads
-# publish whatever each gate produced, and the final step reads both results back and fails the
-# job when either one failed. A single gate failure therefore still fails the run - the only
-# thing that changed is that the other gate, and both sets of evidence, now still exist.
+# WHY THE GATES ARE LINEAR
+# Each gate fails the job at the point of failure. Maven executes dependency-check before the
+# coverage check inside verify, so a coverage failure still leaves a vulnerability report; the
+# workflow does not split those mechanisms into separate verdict steps or reconstruct their status
+# later. Runtime gates follow only after the build is green because they consume the jar and image
+# it produced. Evidence uploads use if: always() solely to preserve reports that already exist; they
+# never turn a failed gate into a successful run. Adding a new gate therefore means adding one
+# ordinary failing step in sequence, not updating a second list of outcomes in a final verdict.
 #
 # WHY THE REPORTS ARE UPLOADED
 # Every report those gates produce is deliberately untracked by the module's ignore file, so the
@@ -192,7 +186,7 @@ jobs:
     # Docker daemon the hosted Ubuntu image provides. Testcontainers owns that lifecycle, so no
     # service container is declared and no compose stack is brought up. No repository secret is
     # required by any step.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Bounded but generous: a cold run fetches the Maven distribution, the dependency graph, the
     # vulnerability data set and several container images before a single test executes.
     #
@@ -234,10 +228,10 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Eclipse Temurin JDK 25
+      - name: Set up Eclipse Temurin JDK 25.0.3+9
         uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4.9.0
         with:
-          java-version: '25'
+          java-version: '25.0.3+9'
           distribution: 'temurin'
 
       # Declared explicitly rather than using the JDK action's built-in option, which restores the
@@ -283,6 +277,17 @@ jobs:
           restore-keys: |
             nvd-${{ runner.os }}-
 
+      # Trivy runs from a digest-pinned container below. Its vulnerability and Java databases are
+      # cached separately from Maven's dependency-check data because the formats and update cadences
+      # are unrelated.
+      - name: Cache the container vulnerability data set
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/trivy
+          key: trivy-${{ runner.os }}-0.62.1-${{ github.run_id }}
+          restore-keys: |
+            trivy-${{ runner.os }}-0.62.1-
+
       # Fail fast and legibly on an unusable runner rather than forty minutes into the container
       # tiers. This is also the wrapper's first invocation, which proves it can fetch and
       # digest-verify its configured distribution before the real build depends on it. That
@@ -292,25 +297,56 @@ jobs:
       # hosted image's utility set can slow this step down but cannot skip the digest check.
       - name: Report the toolchain and container runtime
         run: |
-          java -version
+          java_output="$(java -version 2>&1)"
+          printf '%s\n' "${java_output}"
+          case "${java_output}" in
+            *'25.0.3'*) ;;
+            *)
+              echo 'The runner did not install the pinned Temurin 25.0.3+9 toolchain.' >&2
+              exit 1
+              ;;
+          esac
           ./mvnw -B --version
           docker version --format 'Docker server {{.Server.Version}}'
 
+      # One identity feeds Maven, the Docker build and the OCI labels. The source epoch comes from
+      # the checked-out commit, not the wall clock, so rebuilding the same commit produces the same
+      # build-info resource and archive timestamps.
+      - name: Derive the reproducible build identity
+        run: |
+          set -euo pipefail
+          app_version="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
+          source_revision="$(git rev-parse HEAD)"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+
+          case "${source_revision}" in
+            *[!0-9a-f]*)
+              echo 'The checked-out revision is not a 40-character lowercase Git SHA.' >&2
+              exit 1
+              ;;
+          esac
+          test "${#source_revision}" -eq 40
+          case "${source_date_epoch}" in
+            '' | *[!0-9]*)
+              echo 'The source commit timestamp is not an epoch second.' >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'APP_VERSION=%s\n' "${app_version}"
+            printf 'SOURCE_REVISION=%s\n' "${source_revision}"
+            printf 'SOURCE_DATE_EPOCH=%s\n' "${source_date_epoch}"
+            printf 'COMPOSE_PROJECT_NAME=carddemo-ci-%s-%s\n' \
+              "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_ENV}"
+
       # ---- gate 1 of 4: build, test, coverage and supply chain --------------------------------
-      # THE COMMAND IS EXACTLY `./mvnw -B clean verify`, WITH NOTHING APPENDED. That is not a
-      # stylistic preference, it is the gate mechanism: the coverage check and the vulnerability
-      # scan are both bound to the verify phase in pom.xml, so this one invocation discharges the
-      # zero-warning, coverage-floor and supply-chain properties together. A compiler warning, a
-      # failing test in either tier, coverage under the floor, or a finding at or above the
-      # configured score ends this step, and ending this step ends the run.
-      #
-      # AN EARLIER REVISION APPENDED A SCAN-DISABLING PROPERTY HERE and ran the vulnerability scan
-      # as a separate step afterwards, to avoid scanning twice. That is withdrawn. Such a property is
-      # on this module's prohibited list, and the reason is worth stating plainly: in a log, a build
-      # invoked with a gate switched off is indistinguishable from a build whose gate was never
-      # wired, so the switch costs exactly the assurance the gate exists to provide. Scanning once,
-      # inside verify, removes both the switch and the duplicate - the separate step is gone because
-      # verify already does its work, not because the scan was dropped.
+      # The command reaches verify with no gate-disabling property. The two identity properties do
+      # not change what runs: they make the generated build-info and archive timestamps derive from
+      # the checked-out commit rather than the wall clock. Coverage and full-scope dependency-check
+      # remain bound to verify, so a warning, failing test, coverage shortfall or HIGH/CRITICAL
+      # dependency finding ends this step and the run.
       #
       # NOTHING MASKS THIS STEP. It tolerates no error of its own and carries no if: condition, so
       # its failure is the run's failure directly. The legacy compile-and-link pipeline gated
@@ -322,7 +358,11 @@ jobs:
       # verified by searching it for those names and finding none.
       - name: Build, test, coverage and supply chain gate
         id: build_gate
-        run: ./mvnw -B clean verify
+        run: |
+          ./mvnw -B \
+            -Dbuild.revision="${SOURCE_REVISION}" \
+            -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
+            clean verify
 
       # ---- gate 2 of 4: locale-hostile re-execution -----------------------------------------
       # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
@@ -371,6 +411,8 @@ jobs:
             set -- $locale
             printf '::group::unit tier under %s-%s\n' "$1" "$2"
             ./mvnw -B -ntp test \
+              -Dbuild.revision="${SOURCE_REVISION}" \
+              -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
               -Dtest.reports.dir="target/surefire-reports-locale-$1-$2" \
               -Djacoco.unit.exec="target/jacoco-locale-$1-$2.exec" \
               -Djacoco.unit.report.dir="target/site/jacoco-locale-$1-$2" \
@@ -399,7 +441,7 @@ jobs:
       # Nothing about the gate's strictness is decided in this file: the score that fails the build
       # and the report formats are all declared in the module build.
 
-      # ---- gate 3 of 4: bootstrap contract --------------------------------------------------
+      # ---- gate 3 of 5: bootstrap contract --------------------------------------------------
       # The module's local AWS surface is provisioned by a single emulator initializer,
       # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
       # every other gate here can pass while it is broken - and it is the one file the
@@ -486,11 +528,11 @@ jobs:
           # execution, so the second run is held to exactly the same standard as the first.
           verify_resources() {
             queue_url="$(docker exec "${container}" \
-              awslocal sqs get-queue-url --queue-name carddemo-jobs.fifo --output text)"
+              awslocal sqs get-queue-url --queue-name JOBS.fifo --output text)"
             case "${queue_url}" in
-              */carddemo-jobs.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
+              */JOBS.fifo) printf '  queue url: %s\n' "${queue_url}" ;;
               *)
-                printf 'Bootstrap contract violated: queue url %s does not name carddemo-jobs.fifo.\n' \
+                printf 'Bootstrap contract violated: queue url %s does not name JOBS.fifo.\n' \
                   "${queue_url}" >&2
                 exit 1
                 ;;
@@ -535,7 +577,8 @@ jobs:
             -e AWS_DEFAULT_REGION=us-east-1 \
             -e PERSISTENCE=0 \
             -v "${PWD}/localstack/init:/etc/localstack/init/ready.d:ro" \
-            localstack/localstack:4.14.0 >/dev/null
+            localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a \
+            >/dev/null
 
           # The emulator publishes the outcome of every ready-stage script it ran. That is the
           # authoritative answer to whether the hook succeeded, so it is polled for rather than
@@ -642,7 +685,34 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # ---- gate 4 of 4: deployability -------------------------------------------------------
+      # ---- gate 4 of 5: reproducibility ------------------------------------------------------
+      # Save the verified jar, rebuild from a clean target with the same revision and source epoch,
+      # and compare bytes. The reports from the verified run have already been uploaded above, so the
+      # clean cannot erase evidence. A timestamp or archive-order regression fails here even when both
+      # jars would run.
+      - name: Reproducible artifact gate
+        id: reproducibility_gate
+        run: |
+          set -euo pipefail
+          verified_jar="$(find target -maxdepth 1 -type f -name 'carddemo-java-*.jar' \
+            ! -name '*.original' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print)"
+          test "$(printf '%s\n' "${verified_jar}" | sed '/^$/d' | wc -l)" -eq 1
+          cp "${verified_jar}" "${RUNNER_TEMP}/carddemo-java-verified.jar"
+
+          ./mvnw -B -ntp \
+            -Dbuild.revision="${SOURCE_REVISION}" \
+            -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
+            -DskipTests \
+            clean package
+
+          rebuilt_jar="$(find target -maxdepth 1 -type f -name 'carddemo-java-*.jar' \
+            ! -name '*.original' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -print)"
+          test "$(printf '%s\n' "${rebuilt_jar}" | sed '/^$/d' | wc -l)" -eq 1
+          cmp "${RUNNER_TEMP}/carddemo-java-verified.jar" "${rebuilt_jar}"
+          sha256sum "${rebuilt_jar}"
+          echo 'The clean rebuild is byte-identical to the verified artifact.'
+
+      # ---- gate 5 of 5: deployability -------------------------------------------------------
       # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
       # proves that the class is present in the artifact or that the context it starts can reach a
       # started state. Both are proven here, before the upload, so that the only artifact this
@@ -668,6 +738,20 @@ jobs:
         id: deployability_gate
         run: |
           set -euo pipefail
+
+          app_pid=''
+          cleanup() {
+            if [ -n "${app_pid}" ] && kill -0 "${app_pid}" 2>/dev/null; then
+              kill "${app_pid}"
+              wait "${app_pid}" || :
+            fi
+            if docker rm -f carddemo-smoke-db >/dev/null 2>&1; then
+              echo 'Removed carddemo-smoke-db.'
+            else
+              echo 'No carddemo-smoke-db to remove.'
+            fi
+          }
+          trap cleanup EXIT
 
           jar="$(ls target/carddemo-java-*.jar)"
           echo "Artifact under test: ${jar}"
@@ -700,8 +784,8 @@ jobs:
             -e POSTGRES_DB=carddemo \
             -e POSTGRES_USER=carddemo \
             -e POSTGRES_PASSWORD=carddemo \
-            -p 5432:5432 \
-            postgres:16.14-bookworm
+            -p 127.0.0.1:5432:5432 \
+            postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
 
           database_ready=0
           for _ in $(seq 1 30); do
@@ -757,21 +841,170 @@ jobs:
           test "${started}" -eq 1
           echo "The artifact starts and reports healthy."
 
+      # The full operational boundary: build the image with the same identity as Maven, resolve and
+      # start Compose without rebuilding, verify every service and monitoring contract, then scan the
+      # application and both base images strictly. Third-party Compose images are scanned and archived
+      # too; their upstream findings are inventory evidence rather than a claim this repository can
+      # patch inside someone else's binary.
+      - name: Validate and scan the container and monitoring stack
+        id: container_gate
+        run: |
+          set -euo pipefail
+
+          scanner='ghcr.io/aquasecurity/trivy:0.62.1@sha256:fc10faf341a1d8fa8256c5ff1a6662ef74dd38b65034c8ce42346cf958a02d5d'
+          report_dir="${PWD}/target/container-scan-reports"
+          mkdir -p "${report_dir}"
+
+          cleanup() {
+            if docker compose down -v --remove-orphans; then
+              echo 'Removed the CI Compose stack and its volumes.'
+            else
+              echo 'The CI Compose stack was already absent.'
+            fi
+          }
+          trap cleanup EXIT
+
+          docker build --check .
+          docker build \
+            --build-arg APP_VERSION="${APP_VERSION}" \
+            --build-arg SOURCE_REVISION="${SOURCE_REVISION}" \
+            --build-arg SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+            -t "${COMPOSE_PROJECT_NAME}-app:local" .
+          docker compose config --quiet
+          docker compose up -d --no-build
+
+          services='postgres localstack jaeger app prometheus grafana'
+          stack_ready=0
+          for _ in $(seq 1 120); do
+            stack_ready=1
+            for service in ${services}; do
+              container_id="$(docker compose ps -q "${service}")"
+              if [ -z "${container_id}" ]; then
+                stack_ready=0
+                break
+              fi
+              health="$(docker inspect --format \
+                '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                "${container_id}")"
+              if [ "${health}" != 'healthy' ]; then
+                stack_ready=0
+                break
+              fi
+            done
+            [ "${stack_ready}" -eq 1 ] && break
+            sleep 2
+          done
+          docker compose ps
+          test "${stack_ready}" -eq 1
+
+          health="$(curl -fsS http://127.0.0.1:8080/actuator/health)"
+          printf '%s\n' "${health}" | jq -e '.status == "UP"'
+
+          datasource="$(curl -fsS -u admin:admin \
+            http://127.0.0.1:3000/api/datasources/uid/carddemo-prometheus)"
+          printf '%s\n' "${datasource}" \
+            | jq -e '.uid == "carddemo-prometheus" and .type == "prometheus"'
+          jaeger_status="$(curl -sS -o "${RUNNER_TEMP}/grafana-jaeger.json" -w '%{http_code}' \
+            -u admin:admin http://127.0.0.1:3000/api/datasources/uid/carddemo-jaeger)"
+          test "${jaeger_status}" = '404'
+
+          dashboard="$(curl -fsS -u admin:admin \
+            http://127.0.0.1:3000/api/dashboards/uid/carddemo-overview)"
+          printf '%s\n' "${dashboard}" | jq -e '
+            .dashboard.title == "CardDemo Overview"
+            and (([.dashboard.panels[] | select(.id == 11 or .id == 12)
+                | .targets[].expr
+                | contains("spring_batch_item_read_job_name")
+                  and contains("spring_batch_item_read_step_name")]) as $queries
+              | ($queries | length) == 2 and ($queries | all))'
+
+          targets_ready=0
+          for _ in $(seq 1 60); do
+            targets="$(curl -fsS http://127.0.0.1:9090/api/v1/targets)"
+            if printf '%s\n' "${targets}" | jq -e '
+                any(.data.activeTargets[];
+                  .labels.job == "carddemo-app" and .health == "up")' >/dev/null; then
+              targets_ready=1
+              break
+            fi
+            sleep 2
+          done
+          test "${targets_ready}" -eq 1
+
+          query="$(curl -fsS --get --data-urlencode 'query=up{job="carddemo-app"}' \
+            http://127.0.0.1:9090/api/v1/query)"
+          printf '%s\n' "${query}" | jq -e '
+            .status == "success"
+            and (.data.result | length) == 1
+            and .data.result[0].value[1] == "1"'
+
+          curl -fsS http://127.0.0.1:16686/api/services \
+            | jq -e '.data | type == "array"'
+
+          scan_image() {
+            image="$1"
+            exit_code="$2"
+            name="$(printf '%s' "${image}" | sha256sum | cut -d ' ' -f 1)"
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "${HOME}/.cache/trivy:/root/.cache/" \
+              -v "${report_dir}:/reports" \
+              "${scanner}" image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format json \
+              --output "/reports/${name}.json" \
+              --exit-code "${exit_code}" \
+              "${image}"
+            count="$(jq '[.Results[]?.Vulnerabilities[]?] | length' \
+              "${report_dir}/${name}.json")"
+            printf 'Image %s: %s fixed HIGH/CRITICAL finding(s).\n' "${image}" "${count}"
+          }
+
+          # The product and its two immutable bases are this repository's deployable supply chain.
+          application_image_id="$(docker image inspect \
+            --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-app:local")"
+          case "${application_image_id}" in sha256:*) ;; *) exit 1 ;; esac
+          scan_image "${application_image_id}" 1
+          while IFS= read -r image; do
+            case "${image}" in
+              *@sha256:*) ;;
+              *)
+                printf 'Dockerfile base is not digest pinned: %s\n' "${image}" >&2
+                exit 1
+                ;;
+            esac
+            scan_image "${image}" 1
+          done < <(awk '/^FROM / {print $2}' Dockerfile)
+
+          # Every third-party service image is still scanned by its immutable reference and archived.
+          while IFS= read -r image; do
+            case "${image}" in
+              "${COMPOSE_PROJECT_NAME}-app:local") continue ;;
+              *@sha256:*) ;;
+              *)
+                printf 'Compose image is not digest pinned: %s\n' "${image}" >&2
+                exit 1
+                ;;
+            esac
+            scan_image "${image}" 0
+          done < <(docker compose config --images | sort -u)
+
+          echo 'Container, Compose and monitoring validation passed.'
+
+      - name: Upload container vulnerability scan reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-vulnerability-scan-reports
+          path: carddemo-java/target/container-scan-reports/**
+          if-no-files-found: warn
+          retention-days: 30
+
       # The executable jar is build output rather than gate evidence, so it is uploaded only when
       # every gate passed - and then an absent file is a hard error, because a fully green run
       # that produced no artifact is a finding in its own right.
-      #
-      # The condition names each gate's recorded result explicitly instead of using success().
-      # Four of the five steps are allowed to continue, which makes success() true even when one of
-      # them failed, so success() would publish an artifact from a failing run. Reading the recorded
-      # results is what keeps this honest.
-      #
-      # ALL FIVE are named, and the list has to stay in step with the gates above. An earlier
-      # revision named three - the build, supply chain and deployability results - and omitted the
-      # locale gate, so a run whose only failure was a locale defect still published this artifact.
-      # That is the precise failure this condition exists to prevent: a locale defect corrupts the
-      # emitted bytes of the fixed-width records, which is a defect in the artifact itself and not
-      # merely in the evidence around it.
       #
       # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. It used to
       # enumerate all five gate outcomes, because every gate was allowed to continue past its own
@@ -779,9 +1012,8 @@ jobs:
       # standing hazard: a gate added above and not added here would publish a jar from a run that
       # was going to fail anyway, and the artifact outlives the run. Now no gate continues past its
       # own failure, so reaching this step IS the proof that every one of them passed - including the
-      # smoke test immediately above, which means the only artifact this workflow ever publishes is
-      # one that was observed to start and report healthy. A gate added above needs no change here,
-      # because the control flow states the condition instead of a list restating it.
+      # jar smoke test, the full Compose stack and the image scans. A gate added above needs no change
+      # here, because the control flow states the condition instead of a list restating it.
       - name: Upload the executable jar
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -810,5 +1042,7 @@ jobs:
           echo 'build, test, coverage and supply chain gate : passed'
           echo 'locale-hostile re-execution gate            : passed'
           echo 'bootstrap contract gate                     : passed'
-          echo 'deployability gate                          : passed'
+          echo 'reproducible artifact gate                  : passed'
+          echo 'jar and container deployability gate        : passed'
+          echo 'monitoring and container scan gate          : passed'
           echo 'Every gate passed.'

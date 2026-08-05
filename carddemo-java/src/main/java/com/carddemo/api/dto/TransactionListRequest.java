@@ -17,8 +17,8 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 
@@ -294,13 +294,11 @@ import java.util.List;
  */
 public record TransactionListRequest(
         @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH) String transactionIdFilter,
-        @JsonProperty(access = JsonProperty.Access.READ_ONLY)
-        @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
         @Size(max = TransactionListRequest.ROW_SELECTOR_COUNT)
                 List<@Size(max = TransactionListRequest.ROW_SELECTOR_LENGTH) String> rowSelectors,
         KeyAction keyAction,
         @Valid NavigationContext navigationContext,
-        @Valid PageMetadata.PageCursorRequest pageMetadata) {
+        @Valid ScreenContinuation continuation) {
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -393,6 +391,43 @@ public record TransactionListRequest(
      */
     public static final int ROW_SELECTOR_COUNT = 10;
 
+    /** Width of each displayed transaction identifier retained in the continuation. */
+    public static final int DISPLAYED_TRANSACTION_ID_LENGTH = TRANSACTION_ID_FILTER_LENGTH;
+
+    /** Maximum displayed identifiers retained in one continuation. */
+    public static final int DISPLAYED_TRANSACTION_ID_COUNT = ROW_COUNT;
+
+    /**
+     * Compatibility constructor for callers that carry the earlier split paging shape.
+     */
+    public TransactionListRequest(final String transactionIdFilter,
+                                  final String displayedPageNumber,
+                                  final List<String> rowSelectors,
+                                  final KeyAction keyAction,
+                                  final NavigationContext navigationContext,
+                                  final PageMetadata.PageCursorRequest pageMetadata) {
+        this(transactionIdFilter, rowSelectors, keyAction, navigationContext,
+                pageMetadata == null && displayedPageNumber == null
+                        ? null
+                        : new ScreenContinuation(
+                                pageMetadata == null ? null : pageMetadata.previousCursorKey(),
+                                pageMetadata == null ? null : pageMetadata.nextCursorKey(),
+                                pageMetadata == null ? null : pageMetadata.direction(),
+                                displayedPageNumber,
+                                false,
+                                List.of()));
+    }
+
+    /** Compatibility view of the legacy split page-number component. */
+    public String displayedPageNumber() {
+        return continuation == null ? null : continuation.displayedPageNumber();
+    }
+
+    /** Compatibility view of the legacy split cursor component. */
+    public PageMetadata.PageCursorRequest pageMetadata() {
+        return continuation == null ? null : continuation.pageCursor();
+    }
+
     /**
      * Canonical constructor. Detaches the selector sequence from the caller and leaves every other
      * component exactly as supplied.
@@ -430,6 +465,68 @@ public record TransactionListRequest(
             throw new IllegalArgumentException("rowSelectors may hold at most " + ROW_COUNT
                     + " entries, because that is how many row families the transaction-list screen"
                     + " declares, but it holds " + rowSelectors.size());
+        }
+    }
+
+    /**
+     * Complete bounded state of the page the client is resubmitting.
+     *
+     * @param previousCursorKey first identifier displayed on the page
+     * @param nextCursorKey last identifier displayed on the page
+     * @param direction direction in which the page was reached
+     * @param displayedPageNumber fixed-width page-number image
+     * @param nextPageAvailable whether the look-ahead read found another page
+     * @param displayedTransactionIds identifiers displayed in row order
+     */
+    public record ScreenContinuation(
+            @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
+                    String previousCursorKey,
+            @Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
+                    String nextCursorKey,
+            PageMetadata.PagingDirection direction,
+            @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH)
+            @Pattern(regexp = "[0-9 ]*") String displayedPageNumber,
+            boolean nextPageAvailable,
+            @Size(max = TransactionListRequest.ROW_COUNT)
+                    List<@Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
+                            String> displayedTransactionIds) {
+
+        public ScreenContinuation {
+            displayedTransactionIds = displayedTransactionIds == null
+                    ? List.of()
+                    : List.copyOf(displayedTransactionIds);
+            if (displayedTransactionIds.size() > ROW_COUNT) {
+                throw new IllegalArgumentException("displayedTransactionIds may hold at most "
+                        + ROW_COUNT + " entries");
+            }
+        }
+
+        public static ScreenContinuation empty() {
+            return new ScreenContinuation(null, null, null, null, false, List.of());
+        }
+
+        public PageMetadata.PageCursorRequest pageCursor() {
+            return new PageMetadata.PageCursorRequest(previousCursorKey, nextCursorKey, direction);
+        }
+
+        public int currentPageNumber() {
+            if (displayedPageNumber == null) {
+                return 0;
+            }
+            final String numericImage = displayedPageNumber.strip();
+            return numericImage.isEmpty() ? 0 : Integer.parseInt(numericImage);
+        }
+
+        @Override
+        public String toString() {
+            return "ScreenContinuation["
+                    + "previousCursorKey=" + REDACTION_PLACEHOLDER
+                    + ", nextCursorKey=" + REDACTION_PLACEHOLDER
+                    + ", direction=" + direction
+                    + ", displayedPageNumber=" + displayedPageNumber
+                    + ", nextPageAvailable=" + nextPageAvailable
+                    + ", displayedTransactionIds=" + REDACTION_PLACEHOLDER
+                    + "]";
         }
     }
 
@@ -472,11 +569,10 @@ public record TransactionListRequest(
     public String toString() {
         return "TransactionListRequest["
                 + "transactionIdFilter=" + REDACTION_PLACEHOLDER
-                + ", displayedPageNumber=" + displayedPageNumber
                 + ", rowSelectors=" + rowSelectors
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
-                + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", continuation=" + REDACTION_PLACEHOLDER
                 + "]";
     }
 }

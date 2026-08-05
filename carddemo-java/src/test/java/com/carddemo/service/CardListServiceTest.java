@@ -21,8 +21,6 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.repository.CardRepository;
@@ -153,15 +151,15 @@ final class CardListServiceTest {
      * @param  cardFilter    the card filter as keyed, or {@code null}
      * @return the work area
      */
-    private static ScreenWorkArea workArea(final String accountFilter, final String cardFilter) {
-        return new ScreenWorkArea(KeyAction.ENTER, null, null, null, null, null, accountFilter,
+    private static ScreenInputState workArea(final String accountFilter, final String cardFilter) {
+        return new ScreenInputState(KeyAction.ENTER, null, null, null, null, null, accountFilter,
                 cardFilter, null);
     }
 
     /** @return a carried state that reads as this screen submitting to itself */
-    private static NavigationContext reSubmission() {
-        return new NavigationContext("CCLI", THIS_PROGRAM, "CCLI", THIS_PROGRAM, "USER0001", "U",
-                NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+    private static ScreenNavigationState reSubmission() {
+        return new ScreenNavigationState("CCLI", THIS_PROGRAM, "CCLI", THIS_PROGRAM, "USER0001", "U",
+                ScreenNavigationState.ProgramContext.REENTER, null, null, null, null, null, null, null,
                 "CCRDLIA", "COCRDLI");
     }
 
@@ -174,7 +172,7 @@ final class CardListServiceTest {
      * @return the input
      */
     private static CardListService.CardListScreenInput turn(final String rawKey,
-            final List<String> selections, final NavigationContext context) {
+            final List<String> selections, final ScreenNavigationState context) {
         return new CardListService.CardListScreenInput(rawKey, workArea(null, null), selections, null,
                 1, false, false, context);
     }
@@ -201,7 +199,7 @@ final class CardListServiceTest {
     final class Construction {
 
         @Test
-        @DisplayName("each of the four constructor arguments is mandatory")
+        @DisplayName("each constructor argument is mandatory")
         void everyCollaboratorIsMandatory() {
             final MessageCatalogService catalog = new MessageCatalogService();
             final NavigationService navigation = new NavigationService();
@@ -214,7 +212,8 @@ final class CardListServiceTest {
             assertThatNullPointerException()
                     .isThrownBy(() -> new CardListService(cardRepository, catalog, null, abend));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new CardListService(cardRepository, catalog, navigation, null));
+                    .isThrownBy(() -> new CardListService(
+                            cardRepository, catalog, navigation, null));
         }
 
         @Test
@@ -330,6 +329,28 @@ final class CardListServiceTest {
             assertThat(result.rows()).hasSize(3);
             assertThat(result.rows()).extracting(CardListService.CardListRow::accountId)
                     .containsOnly(ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("the echoed last-page state distinguishes the second forward press")
+        void theLastPageAlreadyShownStateSurvivesTheTurn() {
+            seedCards(PAGE_SIZE);
+            final CardListService.CardListScreenInput input =
+                    new CardListService.CardListScreenInput(
+                            "DFHPF8",
+                            workArea(null, null),
+                            null,
+                            new BrowseWindow.CursorRequest(
+                                    null, cardRow(PAGE_SIZE).getCardNum(),
+                                    BrowseWindow.PagingDirection.FORWARD),
+                            7,
+                            true,
+                            false,
+                            reSubmission());
+
+            final CardListService.CardListResult result = service.processCardList(input);
+
+            assertThat(result.errorMessage()).isEqualTo("NO MORE PAGES TO DISPLAY");
         }
     }
 

@@ -242,7 +242,7 @@ class AbstractCobolStepSecurityTest {
         @Test
         @DisplayName("the tasklet entry point runs the same lifecycle and reports the step finished, so a single "
                 + "invocation is the whole step rather than one chunk of it")
-        void theTaskletEntryPointRunsTheSameLifecycle() {
+        void theTaskletEntryPointRunsTheSameLifecycle() throws Exception {
             final ScriptedStep subject = step("a");
             assertThat(subject.execute(null, null)).isEqualTo(RepeatStatus.FINISHED);
             assertThat(subject.calls).containsExactly("open", "read", "process:a", "read", "close");

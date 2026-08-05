@@ -1,0 +1,67 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.repository;
+
+import com.carddemo.domain.Transaction;
+import jakarta.persistence.EntityManager;
+import java.util.Objects;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.PreparedStatementCallback;
+
+/**
+ * JPA implementation of the assigned-key, insert-only transaction fragment.
+ *
+ * <p>{@link EntityManager#persist(Object)} is used deliberately instead of merge semantics. The
+ * immediate flush makes a duplicate key, referential-integrity failure or any other database refusal
+ * occur while the translated write paragraph is still executing, so that paragraph can preserve its
+ * own response ordering rather than discovering the failure at an unrelated transaction boundary.
+ */
+public class TransactionInsertRepositoryImpl implements TransactionInsertRepository {
+
+    private final EntityManager entityManager;
+    private final JdbcTemplate jdbcTemplate;
+
+    /**
+     * @param entityManager the persistence context that owns the insert; must not be {@code null}
+     */
+    public TransactionInsertRepositoryImpl(final EntityManager entityManager,
+            final JdbcTemplate jdbcTemplate) {
+        this.entityManager = Objects.requireNonNull(entityManager, "entityManager");
+        this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
+    }
+
+    @Override
+    public void lockIdentifierAllocation(final long lockKey) {
+        this.jdbcTemplate.execute("SELECT pg_advisory_xact_lock(?)",
+                (PreparedStatementCallback<Void>) statement -> {
+            statement.setLong(1, lockKey);
+            statement.execute();
+            return null;
+        });
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public Transaction insertAndFlush(final Transaction transaction) {
+        final Transaction required = Objects.requireNonNull(transaction, "transaction");
+        this.entityManager.persist(required);
+        this.entityManager.flush();
+        return required;
+    }
+}

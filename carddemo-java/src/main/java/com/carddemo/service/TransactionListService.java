@@ -16,8 +16,6 @@
  */
 package com.carddemo.service;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
@@ -39,18 +37,18 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Transaction-list screen behaviour: the Java translation of legacy CICS transaction {@code CT00},
- * whose sole implementing member is {@code app/cbl/COTRN00C.cbl} - 699 source lines carrying 16
- * {@code PROCEDURE DIVISION} paragraphs, every one of which has a named method on this class.
+ * whose sole implementing member is {@code app/cbl/COTRN00C.cbl}. Each of its
+ * {@code PROCEDURE DIVISION} paragraphs has a named method on this class and states its own paragraph
+ * name and source line; {@code docs/traceability-matrix.md} carries the row-per-paragraph inventory.
  *
  * <p>Provenance. The legacy estate is read-only reference at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the stamp carried in the trailer
- * comment of the member itself. No legacy source text is transcribed here; behaviour is cited by
- * member name, paragraph name and line number so that a reviewer can hold the two side by side.
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here;
+ * behaviour is cited by member name, paragraph name and line number so that a reviewer can hold the two
+ * side by side.
  *
  * <h2>The two facts that decide whether this translation is correct</h2>
  *
@@ -118,16 +116,13 @@ import org.springframework.transaction.annotation.Transactional;
  * twelve for the five programs that include the copybook, and this member does no such folding - a
  * higher key simply falls to the catch-all arm and produces the invalid-key message.
  *
- * <p>It performs <strong>no scaling and no rounding</strong>. The amount is a {@code BigDecimal} at
- * the two-decimal scale the column declares and it crosses this class untouched; the estate contains
- * no rounding clause on any arithmetic statement, and the single place permitted to scale is
- * {@code com.carddemo.util.ZonedDecimalCodec}, which truncates toward zero. That class is
- * consequently not imported here, because nothing in a list transaction needs it.
- *
- * <p>It performs <strong>no temporal conversion</strong>. Both stored timestamps are bounded
- * twenty-six-character strings and are carried verbatim. The only date-and-time handling anywhere in
- * this class is the screen header clock of the header paragraph at line 569, which formats the
- * current instant for display and never touches a stored value.
+ * <p>It performs <strong>no scaling, no rounding and no temporal conversion</strong>. The amount is a
+ * {@code BigDecimal} at the two-decimal scale the column declares and crosses this class untouched; the
+ * estate contains no rounding clause on any arithmetic statement, and the single place permitted to
+ * scale is {@code com.carddemo.util.ZonedDecimalCodec}, which truncates toward zero and is consequently
+ * not imported here. Both stored timestamps are bounded twenty-six-character strings carried verbatim,
+ * and the only date-and-time handling anywhere in this class is the screen header clock of the header
+ * paragraph at line 569, which formats the current instant for display and never touches a stored value.
  *
  * <p>It <strong>writes nothing</strong>. This is a list transaction: the read is annotated read-only
  * and there is no save, delete, flush or modifying query. It also mints no identifier, applies no
@@ -143,28 +138,17 @@ import org.springframework.transaction.annotation.Transactional;
  * page is cached; the client echoes the paging state back, exactly as the pseudo-conversational turn
  * carried it in the communication area.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The turn is deliberately non-transactional. A repository browse that fails completes its own
+ * transaction before this service maps the failure, so no rollback-only marker can replace the
+ * source screen outcome when this method returns.
  *
  * @see NavigationService
  * @see MessageCatalogService
  * @see TransactionRepository
  * @since 1.0.0
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class TransactionListService {
+public final class TransactionListService {
 
     private static final Logger LOG = LoggerFactory.getLogger(TransactionListService.class);
 
@@ -425,7 +409,6 @@ public class TransactionListService {
      * @return the resolved route, the rows in presentation order and the full screen outcome
      * @throws NullPointerException if {@code command} is {@code null}
      */
-    @Transactional(readOnly = true)
     public TransactionListResult listTransactions(final TransactionListCommand command) {
         Objects.requireNonNull(command, "command must not be null");
 
@@ -444,7 +427,7 @@ public class TransactionListService {
 
         // Line 107: IF EIBCALEN = 0 - the turn carries no prior navigation state at all.
         if (isNavigationStateAbsent(command.navigationContext())) {
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
             LOG.debug("Transaction list entered with no navigation state:"
                     + " rule=absent-context transaction={} program={}", TRANSACTION_ID, PROGRAM_NAME);
             // Lines 108-109: nominate the sign-on program, then return to it.
@@ -1347,7 +1330,7 @@ public class TransactionListService {
      */
     private String lowestTransactionId() {
         final Page<Transaction> firstWindow = transactionRepository.findAll(
-                PageRequest.of(0, SCREEN_ROW_COUNT, ASCENDING_BY_TRANSACTION_ID));
+                PageRequest.of(0, SCREEN_ROW_COUNT + 1, ASCENDING_BY_TRANSACTION_ID));
         final List<Transaction> rows = firstWindow.getContent();
         return rows.isEmpty() ? null : rows.get(0).getTranId();
     }
@@ -1406,7 +1389,7 @@ public class TransactionListService {
      * enter-key processing did not transfer.
      */
     private void transferToProgram(final BrowseState state, final String destinationProgram) {
-        final NavigationContext nominated = withTransferFields(state.context, destinationProgram);
+        final ScreenNavigationState nominated = withTransferFields(state.context, destinationProgram);
         final NavigationService.Route target = navigationService.resolveNominatedDestination(
                 carriedState(nominated), NavigationService.Route.SIGN_ON);
         state.context = nominated.withFirstEntry();
@@ -1471,11 +1454,11 @@ public class TransactionListService {
 
         final String displayedPageNumber = displayedPageNumberImage(state.pageNumber);
         final boolean hasPreviousPages = state.pageNumber > FIRST_PAGE_NUMBER;
-        final PageMetadata pageMetadata = command.keyAction() == KeyAction.PFK07
-                ? PageMetadata.backward(SCREEN_ROW_COUNT, state.firstTransactionId,
+        final BrowseWindow pageMetadata = command.keyAction() == KeyAction.PFK07
+                ? BrowseWindow.backward(SCREEN_ROW_COUNT, state.firstTransactionId,
                         state.lastTransactionId, state.nextPageAvailable, hasPreviousPages,
                         displayedPageNumber)
-                : PageMetadata.forward(SCREEN_ROW_COUNT, state.firstTransactionId,
+                : BrowseWindow.forward(SCREEN_ROW_COUNT, state.firstTransactionId,
                         state.lastTransactionId, state.nextPageAvailable, hasPreviousPages,
                         displayedPageNumber);
 
@@ -1542,9 +1525,9 @@ public class TransactionListService {
      * the originating pair and at lines 188 and 512-514 for the destination. The state is an immutable
      * record with no per-field builder, so a copy is built through its canonical constructor.
      */
-    private static NavigationContext withTransferFields(final NavigationContext context,
+    private static ScreenNavigationState withTransferFields(final ScreenNavigationState context,
             final String destinationProgram) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 TRANSACTION_ID,
                 PROGRAM_NAME,
                 context.toTransactionId(),
@@ -1737,11 +1720,11 @@ public class TransactionListService {
      */
     public record TransactionListCommand(
             KeyAction keyAction,
-            NavigationContext navigationContext,
+            ScreenNavigationState navigationContext,
             String transactionIdFilter,
             List<String> rowSelectors,
             List<String> displayedTransactionIds,
-            PageMetadata.PageCursorRequest pageCursor,
+            BrowseWindow.CursorRequest pageCursor,
             boolean nextPageAvailable,
             int currentPageNumber) {
 
@@ -1762,11 +1745,11 @@ public class TransactionListService {
                         + " page number is an unsigned eight-digit field");
             }
             navigationContext = (navigationContext == null)
-                    ? NavigationContext.empty() : navigationContext;
+                    ? ScreenNavigationState.empty() : navigationContext;
             rowSelectors = immutableCopy(rowSelectors);
             displayedTransactionIds = immutableCopy(displayedTransactionIds);
             pageCursor = (pageCursor == null)
-                    ? new PageMetadata.PageCursorRequest(null, null, null) : pageCursor;
+                    ? new BrowseWindow.CursorRequest(null, null, null) : pageCursor;
         }
 
         /**
@@ -1849,9 +1832,9 @@ public class TransactionListService {
      */
     public record TransactionListResult(
             NavigationService.Route route,
-            NavigationContext navigationContext,
+            ScreenNavigationState navigationContext,
             List<TransactionListRow> rows,
-            PageMetadata pageMetadata,
+            BrowseWindow pageMetadata,
             String message,
             List<ValidationException.FieldError> fieldErrors,
             String focusScreenFieldId,
@@ -2073,7 +2056,7 @@ public class TransactionListService {
         private NavigationService.Route route;
 
         /** The navigation state as this turn leaves it. */
-        private NavigationContext context = NavigationContext.empty();
+        private ScreenNavigationState context = ScreenNavigationState.empty();
 
         /** Field-level detail for the two field failures this screen can report. */
         private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
@@ -2228,7 +2211,7 @@ public class TransactionListService {
                     return null;
                 }
                 final Page<Transaction> page = repository.findAll(
-                        PageRequest.of(nextWindowIndex, SCREEN_ROW_COUNT, sort));
+                        PageRequest.of(nextWindowIndex, SCREEN_ROW_COUNT + 1, sort));
                 nextWindowIndex++;
                 window = page.getContent();
                 windowCursor = 0;
@@ -2263,8 +2246,8 @@ public class TransactionListService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -2279,7 +2262,7 @@ public class TransactionListService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

@@ -102,7 +102,7 @@
 #                                      well formed but names nothing is the exact input the messaging
 #                                      template would otherwise resolve by creating a queue nothing
 #                                      consumes, so a submission would report complete and the cards
-#                                      would sit unread. The canonical value is carddemo-jobs.fifo
+#                                      would sit unread. The canonical value is JOBS.fifo
 #     AWS_REGION                       region for the object-store, queue and notification clients.
 #                                      Keeps its ecosystem-standard name deliberately, because
 #                                      application.yml and docker-compose.yml already use it and the
@@ -180,12 +180,10 @@
 # raised by a listener, a health indicator or the migration itself would already be too late for at
 # least one of them.
 #
-# The same class also refuses, at migration time, any resolved location other than
-# classpath:db/migration/schema - which refuses the seed location classpath:db/migration/seed by name,
-# and refuses their shared parent classpath:db/migration too, because a location is scanned recursively
-# and the parent would reach the seeds through the child directory - and it refuses any resolved version
-# ceiling that reaches a seed version. So a merged environment, an operator override or a copied overlay
-# block cannot reintroduce the seeds in silence even if the co-activation guard were ever removed.
+# The same class also refuses, at migration time, any resolved location other than the one packaged
+# classpath:db/migration, and refuses any resolved version ceiling that reaches a seed version. So a
+# merged environment, an operator override or a copied overlay block cannot reintroduce the seeds in
+# silence even if the co-activation guard were ever removed.
 #
 # And because no configuration control can reach a database that was ALREADY seeded before this
 # process existed, com.carddemo.config.ProductionSeedRejectionCallback refuses a production start-up
@@ -245,33 +243,29 @@ spring:
       ddl-auto: validate
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - AND BOTH SETTINGS BELOW ARE SECURITY CONTROLS, NOT TIDINESS PREFERENCES.
+  # SCHEMA EVOLUTION - AND THE CEILING BELOW IS A SECURITY CONTROL, NOT A TIDINESS PREFERENCE.
   #
-  # THE PRIMARY PRODUCTION CONTROL IS THE LOCATION LIST: THE SCHEMA LOCATION AND NOTHING ELSE. Four
-  # migrations exist in this module, split across two sibling locations, and production resolves only
-  # one of them:
+  # THE PRODUCTION CONTROL IS THE VERSION CEILING: TARGET 2 AND NOTHING ABOVE IT. Four migrations exist
+  # in this module and they are physically FLAT in one directory that every profile resolves:
   #
-  #   classpath:db/migration/schema     RESOLVED HERE, as by every profile
+  #   classpath:db/migration            RESOLVED HERE, as by every profile
   #     V1__create_schema.sql           the eleven application tables         APPLIED HERE
   #     V2__create_indexes.sql          keys and alternate-index equivalents  APPLIED HERE
   #   ------------------------------------------------------------ ceiling: target 2
-  #   classpath:db/migration/seed       NOT RESOLVED HERE - REFUSED BY FlywayConfig
-  #     V3__seed_reference_data.sql     sample reference rows                 NEVER RESOLVED HERE
-  #     V4__seed_user_security.sql      sign-on identities                    NEVER RESOLVED HERE
+  #     V3__seed_reference_data.sql     sample reference rows                 NEVER APPLIED HERE
+  #     V4__seed_user_security.sql      sign-on identities                    NEVER APPLIED HERE
   #
-  # A script the location list does not resolve is not reported, not pending and not applicable, so the
-  # production migration history ends at V2 with nothing outstanding. This is the mechanism AAP 0.3.1
-  # and 0.4.2 require: FlywayConfig resolves V3 and V4 from profile-scoped locations so a production
-  # deployment migrates schema and indexes without inheriting sample data or seeded credentials. See
-  # docs/decision-log.md DL-127.
+  # There is no schema/ or seed/ child directory, and none may be created; a directory-scoped location
+  # list therefore cannot separate the seeds from the schema, and the version ceiling is the control
+  # that can. A script above the ceiling is reported as pending-above-target and the migration still
+  # validates successfully, so the production migration history ends at V2 and that is not a condition a
+  # deployment must suppress. See docs/decision-log.md DL-127.
   #
-  # THE SECOND CONTROL IS THE VERSION CEILING OF 2, retained behind the location list. It is re-asserted
-  # here rather than inherited - the shared baseline in application.yml already carries the same
-  # restrictive value, so a profile that forgets the property inherits the safe one, and this overlay
-  # states it out loud for anyone reading only this file. Were a seed location ever resolved here despite
-  # the refusal, V3 and V4 would still sit above this ceiling and would not be executed; a script above
-  # the ceiling is reported as pending-above-target and the migration still validates successfully, so
-  # even that degraded state is not a condition a deployment must suppress.
+  # THE CEILING IS RE-ASSERTED HERE rather than inherited - the shared baseline in application.yml
+  # already carries the same restrictive value, so a profile that forgets the property inherits the safe
+  # one, and this overlay states it out loud for anyone reading only this file. FlywayConfig re-applies
+  # the same value under this profile AFTER the configuration has been bound, so an inherited value, an
+  # operator override or a merged property source cannot lift it in silence.
   #
   # The batch framework's own metadata tables are created by Spring Batch itself rather than by a
   # migration, which is why the inventory above is four scripts and not five; see the batch block
@@ -286,32 +280,28 @@ spring:
   # module encrypts at rest. Neither belongs in production, and neither reaching it would be
   # untidiness: it would be a credential incident and a privacy incident respectively.
   #
-  # WHY A DIRECTORY AND A CEILING, IN THAT ORDER. A location is scanned RECURSIVELY, which is why the
-  # two delivered locations are SIBLINGS and their shared parent db/migration holds no script at all: a
-  # deployment listing the parent would reach the seeds through the child directory, so the parent is
-  # refused here exactly as the seed location is. With the parent empty the recursion has nothing to
-  # cross, and a list naming db/migration/schema resolves the schema scripts and nothing else. Verified
-  # against Flyway 11.7.2 and PostgreSQL 16: a production-shaped location list reports exactly V1 and V2,
-  # and the two seeds appear in no state at all - not applied, not pending, not above target.
+  # WHY A CEILING AND NOT A DIRECTORY. A Flyway location is scanned RECURSIVELY, so a child directory
+  # under a location a profile resolves is reached anyway; and because all four delivered scripts sit in
+  # ONE flat directory, a location list is the same value in every profile and can express no separation
+  # at all. An earlier revision introduced schema/ and seed/ child directories to try, which contradicted
+  # the delivered layout and left two competing migration models in the same module. The version ceiling
+  # is the control the artefacts actually support: it is measured against the script NUMBER, which is
+  # part of the file name and therefore cannot drift from the file. Verified against Flyway 11.7.2 and
+  # PostgreSQL 16: under target 2 the two seeds are discovered, reported as above-target, and not
+  # executed, and the migration validates successfully. See docs/decision-log.md DL-127, which supersedes
+  # DL-102, DL-111, DL-116 and DL-119.
   #
-  # Two earlier revisions of these documents kept all four scripts in the parent and relied on the
-  # ceiling alone, on the ground above. The ground is sound; the conclusion it supports is that the
-  # SCHEMA scripts must move down too, which is what has been done. The ceiling is retained behind the
-  # location because it is the control that still holds if a seed is renumbered, or if a merged location
-  # list or a command-line override adds the seed location back. See docs/decision-log.md DL-127, which
-  # supersedes DL-102, DL-111, DL-116 and DL-119.
-  #
-  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run goes in db/migration/schema and is
-  # numbered at or below 2; a script production must NEVER run goes in db/migration/seed and is numbered
-  # above 2. Never place a script in the shared parent. Raise this ceiling only in the same commit that
-  # adds a production-required script above it, and never to admit a seed. A sign-on credential is stored
-  # only as a hash regardless, so that even a mistake here leaks no usable secret.
+  # THE RULE FOR ANY FUTURE SCRIPT: a script production MUST run is numbered at or below 2; a script
+  # production must NEVER run is numbered above 2. Do not create a child directory under db/migration.
+  # Raise this ceiling only in the same commit that adds a production-required script above it, and never
+  # to admit a seed. A sign-on credential is stored only as a hash regardless, so that even a mistake
+  # here leaks no usable secret.
   #
   # `target` does not weaken validation: validate-on-migrate stays on, and it catches a CHANGED
   # already-applied script. What it does NOT catch, and this was measured rather than assumed, is a
   # database that was seeded under local or test and is then opened by this profile. Version 11 of the
-  # migration tool ignores FUTURE migrations by default, so applied versions 3 and 4 that the schema
-  # location cannot resolve are not a validation failure - the migration REPORTS SUCCESS over them,
+  # migration tool ignores FUTURE migrations by default, so applied versions 3 and 4 that sit above this
+  # ceiling are not a validation failure - the migration REPORTS SUCCESS over them,
   # with the ceiling set and without it alike. That measurement is asserted by
   # ProductionSeedRejectionCallbackIT, and it is the reason the control described below is
   # indispensable rather than defence in depth: nothing in the configuration, and nothing in the
@@ -385,21 +375,20 @@ spring:
     enabled: true
     # See docs/decision-log.md DL-127.
     #
-    # THE ONE PACKAGED LOCATION AND NOTHING ELSE, matched by equality rather than containment. Another
-    # location would carry scripts the ceiling below never measured, and a look-alike directory on disk
-    # could carry its own V1 and V2, so FlywayConfig refuses anything but this exact value - including
-    # a filesystem: descriptor, a bare path, a nested sub-path, a trailing separator and a second entry.
-    # THIS LINE IS THE PRODUCTION CONTROL: THE SCHEMA LOCATION AND NOTHING ELSE. The two seed scripts
-    # live in classpath:db/migration/seed and are therefore not resolved here at all - not resolved,
-    # not reported, not applied. FlywayConfig refuses any other location while this profile is active,
-    # which includes the seed location by name AND the shared parent classpath:db/migration, because a
-    # location is scanned recursively and the parent would reach the seeds through the child directory.
-    locations: classpath:db/migration/schema
-    # THE SECOND CONTROL, BEHIND THE FIRST. V1 and V2 are at or below "2" and are applied. Were a seed
-    # location ever resolved here despite the refusal, V3 and V4 would still sit above this ceiling and
-    # would not be executed. FlywayConfig re-applies the pin after binding, so an inherited value, an
-    # operator override or a merged property source cannot lift it, and ProductionSeedRejectionCallback
-    # refuses a start against a database that was seeded before this profile was ever pointed at it.
+    # THE ONE PACKAGED LOCATION AND NOTHING ELSE, matched by equality rather than containment. All four
+    # delivered scripts are physically flat in this single directory, so the location is the same value
+    # every profile resolves and carries no part of the seed separation. It is still pinned by equality
+    # because another location would carry scripts the ceiling below never measured, and a look-alike
+    # directory on disk could carry its own V1 and V2 - so FlywayConfig refuses anything but this exact
+    # value, including a filesystem: descriptor, a bare path, a nested sub-path, a trailing separator
+    # and a second entry.
+    locations: classpath:db/migration
+    # THIS LINE IS THE PRODUCTION CONTROL. V1 and V2 are at or below "2" and are applied; the two seed
+    # scripts are numbered 3 and 4, sit above this ceiling, and are therefore never executed - so the
+    # fifty synthetic customer rows and the ten known sign-on identities cannot reach this database.
+    # FlywayConfig re-applies the pin after binding, so an inherited value, an operator override or a
+    # merged property source cannot lift it, and ProductionSeedRejectionCallback refuses a start
+    # against a database that was seeded before this profile was ever pointed at it.
     target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -477,6 +466,8 @@ spring:
         static: ${carddemo.aws.region}
       s3:
         path-style-access-enabled: false
+      sqs:
+        observation-enabled: true
 
 # ===================================================================================================
 # TRANSPORT SECURITY.
@@ -673,9 +664,9 @@ logging:
 # THE KEY PATHS BELOW ARE IDENTICAL TO application-local.yml AND src/test/resources/application-test.yml,
 # and only the values and the credential resolution differ. That is what lets a job parameter read
 # identically under every profile. Two consequences follow and both are deliberate:
-#   * the per-family object-store key prefixes are declared ONCE in application.yml and inherited
-#     unchanged. Restating them here would be a partial re-declaration that dropped the families it
-#     omitted, so no overlay restates them.
+#   * the bucket name is the whole deployer-controlled staging contract. BatchStagingArea is the one
+#     application boundary for every staged input and dataset-producing output, while each job composes
+#     its own object key. There are no per-family prefix properties to restate or let drift.
 #   * region and endpoints are NOT in this namespace. They belong to the cloud integration's own
 #     properties, set under spring.cloud.aws above, so the object-store, queue and notification clients
 #     are configured through one mechanism rather than two.
@@ -710,16 +701,14 @@ logging:
 # The .fifo suffix on the queue name is not decoration: the queue service rejects a first-in-first-out
 # queue whose name omits it, which is a start-up failure rather than a style preference.
 #
-# THE QUEUE NAME IS carddemo-jobs.fifo, AND IT IS MANDATED RATHER THAN CHOSEN. The frozen plan states
-# the four resource names and requires them byte-identically: the bucket carddemo-batch-staging, this
-# queue carddemo-jobs.fifo, the message group carddemo-job-submission and the topic
-# carddemo-job-notifications. An earlier revision renamed this one to JOBS.fifo, reasoning that the
-# legacy transient-data queue name was itself part of the frozen inventory. That reasoning does not
-# survive: what the plan freezes for this resource is the target name it prescribes, and the legacy
-# name is carried instead by the operator-visible message, which is the contract actually compared
-# byte for byte. Aligning the module with the environment by editing the module was also the wrong
-# direction - the emulator bootstrap this module ships is what provisions the queue, so it is the
-# module that decides the name, and the two agree because both now state the mandated one.
+# THE CANONICAL QUEUE NAME IS JOBS.fifo, AND IT IS PRESCRIBED RATHER THAN CHOSEN. The frozen plan
+# names this resource twice - as "SQS FIFO JOBS" in the emulator-bootstrap deliverable and as "the SQS
+# FIFO JOBS queue" in the external-reference table - and names no other value for it, so JOBS plus the
+# suffix the queue service demands is the whole of the derivation. It is also the name the legacy CICS
+# transient-data queue carried, which is why this one resource of the four is legacy-named while the
+# bucket, the message group and the topic are module-namespaced: the plan names a value for the queue
+# and for none of the others. An earlier revision renamed this one to a module-namespaced form and
+# asserted the plan mandated that form; it does not, so the prescribed name stands.
 # See docs/decision-log.md DL-092.
 #
 # The frozen operator message emitted when a submission fails is unaffected by any of this: it names
@@ -738,11 +727,14 @@ carddemo:
     # a client at an emulator; with none, every client resolves the real service endpoint for the region
     # above. The local and test overlays are where an override belongs, and an inherited one here would
     # have to be blanked to undo - which is exactly the kind of correction that gets forgotten.
+    # BatchStagingArea checks and downloads staged inputs and uploads completed output generations
+    # through this one pre-provisioned bucket. It creates no cloud resource, and local writer buffers
+    # are published only after successful completion.
     s3:
       batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
       # NO DEFAULT. A deployment names its own queue, and a fallback here would be a placeholder
-      # that started cleanly and published nowhere. The canonical name is carddemo-jobs.fifo, in
+      # that started cleanly and published nowhere. The canonical name is JOBS.fifo, in
       # application.yml and in the comment above; production must still be told it explicitly.
       #
       # The publisher does refuse a name that omits the first-in-first-out suffix - but it refuses it
@@ -753,7 +745,7 @@ carddemo:
       # docs/decision-log.md DL-105.
       #
       # AND WELL-FORMED IS NOT THE SAME AS TRUSTED. The messaging client accepts any syntactically
-      # valid locator as a queue, so a value such as http://<some-host>/carddemo-jobs.fifo is a
+      # valid locator as a queue, so a value such as http://<some-host>/JOBS.fifo is a
       # perfectly well-formed destination that happens to name somebody else's host - and it would
       # then receive the eighty-column job-control cards of every batch submission, silently, because
       # the queue is defined ignore-on-error and every request would still answer successfully.

@@ -47,6 +47,7 @@ import java.util.List;
 public record TransactionListResponse(
         List<TransactionRow> rows,
         PageMetadata pageMetadata,
+        TransactionListRequest.ScreenContinuation continuation,
         NavigationContext navigationContext,
         String nextRoute,
         @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String transactionIdFilter,
@@ -101,6 +102,63 @@ public record TransactionListResponse(
     public static final String MESSAGE_REACHED_BOTTOM = "You have reached the bottom of the page...";
 
     public static final String MESSAGE_REACHED_TOP = "You have reached the top of the page...";
+
+    /**
+     * Compatibility constructor for producers that have not yet projected the combined continuation.
+     */
+    public TransactionListResponse(final List<TransactionRow> rows,
+                                   final PageMetadata pageMetadata,
+                                   final NavigationContext navigationContext,
+                                   final String nextRoute,
+                                   final String transactionIdFilter,
+                                   final String displayedPageNumber,
+                                   final String message,
+                                   final boolean error,
+                                   final String focusScreenFieldId,
+                                   final String title01,
+                                   final String title02,
+                                   final String currentDate,
+                                   final String currentTime,
+                                   final String transactionName,
+                                   final String programName) {
+        this(rows, pageMetadata, ContinuationFactory.from(rows, pageMetadata, displayedPageNumber),
+                navigationContext, nextRoute, transactionIdFilter,
+                displayedPageNumber, message, error, focusScreenFieldId, title01, title02,
+                currentDate, currentTime, transactionName, programName);
+    }
+
+    private static final class ContinuationFactory {
+
+        private static TransactionListRequest.ScreenContinuation from(
+                final List<TransactionRow> rows,
+                final PageMetadata pageMetadata,
+                final String displayedPageNumber) {
+            if (rows != null && rows.size() > PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
+                return null;
+            }
+            if (pageMetadata == null && displayedPageNumber == null
+                    && (rows == null || rows.isEmpty())) {
+                return null;
+            }
+            final List<String> displayedIdentifiers = rows == null
+                    ? List.of()
+                    : rows.stream()
+                            .map(row -> row == null || row.transactionId() == null
+                                    ? ""
+                                    : row.transactionId())
+                            .toList();
+            return new TransactionListRequest.ScreenContinuation(
+                    pageMetadata == null ? null : pageMetadata.previousCursorKey(),
+                    pageMetadata == null ? null : pageMetadata.nextCursorKey(),
+                    pageMetadata == null ? null : pageMetadata.direction(),
+                    displayedPageNumber,
+                    pageMetadata != null && pageMetadata.hasMorePages(),
+                    displayedIdentifiers);
+        }
+
+        private ContinuationFactory() {
+        }
+    }
 
     /**
      * Normalizes the row collection and refuses a page longer than the screen can present.
@@ -220,6 +278,7 @@ public record TransactionListResponse(
                 + "rowCount=" + rows.size()
                 + ", rows=" + REDACTION_PLACEHOLDER
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", continuation=" + REDACTION_PLACEHOLDER
                 + ", navigationContext=" + navigationContext
                 + ", nextRoute=" + nextRoute
                 + ", transactionIdFilter=" + REDACTION_PLACEHOLDER

@@ -1,0 +1,41 @@
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
+
+# ---------------------------------------------------------------------------------------------
+# Fixed-width fixtures: every byte is a contract, so Git must not rewrite any of them
+# ---------------------------------------------------------------------------------------------
+#
+# The committed fixtures under src/test/resources/fixtures are fixed-width sequential datasets,
+# and the byte-equivalence gate compares module output against them byte for byte. Two default
+# Git behaviours are wrong for that kind of file, and both are disabled here rather than left to
+# a contributor's local configuration:
+#
+#   text       Left unspecified, a checkout on a platform configured to normalise line endings
+#              rewrites each record's single line-feed frame as a carriage return plus line feed.
+#              Every record would then be one byte wider than its declared length - a 350-byte
+#              archive record would arrive as 352 bytes end to end - and the comparison would
+#              fail for a reason that has nothing to do with the code. Marking the fixtures
+#              -text pins them to the bytes that were committed, on every platform.
+#
+#   whitespace Records are space-padded to their declared width, so a record whose trailing field
+#              is filler or a short alphanumeric legitimately ends in spaces. Those spaces are
+#              content, not a defect: they are what makes the record its contractual width. Left
+#              unspecified, `git diff --check` reports each of those lines as a trailing-whitespace
+#              error, which buries genuine whitespace defects under thousands of false ones.
+#
+# The scope is deliberately this directory tree and nothing else. No blanket text=auto or eol
+# rule is declared here, because the wrapper script mvnw.cmd is committed with CRLF line endings
+# on purpose and a repository-wide normalisation rule would corrupt it.
+src/test/resources/fixtures/** -text -whitespace

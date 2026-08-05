@@ -23,7 +23,10 @@ import static org.mockito.Mockito.when;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -44,6 +47,7 @@ import io.awspring.cloud.sqs.operations.SqsSendOptions;
 import io.awspring.cloud.sqs.listener.QueueNotFoundStrategy;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
 import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
 import software.amazon.awssdk.services.sqs.model.SqsException;
 
@@ -91,10 +95,24 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
 class JobSubmissionServiceIT extends AbstractLocalStackIT {
 
     /** The canonical queue name, exactly as {@code application.yml} declares it. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message group, exactly as {@code application.yml} declares it. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
+
+    /**
+     * The message attribute the messaging framework's own payload converter stamps on every message it
+     * sends, naming the Java type of the body.
+     *
+     * <p>Named here because an assertion about the exact set of attributes on a delivered message has to
+     * account for it: it is present on every message, it is not set by this module, and it was present
+     * before the reassembly envelope existed. Asserting the set rather than only the presence of the
+     * three envelope attributes is what makes a fourth attribute of <em>our</em> making fail here, and
+     * that assertion is only possible if the framework's attribute is named rather than tolerated by a
+     * looser matcher. The corresponding unit-level guard observes the send options instead of the
+     * delivered message, so it sees the three and not this one.
+     */
+    private static final String FRAMEWORK_PAYLOAD_TYPE_ATTRIBUTE = "JavaType";
 
     /**
      * A well-formed queue name that names no queue on the emulator, used to reach the ignore-on-error
@@ -114,7 +132,7 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
      * refusal.</p>
      */
     private static final String ABSENT_QUEUE_NAME =
-            "carddemo-jobs-absent-" + UUID.randomUUID() + ".fifo";
+            "JOBS-absent-" + UUID.randomUUID() + ".fifo";
 
     /** Card count the legacy paragraph transmits, sentinel included. */
     private static final int CARD_COUNT = 17;
@@ -283,6 +301,88 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
         }
 
         @Test
+        @DisplayName("delivers the reassembly envelope on every card, so a consumer restores the job "
+                + "stream by grouping and ordering rather than by trusting arrival order")
+        void deliversTheReassemblyEnvelopeOnEveryCard() {
+            // The process-local submission lock cannot stop two instances from interleaving their cards
+            // in the one message group, and this module adds no coordination service. The envelope is
+            // the remedy, so it has to survive the real transport rather than only the send options: an
+            // attribute the queue service dropped would leave a consumer with no way to undo an
+            // interleaving.
+            final String submission = submissionId("envelope");
+
+            service.submitTransactionReportJob(submission, START_DATE, END_DATE);
+
+            final List<Message> messages = drainQueue(queueUrl, CARD_COUNT);
+            assertThat(messages).hasSize(CARD_COUNT);
+            for (int ordinal = 1; ordinal <= CARD_COUNT; ordinal++) {
+                final Map<String, MessageAttributeValue> envelope =
+                        messages.get(ordinal - 1).messageAttributes();
+                assertThat(envelope)
+                        .as("card %s carries the three envelope attributes and, from the messaging "
+                                + "framework's own converter, the payload type attribute - and nothing "
+                                + "else", ordinal)
+                        .containsOnlyKeys(JobSubmissionService.SUBMISSION_ID_HEADER,
+                                JobSubmissionService.CARD_ORDINAL_HEADER,
+                                JobSubmissionService.CARD_COUNT_HEADER,
+                                FRAMEWORK_PAYLOAD_TYPE_ATTRIBUTE);
+                assertThat(envelope.get(JobSubmissionService.SUBMISSION_ID_HEADER).stringValue())
+                        .as("card %s names its submission", ordinal)
+                        .isEqualTo(submission);
+                assertThat(envelope.get(JobSubmissionService.CARD_ORDINAL_HEADER).stringValue())
+                        .as("card %s carries its one-based position", ordinal)
+                        .isEqualTo(Integer.toString(ordinal));
+                assertThat(envelope.get(JobSubmissionService.CARD_COUNT_HEADER).stringValue())
+                        .as("card %s declares the whole stream's length", ordinal)
+                        .isEqualTo(Integer.toString(CARD_COUNT));
+            }
+        }
+
+        @Test
+        @DisplayName("the envelope reassembles two submissions whose cards were published by two "
+                + "different threads, which is the interleaving no process-local lock can prevent "
+                + "between instances")
+        void theEnvelopeReassemblesTwoInterleavedSubmissions() {
+            // Published deliberately interleaved, card by card, through the single-card entry point:
+            // that is what two instances publishing at once produces, and no lock in this process would
+            // have prevented it. The assertion is that grouping by the envelope's submission attribute
+            // and ordering by its ordinal restores both streams exactly, whatever order the queue
+            // delivered them in.
+            final String firstSubmission = submissionId("interleaved-a");
+            final String secondSubmission = submissionId("interleaved-b");
+            final List<String> cards = JclCardImageBuilder.build(START_DATE, END_DATE);
+
+            for (int ordinal = 1; ordinal <= CARD_COUNT; ordinal++) {
+                assertThat(service.writeJobSubmissionQueue(firstSubmission, cards.get(ordinal - 1),
+                        ordinal)).isTrue();
+                assertThat(service.writeJobSubmissionQueue(secondSubmission, cards.get(ordinal - 1),
+                        ordinal)).isTrue();
+            }
+
+            final List<Message> delivered = drainQueue(queueUrl, 2 * CARD_COUNT);
+            assertThat(delivered).hasSize(2 * CARD_COUNT);
+
+            final Map<String, List<Message>> bySubmission = new LinkedHashMap<>();
+            for (final Message message : delivered) {
+                bySubmission.computeIfAbsent(message.messageAttributes()
+                                .get(JobSubmissionService.SUBMISSION_ID_HEADER).stringValue(),
+                        key -> new ArrayList<>()).add(message);
+            }
+
+            assertThat(bySubmission)
+                    .as("the envelope separates the two streams the one message group carried together")
+                    .containsOnlyKeys(firstSubmission, secondSubmission);
+            bySubmission.forEach((submission, stream) -> {
+                stream.sort(Comparator.comparingInt(message -> Integer.parseInt(
+                        message.messageAttributes()
+                                .get(JobSubmissionService.CARD_ORDINAL_HEADER).stringValue())));
+                assertThat(stream).extracting(Message::body)
+                        .as("submission %s reassembles to the whole ordered job stream", submission)
+                        .containsExactlyElementsOf(cards);
+            });
+        }
+
+        @Test
         @DisplayName("reports a complete submission of seventeen cards")
         void reportsACompleteSubmission() {
             final JobSubmissionService.SubmissionResult result =
@@ -302,14 +402,13 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
     class SubmissionIdentity {
 
         @Test
-        @DisplayName("a repeated identity adds no second copy of the job stream")
-        void aRepeatedIdentityAddsNoSecondCopy() {
-            final String repeated = submissionId("repeated");
-
-            service.submitTransactionReportJob(repeated, START_DATE, END_DATE);
+        @DisplayName("reusing the identity returned by the first attempt adds no second copy")
+        void aTrueRetryAddsNoSecondCopy() {
+            final JobSubmissionService.SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
             assertThat(drainBodies()).hasSize(CARD_COUNT);
 
-            service.submitTransactionReportJob(repeated, START_DATE, END_DATE);
+            service.submitTransactionReportJob(first.submissionId(), START_DATE, END_DATE);
 
             assertThat(drainBodies())
                     .as("a resend under the same identity is the retry of one submission,"
@@ -318,17 +417,70 @@ class JobSubmissionServiceIT extends AbstractLocalStackIT {
         }
 
         @Test
-        @DisplayName("a fresh identity for the same period is accepted in full")
-        void aFreshIdentityForTheSamePeriodIsAcceptedInFull() {
-            service.submitTransactionReportJob(submissionId("first-of-period"), START_DATE, END_DATE);
+        @DisplayName("two new requests for the same period mint distinct identities and both are accepted")
+        void twoNewRequestsForTheSamePeriodAreAcceptedInFull() {
+            final JobSubmissionService.SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
             assertThat(drainBodies()).hasSize(CARD_COUNT);
 
-            service.submitTransactionReportJob(submissionId("second-of-period"), START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult second =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
 
             assertThat(drainBodies())
                     .as("a second legitimate submission of the same reporting period must not be"
                             + " mistaken for a duplicate")
                     .hasSize(CARD_COUNT);
+            assertThat(second.submissionId()).isNotEqualTo(first.submissionId());
+        }
+
+        @Test
+        @DisplayName("a second REQUEST for one period is accepted in full against the real queue, "
+                + "because the identity the bridge mints for it is not the first one's")
+        void aSecondRequestForOnePeriodIsAcceptedInFull() {
+            // The two tests above supply the identity, which proves what the queue does with a repeated
+            // and with a distinct one. This one supplies none, so the bridge's own minting decides -
+            // and that is the decision the defect turned the wrong way. Both of the two deduplication
+            // windows are covered by the pair, as far as a test can cover them:
+            //
+            //   INSIDE the interval, which is where these two submissions land, being back to back: a
+            //   reused identity is collapsed (proved above) and a newly minted one is not (proved here).
+            //   So a legitimate second request is never suppressed, and a deliberate retry always is.
+            //
+            //   AFTER the interval, deduplication no longer applies to anything, so a retry re-lands the
+            //   cards that already landed. That is now a consequence of the caller choosing to reuse an
+            //   identity rather than of the bridge deriving one, which is the whole of the change: the
+            //   queue service's interval cannot be advanced from a test, so what is asserted is the
+            //   property that makes the lapsed case a decision instead of an accident.
+            final JobSubmissionService.SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
+            assertThat(drainBodies()).hasSize(CARD_COUNT);
+
+            final JobSubmissionService.SubmissionResult second =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
+
+            assertThat(second.submissionId())
+                    .as("the bridge minted a different identity for the second request")
+                    .isNotEqualTo(first.submissionId());
+            assertThat(drainBodies())
+                    .as("so the real queue accepted the second request in full rather than discarding "
+                            + "it behind the first one's success")
+                    .hasSize(CARD_COUNT);
+        }
+
+        @Test
+        @DisplayName("retrying under the identity the outcome reported is collapsed by the real queue, "
+                + "so an interrupted stream is completed rather than doubled")
+        void retryingUnderTheReportedIdentityIsCollapsed() {
+            final JobSubmissionService.SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
+            assertThat(drainBodies()).hasSize(CARD_COUNT);
+
+            service.submitTransactionReportJob(first.submissionId(), START_DATE, END_DATE);
+
+            assertThat(drainBodies())
+                    .as("the retry names the identity the outcome reported, so every card of it is "
+                            + "recognised as one already published")
+                    .isEmpty();
         }
     }
 

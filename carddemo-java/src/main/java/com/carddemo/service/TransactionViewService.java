@@ -32,11 +32,11 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -448,7 +448,7 @@ public class TransactionViewService {
     public record TransactionViewInput(String transactionIdInput,
                                        String selectedTransactionId,
                                        KeyAction keyAction,
-                                       NavigationContext navigationContext) {
+                                       ScreenNavigationState navigationContext) {
     }
 
     /**
@@ -632,7 +632,7 @@ public class TransactionViewService {
      *                              {@code null} on a path that transferred control without sending
      */
     public record TransactionViewResult(NavigationService.Route route,
-                                        NavigationContext navigationContext,
+                                        ScreenNavigationState navigationContext,
                                         String reArmedTransactionId,
                                         String searchTransactionId,
                                         TransactionProjection transaction,
@@ -802,7 +802,7 @@ public class TransactionViewService {
             // IF EIBCALEN = 0 at line 94, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 95. The
             // destination is the one the navigation rules hold for a turn carrying no state, so no
             // program name is written here as a literal.
-            state.context = withNominatedProgram(NavigationContext.empty(),
+            state.context = withNominatedProgram(ScreenNavigationState.empty(),
                     navigationService.resolveAbsentContextRoute().getLegacyProgramName());
             returnToPrevScreen(state);
             return;
@@ -1231,7 +1231,8 @@ public class TransactionViewService {
             // WHEN OTHER at lines 289 to 295, the arm the DISPLAY of the response codes belongs to. The
             // cause is logged in place of those codes; no key and no record content is logged.
             LOG.error("Transaction lookup failed on resource {}: reporting the lookup-failure message"
-                    + " and re-presenting the screen", WS_TRANSACT_FILE, failure);
+                    + " and re-presenting the screen; failureChain={}", WS_TRANSACT_FILE,
+                    FailureDiagnostics.failureChainOf(failure));
             state.raiseError(MSG_LOOKUP_FAILED, FIELD_TRANSACTION_ID);
             sendTrnviewScreen(state);
             return;
@@ -1446,9 +1447,9 @@ public class TransactionViewService {
      * @param programName the destination program name to nominate
      * @return a new state differing only in its nominated-destination program
      */
-    private static NavigationContext withNominatedProgram(final NavigationContext context,
+    private static ScreenNavigationState withNominatedProgram(final ScreenNavigationState context,
             final String programName) {
-        return new NavigationContext(context.fromTransactionId(),
+        return new ScreenNavigationState(context.fromTransactionId(),
                 context.fromProgram(),
                 context.toTransactionId(),
                 programName,
@@ -1473,8 +1474,8 @@ public class TransactionViewService {
      * @param context the state to copy
      * @return a new state differing only in its originating transaction and program
      */
-    private static NavigationContext withOriginatingProgram(final NavigationContext context) {
-        return new NavigationContext(WS_TRANID,
+    private static ScreenNavigationState withOriginatingProgram(final ScreenNavigationState context) {
+        return new ScreenNavigationState(WS_TRANID,
                 WS_PGMNAME,
                 context.toTransactionId(),
                 context.toProgram(),
@@ -1573,7 +1574,7 @@ public class TransactionViewService {
         private String reArmedTransactionId = NO_MESSAGE;
 
         /** {@code CARDDEMO-COMMAREA}, the navigation state the turn carries. */
-        private NavigationContext context = NavigationContext.empty();
+        private ScreenNavigationState context = ScreenNavigationState.empty();
 
         /**
          * The destination the turn leads to, opening on this screen's own destination because the return
@@ -1684,8 +1685,8 @@ public class TransactionViewService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -1700,7 +1701,7 @@ public class TransactionViewService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

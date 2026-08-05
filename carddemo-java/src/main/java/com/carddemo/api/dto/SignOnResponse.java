@@ -43,9 +43,9 @@ import jakarta.validation.constraints.Size;
  * {@link SignOnRequest}.
  *
  * <p>The user id is nevertheless carried outbound as well, because the map declares an eight-character
- * output item for it, {@code USERIDO} on line 140 of {@code app/cpy-bms/COSGN00.CPY}, and because six
- * of the transaction's eight outcomes redisplay the sign-on screen rather than leaving it. A client
- * that cannot restate the user id cannot reproduce those six screens, and the operator would have to
+ * output item for it, {@code USERIDO} on line 140 of {@code app/cpy-bms/COSGN00.CPY}, and because seven
+ * of the transaction's nine outcomes display or redisplay the sign-on screen rather than leaving it. A
+ * client that cannot restate the user id cannot reproduce those screens, and the operator would have to
  * retype an identifier that was never in question - the credential is what failed. {@link #userId()}
  * is therefore the one operator-typed value this response echoes, and it is what the finding this
  * component closes calls the map's safe output.
@@ -84,8 +84,8 @@ import jakarta.validation.constraints.Size;
  * commented-out alternative that must remain inactive.
  *
  * <p><strong>A failed credential comparison is not a general error.</strong> The program raises its
- * error flag on five of its eight outcomes and leaves it lowered on three: an empty communication
- * area, the exit key, and &mdash; the subtle one &mdash; a failed comparison, which composes a
+ * error flag on five of its nine outcomes and leaves it lowered on four: a successful sign-on, an empty
+ * communication area, the exit key, and &mdash; the subtle one &mdash; a failed comparison, which composes a
  * message and moves the cursor without assigning the flag at all. {@link #generalError()} is
  * therefore an explicit primitive that the service sets from the path it took and is never inferred
  * from the presence of {@link #message()}; deriving it would raise the flag on two paths where the
@@ -153,7 +153,7 @@ import jakarta.validation.constraints.Size;
  *
  * <p>This is the subtlest fact in the whole sign-on contract, and it is why
  * {@link #generalError()} exists as its own component. The program raises its error flag on five of its
- * eight outcomes and leaves it alone on the other three:
+ * nine outcomes and leaves it alone on the other four:
  *
  * <ul>
  *   <li>empty communication area, lines 80 to 83 - <strong>no</strong> flag; the screen is simply sent
@@ -162,6 +162,8 @@ import jakarta.validation.constraints.Size;
  *   <li>unmapped key, lines 91 to 95 - flag raised.</li>
  *   <li>user id empty, lines 118 to 123 - flag raised, cursor on the user-id field.</li>
  *   <li>{@code PASSWD} empty, lines 124 to 129 - flag raised, cursor on that field.</li>
+ *   <li>credential admitted, lines 223 to 240 - <strong>no</strong> flag; control transfers to the
+ *       selected menu.</li>
  *   <li><strong>comparison failed, lines 240 to 245 - no flag is assigned on this path at all</strong>,
  *       yet a message <em>is</em> composed and the cursor <em>is</em> moved to the {@code PASSWD}
  *       field.</li>
@@ -251,18 +253,23 @@ import jakarta.validation.constraints.Size;
  * one, none is derived from one, and none appears indirectly: the successor state below carries screen
  * navigation facts only. That much is a property of this file and is verifiable by reading it.
  *
- * <p><strong>Where authorisation actually travels is an obligation on code that does not exist yet,
- * and this contract does not discharge it.</strong> The intent is that a grant is carried on the
- * transport's own header, minted and validated by the security layer, and never echoed into a response
- * body. Nothing in this module does that yet: no endpoint produces this type, no issuer mints a grant,
- * and no filter validates one, so a reader who takes the paragraph above as an assurance that a
- * bearer-credential mechanism is already in place and merely absent from this body would be mistaken.
- * The absence here is real; the mechanism elsewhere is not yet built. Whatever endpoint eventually
- * produces this type is therefore required to mint its grant only after a successful verification
- * against the stored credential, to return it by way of the transport header rather than by adding a
- * component to this record, and to leave this contract's component set unchanged in doing so. Until
- * that endpoint exists and its real route mapping is exercised by a test, this type's silence about
- * credentials is a property of the type alone and says nothing about the system around it.
+ * <p><strong>Where authorisation actually travels, and why this contract's silence about it is now an
+ * assurance rather than only a property of this file.</strong> The grant is carried on the transport's own
+ * header, minted and validated by the security layer, and never echoed into a response body. Every part
+ * of that is delivered: {@code api.AuthController} produces this type at {@code /api/auth/signon};
+ * {@code service.AuthenticationService} verifies the presented credential against the stored digest before
+ * anything is minted; {@code service.SessionTokenIssuer} and {@code config.JwtTokenProvider} mint the
+ * grant; and the bearer filter in {@code config.SecurityConfig} validates it on every subsequent request,
+ * re-checking it against the current authoritative record so that a demotion, a deletion or a credential
+ * change revokes it at the next request instead of at its expiry.
+ *
+ * <p>The three obligations that were written here for a future endpoint are therefore met rather than
+ * outstanding: the grant is minted only after a successful verification, it is returned by way of the
+ * transport header rather than by adding a component to this record, and this contract's component set is
+ * unchanged - still fifteen, as enumerated below. What remains true, and is the reason the paragraph above
+ * is worth keeping, is that this type carries no credential material of any kind; that is a property of
+ * the type, it is asserted by this package's own tests, and the mechanism it defers to is now a mechanism
+ * that exists.
  *
  * <p>No cardholder or customer identity beyond what {@link NavigationContext} defines and redacts in
  * its own rendering. Consequently this type needs no rendering override of its own, and the absence of

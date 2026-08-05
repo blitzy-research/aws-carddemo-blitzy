@@ -69,6 +69,58 @@
 # the local and test profiles; no password value appears anywhere in this file.
 #
 # -------------------------------------------------------------------------------------------------
+# EVERY PUBLISHED PORT IS BOUND TO THE LOOPBACK INTERFACE, AND THAT IS WHAT MAKES THE CREDENTIALS
+# ABOVE ACCEPTABLE
+#
+# Each mapping below is written HOST-ADDRESS:HOST-PORT:CONTAINER-PORT with the host address defaulting
+# to 127.0.0.1. A mapping that omits the host address - `"5432:5432"` - binds every interface on the
+# machine, which is the default an operator gets by writing the obvious thing and is very rarely what
+# they meant. On that binding the throwaway values above stop being throwaway: the database answers
+# any peer that can route to the host under a password readable in this file, Grafana admits anyone
+# with the same two words, and - most seriously - the application's local profile signs bearer tokens
+# with a development secret that is also committed, so a peer can mint a token bearing the
+# administrator authority and reach the batch-control surface with it. None of those is a defect in
+# the credential; the credential is a fixture and is meant to be readable. The defect is publishing
+# the service that trusts it beyond the machine it was chosen for.
+#
+# So the exposure and the credential are treated as one decision. Loopback is the default, and
+# widening it is a deliberate act with an obligation attached.
+#
+# INTENTIONAL NON-LOOPBACK EXPOSURE - what it costs
+#
+# Each service takes a *_BIND_ADDRESS override, so a stack can be reached from elsewhere when there
+# is a reason to: a colleague inspecting a reproduction, a dashboard on a second machine, a probe from
+# a container network. Widening ANY of them means the fixture credentials are no longer addressing a
+# private machine, and the overrides below must be supplied with generated values rather than left to
+# default:
+#
+#   POSTGRES_PASSWORD          - a generated value, not the fixture
+#   GRAFANA_ADMIN_PASSWORD     - a generated value, not `admin`
+#   CARDDEMO_JWT_SECRET        - a generated signing secret; the committed local default is published
+#                                in src/main/resources/application-local.yml and anyone can sign with
+#                                it. This is the one whose absence is exploitable rather than merely
+#                                untidy, because a forged token carries authority.
+#
+#   APP_BIND_ADDRESS=0.0.0.0 \
+#   POSTGRES_PASSWORD="$(openssl rand -hex 24)" \
+#   GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 24)" \
+#   CARDDEMO_JWT_SECRET="$(openssl rand -hex 48)" \
+#   docker compose up -d --build
+#
+# Nothing here can enforce that pairing - Compose has no conditional - so it is stated at the point of
+# the decision and asserted by a test: LocalValidationStackExposureTest fails if any mapping in this
+# file loses its loopback default.
+#
+# THE DIAGNOSTIC SERVICES ARE GATED BY REACHABILITY, NOT BY START-UP, and that distinction is
+# deliberate. Jaeger, Prometheus and Grafana each take their own *_BIND_ADDRESS, so reaching any of
+# them from another machine is an opt-in exactly as it is for the database and the application. They
+# are NOT put behind a Compose profile that would stop them starting, because the performance baseline
+# is read from the meter set Prometheus scrapes: a stack whose default `up` produced no scrape would
+# make that baseline unobtainable by the documented command, and the baseline is a delivered gate
+# rather than an optional extra. Starting always and being reachable only from this machine is what
+# satisfies both.
+#
+# -------------------------------------------------------------------------------------------------
 # PARALLEL AND ISOLATED STACKS
 #
 # The project name and every published host port is parameterised, so any number of independent
@@ -83,6 +135,20 @@
 #   JAEGER_OTLP_GRPC_PORT=4327 JAEGER_OTLP_HTTP_PORT=4328 \
 #   PROMETHEUS_PORT=9091 GRAFANA_PORT=3001 APP_PORT=8081 \
 #   docker compose up -d --build
+#
+# -------------------------------------------------------------------------------------------------
+# IMAGE PINNING
+#
+# Every image not built here is pinned by tag AND by digest, in the `tag@sha256:...` form the two
+# Dockerfile bases already use and that the continuous-integration workflow already uses for its
+# actions. The tag stays because it is what a reader recognises; the digest is what actually resolves,
+# so an upstream republish of the same tag cannot change what this stack runs without the change
+# appearing in this file as a diff. Upgrades are therefore explicit: bump the tag, read the new digest
+# out of `docker image inspect <tag> --format '{{index .RepoDigests 0}}'`, and commit both.
+#
+# The app image is the one exception and cannot be pinned: it is built from ./Dockerfile in this same
+# stack, so its digest does not exist until the build that produces it has run. Its inputs are pinned
+# instead - both Dockerfile bases by digest, and every dependency by exact version in pom.xml.
 #
 # -------------------------------------------------------------------------------------------------
 # PROVENANCE
@@ -106,14 +172,33 @@ services:
   # column widths are the verified record layouts.
   #
   # SCHEMA OWNERSHIP IS EXCLUSIVE AND IT IS NOT HERE. Flyway owns every table and every seeded row:
-  # V1__create_schema.sql and V2__create_indexes.sql under db/migration/schema in every profile, and
-  # V3__seed_reference_data.sql and V4__seed_user_security.sql under db/migration/seed in the local
-  # and test profiles only. Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
+  # V1__create_schema.sql and V2__create_indexes.sql in every profile, and
+  # V3__seed_reference_data.sql and V4__seed_user_security.sql in the local and test profiles only.
+  # All four sit flat in db/migration, which every profile resolves; the version ceiling of 2 is what
+  # holds the two seeds out of a production migration. Deliberately NO script is mounted into /docker-entrypoint-initdb.d - a
   # second path that creates a table would make the schema depend on which mechanism ran first, and
   # forward-only versioned migration is the whole guarantee being bought.
   postgres:
-    image: postgres:16.14-bookworm
+    image: postgres:16.14-bookworm@sha256:92620daddcd947f8d5ab5ba66e848702fe443d87fed30c4cea8e389fd78dfc55
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-postgres
+    # The official entrypoint must begin as root to initialise and chown a new named volume, then
+    # drops permanently to uid/gid 999 before starting the server. An explicit non-root `user` would
+    # make first start fail on the root-owned empty volume, so this is the one documented user
+    # exception. The capability list is the measured minimum for that one-way ownership transition.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,uid=999,gid=999,mode=3775
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
@@ -136,7 +221,7 @@ services:
       - -c
       - log_min_duration_statement=2000
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     # The application waits on this, because Flyway applies four migrations during start-up and
@@ -184,30 +269,39 @@ services:
   #   * opened at initialisation  -> the queue exists before first use, which is exactly what the
   #                                 readiness gate below enforces
   #
-  # GENERATION RETENTION BECOMES OBJECT VERSIONING, AND THE LEGACY LIMIT IS A RESOLVED CONFLICT.
-  # Six generation-data-group bases were declared at a limit of five in app/jcl/DEFGDGB.jcl, and one
-  # of the six - the report base - was re-declared at a limit of ten in app/jcl/REPTFILE.jcl. The
-  # conflict is resolved to TEN, as the later and more specific declaration, and recorded as row
-  # D-43 of docs/decision-log.md. Retention itself is realised as object versioning on the staging
-  # bucket rather than as a generation count, so the number bounds nothing at runtime; it is
-  # recorded so no reader treats either job member as authoritative on its own.
+  # GENERATION RETENTION IS ENFORCED BY THE APPLICATION, AND THE BUCKET IS ALSO VERSIONED.
+  # StagedGenerationStore publishes collision-free execution generations and scratches objects beyond
+  # each measured depth: five for ordinary bases and ten for the report base, resolving the conflicting
+  # JCL declarations in favour of the later and more specific one. Bucket versioning remains a recovery
+  # layer beneath that measured generation count; it is not a substitute for the count.
   #
   # VERSIONING IS ENABLED IN EXACTLY ONE PLACE. localstack/init/01-create-aws-resources.sh enables
   # it and reads it back, so this file passes the bucket name and does not also configure the
   # bucket: two writers of one setting is how a stack ends up disagreeing with itself.
   localstack:
-    image: localstack/localstack:4.14.0
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-localstack
+    user: "1000:1000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000
+      - /run:rw,nosuid,nodev,size=16m,uid=1000,gid=1000
+      - /var/lib/localstack:rw,nosuid,nodev,size=256m,uid=1000,gid=1000
+      - /home/localstack:rw,nosuid,nodev,size=16m,uid=1000,gid=1000
     environment:
       SERVICES: s3,sqs,sns
       DEBUG: ${LOCALSTACK_DEBUG:-0}
       PERSISTENCE: 0
       AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
-      # The emulator accepts any non-empty credentials and validates none of them. These are
-      # obviously-fake local placeholders, never real keys, and they exist only so the software
-      # development kit's provider chain resolves inside this stack.
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}
+      # The emulator accepts any non-empty credentials and validates none of them. Only dedicated
+      # LOCALSTACK_* host variables can override these obviously-fake values; ambient AWS_* values
+      # are never interpolated, so a developer's real cloud credentials cannot enter this container.
+      AWS_ACCESS_KEY_ID: ${LOCALSTACK_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}
+      AWS_SECRET_ACCESS_KEY: ${LOCALSTACK_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}
       # THE CANONICAL RESOURCE NAMES, AND THE HIGHEST-RISK LINES IN THIS FILE. Each string is
       # byte-identical here, in the app service below, in application.yml and its local and test
       # overlays, and in localstack/init/01-create-aws-resources.sh, which is what creates the
@@ -216,11 +310,11 @@ services:
       # first submission with nothing in the log naming the cause. The readiness gate below closes
       # that hole by refusing to report healthy until all three resources answer to these names.
       CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
-      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-JOBS.fifo}
       CARDDEMO_SQS_MESSAGE_GROUP_ID: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}
       CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
     ports:
-      - "${LOCALSTACK_PORT:-4566}:4566"
+      - "${LOCALSTACK_BIND_ADDRESS:-127.0.0.1}:${LOCALSTACK_PORT:-4566}:4566"
     # Read-only, because a provisioning hook has no reason to be writable by the process it
     # configures. Scripts placed in ready.d run once the edge port is serving; this directory holds
     # exactly one, and it creates the queue, the versioned bucket and the topic.
@@ -265,16 +359,26 @@ services:
   # In-memory storage, because a local validation stack has nothing to retain: `down -v` is meant to
   # leave nothing behind, and a durable trace store would outlive the run that produced it.
   jaeger:
-    image: jaegertracing/all-in-one:1.71.0
+    image: jaegertracing/all-in-one:1.71.0@sha256:beb31282a9c5d0d10cb78dd168945dab9887acebb42fcc0bd738b08c36b68bc0
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-jaeger
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
       SPAN_STORAGE_TYPE: memory
       MEMORY_MAX_TRACES: "20000"
     ports:
-      - "${JAEGER_UI_PORT:-16686}:16686"          # Jaeger UI
-      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"     # OTLP over gRPC
-      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"     # OTLP over HTTP - the exporter this module uses
+      - "${JAEGER_BIND_ADDRESS:-127.0.0.1}:${JAEGER_UI_PORT:-16686}:16686"       # Jaeger UI
+      - "${JAEGER_BIND_ADDRESS:-127.0.0.1}:${JAEGER_OTLP_GRPC_PORT:-4317}:4317" # OTLP over gRPC
+      - "${JAEGER_BIND_ADDRESS:-127.0.0.1}:${JAEGER_OTLP_HTTP_PORT:-4318}:4318" # OTLP over HTTP -
+                                                                                # the exporter this
+                                                                                # module uses
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:14269/ >/dev/null 2>&1 || exit 1"]
       interval: 15s
@@ -304,8 +408,21 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: "${APP_VERSION:?APP_VERSION must equal the Maven project version}"
+        SOURCE_REVISION: "${SOURCE_REVISION:?SOURCE_REVISION must be the current 40-character Git SHA}"
+        SOURCE_DATE_EPOCH: "${SOURCE_DATE_EPOCH:-1658188800}"
     image: ${COMPOSE_PROJECT_NAME:-carddemo}-app:local
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-app
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=10001,gid=10001
+      - /home/carddemo:rw,noexec,nosuid,nodev,size=16m,uid=10001,gid=10001
     environment:
       # application-local.yml binds the stack through exactly these variable names. They are its
       # published contract, not a convention invented here: renaming one silently reverts that
@@ -327,37 +444,45 @@ services:
       # where the resources are.
       AWS_REGION: ${AWS_REGION:-us-east-1}
       AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
-      # Obviously-fake local placeholders for the emulator, never real keys. Production resolves
-      # credentials from the environment with no fallback.
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}
+      # Only dedicated emulator variables may cross the host/container boundary. The LOCALSTACK_*
+      # names feed application-local.yml; the AWS_* names feed the SDK provider chain. Both derive
+      # from the same fake-only source, never from ambient host AWS_* variables.
+      LOCALSTACK_ACCESS_KEY_ID: ${LOCALSTACK_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}
+      LOCALSTACK_SECRET_ACCESS_KEY: ${LOCALSTACK_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}
+      AWS_ACCESS_KEY_ID: ${LOCALSTACK_ACCESS_KEY_ID:-localstack-placeholder-not-a-real-key}
+      AWS_SECRET_ACCESS_KEY: ${LOCALSTACK_SECRET_ACCESS_KEY:-localstack-placeholder-not-a-real-secret}
       # Byte-identical to the localstack service above and to
       # localstack/init/01-create-aws-resources.sh. The message group id provisions nothing - the
       # publisher puts it on every message, and one stable value is what preserves the append order
       # the legacy queue's disposition guaranteed - but the application binds it, so it belongs
       # here.
       CARDDEMO_S3_BUCKET: ${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}
-      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}
+      CARDDEMO_SQS_QUEUE: ${CARDDEMO_SQS_QUEUE:-JOBS.fifo}
       CARDDEMO_SQS_MESSAGE_GROUP_ID: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}
       CARDDEMO_SNS_TOPIC: ${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}
+      # Every file-producing job defaults through this one local root. Files remain execution-scoped
+      # and incomplete files carry a .part suffix; completed artifacts are published to S3 and this
+      # mounted volume remains the observable local staging surface rather than container ephemera.
+      CARDDEMO_BATCH_STAGING_DIRECTORY: /var/lib/carddemo/batch
       # OTLP over HTTP into the collector, again by container-internal port.
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
       TZ: UTC
     ports:
-      - "${APP_PORT:-8080}:8080"
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    volumes:
+      - batch-staging:/var/lib/carddemo/batch
     depends_on:
       # Flyway applies four migrations during start-up and must not race initdb; the AWS clients
       # must not race the ready hook that creates the queue, the bucket and the topic. Both are
-      # therefore gated on health rather than on the container merely having been started.
+      # therefore gated on health rather than on the container merely having been started. Optional
+      # observability services are intentionally absent from this required dependency set.
       postgres:
         condition: service_healthy
       localstack:
         condition: service_healthy
-      # Ordering only, and deliberately not a health condition: trace export is non-fatal, so a
-      # collector that is slow to start must never hold up the application. Starting it first simply
-      # avoids discarding the spans emitted during start-up.
-      jaeger:
-        condition: service_started
+    # Spring allows 30 seconds for each graceful shutdown phase; five additional seconds cover
+    # signal delivery and container bookkeeping before Docker is permitted to send SIGKILL.
+    stop_grace_period: 35s
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -369,15 +494,22 @@ services:
   # The scrape configuration is bind-mounted from config/, which is this module's only configuration
   # tree; there is no docker/ directory here and nothing references one.
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-prometheus
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=65534,gid=65534
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --storage.tsdb.retention.time=6h
-      - --web.enable-lifecycle
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "${PROMETHEUS_BIND_ADDRESS:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -407,8 +539,20 @@ services:
   # inspection of `docker compose config` and by a file test before the stack is even started.
   # /var/lib/grafana/dashboards is the path the dashboard provider itself declares.
   grafana:
-    image: grafana/grafana:11.6.6
+    image: grafana/grafana:11.6.6@sha256:f3b7b0bf02f79eca049a9463424f19fc600f70cabbc0d0e4946f810c5d165830
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-grafana
+    # The image's declared identity is uid 472 with primary group 0; restating it prevents a future
+    # image default from changing the runtime principal while retaining access to root-group-readable
+    # packaged configuration. Capabilities are still empty and the root filesystem is immutable.
+    user: "472:0"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=472,gid=0
+      - /var/log/grafana:rw,noexec,nosuid,nodev,size=32m,uid=472,gid=0
     environment:
       # Local-only development credentials for a container on the developer's own machine. Nothing
       # here is a production default; production has none.
@@ -418,7 +562,7 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_INSTALL_PLUGINS: ""
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "${GRAFANA_BIND_ADDRESS:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     volumes:
       - ./config/grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
       - ./config/grafana/provisioning/dashboards/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
@@ -437,11 +581,12 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-# Named volumes, so `down` keeps state and `down -v` discards it deliberately. The database volume
-# is what lets a stack restart without re-running four migrations from empty; the other two hold
+# Named volumes, so `down` keeps state and `down -v` discards it deliberately. PostgreSQL retains
+# migrated data, batch-staging retains execution-scoped local file views, and the final two retain
 # only local metric and dashboard state.
 volumes:
   postgres-data:
+  batch-staging:
   prometheus-data:
   grafana-data:
 

@@ -35,6 +35,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -83,11 +84,13 @@ import org.springframework.web.bind.annotation.RestController;
  * the record are echoed onward unchanged, because carrying them across the pseudo-conversation is exactly
  * what the legacy return does.
  *
- * <p><strong>Idempotent by construction.</strong> No state is held here and none is created here: the
- * service's own turn is stateless, so two identical submissions produce two identical outcomes and the
- * transaction re-arm the legacy performs becomes the client's next call rather than a server-side forward.
- * There is no session, no redirect and no dispatch to another handler; the destination the turn leads to
- * is published as route metadata on the response for the client to act on.
+ * <p><strong>Retry identity travels in a header, not in the frozen screen body.</strong> A caller may send
+ * {@link #IDEMPOTENCY_KEY_HEADER} to identify one logical submission and repeat it on a retry. When it is
+ * absent the service mints a fresh token, making the request a deliberate new submission even when its date
+ * range matches an earlier one; the effective token is returned in the same response header. The service
+ * combines that token with the date range before the queue bridge adds each card ordinal, so a retry is
+ * stable and a new request cannot be mistaken for one. No state is held here, no field is added to the
+ * screen DTO, and there is still no session, redirect or server-side dispatch.
  *
  * <p><strong>Nothing is logged here.</strong> The service already records the turn's shape - route,
  * resolved period, cards published and error state - and everything this class additionally holds is
@@ -124,6 +127,11 @@ public class ReportController {
      */
     public static final String REPORT_REQUEST_PATH = "/api/reports/request";
 
+    /**
+     * Standard request/response header carrying the stable token of one logical report submission.
+     */
+    public static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
     /** Timer name for one report-request turn, following the module's metric naming. */
     private static final String METRIC_REPORT_REQUEST_TURN = "carddemo.online.reportrequest.turn";
 
@@ -144,6 +152,9 @@ public class ReportController {
 
     /** Outcome tag: the screen was served without a submission and without a fault. */
     private static final String OUTCOME_SCREEN_SENT = "screen-sent";
+
+    /** Outcome tag: the boundary raised before returning a screen. */
+    private static final String OUTCOME_FAILED = "failed";
 
     /** Period tag used when the ordered evaluation resolved no report type at all. */
     private static final String PERIOD_NONE = "none";
@@ -191,6 +202,7 @@ public class ReportController {
      *
      * @param request        the marked report type, the operator-supplied date parts, the confirmation
      *                       character, the attention key that arrived and the echoed navigation state
+     * @param retryToken     token of an earlier attempt, or absent for a deliberate new submission
      * @param authentication the established identity, supplied by the framework from the presented
      *                       credential; the route requires one, so it is absent only where this handler is
      *                       driven without a security chain
@@ -210,32 +222,44 @@ public class ReportController {
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. A submitted request carries the acknowledgement and "
-                        + "the resolved period; any other outcome carries the screen message, the field "
-                        + "the cursor returns to, and the marks and date parts as the turn leaves them."),
+                        + "the resolved period, with the effective retry token returned in the "
+                        + "Idempotency-Key header; any other outcome carries the screen message, the "
+                        + "field the cursor returns to, and the marks and date parts as the turn leaves "
+                        + "them."),
         @ApiResponse(responseCode = "400",
                 description = "The request exceeded the widths the report-request map declares."),
         @ApiResponse(responseCode = "401",
                 description = "No credential was presented, or the one presented did not verify.")})
     public ResponseEntity<ReportResponse> requestReport(
             @Valid @RequestBody final ReportRequest request,
+            @RequestHeader(value = IDEMPOTENCY_KEY_HEADER, required = false)
+            final String retryToken,
             final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        String period = PERIOD_NONE;
+        try {
+            final NavigationContext echoedContext = request.navigationContext();
+            final UserType authenticatedUserType = authenticatedUserTypeOf(authentication);
+            final String authenticatedUserId =
+                    (authenticatedUserType == null) ? null : authentication.getName();
 
-        // The echoed record is read once, before the turn runs, because the turn's own carried state
-        // models only the routing members and the adapter merges the two back together afterwards.
-        final NavigationContext echoedContext = request.navigationContext();
-        final UserType authenticatedUserType = authenticatedUserTypeOf(authentication);
-        final String authenticatedUserId =
-                (authenticatedUserType == null) ? null : authentication.getName();
+            final ReportRequestService.ReportRequestResult result = this.reportRequestService
+                    .processReportRequest(this.reportContractAdapter.toScreenInput(request), retryToken);
 
-        final ReportRequestService.ReportRequestResult result = this.reportRequestService
-                .processReportRequest(this.reportContractAdapter.toScreenInput(request));
+            final ReportResponse body = this.reportContractAdapter.toResponse(result, echoedContext,
+                    authenticatedUserId, authenticatedUserType);
+            outcome = outcomeTagOf(result);
+            period = periodTagOf(result);
 
-        final ReportResponse body = this.reportContractAdapter.toResponse(result, echoedContext,
-                authenticatedUserId, authenticatedUserType);
-
-        recordTurn(sample, result);
-        return ResponseEntity.ok(body);
+            final ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+            if (result.submissionToken() != null) {
+                response.header(IDEMPOTENCY_KEY_HEADER, result.submissionToken());
+            }
+            return response.body(body);
+        } finally {
+            recordTurn(sample, outcome, period);
+        }
     }
 
     /**
@@ -272,11 +296,11 @@ public class ReportController {
      * @param result the turn's outcome
      */
     private void recordTurn(final Timer.Sample sample,
-            final ReportRequestService.ReportRequestResult result) {
+            final String outcome, final String period) {
         sample.stop(Timer.builder(METRIC_REPORT_REQUEST_TURN)
                 .description("Elapsed time of one CardDemo report-request turn, transaction CR00")
-                .tag(TAG_OUTCOME, outcomeTagOf(result))
-                .tag(TAG_PERIOD, periodTagOf(result))
+                .tag(TAG_OUTCOME, outcome)
+                .tag(TAG_PERIOD, period)
                 .register(this.meterRegistry));
     }
 

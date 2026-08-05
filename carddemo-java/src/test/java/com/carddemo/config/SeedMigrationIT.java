@@ -62,12 +62,12 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  * suite - and migrates two schemas of its own:
  *
  * <ul>
- *   <li>{@value #HEAD_SCHEMA}, migrated from BOTH delivered locations with no ceiling, which is what
- *       the local and test profiles resolve;</li>
- *   <li>{@value #PINNED_SCHEMA}, migrated from the schema location alone under the schema-only ceiling,
- *       which is what production resolves. The two differ in the seed location and in the ceiling, and
- *       the tests below vary each independently, which is precisely what makes the comparison evidence
- *       rather than illustration.</li>
+ *   <li>{@value #HEAD_SCHEMA}, migrated from the one delivered location with no ceiling, which is
+ *       what the local and test profiles resolve;</li>
+ *   <li>{@value #PINNED_SCHEMA}, migrated from THAT SAME location under the schema-only ceiling, which
+ *       is what production resolves. The two differ in the ceiling and in nothing else, which is
+ *       precisely what makes the comparison evidence rather than illustration: a difference in outcome
+ *       can only be attributed to the one variable that was changed.</li>
  * </ul>
  *
  * <p>The migration scripts declare no schema of their own, so the schema each one lands in is decided
@@ -101,10 +101,10 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
  *       three would break a lookup or fabricate a processed timestamp.</li>
  *   <li><strong>No credential in cleartext, and none in production.</strong> Ten seeded identities,
  *       every credential a distinct digest, and the whole seed withheld from a production migration by
- *       the LOCATION LIST first and the version ceiling behind it. The seeds ship from
- *       {@code db/migration/seed}, which production is refused, so the tests below prove the exclusion
- *       twice: removing the ceiling from a production-shaped location list still seeds nothing, and
- *       adding the seed location back with the ceiling in place still seeds nothing.</li>
+ *       the VERSION CEILING alone. All four scripts ship flat from {@code db/migration}, so the
+ *       location list is identical in every profile and carries none of the exclusion; the tests below
+ *       therefore prove it where it lives, by applying the same location list under both ceilings and
+ *       showing the pinned run stops at version two with every seeded table empty.</li>
  * </ol>
  *
  * <h2>Provenance</h2>
@@ -236,22 +236,17 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     private static final String PINNED_TARGET = FlywayConfig.SCHEMA_ONLY_TARGET;
 
     /**
-     * The location list a production deployment resolves: the schema location and nothing else, read
-     * from the module's own production control so the two cannot drift apart.
-     */
-    private static final List<String> PRODUCTION_LOCATIONS =
-            List.of(FlywayConfig.SCHEMA_LOCATION);
-
-    /**
-     * The location list a seeding profile resolves: the schema location AND the seed location, read from
-     * the module's own controls so the two cannot drift apart.
+     * The location list EVERY profile resolves, production included: the one flat migration location,
+     * read from the module's own production control so the two cannot drift apart.
      *
-     * <p>The difference between this list and {@link #PRODUCTION_LOCATIONS} is the primary exclusion
-     * mechanism, and the tests below prove it by running both lists against the same server: a
-     * production-shaped list does not resolve a seed script at all, with or without a ceiling.</p>
+     * <p>All four delivered scripts sit in this location, so the list is deliberately identical for a
+     * production deployment and for a seeding profile. The difference between them is
+     * {@link #PINNED_TARGET} and nothing else, and the tests below prove it by running the SAME list
+     * against the same server under two different ceilings: the pinned run applies two versions and
+     * the head run applies four.</p>
      */
-    private static final List<String> SEEDING_LOCATIONS =
-            List.of(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION);
+    private static final List<String> MIGRATION_LOCATIONS =
+            List.of(FlywayConfig.MIGRATION_LOCATION);
 
     /** Migration state of the pinned schema, captured once so every assertion reads one answer. */
     private static List<MigrationInfo> pinnedMigrationState;
@@ -264,9 +259,9 @@ final class SeedMigrationIT extends AbstractPostgresIT {
      */
     @BeforeAll
     static void migrateBothSchemas() {
-        flywayFor(HEAD_SCHEMA, SEEDING_LOCATIONS, null).migrate();
+        flywayFor(HEAD_SCHEMA, MIGRATION_LOCATIONS, null).migrate();
 
-        Flyway pinned = flywayFor(PINNED_SCHEMA, PRODUCTION_LOCATIONS, PINNED_TARGET);
+        Flyway pinned = flywayFor(PINNED_SCHEMA, MIGRATION_LOCATIONS, PINNED_TARGET);
         pinned.migrate();
         pinnedMigrationState = List.of(pinned.info().all());
     }
@@ -697,24 +692,30 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             }
 
             assertThat(states.keySet())
-                    .as("a production-shaped location list resolves the schema scripts and NOTHING else. "
-                            + "The two seeds are not above target here - they are not resolved at all, "
-                            + "which is the mechanism the module plan requires and is stronger than "
-                            + "resolving them and declining to run them")
-                    .containsExactly("1", "2");
+                    .as("all four scripts share the one flat location, so a production-shaped scope "
+                            + "RESOLVES all four. That is the point: the ceiling is a boundary the "
+                            + "migration tool reports on rather than a directory that hides a script, "
+                            + "so an operator reading the migration state can see exactly which "
+                            + "scripts were withheld and why")
+                    .containsExactly("1", "2", "3", "4");
             assertThat(states.get("1")).isEqualTo(MigrationState.SUCCESS);
             assertThat(states.get("2")).isEqualTo(MigrationState.SUCCESS);
-            assertThat(states)
-                    .as("nothing from the seed location may appear in a production-shaped resolution, in "
-                            + "any state")
-                    .doesNotContainKeys("3", "4");
+            assertThat(states.get("3"))
+                    .as("V3 is resolved and reported above target rather than applied; a state of "
+                            + "SUCCESS here would mean fifty synthetic customer rows of regulated "
+                            + "identity data in a production database")
+                    .isEqualTo(MigrationState.ABOVE_TARGET);
+            assertThat(states.get("4"))
+                    .as("and V4 likewise; a state of SUCCESS here would mean ten known sign-on "
+                            + "identities in a production database")
+                    .isEqualTo(MigrationState.ABOVE_TARGET);
         }
 
         @Test
         @DisplayName("validation succeeds under the production scope, so the arrangement is not one a "
                 + "deployment has to suppress an error to live with")
         void validationSucceedsUnderTheProductionScope() {
-            assertThat(flywayFor(PINNED_SCHEMA, PRODUCTION_LOCATIONS, PINNED_TARGET)
+            assertThat(flywayFor(PINNED_SCHEMA, MIGRATION_LOCATIONS, PINNED_TARGET)
                     .validateWithResult().validationSuccessful)
                     .as("if the production scope failed validation, production would have to disable "
                             + "validation to start - and would then also stop noticing a genuinely "
@@ -723,27 +724,27 @@ final class SeedMigrationIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("removing the ceiling from a production-shaped location list still seeds NOTHING, "
-                + "which is what makes the location the primary control rather than the ceiling")
+        @DisplayName("removing the ceiling from the SAME location list applies both seeds, which is "
+                + "what proves the ceiling is the control and the location list carries none of it")
         void removingTheCeilingAloneAppliesBothSeeds() throws SQLException {
             String schema = "seed_ceiling_lifted";
-            flywayFor(schema, PRODUCTION_LOCATIONS, null).migrate();
+            flywayFor(schema, MIGRATION_LOCATIONS, null).migrate();
 
             assertThat(count(schema, "user_security"))
-                    .as("the ceiling is gone entirely and the seeds STILL do not land, because the "
-                            + "location list never resolved them. This is the strongest form of the "
-                            + "guarantee: the failure mode the ceiling alone could not survive - an "
-                            + "operator override, a merged profile list, a copied overlay block - cannot "
-                            + "reach a script that was never resolved")
-                    .isZero();
+                    .as("the location list is character for character the production one and the only "
+                            + "thing withdrawn is the ceiling, and ten sign-on identities land. That is "
+                            + "the experiment that shows where the control lives: it is not the "
+                            + "directory, because the directory did not change")
+                    .isEqualTo(10L);
             assertThat(count(schema, "customer"))
-                    .as("and the reference seed is equally unreachable, so no synthetic regulated "
-                            + "identity data lands either")
-                    .isZero();
+                    .as("and the reference seed lands with it, which is why the ceiling has to be "
+                            + "enforced in code as well as declared in a document that an override can "
+                            + "supersede")
+                    .isEqualTo(50L);
             assertThat(count(schema, "account"))
-                    .as("while the schema itself was fully applied, so this is an exclusion of the seeds "
-                            + "and not a failure to migrate")
-                    .isZero();
+                    .as("the schema was fully applied in both runs, so the difference between them is "
+                            + "the seeded rows and nothing else")
+                    .isEqualTo(50L);
         }
 
         @Test
@@ -751,7 +752,7 @@ final class SeedMigrationIT extends AbstractPostgresIT {
                 + "above target rather than hidden")
         void theCeilingWithholdsTheSeedsWhileResolvingThem() throws SQLException {
             String schema = "seed_location_added";
-            Flyway migration = flywayFor(schema, SEEDING_LOCATIONS, PINNED_TARGET);
+            Flyway migration = flywayFor(schema, MIGRATION_LOCATIONS, PINNED_TARGET);
             migration.migrate();
 
             Map<String, MigrationState> states = new LinkedHashMap<>();
@@ -761,37 +762,40 @@ final class SeedMigrationIT extends AbstractPostgresIT {
                 }
             }
             assertThat(states.keySet())
-                    .as("both locations resolve now, so all four scripts are visible - which is the "
-                            + "situation a widened production location list would create, and which the "
-                            + "retained ceiling is kept to survive")
+                    .as("all four scripts resolve from the one flat location in every profile, so this "
+                            + "is not a widened list but the ordinary one; what differs from a seeding "
+                            + "run is only the ceiling")
                     .containsExactly("1", "2", "3", "4");
             assertThat(states.get("3")).isEqualTo(MigrationState.ABOVE_TARGET);
             assertThat(states.get("4")).isEqualTo(MigrationState.ABOVE_TARGET);
             assertThat(count(schema, "user_security"))
                     .as("resolved, reported above target, and still unapplied - the ceiling doing "
-                            + "exactly the work the specifications assign to it")
+                            + "exactly the work both seed-migration specifications assign to it")
                     .isZero();
         }
 
         @Test
-        @DisplayName("relaxing BOTH controls on an already-migrated schema applies both seeds, so each "
-                + "control is shown to be necessary and neither is silently doing nothing")
+        @DisplayName("lifting the ceiling on an ALREADY-migrated pinned schema applies both seeds, so "
+                + "the control is shown to be necessary rather than incidentally satisfied")
         void relaxingBothControlsAppliesBothSeeds() throws SQLException {
             String schema = "seed_fully_relaxed";
-            flywayFor(schema, PRODUCTION_LOCATIONS, PINNED_TARGET).migrate();
+            flywayFor(schema, MIGRATION_LOCATIONS, PINNED_TARGET).migrate();
 
             assertThat(count(schema, "user_security"))
-                    .as("production-shaped first, so the emptiness is established before the relaxation")
+                    .as("production-shaped first, so the emptiness is established before the ceiling "
+                            + "is lifted and cannot be mistaken for a migration that never ran")
                     .isZero();
 
-            flywayFor(schema, SEEDING_LOCATIONS, null).migrate();
+            flywayFor(schema, MIGRATION_LOCATIONS, null).migrate();
 
             assertThat(count(schema, "user_security"))
-                    .as("adding the seed location AND removing the ceiling produces ten sign-on "
-                            + "identities where a production-shaped resolution produced none - which is "
-                            + "the whole claim of the delivered exclusion mechanism stated as an "
-                            + "experiment rather than as prose. Either control withheld alone is enough "
-                            + "to keep the count at zero, as the two tests above show separately")
+                    .as("lifting the ceiling produces ten sign-on identities where the pinned run "
+                            + "produced none, from the same location list and against the same schema. "
+                            + "That is the whole claim of the delivered exclusion mechanism stated as an "
+                            + "experiment rather than as prose, and it also shows the withholding is a "
+                            + "PENDING state rather than a permanent one: the same scripts apply the "
+                            + "moment the ceiling moves, which is exactly why the ceiling is enforced "
+                            + "in code and not left to a document an override can supersede")
                     .isEqualTo(10L);
             assertThat(count(schema, "daily_transaction")).isEqualTo(300L);
         }
@@ -802,10 +806,10 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     /**
      * Builds a migration configured to land in one schema, with an explicit location list.
      *
-     * <p>The location list is a parameter rather than a constant so that the production-shaped list and
-     * the seeding list can each be exercised deliberately against the same server. The two differ by one
-     * entry, the seed location, and that difference is the primary exclusion mechanism - passing the
-     * list explicitly is what makes it visible here rather than inferred.
+     * <p>The location list is a parameter rather than a constant so that every call site states the
+     * location it resolves from instead of leaving it to be inferred. Every call passes the SAME one
+     * flat location, which is the point: the production-shaped run and the seeding run differ only in
+     * the {@code target}, so the parameter that varies is the one carrying the control.
      *
      * <p>{@code cleanDisabled} is left at its safe default: nothing here drops a schema, and a
      * configuration that could would be one edit away from dropping the shared one.</p>

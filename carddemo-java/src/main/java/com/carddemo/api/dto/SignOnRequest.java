@@ -20,6 +20,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.Pattern;
 
 /**
  * Immutable sign-on request contract for legacy CICS transaction {@code CC00}.
@@ -129,11 +130,13 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>Credential verification is out of scope for this type.</strong> The legacy comparison is
  * a direct equality test against a stored cleartext password. Replacing it with hashed verification is
- * a documented parity exception recorded as decision log entry D-12, which records that the encoder
- * and the verifying comparison are delivered in {@code service.CredentialDigestService} while
- * <strong>no sign-on path that calls them has been delivered yet</strong> - this contract carries the
- * two values and asserts nothing about how they are checked. No credential literal, hash, salt or work
- * factor appears in this file.
+ * a documented parity exception recorded as decision log entry D-12. The encoder and the verifying
+ * comparison live in {@code service.CredentialDigestService}, and the sign-on path that calls them is
+ * delivered: {@code service.AuthenticationService} performs the verification and
+ * {@code api.AuthController} maps the one route that reaches it. This contract carries the two values
+ * and asserts nothing about how they are checked - which is the point of saying so here, because a
+ * request type that described the check would be a second place for the check to be specified. No
+ * credential literal, hash, salt or work factor appears in this file.
  *
  * <p>Lines 118-131 of {@code COSGN00C} form a single ordered evaluation cascade: the user
  * id is tested for emptiness first, the password second, and because the construct stops
@@ -229,11 +232,16 @@ import jakarta.validation.constraints.Size;
  *                 <strong>Deliberately never defaulted</strong> and carrying no presence
  *                 constraint: the legacy evaluation has no catch-all that substitutes a key, so
  *                 an unrecognised or unreported key stays absent and reaches the service as
- *                 {@code null}, which the any-other-key path already accounts for. May be
- *                 {@code null}.
+ *                 {@code null}, which the any-other-key path already accounts for. The distinct
+ *                 zero-communication-area first entry does not use this request at all; it is the
+ *                 GET operation on the same sign-on route, so an absent key on a submitted POST
+ *                 cannot be confused with first entry. May be {@code null}.
  */
 public record SignOnRequest(
-        @Size(max = 8) String userId,
+        @Size(max = 8)
+        @Pattern(regexp = "^[^\\p{Cc}\\p{Cf}]*$",
+                message = "must not contain control or format characters")
+        String userId,
         @Size(max = 8)
         @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
         @Schema(accessMode = Schema.AccessMode.WRITE_ONLY, format = "password",

@@ -22,8 +22,11 @@
 # script it finds there once the edge port is serving. This is the only script in the directory and
 # it provisions exactly three independent resources - a first-in-first-out queue (the single
 # online-to-batch bridge of the legacy estate), an object-store bucket with versioning enabled for
-# batch file staging, and a notification topic for job completion. Every one of the eight validation
-# gates runs against this stack: no mainframe, no staging environment, no real AWS account.
+# batch file staging, and a notification topic for job completion. The validation gates that need an
+# AWS surface run against this stack - end-to-end boundary verification, the performance baseline, the
+# named-artefact run, interface contract verification and the scope-coverage tier - with no mainframe,
+# no staging environment and no real AWS account. The remaining gates are build-time and static: the
+# zero-warning build, the unsafe-code audit and the integration sign-off need nothing from here.
 #
 # IT MUST BE IDEMPOTENT. A ready hook re-runs on every container start and the hook runner raises if
 # this file exits non-zero, so "already there" is a normal outcome, is tolerated per resource, and no
@@ -38,16 +41,17 @@
 # with nothing in the start-up log naming the cause.
 #
 #   carddemo-batch-staging       object-store bucket        -> carddemo.aws.s3.bucket
-#   carddemo-jobs.fifo           submission queue           -> carddemo.aws.sqs.job-submission-queue
+#   JOBS.fifo                    submission queue           -> carddemo.aws.sqs.job-submission-queue
 #   carddemo-job-submission      message group id           -> carddemo.aws.sqs.message-group-id
 #   carddemo-job-notifications   notification topic         -> carddemo.aws.sns.job-notification-topic
-#   us-east-1                    region                     -> spring.cloud.aws.region.static
+#   us-east-1                    region                     -> carddemo.aws.region
 #
 # The .fifo suffix is required rather than decoration: the queue service refuses a first-in-first-out
 # queue whose name omits it. The message group id provisions nothing - the publisher puts it on each
-# message, and one stable value is what preserves append order - and the S3 key prefixes are not
-# resources either, so no marker object is created for them: an empty marker would be returned to a
-# reader listing the prefix and would gain a version on every re-run.
+# message, and one stable value is what preserves append order. Nor is an object key a resource: the
+# job that writes an object composes its key, so no marker object is created for any staging area - an
+# empty marker would be returned to a reader listing that key prefix and would gain a version on every
+# re-run.
 #
 # TWO FACTS ABOUT THIS QUEUE ARE DELIBERATELY NOT PROPERTIES: the fixed eighty-character record width
 # and the ignore-on-error failure tolerance. Both come from the legacy queue definition and neither
@@ -163,7 +167,7 @@ require_bounded_value() {
 # all, and each overridable for a parallel stack.
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 BUCKET="${CARDDEMO_S3_BUCKET:-carddemo-batch-staging}"
-QUEUE="${CARDDEMO_SQS_QUEUE:-carddemo-jobs.fifo}"
+QUEUE="${CARDDEMO_SQS_QUEUE:-JOBS.fifo}"
 MESSAGE_GROUP_ID="${CARDDEMO_SQS_MESSAGE_GROUP_ID:-carddemo-job-submission}"
 TOPIC="${CARDDEMO_SNS_TOPIC:-carddemo-job-notifications}"
 

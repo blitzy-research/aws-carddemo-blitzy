@@ -98,7 +98,7 @@ import static org.mockito.Mockito.when;
 class JobSubmissionServiceBaselineTest {
 
     /** The canonical first-in-first-out queue name the configuration fixes. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The canonical message-group identifier that preserves append order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -651,37 +651,39 @@ class JobSubmissionServiceBaselineTest {
         }
 
         @Test
-        @DisplayName("derives the submission identifier from both dates and nothing else, free of whitespace, so replaying one request reproduces its identifiers exactly")
-        void derivesTheSubmissionIdentifierFromBothDatesAndNothingElse() {
-            // The bridge's contract composes the identifier from the submission's own identity plus
-            // the card ordinal, and forbids a random value in the identity's place because a random
-            // identity defeats idempotency. The identity is therefore the two date slots joined, and
-            // the one-based card ordinal remains the suffix. A submission that is genuinely a second
-            // unit of work rather than a replay says so through the identity-bearing entry point.
+        @DisplayName("mints a unique submission identifier and carries it in the result")
+        void mintsAndCarriesTheSubmissionIdentifier() {
             acceptEveryCard();
 
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final SubmissionResult result =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
 
+            assertThat(result.submissionId()).isNotBlank().doesNotContainAnyWhitespaces();
             assertThat(published.get(0).messageDeduplicationId)
-                    .isEqualTo(START_DATE + "_" + END_DATE + "-1")
-                    .doesNotContainAnyWhitespaces();
+                    .isEqualTo(result.submissionId() + "-1");
         }
 
         @Test
-        @DisplayName("replaying one request reproduces every identifier, which is what the deduplication identifier exists to give")
-        void replayingOneRequestReproducesEveryIdentifier() {
+        @DisplayName("a true retry reuses the returned identity while a new request mints another")
+        void onlyATrueRetryReusesEveryIdentifier() {
             acceptEveryCard();
 
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+            final SubmissionResult first =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
             final List<String> firstPass = published.stream()
                     .map(publish -> publish.messageDeduplicationId)
                     .toList();
             published.clear();
-            service.submitTransactionReportJob(START_DATE, END_DATE);
+            service.submitTransactionReportJob(first.submissionId(), START_DATE, END_DATE);
 
             assertThat(published.stream().map(publish -> publish.messageDeduplicationId).toList())
-                    .as("the replay reproduces the first pass card for card")
+                    .as("the explicit retry reproduces the first pass card for card")
                     .containsExactlyElementsOf(firstPass);
+
+            published.clear();
+            final SubmissionResult second =
+                    service.submitTransactionReportJob(START_DATE, END_DATE);
+            assertThat(second.submissionId()).isNotEqualTo(first.submissionId());
         }
 
         @Test
@@ -716,7 +718,7 @@ class JobSubmissionServiceBaselineTest {
         @Test
         @DisplayName("reports a wholly published submission as complete and not partial")
         void reportsACompleteSubmission() {
-            final SubmissionResult result = new SubmissionResult(17, 17, false, "");
+            final SubmissionResult result = new SubmissionResult(SUBMISSION_ID, 17, 17, false, "");
 
             assertThat(result.complete()).isTrue();
             assertThat(result.partial()).isFalse();
@@ -726,7 +728,7 @@ class JobSubmissionServiceBaselineTest {
         @Test
         @DisplayName("clears any failure message when the submission did not fail")
         void clearsTheFailureMessageOnSuccess() {
-            final SubmissionResult result = new SubmissionResult(17, 17, false, "ignored text");
+            final SubmissionResult result = new SubmissionResult(SUBMISSION_ID, 17, 17, false, "ignored text");
 
             assertThat(result.failureMessage()).isEmpty();
         }
@@ -734,23 +736,23 @@ class JobSubmissionServiceBaselineTest {
         @Test
         @DisplayName("supplies the legacy failure text when a failure carries none")
         void suppliesTheLegacyFailureText() {
-            assertThat(new SubmissionResult(17, 3, true, "").failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION_ID, 17, 3, true, "").failureMessage())
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
-            assertThat(new SubmissionResult(17, 3, true, null).failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION_ID, 17, 3, true, null).failureMessage())
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
         }
 
         @Test
         @DisplayName("keeps a supplied failure message")
         void keepsASuppliedFailureMessage() {
-            assertThat(new SubmissionResult(17, 3, true, "queue unavailable").failureMessage())
+            assertThat(new SubmissionResult(SUBMISSION_ID, 17, 3, true, "queue unavailable").failureMessage())
                     .isEqualTo("queue unavailable");
         }
 
         @Test
         @DisplayName("reports a partly published failure as partial but not complete")
         void reportsAPartialSubmission() {
-            final SubmissionResult result = new SubmissionResult(17, 3, true, "");
+            final SubmissionResult result = new SubmissionResult(SUBMISSION_ID, 17, 3, true, "");
 
             assertThat(result.partial()).isTrue();
             assertThat(result.complete()).isFalse();
@@ -760,7 +762,7 @@ class JobSubmissionServiceBaselineTest {
         @DisplayName("refuses a negative requested count")
         void refusesANegativeRequestedCount() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(-1, 0, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION_ID, -1, 0, false, ""))
                     .withMessageContaining("cardsRequested must not be negative");
         }
 
@@ -768,7 +770,7 @@ class JobSubmissionServiceBaselineTest {
         @DisplayName("refuses a negative published count")
         void refusesANegativePublishedCount() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(17, -1, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION_ID, 17, -1, false, ""))
                     .withMessageContaining("cardsPublished must not be negative");
         }
 
@@ -776,7 +778,7 @@ class JobSubmissionServiceBaselineTest {
         @DisplayName("refuses publishing more cards than were requested")
         void refusesPublishingMoreThanRequested() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new SubmissionResult(3, 4, false, ""))
+                    .isThrownBy(() -> new SubmissionResult(SUBMISSION_ID, 3, 4, false, ""))
                     .withMessageContaining("must not")
                     .withMessageContaining("exceed");
         }

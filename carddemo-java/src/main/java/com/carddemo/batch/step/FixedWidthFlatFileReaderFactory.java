@@ -38,9 +38,14 @@ import com.carddemo.util.TranCatRecordMapper;
 import com.carddemo.util.TranTypeRecordMapper;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.util.UserSecurityRecordMapper;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
+import org.springframework.batch.item.file.BufferedReaderFactory;
 import org.springframework.batch.item.file.FlatFileItemReader;
 import org.springframework.batch.item.file.LineMapper;
 import org.springframework.batch.item.file.builder.FlatFileItemReaderBuilder;
@@ -289,6 +294,16 @@ public final class FixedWidthFlatFileReaderFactory {
     public static final String TRANSACTION_READER_NAME = "transactionFixedWidthItemReader";
 
     /**
+     * Stable restart name of the fixed-unblocked transaction reader.
+     *
+     * <p>The logical layout is still the transaction master layout, but its physical record boundary is
+     * a 350-byte stride rather than a line terminator. A separate name prevents restart metadata from a
+     * line-oriented source being applied to a fixed-unblocked source.
+     */
+    public static final String FIXED_TRANSACTION_READER_NAME =
+            "fixedUnblockedTransactionItemReader";
+
+    /**
      * Name of the reader over the 350-byte daily transaction layout, the posting job's input.
      *
      * <p>Distinct from {@link #TRANSACTION_READER_NAME} for the reason given there.
@@ -482,6 +497,23 @@ public final class FixedWidthFlatFileReaderFactory {
      */
     public FlatFileItemReader<Transaction> transactionReader(final Resource resource) {
         return newReader(TRANSACTION_READER_NAME, resource,
+                (line, lineNumber) -> TransactionRecordMapper.fromRecord(line));
+    }
+
+    /**
+     * Builds a reader over a fixed-unblocked transaction generation.
+     *
+     * <p>Unlike {@link #transactionReader(Resource)}, this reader does not look for a line terminator.
+     * It reads exactly {@link TransactionRecordMapper#RECORD_LENGTH} US-ASCII bytes per record and
+     * reports an incomplete trailing stride as an input failure.
+     *
+     * @param resource the fixed-unblocked generation; must not be {@code null}
+     * @return a new reader, never {@code null}, named {@value #FIXED_TRANSACTION_READER_NAME}
+     * @throws NullPointerException if {@code resource} is {@code null}
+     */
+    public FlatFileItemReader<Transaction> fixedTransactionReader(final Resource resource) {
+        return newFixedStrideReader(FIXED_TRANSACTION_READER_NAME, resource,
+                TransactionRecordMapper.RECORD_LENGTH,
                 (line, lineNumber) -> TransactionRecordMapper.fromRecord(line));
     }
 
@@ -687,5 +719,67 @@ public final class FixedWidthFlatFileReaderFactory {
                 .lineMapper(lineMapper)
                 .build();
     }
-}
 
+    /**
+     * Builds the fixed-stride variant while preserving every other reader decision.
+     *
+     * @param <T>          the mapped domain type
+     * @param readerName   the stable restart name
+     * @param resource     the fixed-unblocked resource
+     * @param recordLength the exact encoded stride
+     * @param lineMapper   maps one complete stride
+     * @return a new independent reader
+     */
+    private static <T> FlatFileItemReader<T> newFixedStrideReader(final String readerName,
+            final Resource resource, final int recordLength, final LineMapper<T> lineMapper) {
+        Objects.requireNonNull(resource, RESOURCE_REQUIRED);
+        final BufferedReaderFactory readerFactory = (source, encoding) ->
+                new FixedStrideBufferedReader(
+                        new InputStreamReader(source.getInputStream(), encoding), recordLength);
+        return new FlatFileItemReaderBuilder<T>()
+                .name(readerName)
+                .resource(resource)
+                .encoding(RECORD_CHARSET_NAME)
+                .bufferedReaderFactory(readerFactory)
+                .recordSeparatorPolicy(new SimpleRecordSeparatorPolicy())
+                .comments(NO_COMMENT_PREFIXES)
+                .strict(true)
+                .lineMapper(lineMapper)
+                .build();
+    }
+
+    /**
+     * Presents one exact-width stride as one logical line to {@link FlatFileItemReader}.
+     */
+    private static final class FixedStrideBufferedReader extends BufferedReader {
+
+        /** Number of characters, and therefore US-ASCII bytes, in one record. */
+        private final int recordLength;
+
+        private FixedStrideBufferedReader(final Reader delegate, final int recordLength) {
+            super(Objects.requireNonNull(delegate, "delegate"), recordLength);
+            if (recordLength < 1) {
+                throw new IllegalArgumentException("recordLength must be at least one byte");
+            }
+            this.recordLength = recordLength;
+        }
+
+        @Override
+        public String readLine() throws IOException {
+            final char[] record = new char[this.recordLength];
+            int offset = 0;
+            while (offset < record.length) {
+                final int read = super.read(record, offset, record.length - offset);
+                if (read < 0) {
+                    if (offset == 0) {
+                        return null;
+                    }
+                    throw new IOException("fixed-unblocked resource ended after " + offset
+                            + " byte(s) of a " + this.recordLength + "-byte record");
+                }
+                offset += read;
+            }
+            return new String(record);
+        }
+    }
+}

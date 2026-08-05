@@ -33,18 +33,15 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
-import com.carddemo.api.dto.UserRequest;
-import com.carddemo.api.dto.UserResponse;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 
 /**
  * The four administrative user transactions of the legacy estate, translated into one service.
@@ -68,9 +65,9 @@ import com.carddemo.util.CobolStringUtils;
  *       <td>delete</td></tr>
  * </table>
  *
- * <p><strong>Forty-seven paragraphs in total, and every one has a named method here.</strong> The
- * mapping is set out in full in the table further down, including the two places where an identical
- * paragraph in more than one member is served by a single shared method.</p>
+ * <p><strong>Forty-seven paragraphs in total, and every one has a named method here</strong>, including
+ * the two places where an identical paragraph in more than one member is served by a single shared
+ * method.</p>
  *
  * <p>None of the four members includes the attention-key copybook and none installs an abend
  * handler - those belong to the five-program family that includes the card-and-account screens - so
@@ -88,10 +85,12 @@ import com.carddemo.util.CobolStringUtils;
  *
  * <p><strong>The credential column is sixty characters wide, and that is the one deliberate width
  * divergence in the whole eleven-table schema.</strong> The legacy field is eight cleartext
- * characters that sign-on compared directly; the column holds a BCrypt digest instead, so this
- * service hashes on write and never reads a credential back. The legacy shared cleartext value that
- * the provisioning job stream carried does not appear anywhere in this module, and the ten seeded
- * identities are the only thing carried across from it.</p>
+ * characters that sign-on compared directly; the column holds a BCrypt digest instead. What this
+ * service guarantees is confined to what it does: every write path stores a digest and never a
+ * cleartext value, no read path returns, echoes, renders or logs a credential in either form, and no
+ * method here compares digests for equality. The ten seeded identities are carried across from the
+ * provisioning job stream as identifiers, names and types; their credentials are seeded as digests by
+ * the fourth migration.</p>
  *
  * <p>The table has no cluster definition in the legacy estate and <strong>starts empty</strong>
  * after the reference-data migration. The ten identities - five of type {@code A} and five of type
@@ -99,74 +98,12 @@ import com.carddemo.util.CobolStringUtils;
  * the shared and production configurations pin the migration target below its version. Nothing here
  * depends on their presence.</p>
  *
- * <h2>Paragraph-to-method mapping, all forty-seven</h2>
+ * <h2>Paragraph-to-method mapping</h2>
  *
- * <table border="1">
- *   <caption>{@code CU00} list - {@code app/cbl/COUSR00C.cbl}, 16 paragraphs</caption>
- *   <tr><th>Paragraph</th><th>Line</th><th>Method</th></tr>
- *   <tr><td>{@code MAIN-PARA}</td><td>98</td><td>{@code listUsers}</td></tr>
- *   <tr><td>{@code PROCESS-ENTER-KEY}</td><td>149</td><td>{@code processListEnterKey}</td></tr>
- *   <tr><td>{@code PROCESS-PF7-KEY}</td><td>237</td><td>{@code processPf7Key}</td></tr>
- *   <tr><td>{@code PROCESS-PF8-KEY}</td><td>260</td><td>{@code processPf8Key}</td></tr>
- *   <tr><td>{@code PROCESS-PAGE-FORWARD}</td><td>282</td><td>{@code processPageForward}</td></tr>
- *   <tr><td>{@code PROCESS-PAGE-BACKWARD}</td><td>336</td><td>{@code processPageBackward}</td></tr>
- *   <tr><td>{@code POPULATE-USER-DATA}</td><td>384</td><td>{@code populateUserData}</td></tr>
- *   <tr><td>{@code INITIALIZE-USER-DATA}</td><td>446</td><td>{@code initializeUserData}</td></tr>
- *   <tr><td>{@code RETURN-TO-PREV-SCREEN}</td><td>506</td><td>{@code returnToPrevScreen} (shared)</td></tr>
- *   <tr><td>{@code SEND-USRLST-SCREEN}</td><td>522</td><td>{@code sendUsrlstScreen}</td></tr>
- *   <tr><td>{@code RECEIVE-USRLST-SCREEN}</td><td>549</td><td>{@code receiveUsrlstScreen}</td></tr>
- *   <tr><td>{@code POPULATE-HEADER-INFO}</td><td>562</td><td>{@code populateHeaderInfo} (shared)</td></tr>
- *   <tr><td>{@code STARTBR-USER-SEC-FILE}</td><td>586</td><td>{@code startbrUserSecFile}</td></tr>
- *   <tr><td>{@code READNEXT-USER-SEC-FILE}</td><td>619</td><td>{@code readnextUserSecFile}</td></tr>
- *   <tr><td>{@code READPREV-USER-SEC-FILE}</td><td>653</td><td>{@code readprevUserSecFile}</td></tr>
- *   <tr><td>{@code ENDBR-USER-SEC-FILE}</td><td>687</td><td>{@code endbrUserSecFile}</td></tr>
- * </table>
- *
- * <table border="1">
- *   <caption>{@code CU01} add - {@code app/cbl/COUSR01C.cbl}, 9 paragraphs</caption>
- *   <tr><th>Paragraph</th><th>Line</th><th>Method</th></tr>
- *   <tr><td>{@code MAIN-PARA}</td><td>71</td><td>{@code addUser}</td></tr>
- *   <tr><td>{@code PROCESS-ENTER-KEY}</td><td>115</td><td>{@code processAddEnterKey}</td></tr>
- *   <tr><td>{@code RETURN-TO-PREV-SCREEN}</td><td>165</td><td>{@code returnToPrevScreen} (shared)</td></tr>
- *   <tr><td>{@code SEND-USRADD-SCREEN}</td><td>184</td><td>{@code sendUsraddScreen}</td></tr>
- *   <tr><td>{@code RECEIVE-USRADD-SCREEN}</td><td>201</td><td>{@code receiveUsraddScreen}</td></tr>
- *   <tr><td>{@code POPULATE-HEADER-INFO}</td><td>214</td><td>{@code populateHeaderInfo} (shared)</td></tr>
- *   <tr><td>{@code WRITE-USER-SEC-FILE}</td><td>238</td><td>{@code writeUserSecFile}</td></tr>
- *   <tr><td>{@code CLEAR-CURRENT-SCREEN}</td><td>279</td><td>{@code clearAddScreen}</td></tr>
- *   <tr><td>{@code INITIALIZE-ALL-FIELDS}</td><td>287</td><td>{@code initializeAddFields}</td></tr>
- * </table>
- *
- * <table border="1">
- *   <caption>{@code CU02} update - {@code app/cbl/COUSR02C.cbl}, 11 paragraphs</caption>
- *   <tr><th>Paragraph</th><th>Line</th><th>Method</th></tr>
- *   <tr><td>{@code MAIN-PARA}</td><td>82</td><td>{@code updateUser}</td></tr>
- *   <tr><td>{@code PROCESS-ENTER-KEY}</td><td>143</td><td>{@code processUpdateEnterKey}</td></tr>
- *   <tr><td>{@code UPDATE-USER-INFO}</td><td>177</td><td>{@code updateUserInfo}</td></tr>
- *   <tr><td>{@code RETURN-TO-PREV-SCREEN}</td><td>250</td><td>{@code returnToPrevScreen} (shared)</td></tr>
- *   <tr><td>{@code SEND-USRUPD-SCREEN}</td><td>266</td><td>{@code sendUsrupdScreen}</td></tr>
- *   <tr><td>{@code RECEIVE-USRUPD-SCREEN}</td><td>283</td><td>{@code receiveUsrupdScreen}</td></tr>
- *   <tr><td>{@code POPULATE-HEADER-INFO}</td><td>296</td><td>{@code populateHeaderInfo} (shared)</td></tr>
- *   <tr><td>{@code READ-USER-SEC-FILE}</td><td>320</td><td>{@code readUserSecFileForUpdate}</td></tr>
- *   <tr><td>{@code UPDATE-USER-SEC-FILE}</td><td>358</td><td>{@code updateUserSecFile}</td></tr>
- *   <tr><td>{@code CLEAR-CURRENT-SCREEN}</td><td>395</td><td>{@code clearUpdateScreen}</td></tr>
- *   <tr><td>{@code INITIALIZE-ALL-FIELDS}</td><td>403</td><td>{@code initializeUpdateFields}</td></tr>
- * </table>
- *
- * <table border="1">
- *   <caption>{@code CU03} delete - {@code app/cbl/COUSR03C.cbl}, 11 paragraphs</caption>
- *   <tr><th>Paragraph</th><th>Line</th><th>Method</th></tr>
- *   <tr><td>{@code MAIN-PARA}</td><td>82</td><td>{@code deleteUser}</td></tr>
- *   <tr><td>{@code PROCESS-ENTER-KEY}</td><td>142</td><td>{@code processDeleteEnterKey}</td></tr>
- *   <tr><td>{@code DELETE-USER-INFO}</td><td>174</td><td>{@code deleteUserInfo}</td></tr>
- *   <tr><td>{@code RETURN-TO-PREV-SCREEN}</td><td>197</td><td>{@code returnToPrevScreen} (shared)</td></tr>
- *   <tr><td>{@code SEND-USRDEL-SCREEN}</td><td>213</td><td>{@code sendUsrdelScreen}</td></tr>
- *   <tr><td>{@code RECEIVE-USRDEL-SCREEN}</td><td>230</td><td>{@code receiveUsrdelScreen}</td></tr>
- *   <tr><td>{@code POPULATE-HEADER-INFO}</td><td>243</td><td>{@code populateHeaderInfo} (shared)</td></tr>
- *   <tr><td>{@code READ-USER-SEC-FILE}</td><td>267</td><td>{@code readUserSecFileForDelete}</td></tr>
- *   <tr><td>{@code DELETE-USER-SEC-FILE}</td><td>305</td><td>{@code deleteUserSecFile}</td></tr>
- *   <tr><td>{@code CLEAR-CURRENT-SCREEN}</td><td>341</td><td>{@code clearDeleteScreen}</td></tr>
- *   <tr><td>{@code INITIALIZE-ALL-FIELDS}</td><td>349</td><td>{@code initializeDeleteFields}</td></tr>
- * </table>
+ * <p>Each of the forty-seven paragraphs across the four members resolves to one named method here, and
+ * every method states its own member, paragraph name and source line. {@code docs/traceability-matrix.md}
+ * carries the row-per-paragraph inventory. The numeric or hyphenated legacy names are cited rather than
+ * transliterated, because a Java identifier cannot carry them.
  *
  * <p><strong>Two methods are shared, and the sharing is stated rather than hidden.</strong>
  * {@code returnToPrevScreen} carries four paragraphs - {@code COUSR00C.cbl} L506,
@@ -211,9 +148,10 @@ import com.carddemo.util.CobolStringUtils;
  * <p><strong>No failure on this path raises an exception of its own.</strong> Every legacy failure
  * arm in all four members writes a message and re-presents the screen; not one abends, not one
  * rolls back, and the estate's only explicit rollback is in the account-update program. A
- * not-found identifier is therefore reported as the legacy message rather than raised, and the two
- * mutating operations take a plain transaction with no forced rollback. The entity carries no
- * version attribute, so no optimistic-locking failure can arise here either.</p>
+ * not-found identifier is therefore reported as the legacy message rather than raised. Each of the
+ * three mutating repository units is transactional only inside {@code OnlineTransactionBoundary},
+ * so a provider failure is rolled back before it is converted to that message. The entity carries
+ * no version attribute, so no optimistic-locking failure can arise here either.</p>
  *
  * <h2>Provenance</h2>
  *
@@ -224,23 +162,12 @@ import com.carddemo.util.CobolStringUtils;
  * names, transaction identifiers, paragraph names, line numbers, field names, widths, offsets and
  * the exact message texts cross into this module.</p>
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The screen turns are deliberately non-transactional. Add, update and delete enter
+ * {@link OnlineTransactionBoundary} only for their repository write unit, so a persistence failure
+ * is rolled back before this service translates it into the source screen message.
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class UserManagementService {
+public final class UserManagementService {
 
     private static final Logger LOG = LoggerFactory.getLogger(UserManagementService.class);
 
@@ -383,6 +310,12 @@ public class UserManagementService {
 
     private final NavigationService navigationService;
 
+    private final UserListPageTokenService pageTokenService;
+
+    private final OnlineTransactionBoundary transactionBoundary;
+
+    private final RecordWriter recordWriter;
+
     private final PasswordEncoder passwordEncoder;
 
     private final Clock clock;
@@ -391,13 +324,19 @@ public class UserManagementService {
      * Creates the service. Constructor injection only: every collaborator is final and mandatory,
      * so no instance of this class can exist in a partially wired state.
      *
-     * @param userSecurityRepository the only access path to the user-security table; supplies the
-     *                               full-key read, the paged projection, the single write and the
-     *                               single-row delete, and nothing else
+     * @param userSecurityRepository the only access path to the user-security table. This service
+     *                               uses exactly four of its inherited operations - the full-key
+     *                               read, the paged scan, the single-row write and the single-row
+     *                               delete - and no other, which is the least-privilege rule the
+     *                               call sites keep rather than the repository's shape
      * @param messageCatalogService  the source of the common message texts, in particular the
      *                               unmapped-key text at its full untrimmed contractual width
      * @param navigationService      the single authority for the routes this service returns; no
      *                               route table is declared here
+     * @param pageTokenService       seals the ordered identifiers displayed by the list screen and
+     *                               resolves a submitted row marker from that immutable snapshot
+     * @param transactionBoundary    owns each independent add, update, or delete repository unit
+     * @param recordWriter           explicit create and flush primitives for legacy write verbs
      * @param passwordEncoder        the BCrypt encoder published as a bean by the security
      *                               configuration. Used to produce a digest on write and to confirm
      *                               that a re-typed credential is unchanged; never to compare two
@@ -409,6 +348,9 @@ public class UserManagementService {
     public UserManagementService(final UserSecurityRepository userSecurityRepository,
                                  final MessageCatalogService messageCatalogService,
                                  final NavigationService navigationService,
+                                 final UserListPageTokenService pageTokenService,
+                                 final OnlineTransactionBoundary transactionBoundary,
+                                 final RecordWriter recordWriter,
                                  final PasswordEncoder passwordEncoder,
                                  final Clock clock) {
         this.userSecurityRepository = Objects.requireNonNull(userSecurityRepository,
@@ -417,6 +359,11 @@ public class UserManagementService {
                 "messageCatalogService must not be null");
         this.navigationService = Objects.requireNonNull(navigationService,
                 "navigationService must not be null");
+        this.pageTokenService = Objects.requireNonNull(pageTokenService,
+                "pageTokenService must not be null");
+        this.transactionBoundary = Objects.requireNonNull(transactionBoundary,
+                "transactionBoundary must not be null");
+        this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.passwordEncoder = Objects.requireNonNull(passwordEncoder,
                 "passwordEncoder must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -663,7 +610,7 @@ public class UserManagementService {
         private String focusFieldId;
 
         /** Independent per-field error entries, in the order the fields are validated. */
-        private final List<ErrorResponse.FieldError> fieldErrors = new ArrayList<>();
+        private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
 
         /** Whether the turn completed its operation, which the three success arms report. */
         private boolean actionSucceeded;
@@ -678,7 +625,7 @@ public class UserManagementService {
         private String lastUserIdOnPage;
 
         /** The numbered screen row slots, blank until a row is moved into one. */
-        private final UserResponse.UserRow[] rowSlots = new UserResponse.UserRow[USER_LIST_PAGE_SIZE];
+        private final UserOutcome.UserRow[] rowSlots = new UserOutcome.UserRow[USER_LIST_PAGE_SIZE];
 
         /** Echoed identifier field, {@code USRIDINI} on three screens and {@code USERIDI} on add. */
         private String userId;
@@ -710,7 +657,7 @@ public class UserManagementService {
         private String submittedCredential;
 
         /** The communication area of the turn, replaced rather than mutated. */
-        private NavigationContext context;
+        private ScreenNavigationState context;
 
         /** The destination the turn resolves to. */
         private NavigationService.Route route;
@@ -740,7 +687,7 @@ public class UserManagementService {
          * and a turn that transfers control or reports a field error never walked the key sequence at
          * all. Only a turn that actually walked one may carry paging metadata.
          */
-        private PageMetadata.PagingDirection pageDirection;
+        private BrowseWindow.PagingDirection pageDirection;
 
         /**
          * Returns the populated row slots in slot order, which is ascending key order for a page
@@ -754,9 +701,9 @@ public class UserManagementService {
          * @return the rows the page carries, never {@code null}, never longer than the screen's row
          *         count and ordered ascending by identifier
          */
-        private List<UserResponse.UserRow> populatedRows() {
-            final List<UserResponse.UserRow> rows = new ArrayList<>(rowSlots.length);
-            for (final UserResponse.UserRow slot : rowSlots) {
+        private List<UserOutcome.UserRow> populatedRows() {
+            final List<UserOutcome.UserRow> rows = new ArrayList<>(rowSlots.length);
+            for (final UserOutcome.UserRow slot : rowSlots) {
                 if (slot != null) {
                     rows.add(slot);
                 }
@@ -771,11 +718,19 @@ public class UserManagementService {
      *
      * <p><strong>Why this exists at all.</strong> The legacy list screen browses a keyed cluster:
      * it positions on a key, reads forward or backward one record per verb, and stops when a read
-     * runs off the end. The repository publishes exactly two read paths - a full-key read and a
-     * paged scan over a credential-free projection - and deliberately declares no derived finder,
-     * because the schema creates no secondary index for one to use. The paged scan is therefore the
-     * sanctioned mechanism, and this class is the browse expressed in terms of it: each page is one
-     * indexed range read on the primary key, and a row-at-a-time cursor is layered over the pages.
+     * runs off the end. The repository declares no derived finder at all, because the schema creates
+     * no secondary index for one to use, so the two access paths that exist are the inherited
+     * full-key read and the inherited paged scan on the primary key. The paged scan is therefore the
+     * mechanism, and this class is the browse expressed in terms of it: each page is one indexed
+     * range read on the primary key, and a row-at-a-time cursor is layered over the pages.
+     *
+     * <p><strong>The page is bounded, and that is the property that matters.</strong> Every read here
+     * goes through a {@code Pageable} at the legacy screen's page size, so no call loads the whole
+     * table and no call loads a credential it has no use for beyond the row it is displaying. The
+     * rows are entities rather than a projection, so a digest is present in memory for the ten rows
+     * of one page; none of it is read - {@link #populateUserData} takes the four fields the legacy
+     * screen shows and nothing else - and none of it reaches a response, a log or an exception
+     * message.
      *
      * <p>One instance serves one turn and is discarded with it, so the loaded page is a
      * within-call read buffer and never state that outlives the call. The buffer is what keeps ten
@@ -798,7 +753,7 @@ public class UserManagementService {
         private final UserSecurityRepository repository;
 
         /** The page currently buffered, or {@code null} when the browse holds no position. */
-        private Page<UserSecurityRepository.AdminEntry> bufferedPage;
+        private Page<UserSecurity> bufferedPage;
 
         /** Index of the buffered page, or {@code -1} when no page is buffered. */
         private int bufferedPageIndex = -1;
@@ -806,7 +761,7 @@ public class UserManagementService {
         /**
          * Creates a browse over one repository.
          *
-         * @param repository the repository whose paged projection the browse reads
+         * @param repository the repository whose paged primary-key scan the browse reads
          */
         private SequentialBrowse(final UserSecurityRepository repository) {
             this.repository = repository;
@@ -818,9 +773,9 @@ public class UserManagementService {
          * @param pageIndex zero-based page index
          * @return the requested page, which is empty when it lies beyond the last row
          */
-        private Page<UserSecurityRepository.AdminEntry> pageAt(final int pageIndex) {
+        private Page<UserSecurity> pageAt(final int pageIndex) {
             if (bufferedPageIndex != pageIndex || bufferedPage == null) {
-                bufferedPage = repository.findAllProjectedBy(
+                bufferedPage = repository.findAll(
                         PageRequest.of(pageIndex, USER_LIST_PAGE_SIZE, ASCENDING_BY_USER_ID));
                 bufferedPageIndex = pageIndex;
             }
@@ -836,13 +791,13 @@ public class UserManagementService {
          *               first row does
          * @return the row, or an empty result when the offset lies outside the sequence
          */
-        private Optional<UserSecurityRepository.AdminEntry> rowAt(final long offset) {
+        private Optional<UserSecurity> rowAt(final long offset) {
             if (offset < 0L || offset / USER_LIST_PAGE_SIZE > Integer.MAX_VALUE) {
                 return Optional.empty();
             }
             final int pageIndex = (int) (offset / USER_LIST_PAGE_SIZE);
             final int withinPage = (int) (offset % USER_LIST_PAGE_SIZE);
-            final List<UserSecurityRepository.AdminEntry> content = pageAt(pageIndex).getContent();
+            final List<UserSecurity> content = pageAt(pageIndex).getContent();
             if (withinPage >= content.size()) {
                 return Optional.empty();
             }
@@ -864,9 +819,9 @@ public class UserManagementService {
         private OptionalLong positionAtOrAfter(final String key) {
             long pageStartOffset = 0L;
             while (true) {
-                final Page<UserSecurityRepository.AdminEntry> page =
+                final Page<UserSecurity> page =
                         pageAt((int) (pageStartOffset / USER_LIST_PAGE_SIZE));
-                final List<UserSecurityRepository.AdminEntry> content = page.getContent();
+                final List<UserSecurity> content = page.getContent();
                 for (int index = 0; index < content.size(); index++) {
                     if (content.get(index).getSecUsrId().compareTo(key) >= 0) {
                         return OptionalLong.of(pageStartOffset + index);
@@ -930,8 +885,7 @@ public class UserManagementService {
      * @return the rows, paging metadata, message and route for the client to render
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional(readOnly = true)
-    public UserResponse listUsers(final UserRequest request) {
+    public UserOutcome listUsers(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
         // L100-L103: SET ERR-FLG-OFF, USER-SEC-NOT-EOF, NEXT-PAGE-NO and SEND-ERASE-YES TO TRUE.
@@ -944,10 +898,10 @@ public class UserManagementService {
         // L108: MOVE -1 TO USRIDINL, placing the cursor on the identifier field.
         state.focusFieldId = FIELD_LIST_USER_ID;
 
-        final NavigationContext inbound = request.navigationContext();
+        final ScreenNavigationState inbound = request.navigationContext();
         // L110-L112: a zero-length communication area nominates sign-on and transfers.
         if (isNavigationStateAbsent(inbound)) {
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
             LOG.debug("User list entered with no prior navigation state: transaction={}",
                     LIST_TRANSACTION_ID);
             returnToPrevScreen(state, SIGN_ON_PROGRAM_NAME, LIST_TRANSACTION_ID, LIST_PROGRAM_NAME,
@@ -1007,14 +961,14 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void processListEnterKey(final UserRequest request, final TurnState state) {
+    private void processListEnterKey(final UserCommand request, final TurnState state) {
         final SequentialBrowse browse = new SequentialBrowse(userSecurityRepository);
         final int selectedPosition = firstSelectedRowPosition(request.rowSelections());
         if (selectedPosition > 0) {
             final String marker = request.rowSelections().get(selectedPosition - 1);
             final Optional<String> selectedUserId =
-                    selectedUserIdAtPosition(browse, state, request.firstUserIdOnPage(),
-                            selectedPosition);
+                    selectedUserIdAtPosition(browse, state, request.rowSnapshotToken(),
+                            request.firstUserIdOnPage(), selectedPosition);
             // L187-L188: both the marker and the selected identifier must be present to dispatch.
             if (selectedUserId.isPresent()) {
                 if (dispatchSelection(state, marker, selectedUserId.get())) {
@@ -1023,7 +977,7 @@ public class UserManagementService {
                 }
                 // L210-L214: the default arm. Text only; the error flag is deliberately left clear,
                 // matching the source, which sets no flag here and falls through to rebuild the page.
-                state.message = UserResponse.MSG_LIST_INVALID_SELECTION;
+                state.message = UserOutcome.MSG_LIST_INVALID_SELECTION;
                 state.focusFieldId = FIELD_LIST_USER_ID;
             }
         }
@@ -1054,7 +1008,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void processPf7Key(final UserRequest request, final TurnState state) {
+    private void processPf7Key(final UserCommand request, final TurnState state) {
         final String firstOnPage = request.firstUserIdOnPage();
         final BrowseAnchor anchor = isBlank(firstOnPage) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
         // L245: SET NEXT-PAGE-YES TO TRUE.
@@ -1078,7 +1032,7 @@ public class UserManagementService {
         // is overwritten in place, and the error flag is deliberately left clear as the source leaves
         // it.
         browse.release();
-        state.message = UserResponse.MSG_LIST_ALREADY_AT_TOP;
+        state.message = UserOutcome.MSG_LIST_ALREADY_AT_TOP;
         state.sendEraseFlag = SendEraseFlag.NO;
     }
 
@@ -1103,7 +1057,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void processPf8Key(final UserRequest request, final TurnState state) {
+    private void processPf8Key(final UserCommand request, final TurnState state) {
         final String lastOnPage = request.lastUserIdOnPage();
         final BrowseAnchor anchor = isBlank(lastOnPage) ? BrowseAnchor.HIGH_VALUES : BrowseAnchor.KEY;
         // L268: MOVE -1 TO USRIDINL.
@@ -1128,7 +1082,7 @@ public class UserManagementService {
         }
         // L272-L276: already at the bottom. Text only; the error flag stays clear, as in the source.
         browse.release();
-        state.message = UserResponse.MSG_LIST_ALREADY_AT_BOTTOM;
+        state.message = UserOutcome.MSG_LIST_ALREADY_AT_BOTTOM;
         state.sendEraseFlag = SendEraseFlag.NO;
     }
 
@@ -1156,7 +1110,7 @@ public class UserManagementService {
                                     final BrowseAnchor anchor,
                                     final String key,
                                     final KeyAction keyAction) {
-        state.pageDirection = PageMetadata.PagingDirection.FORWARD;
+        state.pageDirection = BrowseWindow.PagingDirection.FORWARD;
         // L284: PERFORM STARTBR-USER-SEC-FILE.
         final OptionalLong positioned = startbrUserSecFile(browse, state, anchor, key);
         // L286: IF NOT ERR-FLG-ON.
@@ -1179,7 +1133,7 @@ public class UserManagementService {
         // L298-L306: MOVE 1 TO WS-IDX, then fill upward until the slot count is exceeded.
         int slot = 1;
         while (slot <= USER_LIST_PAGE_SIZE && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurityRepository.AdminEntry> row =
+            final Optional<UserSecurity> row =
                     readnextUserSecFile(browse, state, offset);
             if (row.isPresent() && !state.errorFlag.isOn()) {
                 populateUserData(state, slot, row.get());
@@ -1190,7 +1144,7 @@ public class UserManagementService {
         // L308-L323: one read past the page decides whether a further page follows.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
             state.pageNumber++;
-            final Optional<UserSecurityRepository.AdminEntry> beyond =
+            final Optional<UserSecurity> beyond =
                     readnextUserSecFile(browse, state, offset);
             state.nextPageFlag = beyond.isPresent() && !state.errorFlag.isOn()
                     ? NextPageFlag.YES
@@ -1230,7 +1184,7 @@ public class UserManagementService {
                                      final BrowseAnchor anchor,
                                      final String key,
                                      final KeyAction keyAction) {
-        state.pageDirection = PageMetadata.PagingDirection.BACKWARD;
+        state.pageDirection = BrowseWindow.PagingDirection.BACKWARD;
         // L338: PERFORM STARTBR-USER-SEC-FILE.
         final OptionalLong positioned = startbrUserSecFile(browse, state, anchor, key);
         // L340: IF NOT ERR-FLG-ON.
@@ -1252,7 +1206,7 @@ public class UserManagementService {
         // L352-L360: MOVE 10 TO WS-IDX, then fill downward until the slot number falls below one.
         int slot = USER_LIST_PAGE_SIZE;
         while (slot >= 1 && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurityRepository.AdminEntry> row =
+            final Optional<UserSecurity> row =
                     readprevUserSecFile(browse, state, offset);
             if (row.isPresent() && !state.errorFlag.isOn()) {
                 populateUserData(state, slot, row.get());
@@ -1262,7 +1216,7 @@ public class UserManagementService {
         }
         // L362-L372: one read further back decides the counter, which is floored at one.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurityRepository.AdminEntry> beyond =
+            final Optional<UserSecurity> beyond =
                     readprevUserSecFile(browse, state, offset);
             if (state.nextPageFlag.isYes()) {
                 final boolean furtherPageExists =
@@ -1289,16 +1243,17 @@ public class UserManagementService {
      *
      * @param state the turn being assembled
      * @param slot  the one-based slot number
-     * @param row   the projected row, which carries no credential
+     * @param row   the row to display; only its four screen fields are read and its credential
+     *              digest is never touched
      */
     private void populateUserData(final TurnState state,
                                   final int slot,
-                                  final UserSecurityRepository.AdminEntry row) {
+                                  final UserSecurity row) {
         if (slot < 1 || slot > USER_LIST_PAGE_SIZE) {
             // L439-L440: WHEN OTHER CONTINUE.
             return;
         }
-        state.rowSlots[slot - 1] = new UserResponse.UserRow(
+        state.rowSlots[slot - 1] = new UserOutcome.UserRow(
                 null, row.getSecUsrId(), row.getSecUsrFname(), row.getSecUsrLname(),
                 row.getSecUsrType());
         if (slot == 1) {
@@ -1345,19 +1300,22 @@ public class UserManagementService {
      * @param state the assembled turn
      * @return the response for the client to render
      */
-    private UserResponse sendUsrlstScreen(final TurnState state) {
+    private UserOutcome sendUsrlstScreen(final TurnState state) {
         populateHeaderInfo(state, LIST_TRANSACTION_ID, LIST_PROGRAM_NAME);
-        final List<UserResponse.UserRow> rows = state.populatedRows();
-        PageMetadata pageMetadata = null;
+        final List<UserOutcome.UserRow> rows = state.populatedRows();
+        final String rowSnapshotToken = rows.isEmpty()
+                ? null
+                : pageTokenService.mint(rows.stream().map(UserOutcome.UserRow::userId).toList());
+        BrowseWindow pageMetadata = null;
         if (state.pageDirection != null) {
             final String displayedPageNumber = CobolStringUtils.rightJustifyZeroFill(
                     Integer.toString(Math.max(state.pageNumber, 0)),
-                    PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH);
-            pageMetadata = state.pageDirection == PageMetadata.PagingDirection.BACKWARD
-                    ? PageMetadata.backward(rows.size(), state.firstUserIdOnPage,
+                    BrowseWindow.DISPLAYED_PAGE_NUMBER_MAX_LENGTH);
+            pageMetadata = state.pageDirection == BrowseWindow.PagingDirection.BACKWARD
+                    ? BrowseWindow.backward(rows.size(), state.firstUserIdOnPage,
                             state.lastUserIdOnPage, state.nextPageFlag.isYes(),
                             state.pageNumber > 1, displayedPageNumber)
-                    : PageMetadata.forward(rows.size(), state.firstUserIdOnPage,
+                    : BrowseWindow.forward(rows.size(), state.firstUserIdOnPage,
                             state.lastUserIdOnPage, state.nextPageFlag.isYes(),
                             state.pageNumber > 1, displayedPageNumber);
         }
@@ -1376,9 +1334,10 @@ public class UserManagementService {
                     + " pageNumber={} error={}", LIST_TRANSACTION_ID, rows.size(), state.pageNumber,
                     state.errorFlag);
         }
-        return new UserResponse(
+        return new UserOutcome(
                 rows,
                 pageMetadata,
+                rowSnapshotToken,
                 state.userId,
                 state.firstName,
                 state.lastName,
@@ -1411,7 +1370,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void receiveUsrlstScreen(final UserRequest request, final TurnState state) {
+    private void receiveUsrlstScreen(final UserCommand request, final TurnState state) {
         state.userId = request.searchUserId();
     }
 
@@ -1447,12 +1406,12 @@ public class UserManagementService {
             };
             response = positioned.isPresent() ? BrowseResponse.NORMAL : BrowseResponse.END_OF_SEQUENCE;
         } catch (final RuntimeException failure) {
-            LOG.warn("User list positioning failed: transaction={} anchor={}", LIST_TRANSACTION_ID,
-                    anchor, failure);
-            applyBrowseResponse(state, BrowseResponse.OTHER, UserResponse.MSG_LIST_AT_TOP);
+            LOG.warn("User list positioning failed: transaction={} anchor={} failureChain={}",
+                    LIST_TRANSACTION_ID, anchor, FailureDiagnostics.failureChainOf(failure));
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
             return OptionalLong.empty();
         }
-        applyBrowseResponse(state, response, UserResponse.MSG_LIST_AT_TOP);
+        applyBrowseResponse(state, response, UserOutcome.MSG_LIST_AT_TOP);
         return positioned;
     }
 
@@ -1469,9 +1428,9 @@ public class UserManagementService {
      * @param offset the offset to read
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurityRepository.AdminEntry> readnextUserSecFile(
+    private Optional<UserSecurity> readnextUserSecFile(
             final SequentialBrowse browse, final TurnState state, final long offset) {
-        return readOneRow(browse, state, offset, UserResponse.MSG_LIST_REACHED_BOTTOM);
+        return readOneRow(browse, state, offset, UserOutcome.MSG_LIST_REACHED_BOTTOM);
     }
 
     /**
@@ -1488,9 +1447,9 @@ public class UserManagementService {
      * @param offset the offset to read
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurityRepository.AdminEntry> readprevUserSecFile(
+    private Optional<UserSecurity> readprevUserSecFile(
             final SequentialBrowse browse, final TurnState state, final long offset) {
-        return readOneRow(browse, state, offset, UserResponse.MSG_LIST_REACHED_TOP);
+        return readOneRow(browse, state, offset, UserOutcome.MSG_LIST_REACHED_TOP);
     }
 
     /**
@@ -1543,29 +1502,45 @@ public class UserManagementService {
      * Recovers the identifier displayed at one row of the page the operator was looking at.
      *
      * <p>The legacy reads this straight out of the echoed map, which holds the identifier the screen
-     * displayed in that row. The request contract carries no per-row identifier echo - deliberately,
-     * because an identifier a client supplies is an identifier a client can substitute - so the row
-     * is recovered by re-reading the page the operator was on and taking it by position. The page is
-     * the one anchored on its retained first identifier, which is the same anchor the backward pager
-     * uses, so the row recovered is the row displayed.
+     * displayed in that row. A REST client cannot safely echo those identifiers directly, and
+     * re-reading a mutable page would allow an intervening insert or delete to move a different user
+     * into the selected position. The response therefore seals the ordered displayed identifiers in
+     * an authenticated page token, and this method resolves the marker only from that snapshot.
      *
-     * @param browse      the browse to read through
-     * @param firstOnPage the retained first identifier of the page, or blank on a first entry
-     * @param position    the one-based row position that was marked
-     * @return the identifier at that position, or an empty result when the page no longer has such a
-     *         row - which is the source's condition at L188 of a blank selected identifier
+     * @param state     the turn being assembled
+     * @param rowSnapshotToken authenticated snapshot echoed from the displayed rows
+     * @param position         the one-based row position that was marked
+     * @return the identifier that occupied that displayed position, or an empty result when the
+     *         snapshot was shorter than the submitted position
      */
     private Optional<String> selectedUserIdAtPosition(final SequentialBrowse browse,
                                                       final TurnState state,
+                                                      final String rowSnapshotToken,
                                                       final String firstOnPage,
                                                       final int position) {
-        final BrowseAnchor anchor = isBlank(firstOnPage) ? BrowseAnchor.LOW_VALUES : BrowseAnchor.KEY;
+        if (!isBlank(rowSnapshotToken)) {
+            try {
+                return pageTokenService.resolve(rowSnapshotToken, position);
+            } catch (final IllegalArgumentException rejected) {
+                LOG.warn("User list page snapshot was refused: transaction={} failureChain={}",
+                        LIST_TRANSACTION_ID, FailureDiagnostics.failureChainOf(rejected));
+                applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
+                return Optional.empty();
+            }
+        }
+
+        final BrowseAnchor anchor = isBlank(firstOnPage)
+                ? BrowseAnchor.LOW_VALUES
+                : BrowseAnchor.KEY;
         final OptionalLong pageStart = probeAnchor(browse, state, anchor, firstOnPage);
         if (pageStart.isEmpty()) {
+            if (!isBlank(firstOnPage) && !state.errorFlag.isOn()) {
+                applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
+            }
             return Optional.empty();
         }
         return probeRowAt(browse, state, pageStart.getAsLong() + position - 1L)
-                .map(UserSecurityRepository.AdminEntry::getSecUsrId);
+                .map(UserSecurity::getSecUsrId);
     }
 
     /**
@@ -1595,9 +1570,9 @@ public class UserManagementService {
         try {
             return locateAnchor(browse, anchor, key);
         } catch (final RuntimeException failure) {
-            LOG.warn("User list anchor probe failed: transaction={} anchor={}", LIST_TRANSACTION_ID,
-                    anchor, failure);
-            applyBrowseResponse(state, BrowseResponse.OTHER, UserResponse.MSG_LIST_AT_TOP);
+            LOG.warn("User list anchor probe failed: transaction={} anchor={} failureChain={}",
+                    LIST_TRANSACTION_ID, anchor, FailureDiagnostics.failureChainOf(failure));
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
             return OptionalLong.empty();
         }
     }
@@ -1611,15 +1586,15 @@ public class UserManagementService {
      * @return the row at that offset, or an empty result at the end of the sequence or when the store
      *         refused the probe
      */
-    private Optional<UserSecurityRepository.AdminEntry> probeRowAt(final SequentialBrowse browse,
+    private Optional<UserSecurity> probeRowAt(final SequentialBrowse browse,
                                                                   final TurnState state,
                                                                   final long offset) {
         try {
             return browse.rowAt(offset);
         } catch (final RuntimeException failure) {
-            LOG.warn("User list row probe failed: transaction={} offset={}", LIST_TRANSACTION_ID,
-                    offset, failure);
-            applyBrowseResponse(state, BrowseResponse.OTHER, UserResponse.MSG_LIST_AT_TOP);
+            LOG.warn("User list row probe failed: transaction={} offset={} failureChain={}",
+                    LIST_TRANSACTION_ID, offset, FailureDiagnostics.failureChainOf(failure));
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
             return Optional.empty();
         }
     }
@@ -1656,7 +1631,7 @@ public class UserManagementService {
         }
         state.context = withRouting(state.context, LIST_TRANSACTION_ID, LIST_PROGRAM_NAME,
                 destination.getLegacyTransactionId(), destination.getLegacyProgramName(),
-                NavigationContext.ProgramContext.ENTER);
+                ScreenNavigationState.ProgramContext.ENTER);
         state.route = destination;
         state.userId = selectedUserId;
         LOG.debug("User list dispatching a row selection: transaction={} destination={}",
@@ -1721,16 +1696,17 @@ public class UserManagementService {
      * @param endOfSequenceMessage the text the end-of-sequence arm emits
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurityRepository.AdminEntry> readOneRow(
+    private Optional<UserSecurity> readOneRow(
             final SequentialBrowse browse,
             final TurnState state,
             final long offset,
             final String endOfSequenceMessage) {
-        final Optional<UserSecurityRepository.AdminEntry> row;
+        final Optional<UserSecurity> row;
         try {
             row = browse.rowAt(offset);
         } catch (final RuntimeException failure) {
-            LOG.warn("User list read failed: transaction={}", LIST_TRANSACTION_ID, failure);
+            LOG.warn("User list read failed: transaction={} failureChain={}", LIST_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
             applyBrowseResponse(state, BrowseResponse.OTHER, endOfSequenceMessage);
             return Optional.empty();
         }
@@ -1766,7 +1742,7 @@ public class UserManagementService {
             }
             case OTHER -> {
                 state.errorFlag = ErrorFlag.ON;
-                state.message = UserResponse.MSG_LIST_UNABLE_TO_LOOKUP_USER;
+                state.message = UserOutcome.MSG_LIST_UNABLE_TO_LOOKUP_USER;
                 state.focusFieldId = FIELD_LIST_USER_ID;
             }
         }
@@ -1792,8 +1768,7 @@ public class UserManagementService {
      * @return the message, field errors and route for the client to render
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional
-    public UserResponse addUser(final UserRequest request) {
+    public UserOutcome addUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
         // L73: SET ERR-FLG-OFF TO TRUE.
@@ -1801,10 +1776,10 @@ public class UserManagementService {
         // L75-L76: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
         state.message = null;
 
-        final NavigationContext inbound = request.navigationContext();
+        final ScreenNavigationState inbound = request.navigationContext();
         // L78-L80: a zero-length communication area nominates sign-on and transfers.
         if (isNavigationStateAbsent(inbound)) {
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
             LOG.debug("User add entered with no prior navigation state: transaction={}",
                     ADD_TRANSACTION_ID);
             returnToPrevScreen(state, SIGN_ON_PROGRAM_NAME, ADD_TRANSACTION_ID, ADD_PROGRAM_NAME,
@@ -1850,12 +1825,9 @@ public class UserManagementService {
      *
      * <p>L117-L151 is an {@code EVALUATE TRUE} whose five conditions test the five items for
      * emptiness <strong>in this order</strong>: given name, family name, identifier, credential, type.
-     * {@code EVALUATE} stops at its first true condition, so the summary text and the cursor position
-     * belong to the <strong>first</strong> empty item and later ones contribute neither. The
-     * per-field error entries are independent of that and are raised for <em>every</em> empty item, so
-     * a client can decorate all of them at once; the summary and the focus remain the first, exactly
-     * as the screen showed. The final arm at L148-L150 places the cursor on the given-name field and
-     * continues.
+     * {@code EVALUATE} stops at its first true condition, so exactly one summary text, one cursor and
+     * one field-level error belong to the <strong>first</strong> empty item. The final arm at
+     * L148-L150 places the cursor on the given-name field and continues.
      *
      * <p>L153-L159 then moves the five items into the record and writes it, but only when the error
      * flag is clear.
@@ -1873,37 +1845,36 @@ public class UserManagementService {
         // L118-L123: WHEN FNAMEI = SPACES OR LOW-VALUES.
         if (isBlank(state.firstName)) {
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
-                    UserResponse.MSG_ADD_FIRST_NAME_EMPTY);
+                    UserOutcome.MSG_ADD_FIRST_NAME_EMPTY);
         }
         // L124-L129: WHEN LNAMEI = SPACES OR LOW-VALUES.
         if (isBlank(state.lastName)) {
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
-                    UserResponse.MSG_ADD_LAST_NAME_EMPTY);
+                    UserOutcome.MSG_ADD_LAST_NAME_EMPTY);
         }
         // L130-L135: WHEN USERIDI = SPACES OR LOW-VALUES.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_ADD_USER_ID,
-                    UserResponse.MSG_ADD_USER_ID_EMPTY);
+                    UserOutcome.MSG_ADD_USER_ID_EMPTY);
         }
         // L136-L141: WHEN PASSWDI = SPACES OR LOW-VALUES. The submitted credential is inspected only
         // for emptiness; its value is neither retained on the turn nor placed in any error entry.
         if (isBlank(state.submittedCredential)) {
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
-                    UserResponse.MSG_ADD_CREDENTIAL_FIELD_EMPTY);
+                    UserOutcome.MSG_ADD_CREDENTIAL_FIELD_EMPTY);
         }
         // L142-L147: WHEN USRTYPEI = SPACES OR LOW-VALUES.
         if (isBlank(state.userType)) {
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
-                    UserResponse.MSG_ADD_USER_TYPE_EMPTY);
+                    UserOutcome.MSG_ADD_USER_TYPE_EMPTY);
+        }
+        if (state.errorFlag.isOn()) {
+            return;
         }
         // L148-L150: WHEN OTHER places the cursor on the given-name field and continues.
-        if (!state.errorFlag.isOn()) {
-            state.focusFieldId = FIELD_FIRST_NAME;
-        }
+        state.focusFieldId = FIELD_FIRST_NAME;
         // L153-L159: IF NOT ERR-FLG-ON, move the five items into the record and write it.
-        if (!state.errorFlag.isOn()) {
-            writeUserSecFile(state);
-        }
+        writeUserSecFile(state);
     }
 
     /**
@@ -1917,7 +1888,7 @@ public class UserManagementService {
      * @param state the assembled turn
      * @return the response for the client to render
      */
-    private UserResponse sendUsraddScreen(final TurnState state) {
+    private UserOutcome sendUsraddScreen(final TurnState state) {
         populateHeaderInfo(state, ADD_TRANSACTION_ID, ADD_PROGRAM_NAME);
         return buildRecordScreen(state);
     }
@@ -1933,7 +1904,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void receiveUsraddScreen(final UserRequest request, final TurnState state) {
+    private void receiveUsraddScreen(final UserCommand request, final TurnState state) {
         state.userId = request.userId();
         state.firstName = request.firstName();
         state.lastName = request.lastName();
@@ -1970,52 +1941,54 @@ public class UserManagementService {
      * @param state the turn being assembled
      */
     private void writeUserSecFile(final TurnState state) {
-        final RecordResponse response;
+        RecordResponse response;
         UserSecurity stored = null;
+        final String recordKey = recordKeyOf(state.userId);
         try {
-            if (userSecurityRepository.findById(state.userId).isPresent()) {
+            stored = recordWriter.insertIndependently(new UserSecurity(
+                    recordKey,
+                    state.firstName,
+                    state.lastName,
+                    passwordEncoder.encode(state.submittedCredential),
+                    state.userType));
+            response = RecordResponse.NORMAL;
+        } catch (final RuntimeException failure) {
+            if (RecordWriter.isDuplicateKey(failure)) {
+                LOG.info("User add refused an existing identifier: transaction={}",
+                        ADD_TRANSACTION_ID);
                 response = RecordResponse.DUPLICATE;
             } else {
-                stored = userSecurityRepository.save(new UserSecurity(
-                        state.userId,
-                        state.firstName,
-                        state.lastName,
-                        passwordEncoder.encode(state.submittedCredential),
-                        state.userType));
-                response = RecordResponse.NORMAL;
+                LOG.warn("User add write failed: transaction={} failureChain={}", ADD_TRANSACTION_ID,
+                        FailureDiagnostics.failureChainOf(failure));
+                response = RecordResponse.OTHER;
             }
-        } catch (final RuntimeException failure) {
-            LOG.warn("User add write failed: transaction={}", ADD_TRANSACTION_ID, failure);
-            state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_ADD_UNABLE_TO_ADD_USER;
-            state.focusFieldId = FIELD_FIRST_NAME;
-            return;
         }
         switch (response) {
             case NORMAL -> {
                 // L252-L259: clear the fields, then build the success text from the stored identifier.
-                final String storedUserId = stored.getSecUsrId();
+                final UserSecurity storedIdentity = Objects.requireNonNull(stored);
+                final String storedUserId = storedIdentity.getSecUsrId();
                 initializeAddFields(state);
                 state.actionSucceeded = true;
-                state.message = UserResponse.MSG_ADD_SUCCESS_PREFIX
+                state.message = UserOutcome.MSG_ADD_SUCCESS_PREFIX
                         + delimitedBySpace(storedUserId)
-                        + UserResponse.MSG_ADD_SUCCESS_SUFFIX;
+                        + UserOutcome.MSG_ADD_SUCCESS_SUFFIX;
                 LOG.info("User added: transaction={} roleClass={}", ADD_TRANSACTION_ID,
-                        resolvedRoleClass(stored.getSecUsrType()));
+                        resolvedRoleClass(storedIdentity.getSecUsrType()));
             }
             case DUPLICATE -> {
                 // L262-L266: the two duplicate responses share one arm.
                 state.errorFlag = ErrorFlag.ON;
-                state.message = UserResponse.MSG_ADD_USER_ID_ALREADY_EXIST;
+                state.message = UserOutcome.MSG_ADD_USER_ID_ALREADY_EXIST;
                 state.focusFieldId = FIELD_ADD_USER_ID;
                 raiseFieldErrorState(state, PROPERTY_USER_ID, FIELD_ADD_USER_ID,
-                        ErrorResponse.FieldState.INVALID, UserResponse.MSG_ADD_USER_ID_ALREADY_EXIST);
+                        ValidationException.FieldState.INVALID, UserOutcome.MSG_ADD_USER_ID_ALREADY_EXIST);
             }
             case NOT_FOUND, OTHER -> {
                 // L267-L273: the default arm. The not-found response cannot arise on a write, so it
                 // shares the default arm rather than inventing an outcome the source cannot produce.
                 state.errorFlag = ErrorFlag.ON;
-                state.message = UserResponse.MSG_ADD_UNABLE_TO_ADD_USER;
+                state.message = UserOutcome.MSG_ADD_UNABLE_TO_ADD_USER;
                 state.focusFieldId = FIELD_FIRST_NAME;
             }
         }
@@ -2079,8 +2052,7 @@ public class UserManagementService {
      * @return the loaded or saved identity, the message, the field errors and the route
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional
-    public UserResponse updateUser(final UserRequest request) {
+    public UserOutcome updateUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
         // L84-L85: SET ERR-FLG-OFF and USR-MODIFIED-NO TO TRUE.
@@ -2089,10 +2061,10 @@ public class UserManagementService {
         // L87-L88: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
         state.message = null;
 
-        final NavigationContext inbound = request.navigationContext();
+        final ScreenNavigationState inbound = request.navigationContext();
         // L90-L92: a zero-length communication area nominates sign-on and transfers.
         if (isNavigationStateAbsent(inbound)) {
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
             LOG.debug("User update entered with no prior navigation state: transaction={}",
                     UPDATE_TRANSACTION_ID);
             returnToPrevScreen(state, SIGN_ON_PROGRAM_NAME, UPDATE_TRANSACTION_ID,
@@ -2172,7 +2144,7 @@ public class UserManagementService {
         // L146-L151: WHEN USRIDINI = SPACES OR LOW-VALUES.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    UserResponse.MSG_UPDATE_USER_ID_EMPTY);
+                    UserOutcome.MSG_UPDATE_USER_ID_EMPTY);
             return;
         }
         // L152-L154: WHEN OTHER places the cursor on the identifier field and continues.
@@ -2197,9 +2169,8 @@ public class UserManagementService {
      * <strong>{@code UPDATE-USER-INFO}, {@code app/cbl/COUSR02C.cbl} L177.</strong>
      *
      * <p>L179-L213 is an {@code EVALUATE TRUE} whose five conditions test for emptiness <strong>in
-     * this order</strong>: identifier, given name, family name, credential, type. The summary text and
-     * the cursor belong to the first empty item; the per-field entries are raised for every empty item
-     * independently.
+     * this order</strong>: identifier, given name, family name, credential, type. The first true arm
+     * returns immediately with its one summary text, one cursor and one field-level error.
      *
      * <p>L215-L234 then reads the record and compares the four editable fields, <strong>in the
      * source's order</strong>, setting the modified flag on the first difference in each. L236-L243
@@ -2232,28 +2203,28 @@ public class UserManagementService {
         // L180-L185: WHEN USRIDINI = SPACES OR LOW-VALUES.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    UserResponse.MSG_UPDATE_USER_ID_EMPTY);
+                    UserOutcome.MSG_UPDATE_USER_ID_EMPTY);
         }
         // L186-L191: WHEN FNAMEI = SPACES OR LOW-VALUES.
         if (isBlank(state.firstName)) {
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
-                    UserResponse.MSG_UPDATE_FIRST_NAME_EMPTY);
+                    UserOutcome.MSG_UPDATE_FIRST_NAME_EMPTY);
         }
         // L192-L197: WHEN LNAMEI = SPACES OR LOW-VALUES.
         if (isBlank(state.lastName)) {
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
-                    UserResponse.MSG_UPDATE_LAST_NAME_EMPTY);
+                    UserOutcome.MSG_UPDATE_LAST_NAME_EMPTY);
         }
         // L198-L203: WHEN PASSWDI = SPACES OR LOW-VALUES. An absent item is not an empty one: see the
         // three-case account in this method's documentation.
         if (state.submittedCredential != null && isBlank(state.submittedCredential)) {
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
-                    UserResponse.MSG_UPDATE_CREDENTIAL_FIELD_EMPTY);
+                    UserOutcome.MSG_UPDATE_CREDENTIAL_FIELD_EMPTY);
         }
         // L204-L209: WHEN USRTYPEI = SPACES OR LOW-VALUES.
         if (isBlank(state.userType)) {
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
-                    UserResponse.MSG_UPDATE_USER_TYPE_EMPTY);
+                    UserOutcome.MSG_UPDATE_USER_TYPE_EMPTY);
         }
         if (state.errorFlag.isOn()) {
             return;
@@ -2292,7 +2263,7 @@ public class UserManagementService {
             updateUserSecFile(state, identity);
             return;
         }
-        state.message = UserResponse.MSG_UPDATE_NO_CHANGE;
+        state.message = UserOutcome.MSG_UPDATE_NO_CHANGE;
     }
 
     /**
@@ -2306,7 +2277,7 @@ public class UserManagementService {
      * @param state the assembled turn
      * @return the response for the client to render
      */
-    private UserResponse sendUsrupdScreen(final TurnState state) {
+    private UserOutcome sendUsrupdScreen(final TurnState state) {
         populateHeaderInfo(state, UPDATE_TRANSACTION_ID, UPDATE_PROGRAM_NAME);
         return buildRecordScreen(state);
     }
@@ -2322,7 +2293,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void receiveUsrupdScreen(final UserRequest request, final TurnState state) {
+    private void receiveUsrupdScreen(final UserCommand request, final TurnState state) {
         state.userId = request.userId();
         state.firstName = request.firstName();
         state.lastName = request.lastName();
@@ -2351,25 +2322,26 @@ public class UserManagementService {
     private Optional<UserSecurity> readUserSecFileForUpdate(final TurnState state) {
         final Optional<UserSecurity> found;
         try {
-            found = userSecurityRepository.findById(state.userId);
+            found = userSecurityRepository.findById(recordKeyOf(state.userId));
         } catch (final RuntimeException failure) {
-            LOG.warn("User update read failed: transaction={}", UPDATE_TRANSACTION_ID, failure);
+            LOG.warn("User update read failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_UPDATE_UNABLE_TO_LOOKUP_USER;
+            state.message = UserOutcome.MSG_UPDATE_UNABLE_TO_LOOKUP_USER;
             state.focusFieldId = FIELD_FIRST_NAME;
             return Optional.empty();
         }
         if (found.isEmpty()) {
             // L340-L345: the not-found arm.
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_UPDATE_USER_ID_NOT_FOUND;
+            state.message = UserOutcome.MSG_UPDATE_USER_ID_NOT_FOUND;
             state.focusFieldId = FIELD_LIST_USER_ID;
             raiseFieldErrorState(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    ErrorResponse.FieldState.INVALID, UserResponse.MSG_UPDATE_USER_ID_NOT_FOUND);
+                    ValidationException.FieldState.INVALID, UserOutcome.MSG_UPDATE_USER_ID_NOT_FOUND);
             return Optional.empty();
         }
         // L334-L339: the normal arm emits the prompt and leaves the error flag clear.
-        state.message = UserResponse.MSG_UPDATE_PRESS_PF5;
+        state.message = UserOutcome.MSG_UPDATE_PRESS_PF5;
         return found;
     }
 
@@ -2388,25 +2360,39 @@ public class UserManagementService {
      * the four members contains a rollback - the estate's only explicit rollback is in the
      * account-update program.
      *
+     * <p><strong>Nor does it revoke anything, and it must not be given a step that does.</strong> A
+     * bearer session issued to this operator carries a fingerprint of the three security facts of this
+     * record - identifier, raw type code and stored credential digest - and the security boundary
+     * recomputes that fingerprint from the record on every request. So a type this method changed, and a
+     * credential digest it replaced, end every session issued before the change on the next request the
+     * holder makes, with nothing stored, versioned or bumped here. {@link SignOnStateService} owns that
+     * mechanism; a revocation step added to this paragraph would be a second mechanism that could
+     * disagree with it, and one that a future write path could forget.
+     *
      * @param state    the turn being assembled
      * @param identity the identity to save, already carrying the changed fields
      */
     private void updateUserSecFile(final TurnState state, final UserSecurity identity) {
         final UserSecurity saved;
         try {
-            saved = userSecurityRepository.save(identity);
+            saved = transactionBoundary.execute(() -> {
+                final UserSecurity persisted = userSecurityRepository.save(identity);
+                recordWriter.flush();
+                return persisted;
+            });
         } catch (final RuntimeException failure) {
-            LOG.warn("User update save failed: transaction={}", UPDATE_TRANSACTION_ID, failure);
+            LOG.warn("User update save failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_UPDATE_UNABLE_TO_UPDATE_USER;
+            state.message = UserOutcome.MSG_UPDATE_UNABLE_TO_UPDATE_USER;
             state.focusFieldId = FIELD_FIRST_NAME;
             return;
         }
         // L369-L376: the normal arm.
         state.actionSucceeded = true;
-        state.message = UserResponse.MSG_UPDATE_SUCCESS_PREFIX
+        state.message = UserOutcome.MSG_UPDATE_SUCCESS_PREFIX
                 + delimitedBySpace(saved.getSecUsrId())
-                + UserResponse.MSG_UPDATE_SUCCESS_SUFFIX;
+                + UserOutcome.MSG_UPDATE_SUCCESS_SUFFIX;
         LOG.info("User updated: transaction={} roleClass={}", UPDATE_TRANSACTION_ID,
                 resolvedRoleClass(saved.getSecUsrType()));
     }
@@ -2467,8 +2453,7 @@ public class UserManagementService {
      * @return the loaded identity, the message, the field errors and the route
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional
-    public UserResponse deleteUser(final UserRequest request) {
+    public UserOutcome deleteUser(final UserCommand request) {
         Objects.requireNonNull(request, "request must not be null");
         final TurnState state = new TurnState();
         // L84-L85: SET ERR-FLG-OFF and USR-MODIFIED-NO TO TRUE. The modified flag is declared by this
@@ -2478,10 +2463,10 @@ public class UserManagementService {
         // L87-L88: MOVE SPACES TO WS-MESSAGE and to the error line of the output map.
         state.message = null;
 
-        final NavigationContext inbound = request.navigationContext();
+        final ScreenNavigationState inbound = request.navigationContext();
         // L90-L92: a zero-length communication area nominates sign-on and transfers.
         if (isNavigationStateAbsent(inbound)) {
-            state.context = NavigationContext.empty();
+            state.context = ScreenNavigationState.empty();
             LOG.debug("User delete entered with no prior navigation state: transaction={}",
                     DELETE_TRANSACTION_ID);
             returnToPrevScreen(state, SIGN_ON_PROGRAM_NAME, DELETE_TRANSACTION_ID,
@@ -2554,7 +2539,7 @@ public class UserManagementService {
         // L145-L150: WHEN USRIDINI = SPACES OR LOW-VALUES.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    UserResponse.MSG_DELETE_USER_ID_EMPTY);
+                    UserOutcome.MSG_DELETE_USER_ID_EMPTY);
             return;
         }
         // L151-L153: WHEN OTHER places the cursor on the identifier field and continues.
@@ -2594,7 +2579,7 @@ public class UserManagementService {
         // L177-L182: WHEN USRIDINI = SPACES OR LOW-VALUES.
         if (isBlank(state.userId)) {
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    UserResponse.MSG_DELETE_USER_ID_EMPTY);
+                    UserOutcome.MSG_DELETE_USER_ID_EMPTY);
             return;
         }
         // L183-L185: WHEN OTHER places the cursor on the identifier field and continues.
@@ -2614,7 +2599,7 @@ public class UserManagementService {
      * @param state the assembled turn
      * @return the response for the client to render
      */
-    private UserResponse sendUsrdelScreen(final TurnState state) {
+    private UserOutcome sendUsrdelScreen(final TurnState state) {
         populateHeaderInfo(state, DELETE_TRANSACTION_ID, DELETE_PROGRAM_NAME);
         return buildRecordScreen(state);
     }
@@ -2630,7 +2615,7 @@ public class UserManagementService {
      * @param request the submitted screen
      * @param state   the turn being assembled
      */
-    private void receiveUsrdelScreen(final UserRequest request, final TurnState state) {
+    private void receiveUsrdelScreen(final UserCommand request, final TurnState state) {
         state.userId = request.userId();
         state.firstName = request.firstName();
         state.lastName = request.lastName();
@@ -2652,13 +2637,14 @@ public class UserManagementService {
     private Optional<UserSecurity> readUserSecFileForDelete(final TurnState state) {
         final Optional<UserSecurity> found;
         try {
-            found = userSecurityRepository.findById(state.userId);
+            found = userSecurityRepository.findById(recordKeyOf(state.userId));
         } catch (final RuntimeException failure) {
-            LOG.warn("User delete read failed: transaction={}", DELETE_TRANSACTION_ID, failure);
+            LOG.warn("User delete read failed: transaction={} failureChain={}", DELETE_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
             // L293-L299: the catch-all arm.
             state.readResponse = RecordResponse.OTHER;
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_DELETE_UNABLE_TO_LOOKUP_USER;
+            state.message = UserOutcome.MSG_DELETE_UNABLE_TO_LOOKUP_USER;
             state.focusFieldId = FIELD_FIRST_NAME;
             return Optional.empty();
         }
@@ -2666,15 +2652,15 @@ public class UserManagementService {
             // L287-L292: the not-found arm.
             state.readResponse = RecordResponse.NOT_FOUND;
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_DELETE_USER_ID_NOT_FOUND;
+            state.message = UserOutcome.MSG_DELETE_USER_ID_NOT_FOUND;
             state.focusFieldId = FIELD_LIST_USER_ID;
             raiseFieldErrorState(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
-                    ErrorResponse.FieldState.INVALID, UserResponse.MSG_DELETE_USER_ID_NOT_FOUND);
+                    ValidationException.FieldState.INVALID, UserOutcome.MSG_DELETE_USER_ID_NOT_FOUND);
             return Optional.empty();
         }
         // L281-L286: the normal arm emits the prompt and leaves the error flag clear.
         state.readResponse = RecordResponse.NORMAL;
-        state.message = UserResponse.MSG_DELETE_PRESS_PF5;
+        state.message = UserOutcome.MSG_DELETE_PRESS_PF5;
         return found;
     }
 
@@ -2688,6 +2674,12 @@ public class UserManagementService {
      * the identifier must be captured <em>before</em> the fields are cleared, because the source builds
      * the text from the record area rather than from the screen. The not-found arm emits the not-found
      * text.
+     *
+     * <p><strong>Removing the record is what ends the removed operator's sessions</strong>, and nothing
+     * further is required here. The security boundary reads this record on every request that presents a
+     * bearer session and establishes no identity when it is gone, so a session already in the removed
+     * operator's hands stops working on their next request rather than at the end of its lifetime. See
+     * {@link SignOnStateService}, which is the one place that mechanism lives.
      *
      * <p><strong>The default arm's text is a source oddity, and it is reproduced rather than
      * corrected.</strong> At L332 the failure arm of the <em>delete</em> paragraph emits the
@@ -2708,12 +2700,12 @@ public class UserManagementService {
             switch (state.readResponse) {
                 case NOT_FOUND -> {
                     state.errorFlag = ErrorFlag.ON;
-                    state.message = UserResponse.MSG_DELETE_USER_ID_NOT_FOUND;
+                    state.message = UserOutcome.MSG_DELETE_USER_ID_NOT_FOUND;
                     state.focusFieldId = FIELD_LIST_USER_ID;
                 }
                 case NORMAL, DUPLICATE, OTHER -> {
                     state.errorFlag = ErrorFlag.ON;
-                    state.message = UserResponse.MSG_DELETE_UNABLE_TO_UPDATE_USER;
+                    state.message = UserOutcome.MSG_DELETE_UNABLE_TO_UPDATE_USER;
                     state.focusFieldId = FIELD_FIRST_NAME;
                 }
             }
@@ -2725,12 +2717,17 @@ public class UserManagementService {
         // from the record that was read rather than from the echoed screen item.
         final String removedRoleCode = found.get().getSecUsrType();
         try {
-            userSecurityRepository.deleteById(removedUserId);
+            transactionBoundary.execute(() -> {
+                userSecurityRepository.deleteById(removedUserId);
+                recordWriter.flush();
+                return Boolean.TRUE;
+            });
         } catch (final RuntimeException failure) {
-            LOG.warn("User delete removal failed: transaction={}", DELETE_TRANSACTION_ID, failure);
+            LOG.warn("User delete removal failed: transaction={} failureChain={}",
+                    DELETE_TRANSACTION_ID, FailureDiagnostics.failureChainOf(failure));
             // L329-L335: the default arm, whose text names the update operation in the source.
             state.errorFlag = ErrorFlag.ON;
-            state.message = UserResponse.MSG_DELETE_UNABLE_TO_UPDATE_USER;
+            state.message = UserOutcome.MSG_DELETE_UNABLE_TO_UPDATE_USER;
             state.focusFieldId = FIELD_FIRST_NAME;
             return;
         }
@@ -2738,9 +2735,9 @@ public class UserManagementService {
         // identifier.
         initializeDeleteFields(state);
         state.actionSucceeded = true;
-        state.message = UserResponse.MSG_DELETE_SUCCESS_PREFIX
+        state.message = UserOutcome.MSG_DELETE_SUCCESS_PREFIX
                 + delimitedBySpace(removedUserId)
-                + UserResponse.MSG_DELETE_SUCCESS_SUFFIX;
+                + UserOutcome.MSG_DELETE_SUCCESS_SUFFIX;
         LOG.info("User deleted: transaction={} roleClass={}", DELETE_TRANSACTION_ID,
                 resolvedRoleClass(removedRoleCode));
     }
@@ -2814,12 +2811,12 @@ public class UserManagementService {
         // L511-L513: record the originating identity and zero the program context, which is the
         // first-entry state - the receiving screen must not believe it is being re-entered.
         state.context = withRouting(
-                state.context == null ? NavigationContext.empty() : state.context,
+                state.context == null ? ScreenNavigationState.empty() : state.context,
                 fromTransactionId,
                 fromProgram,
                 state.context == null ? null : state.context.toTransactionId(),
                 destinationProgram,
-                NavigationContext.ProgramContext.ENTER);
+                ScreenNavigationState.ProgramContext.ENTER);
         // L514-L517: transfer control, which is a resolved destination in the response.
         state.route = navigationService.resolveNominatedDestination(carriedState(state.context), callerDefault);
         LOG.debug("Returning to the previous screen: from={} destination={}", fromProgram,
@@ -2879,8 +2876,8 @@ public class UserManagementService {
      * @param state the assembled turn
      * @return the response for the client to render
      */
-    private UserResponse buildRecordScreen(final TurnState state) {
-        return new UserResponse(
+    private UserOutcome buildRecordScreen(final TurnState state) {
+        return new UserOutcome(
                 List.of(),
                 null,
                 state.userId,
@@ -2903,15 +2900,12 @@ public class UserManagementService {
     }
 
     /**
-     * Records a missing mandatory item: the summary text and cursor go to the first such item, while
-     * the per-field entry is recorded for every one of them.
+     * Records the single missing mandatory item selected by an ordered {@code EVALUATE TRUE} cascade.
      *
      * <p>This is where the legacy {@code EVALUATE TRUE} cascade and the field-level error contract are
-     * reconciled. The cascade stops at its first true condition, so exactly one summary text and one
-     * cursor position exist per submission - and that is preserved by assigning them only the first
-     * time this method fires on a turn. The field-level contract, by contrast, is a set of independent
-     * per-field flags, so an entry is added for <strong>every</strong> empty item, letting a client
-     * decorate all of them at once as the screen's own decoration macro did.
+     * reproduced. The cascade stops at its first true condition, and each caller returns immediately
+     * after this method, so one submission carries exactly one summary text, one cursor position and
+     * one per-field entry.
      *
      * <p>The state is {@code MISSING} rather than {@code INVALID} because the item was left blank,
      * which is the distinction the two-state contract exists to draw: one tells the operator to supply
@@ -2926,15 +2920,14 @@ public class UserManagementService {
                                 final String propertyName,
                                 final String screenFieldId,
                                 final String message) {
-        final boolean firstError = !state.errorFlag.isOn();
         // MOVE 'Y' TO WS-ERR-FLG, present in every arm of every cascade.
+        final boolean firstError = !state.errorFlag.isOn();
         state.errorFlag = ErrorFlag.ON;
         if (firstError) {
-            // The first arm to fire owns the summary line and the cursor; later arms do not.
             state.message = message;
             state.focusFieldId = screenFieldId;
         }
-        raiseFieldErrorState(state, propertyName, screenFieldId, ErrorResponse.FieldState.MISSING,
+        raiseFieldErrorState(state, propertyName, screenFieldId, ValidationException.FieldState.MISSING,
                 message);
     }
 
@@ -2960,13 +2953,13 @@ public class UserManagementService {
     private void raiseFieldErrorState(final TurnState state,
                                       final String propertyName,
                                       final String screenFieldId,
-                                      final ErrorResponse.FieldState fieldState,
+                                      final ValidationException.FieldState fieldState,
                                       final String message) {
         if (!reEntryGateOpen(state)) {
             return;
         }
         state.fieldErrors.add(
-                new ErrorResponse.FieldError(propertyName, screenFieldId, fieldState, message));
+                new ValidationException.FieldError(propertyName, screenFieldId, fieldState, message));
     }
 
     /**
@@ -2997,6 +2990,11 @@ public class UserManagementService {
      * @param value the item to test; may be {@code null}
      * @return {@code true} when the item is absent, empty or entirely spaces
      */
+    private static String recordKeyOf(final String userId) {
+        return CobolStringUtils.leftJustifySpaceFill(userId == null ? "" : userId,
+                UserSecurity.SEC_USR_ID_WIDTH);
+    }
+
     private static boolean isBlank(final String value) {
         if (value == null || value.isEmpty()) {
             return true;
@@ -3114,14 +3112,14 @@ public class UserManagementService {
      * @param programContext    the program context the destination should see
      * @return a new state carrying the routing fields supplied and every other field unchanged
      */
-    private static NavigationContext withRouting(
-            final NavigationContext context,
+    private static ScreenNavigationState withRouting(
+            final ScreenNavigationState context,
             final String fromTransactionId,
             final String fromProgram,
             final String toTransactionId,
             final String toProgram,
-            final NavigationContext.ProgramContext programContext) {
-        return new NavigationContext(
+            final ScreenNavigationState.ProgramContext programContext) {
+        return new ScreenNavigationState(
                 fromTransactionId,
                 fromProgram,
                 toTransactionId,
@@ -3153,8 +3151,8 @@ public class UserManagementService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -3169,7 +3167,7 @@ public class UserManagementService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

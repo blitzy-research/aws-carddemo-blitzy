@@ -530,7 +530,7 @@ class TransactionListRequestTest {
             String oneTooWide = "9".repeat(TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH + 1);
 
             assertThat(soleViolationPathOf(indicatedBy(oneTooWide)))
-                    .isEqualTo("displayedPageNumber");
+                    .isEqualTo("continuation.displayedPageNumber");
         }
 
         private TransactionListRequest indicatedBy(String indicator) {
@@ -656,7 +656,7 @@ class TransactionListRequestTest {
                     widest + "x", null, PageMetadata.PagingDirection.FORWARD))))
                     .as("without the cascade this width would be declared and never evaluated, and an"
                             + " arbitrarily wide echoed key would reach a query unmeasured")
-                    .isEqualTo("pageMetadata.previousCursorKey");
+                    .isEqualTo("continuation.previousCursorKey");
         }
 
         @Test
@@ -918,7 +918,7 @@ class TransactionListRequestTest {
                     .isEqualTo("transactionIdFilter");
             assertThat(soleViolationPathOf(new TransactionListRequest(null,
                     "9".repeat(indicatorWidth + 1), null, KeyAction.ENTER, null, null)))
-                    .isEqualTo("displayedPageNumber");
+                    .isEqualTo("continuation.displayedPageNumber");
             assertThat(soleViolationPathOf(withSelectors(
                     List.of(MARKED.repeat(selectorWidth + 1)))))
                     .as("the bound applies to each entry of the sequence, not to the sequence")
@@ -1032,19 +1032,18 @@ class TransactionListRequestTest {
         }
 
         @Test
-        @DisplayName("the wire form carries exactly the six declared components and no seventh")
+        @DisplayName("the wire form carries exactly the five declared components")
         void theWireFormCarriesExactlySixComponents() throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
 
             JsonNode tree = mapper.readTree(mapper.writeValueAsString(populated()));
 
-            assertThat(tree.size()).isEqualTo(6);
+            assertThat(tree.size()).isEqualTo(5);
             assertThat(tree.has("transactionIdFilter")).isTrue();
-            assertThat(tree.has("displayedPageNumber")).isTrue();
             assertThat(tree.has("rowSelectors")).isTrue();
             assertThat(tree.has("keyAction")).isTrue();
             assertThat(tree.has("navigationContext")).isTrue();
-            assertThat(tree.has("pageMetadata")).isTrue();
+            assertThat(tree.has("continuation")).isTrue();
         }
 
         @Test
@@ -1111,8 +1110,8 @@ class TransactionListRequestTest {
             assertThat(rendered)
                     .as("withheld whole, so this type's safety is not a property of another type's"
                             + " rendering staying safe")
-                    .contains("pageMetadata=" + WITHHELD)
-                    .doesNotContain("PageCursorRequest[");
+                    .contains("continuation=" + WITHHELD)
+                    .doesNotContain("ScreenContinuation[");
         }
 
         @Test
@@ -1124,7 +1123,7 @@ class TransactionListRequestTest {
             assertThat(rendered)
                     .as("which page, which row was marked and which direction was asked for is"
                             + " exactly what a diagnostic on this browse needs")
-                    .contains("displayedPageNumber=" + INDICATOR_AT_FULL_WIDTH)
+                    .contains("continuation=" + WITHHELD)
                     .contains("keyAction=PFK08")
                     .contains(MARKED);
             assertThat(rendered)

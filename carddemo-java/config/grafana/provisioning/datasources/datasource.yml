@@ -89,10 +89,20 @@
 
 apiVersion: 1
 
+# Reconcile the persistent Grafana database with this file on every start. `prune` removes any
+# provisioned data source that used to be declared by this file and is no longer present. The
+# explicit deletion handles the previously shipped tracing source immediately, including named
+# volumes created before pruning was enabled.
+prune: true
+deleteDatasources:
+  - name: Jaeger
+    orgId: 1
+
 # Exactly one data source. Prometheus is the only metrics store this module
 # runs, the legacy estate had no second one, and provisioning a data source
-# for a system nothing scrapes would be feature expansion. An entry for the
-# tracing back end was removed for that reason: no panel referenced it.
+# for a system nothing scrapes would be feature expansion. The tracing back
+# end remains reachable through its own UI; the obsolete Grafana source is
+# deleted above because no panel references it.
 datasources:
   - name: Prometheus
     # Load-bearing; see THE uid IS A CONTRACT above. Every panel of

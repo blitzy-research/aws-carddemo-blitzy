@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import io.awspring.cloud.s3.S3Operations;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -75,6 +76,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.RejectRecordWriter;
 import com.carddemo.batch.step.TransactionValidationProcessor;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.DailyTransaction;
 import com.carddemo.service.TransactionPostingService;
@@ -152,6 +154,10 @@ final class PostTransactionJobConfigTest {
     @Mock
     private TransactionPostingService postingService;
 
+    /** Object-store client behind the real staging adapter used by the scoped collaborators. */
+    @Mock
+    private S3Operations objectStore;
+
     /** The real reader factory, because the record layouts it owns are part of what is asserted. */
     private final FixedWidthFlatFileReaderFactory readerFactory =
             new FixedWidthFlatFileReaderFactory();
@@ -166,21 +172,28 @@ final class PostTransactionJobConfigTest {
     /** The configuration under test, rebuilt for every test over that directory. */
     private PostTransactionJobConfig configuration;
 
+    /** The real shared staging adapter over the mocked object store. */
+    private BatchStagingArea stagingArea;
+
     @BeforeEach
     void buildConfiguration() {
-        this.configuration = configurationWith(PostTransactionJobConfig.RECORD_AT_A_TIME);
+        this.stagingArea = new BatchStagingArea(this.objectStore,
+                new AwsProperties("us-west-2", null,
+                        new AwsProperties.S3("unit-test-batch-staging"),
+                        new AwsProperties.Sqs("carddemo-jobs.fifo", "carddemo-jobs"),
+                        new AwsProperties.Sns("carddemo-job-notifications")));
+        this.configuration = configuration();
     }
 
     /**
-     * Builds the configuration over the per-test staging directory at a given commit granularity.
+     * Builds the configuration over the per-test staging directory.
      *
-     * @param  commitGranularity records per unit of work
      * @return a fully constructed configuration
      */
-    private PostTransactionJobConfig configurationWith(final int commitGranularity) {
+    private PostTransactionJobConfig configuration() {
         return new PostTransactionJobConfig(this.jobRepository, this.transactionManager,
                 this.readerFactory, this.postingService, this.meterRegistry, Clock.systemUTC(),
-                this.stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE, commitGranularity);
+                this.stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE);
     }
 
     /**
@@ -225,28 +238,22 @@ final class PostTransactionJobConfigTest {
         void everyCollaboratorIsRequired() {
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     null, transactionManager, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, null, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, transactionManager, null, postingService, meterRegistry,
-                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, transactionManager, readerFactory, null, meterRegistry,
-                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, transactionManager, readerFactory, postingService, null,
-                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, transactionManager, readerFactory, postingService, meterRegistry,
-                    null, stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    null, stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE));
         }
 
         @Test
@@ -255,21 +262,53 @@ final class PostTransactionJobConfigTest {
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new PostTransactionJobConfig(jobRepository, transactionManager,
                             readerFactory, postingService, meterRegistry, Clock.systemUTC(), "  ",
-                            DALYTRAN_DATASET, DALYREJS_BASE,
-                            PostTransactionJobConfig.RECORD_AT_A_TIME))
+                            DALYTRAN_DATASET, DALYREJS_BASE))
                     .withMessageContaining(PostTransactionJobConfig.STAGING_DIRECTORY_PROPERTY);
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new PostTransactionJobConfig(jobRepository, transactionManager,
                             readerFactory, postingService, meterRegistry, Clock.systemUTC(),
-                            stagingDirectory.toString(), "", DALYREJS_BASE,
-                            PostTransactionJobConfig.RECORD_AT_A_TIME))
+                            stagingDirectory.toString(), "", DALYREJS_BASE))
                     .withMessageContaining(PostTransactionJobConfig.DALYTRAN_DATASET_PROPERTY);
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> new PostTransactionJobConfig(jobRepository, transactionManager,
                             readerFactory, postingService, meterRegistry, Clock.systemUTC(),
-                            stagingDirectory.toString(), DALYTRAN_DATASET, "",
-                            PostTransactionJobConfig.RECORD_AT_A_TIME))
+                            stagingDirectory.toString(), DALYTRAN_DATASET, ""))
                     .withMessageContaining(PostTransactionJobConfig.DALYREJS_DATASET_BASE_PROPERTY);
+        }
+
+        @Test
+        @DisplayName("a logical name that would resolve outside the staging directory is refused when the "
+                + "configuration binds, so no run can create, truncate or delete a file outside it")
+        void aLogicalNameThatWouldEscapeTheStagingDirectoryIsRefused() {
+            for (final String escaping : new String[] {"/etc/passwd", "../../etc/passwd",
+                "sub/dalytran.PS", "sub\\dalytran.PS", ".."}) {
+                assertThatIllegalArgumentException()
+                        .as("input dataset name %s", escaping)
+                        .isThrownBy(() -> new PostTransactionJobConfig(jobRepository,
+                                transactionManager, readerFactory, postingService, meterRegistry,
+                                Clock.systemUTC(), stagingDirectory.toString(), escaping,
+                                DALYREJS_BASE))
+                        .withMessageContaining(PostTransactionJobConfig.DALYTRAN_DATASET_PROPERTY);
+                assertThatIllegalArgumentException()
+                        .as("reject generation base %s", escaping)
+                        .isThrownBy(() -> new PostTransactionJobConfig(jobRepository,
+                                transactionManager, readerFactory, postingService, meterRegistry,
+                                Clock.systemUTC(), stagingDirectory.toString(), DALYTRAN_DATASET,
+                                escaping))
+                        .withMessageContaining(PostTransactionJobConfig.DALYREJS_DATASET_BASE_PROPERTY);
+            }
+        }
+
+        @Test
+        @DisplayName("the staging directory itself may be a multi-segment path, because a real "
+                + "deployment's root is one and the containment rule cannot be applied to it")
+        void theStagingDirectoryItselfMayBeAMultiSegmentPath() {
+            assertThat(new PostTransactionJobConfig(jobRepository, transactionManager, readerFactory,
+                    postingService, meterRegistry, Clock.systemUTC(),
+                    stagingDirectory.resolve("nested").resolve("deeper").toString(), DALYTRAN_DATASET,
+                    DALYREJS_BASE).dalytranInput())
+                    .isEqualTo(stagingDirectory.resolve("nested").resolve("deeper")
+                            .resolve(DALYTRAN_DATASET));
         }
 
         @Test
@@ -277,32 +316,14 @@ final class PostTransactionJobConfigTest {
         void aNullLogicalNameIsRefused() {
             assertThatNullPointerException().isThrownBy(() -> new PostTransactionJobConfig(
                     jobRepository, transactionManager, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), null, DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME));
+                    Clock.systemUTC(), null, DALYTRAN_DATASET, DALYREJS_BASE));
         }
 
         @Test
-        @DisplayName("a unit of work below one record is refused when the configuration binds, not when "
-                + "a step runs")
-        void aUnitOfWorkBelowOneRecordIsRefused() {
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> configurationWith(PostTransactionJobConfig.RECORD_AT_A_TIME - 1))
-                    .withMessageContaining(PostTransactionJobConfig.COMMIT_GRANULARITY_PROPERTY);
-        }
-
-        @Test
-        @DisplayName("the commit granularity defaults to one record, which is the legacy semantic and "
-                + "not a tuning figure")
-        void theCommitGranularityDefaultsToOneRecord() {
+        @DisplayName("the commit granularity is exactly one record, a semantic constant rather than a "
+                + "configuration or tuning figure")
+        void theCommitGranularityIsOneRecord() {
             assertThat(PostTransactionJobConfig.RECORD_AT_A_TIME).isOne();
-        }
-
-        @Test
-        @DisplayName("a granularity above one record is accepted, because it is configuration rather "
-                + "than a constant written into the step")
-        void aGranularityAboveOneRecordIsAccepted() {
-            assertThatCode(() -> configurationWith(PostTransactionJobConfig.RECORD_AT_A_TIME + 1))
-                    .doesNotThrowAnyException();
         }
     }
 
@@ -393,14 +414,9 @@ final class PostTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("the step is built at the configured granularity rather than at a constant")
-        void theStepIsBuiltAtTheConfiguredGranularity() {
-            final PostTransactionJobConfig wider =
-                    configurationWith(PostTransactionJobConfig.RECORD_AT_A_TIME + 1);
-
-            assertThat(wider.postDailyTransactionsStep(reader(),
-                    wider.postTransactionValidationProcessor(), writer()))
-                    .isInstanceOf(TaskletStep.class);
+        @DisplayName("the step uses the record-at-a-time semantic constant")
+        void theStepUsesTheRecordAtATimeSemanticConstant() {
+            assertThat(step()).isInstanceOf(TaskletStep.class);
         }
 
         private Step step() {
@@ -462,12 +478,12 @@ final class PostTransactionJobConfigTest {
             final Path fresh = stagingDirectory.resolve("generations");
             final PostTransactionJobConfig relocated = new PostTransactionJobConfig(jobRepository,
                     transactionManager, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), fresh.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME);
+                    Clock.systemUTC(), fresh.toString(), DALYTRAN_DATASET, DALYREJS_BASE);
             assertThat(fresh).doesNotExist();
 
-            assertThat(relocated.postTransactionRejectRecordWriter(EXECUTION_ID))
-                    .isInstanceOf(RejectRecordWriter.class);
+            assertThat(relocated.postTransactionRejectRecordWriter(EXECUTION_ID,
+                    stepExecution(BatchStatus.STARTED, 0, 0)))
+                    .isNotNull();
             assertThat(fresh).isDirectory();
         }
 
@@ -484,7 +500,8 @@ final class PostTransactionJobConfigTest {
                 + "without one")
         void anAbsentExecutionIdentifierIsRefused() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> configuration.postTransactionRejectRecordWriter(null));
+                    .isThrownBy(() -> configuration.postTransactionRejectRecordWriter(
+                            null, stepExecution(BatchStatus.STARTED, 0, 0)));
         }
 
         @Test
@@ -495,11 +512,11 @@ final class PostTransactionJobConfigTest {
             Files.writeString(occupied, "not a directory", StandardCharsets.US_ASCII);
             final PostTransactionJobConfig blocked = new PostTransactionJobConfig(jobRepository,
                     transactionManager, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), occupied.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME);
+                    Clock.systemUTC(), occupied.toString(), DALYTRAN_DATASET, DALYREJS_BASE);
 
             assertThatExceptionOfType(UncheckedIOException.class)
-                    .isThrownBy(() -> blocked.postTransactionRejectRecordWriter(EXECUTION_ID))
+                    .isThrownBy(() -> blocked.postTransactionRejectRecordWriter(EXECUTION_ID,
+                            stepExecution(BatchStatus.STARTED, 0, 0)))
                     .withMessageContaining(TransactionPostingService.DALYREJS_DD)
                     .withMessageContaining(occupied.toString())
                     .withCauseInstanceOf(FileAlreadyExistsException.class);
@@ -524,8 +541,7 @@ final class PostTransactionJobConfigTest {
             final Path fresh = stagingDirectory.resolve("untouched");
             final PostTransactionJobConfig relocated = new PostTransactionJobConfig(jobRepository,
                     transactionManager, readerFactory, postingService, meterRegistry,
-                    Clock.systemUTC(), fresh.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME);
+                    Clock.systemUTC(), fresh.toString(), DALYTRAN_DATASET, DALYREJS_BASE);
 
             relocated.dalytranInput();
             relocated.rejectGeneration(EXECUTION_ID);
@@ -534,18 +550,18 @@ final class PostTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("the reject generation is named in the legacy absolute-generation form")
+        @DisplayName("the reject generation keeps the absolute-generation vocabulary at ten digits")
         void theRejectGenerationIsNamedInTheLegacyForm() {
             assertThat(configuration.rejectGeneration(EXECUTION_ID))
-                    .isEqualTo(stagingDirectory.resolve(DALYREJS_BASE + ".G0007V00"));
+                    .isEqualTo(stagingDirectory.resolve(DALYREJS_BASE + ".G0000000007V00"));
         }
 
         @Test
-        @DisplayName("the generation number wraps at the end of the legacy numbering range rather than "
-                + "growing past its width")
-        void theGenerationNumberWraps() {
+        @DisplayName("the generation number does not wrap onto an earlier execution")
+        void theGenerationNumberDoesNotWrap() {
             assertThat(configuration.rejectGeneration(WRAPPING_EXECUTION_ID))
-                    .isEqualTo(stagingDirectory.resolve(DALYREJS_BASE + ".G0003V00"));
+                    .isEqualTo(stagingDirectory.resolve(DALYREJS_BASE + ".G0000010003V00"))
+                    .isNotEqualTo(configuration.rejectGeneration(3L));
         }
 
         @Test
@@ -620,8 +636,7 @@ final class PostTransactionJobConfigTest {
             final Clock behind = Clock.fixed(Instant.EPOCH, ZoneId.systemDefault());
             final PostTransactionJobConfig withBehindClock = new PostTransactionJobConfig(jobRepository,
                     transactionManager, readerFactory, postingService, meterRegistry, behind,
-                    stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE,
-                    PostTransactionJobConfig.RECORD_AT_A_TIME);
+                    stagingDirectory.toString(), DALYTRAN_DATASET, DALYREJS_BASE);
             final StepExecution completed = stepExecution(BatchStatus.COMPLETED, 1L, 0L);
             completed.setStartTime(LocalDateTime.now());
 
@@ -671,12 +686,18 @@ final class PostTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("the tolerated completion code this job raises is exactly the one the backup "
-                + "job's step gate admits")
-        void theToleratedCompletionCodeMatchesTheGateThatAdmitsIt() {
+        @DisplayName("the completion code this job raises for a nonzero reject count is four, and it is "
+                + "no step gate's ceiling")
+        void theCompletionCodeForRejectsIsFourAndGatesNothing() {
             assertThat(TransactionPostingService.RETURN_CODE_REJECTS_PRESENT)
-                    .isEqualTo(BatchConfig.ConditionCodeGate.WARNINGS_TOLERATED
-                            .highestToleratedReturnCode());
+                    .as("the program sets it at app/cbl/CBTRN02C.cbl lines 229 to 230; the authority is "
+                            + "the program, never another job's gate")
+                    .isEqualTo(4);
+            assertThat(BatchConfig.ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(
+                            TransactionPostingService.RETURN_CODE_REJECTS_PRESENT))
+                    .as("every condition-code step gate in the estate is the strict form, so this code "
+                            + "is admitted by none of them")
+                    .isFalse();
         }
 
         @Test
@@ -689,8 +710,6 @@ final class PostTransactionJobConfigTest {
             assertThat(PostTransactionJobConfig.DALYTRAN_DATASET_PROPERTY)
                     .startsWith(PostTransactionJobConfig.RESOURCE_PROPERTY_PREFIX);
             assertThat(PostTransactionJobConfig.DALYREJS_DATASET_BASE_PROPERTY)
-                    .startsWith(PostTransactionJobConfig.RESOURCE_PROPERTY_PREFIX);
-            assertThat(PostTransactionJobConfig.COMMIT_GRANULARITY_PROPERTY)
                     .startsWith(PostTransactionJobConfig.RESOURCE_PROPERTY_PREFIX);
         }
 
@@ -729,6 +748,7 @@ final class PostTransactionJobConfigTest {
                 .withBean(PlatformTransactionManager.class, () -> transactionManager)
                 .withBean(TransactionPostingService.class, () -> postingService)
                 .withBean(FixedWidthFlatFileReaderFactory.class, () -> readerFactory)
+                .withBean(BatchStagingArea.class, () -> stagingArea)
                 .withBean(MeterRegistry.class, () -> meterRegistry)
                 .withBean(Clock.class, Clock::systemUTC);
 
@@ -811,12 +831,13 @@ final class PostTransactionJobConfigTest {
 
     /** The step-scoped reader over the staged sequential input. */
     private ItemStreamReader<DailyTransaction> reader() {
-        return configuration.postTransactionDailyTransactionReader();
+        return configuration.postTransactionDailyTransactionReader(this.stagingArea);
     }
 
     /** The step-scoped writer over this execution's own reject generation. */
     private ItemStreamWriter<RejectRecordWriter.RejectedTransaction> writer() {
-        return configuration.postTransactionRejectRecordWriter(EXECUTION_ID);
+        return configuration.postTransactionRejectRecordWriter(EXECUTION_ID,
+                stepExecution(BatchStatus.STARTED, 0, 0));
     }
 
     /**

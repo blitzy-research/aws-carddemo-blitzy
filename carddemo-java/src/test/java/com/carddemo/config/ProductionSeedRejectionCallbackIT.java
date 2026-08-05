@@ -277,7 +277,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
         Flyway withoutTheCallback = Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .locations(FlywayConfig.MIGRATION_LOCATION)
                 .target(FlywayConfig.SCHEMA_ONLY_TARGET)
                 .load();
 
@@ -303,7 +303,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         + "written into the profile documents unchallenged")
                 .isThrownBy(() -> Flyway.configure()
                         .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                        .locations(FlywayConfig.SCHEMA_LOCATION)
+                        .locations(FlywayConfig.MIGRATION_LOCATION)
                         .load()
                         .migrate());
     }
@@ -316,7 +316,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
 
         Flyway refusing = Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .locations(FlywayConfig.MIGRATION_LOCATION)
                 .target(FlywayConfig.SCHEMA_ONLY_TARGET)
                 .table("carddemo_history")
                 .callbacks(new ProductionSeedRejectionCallback())
@@ -430,7 +430,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=false",
-                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
                         "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET)
                 .run(refused -> assertThat(refused)
                         .as("switching migrations off is itself refused, before any bean is created, "
@@ -470,7 +470,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
                         "spring.flyway.enabled=true",
-                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
                         "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET);
     }
 
@@ -498,7 +498,7 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
                         "spring.datasource.url=" + probeJdbcUrl(),
                         "spring.datasource.username=" + databaseUser(),
                         "spring.datasource.password=" + databasePassword(),
-                        "spring.flyway.locations=" + FlywayConfig.SCHEMA_LOCATION,
+                        "spring.flyway.locations=" + FlywayConfig.MIGRATION_LOCATION,
                         "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET,
                         "spring.flyway.validate-on-migrate=true",
                         "spring.flyway.clean-disabled=true",
@@ -530,21 +530,22 @@ class ProductionSeedRejectionCallbackIT extends AbstractPostgresIT {
     private static Flyway seedingMigration() {
         return Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION, FlywayConfig.SEED_LOCATION)
+                .locations(FlywayConfig.MIGRATION_LOCATION)
                 .target(FlywayConfig.SEEDING_TARGET)
                 .load();
     }
 
     /**
-     * Builds the migration a production deployment performs: the schema location alone, the schema-only
-     * ceiling, and the refusal registered exactly as {@link FlywayConfig} registers it for production.
+     * Builds the migration a production deployment performs: the one shared location, the schema-only
+     * ceiling that holds the two seeds out of it, and the refusal registered exactly as
+     * {@link FlywayConfig} registers it for production.
      *
      * @return a loaded migration, not yet run
      */
     private static Flyway productionMigration() {
         return Flyway.configure()
                 .dataSource(probeJdbcUrl(), databaseUser(), databasePassword())
-                .locations(FlywayConfig.SCHEMA_LOCATION)
+                .locations(FlywayConfig.MIGRATION_LOCATION)
                 .target(FlywayConfig.SCHEMA_ONLY_TARGET)
                 .callbacks(new ProductionSeedRejectionCallback())
                 .load();

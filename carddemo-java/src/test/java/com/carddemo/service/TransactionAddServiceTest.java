@@ -19,7 +19,6 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
-import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
@@ -40,7 +39,10 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -110,7 +112,8 @@ final class TransactionAddServiceTest {
         this.crossReferenceRepository = Mockito.mock(CardCrossReferenceRepository.class);
         this.service = new TransactionAddService(new DateValidationService(),
                 new MessageCatalogService(), new NavigationService(), this.transactionRepository,
-                this.crossReferenceRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+                this.crossReferenceRepository, new OnlineTransactionBoundary(),
+                Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
     // ==============================================================================================
@@ -120,8 +123,8 @@ final class TransactionAddServiceTest {
     /** Stubs the cross reference so the account identifier resolves to the fixture card. */
     private void seedCrossReferenceByAccount() {
         Mockito.when(crossReferenceRepository
-                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, "000000011",
+                        .findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, "000000011",
                         ACCOUNT_ID)));
     }
 
@@ -139,21 +142,36 @@ final class TransactionAddServiceTest {
      *                   master
      */
     private void seedHighestTransaction(final String highestKey) {
+        Mockito.when(transactionRepository.findAll(ArgumentMatchers.any(Pageable.class)))
+                .thenReturn(pageOf(highestKey));
+        Mockito.when(transactionRepository.insertAndFlush(ArgumentMatchers.any(Transaction.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    /**
+     * Builds the single-row page the descending browse returns.
+     *
+     * <p>Extracted from the stub above so that a test which needs the browse to answer <em>differently
+     * on a second read</em> - which is what a re-allocation under the lock observes - can supply two
+     * pages without restating the fixture row.
+     *
+     * @param highestKey the identifier the highest existing row carries, or {@code null} for an empty
+     *                   master
+     * @return a page holding that one row, or an empty page
+     */
+    private static PageImpl<Transaction> pageOf(final String highestKey) {
         final List<Transaction> rows = (highestKey == null)
                 ? List.of()
                 : List.of(new Transaction(highestKey, "01", "0001", "POS TERM", "PURCHASE",
                         new BigDecimal("10.00"), "000000001", "MERCHANT", "CITY", "10001",
                         CARD_NUMBER, "2022-07-19 00:00:00.000000", "2022-07-19 00:00:00.000000"));
-        Mockito.when(transactionRepository.findAll(ArgumentMatchers.any(Pageable.class)))
-                .thenReturn(new PageImpl<>(rows, PageRequest.of(0, 1), rows.size()));
-        Mockito.when(transactionRepository.save(ArgumentMatchers.any(Transaction.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        return new PageImpl<>(rows, PageRequest.of(0, 1), rows.size());
     }
 
     /** @return a carried state that reads as this screen submitting to itself */
-    private static NavigationContext reSubmission() {
-        return new NavigationContext("CT02", "COTRN02C", "CT02", "COTRN02C", "USER0001", "U",
-                NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+    private static ScreenNavigationState reSubmission() {
+        return new ScreenNavigationState("CT02", "COTRN02C", "CT02", "COTRN02C", "USER0001", "U",
+                ScreenNavigationState.ProgramContext.REENTER, null, null, null, null, null, null, null,
                 "COTRN2A", "COTRN02");
     }
 
@@ -207,20 +225,23 @@ final class TransactionAddServiceTest {
             final DateValidationService dates = new DateValidationService();
             final MessageCatalogService catalog = new MessageCatalogService();
             final NavigationService navigation = new NavigationService();
+            final OnlineTransactionBoundary boundary = new OnlineTransactionBoundary();
             final Clock clock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(null, catalog,
-                    navigation, transactionRepository, crossReferenceRepository, clock));
+                    navigation, transactionRepository, crossReferenceRepository, boundary, clock));
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, null,
-                    navigation, transactionRepository, crossReferenceRepository, clock));
+                    navigation, transactionRepository, crossReferenceRepository, boundary, clock));
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, catalog,
-                    null, transactionRepository, crossReferenceRepository, clock));
+                    null, transactionRepository, crossReferenceRepository, boundary, clock));
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, catalog,
-                    navigation, null, crossReferenceRepository, clock));
+                    navigation, null, crossReferenceRepository, boundary, clock));
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, catalog,
-                    navigation, transactionRepository, null, clock));
+                    navigation, transactionRepository, null, boundary, clock));
             assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, catalog,
-                    navigation, transactionRepository, crossReferenceRepository, null));
+                    navigation, transactionRepository, crossReferenceRepository, null, clock));
+            assertThatNullPointerException().isThrownBy(() -> new TransactionAddService(dates, catalog,
+                    navigation, transactionRepository, crossReferenceRepository, boundary, null));
         }
 
         @Test
@@ -264,7 +285,7 @@ final class TransactionAddServiceTest {
 
             assertThat(result.screen().cardNumber()).contains(CARD_NUMBER);
             Mockito.verify(crossReferenceRepository)
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+                    .findByXrefAcctId(ACCOUNT_ID);
         }
 
         @Test
@@ -324,8 +345,8 @@ final class TransactionAddServiceTest {
                 + "than a lookup failure, so the two arms stay distinguishable")
         void anUnknownAccountIdentifierReportsNotFound() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
 
             final TransactionAddService.TransactionAddResult result =
                     service.processTransactionAdd(validTurn(""));
@@ -358,7 +379,7 @@ final class TransactionAddServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.message()).isEqualTo("Amount should be in format -99999999.99");
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @ParameterizedTest(name = "a positive and a negative lexeme are both accepted: {0}")
@@ -464,7 +485,7 @@ final class TransactionAddServiceTest {
             assertThat(result.message()).isEqualTo("Confirm to add this transaction...");
             assertThat(result.transactionAdded()).isFalse();
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @ParameterizedTest(name = "confirmation {0} is refused as an invalid value")
@@ -480,7 +501,7 @@ final class TransactionAddServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.message()).isEqualTo("Invalid value. Valid values are (Y/N)...");
             Mockito.verify(transactionRepository, Mockito.never())
-                    .save(ArgumentMatchers.any(Transaction.class));
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @Test
@@ -497,7 +518,8 @@ final class TransactionAddServiceTest {
                     service.processTransactionAdd(validTurn("y "));
 
             assertThat(result.transactionAdded()).isTrue();
-            Mockito.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+            Mockito.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @ParameterizedTest(name = "confirmation {0} writes the transaction")
@@ -511,7 +533,8 @@ final class TransactionAddServiceTest {
                     service.processTransactionAdd(validTurn(confirm));
 
             assertThat(result.transactionAdded()).isTrue();
-            Mockito.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+            Mockito.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
     }
 
@@ -570,6 +593,24 @@ final class TransactionAddServiceTest {
         }
 
         @Test
+        @DisplayName("allocation is locked before the highest key is read and stays in the same turn "
+                + "through the flushed insert")
+        void identifierAllocationIsLockedBeforeTheReadAndInsert() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000042");
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            final InOrder allocationOrder = Mockito.inOrder(transactionRepository);
+            allocationOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            allocationOrder.verify(transactionRepository)
+                    .findAll(ArgumentMatchers.any(Pageable.class));
+            allocationOrder.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+        }
+
+        @Test
         @DisplayName("the written row carries the amount at the stored scale, the resolved card number "
                 + "and both timestamps from the injected clock")
         void theWrittenRowCarriesTheEditedValues() {
@@ -579,7 +620,7 @@ final class TransactionAddServiceTest {
             service.processTransactionAdd(validTurn("Y"));
 
             final ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-            Mockito.verify(transactionRepository).save(captor.capture());
+            Mockito.verify(transactionRepository).insertAndFlush(captor.capture());
             final Transaction written = captor.getValue();
             assertThat(written.getTranCardNum()).isEqualTo(CARD_NUMBER);
             assertThat(written.getTranAmt()).isEqualByComparingTo(new BigDecimal("-100.00"));
@@ -603,9 +644,198 @@ final class TransactionAddServiceTest {
                     withDataFields(validTurn("Y"), "-00000100.99", null, null));
 
             final ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-            Mockito.verify(transactionRepository).save(captor.capture());
+            Mockito.verify(transactionRepository).insertAndFlush(captor.capture());
             assertThat(captor.getValue().getTranAmt())
                     .isEqualByComparingTo(new BigDecimal("-100.99"));
+        }
+    }
+
+    // ==============================================================================================
+    // Serialised identifier allocation, lines 444 to 466
+    //
+    // The legacy region held its browse position across the read, the increment and the write, which
+    // admitted one allocator at a time. A relational store expresses that hold as the repository's
+    // transaction-scoped advisory lock plus an existence probe, and the repository's contract obliges
+    // this service to take the lock BEFORE the highest key is read and to re-read under it when a
+    // writer that skipped the lock has already taken the identifier. A shared transaction is not
+    // sufficient on its own: under READ COMMITTED an uncommitted insert is invisible, so two adds could
+    // otherwise read the same highest key, derive the same successor and collide on the primary key.
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("serialised identifier allocation, lines 444 to 466")
+    final class SerialisedAllocation {
+
+        @Test
+        @DisplayName("the advisory lock is taken BEFORE the descending browse reads the highest key, "
+                + "because a lock taken afterwards serialises nothing")
+        void theLockPrecedesTheBrowse() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000042");
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            final InOrder inOrder = Mockito.inOrder(transactionRepository);
+            inOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            inOrder.verify(transactionRepository).findAll(ArgumentMatchers.any(Pageable.class));
+        }
+
+        @Test
+        @DisplayName("the key the lock is taken on is the repository's own constant, because a lock on "
+                + "any other key serialises against nobody")
+        void theLockKeyIsTheRepositoryConstant() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction(null);
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            assertThat(TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY).isEqualTo(350_016L);
+            Mockito.verify(transactionRepository).lockIdentifierAllocation(350_016L);
+        }
+
+        @Test
+        @DisplayName("the lock is still held when the write is flushed, so the row reaches the server "
+                + "inside the serialised window rather than at commit")
+        void theLockIsHeldWhenTheWriteIsFlushed() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction(null);
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            final InOrder inOrder = Mockito.inOrder(transactionRepository);
+            inOrder.verify(transactionRepository).lockIdentifierAllocation(
+                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+            inOrder.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("the lock is taken exactly once per turn, because it is re-entrant within a "
+                + "session and a second acquisition would buy nothing")
+        void theLockIsTakenOncePerTurn() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction(null);
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            Mockito.verify(transactionRepository, Mockito.times(1))
+                    .lockIdentifierAllocation(ArgumentMatchers.anyLong());
+        }
+
+        @Test
+        @DisplayName("the copy-last-transaction key browses the very same rows and takes NO lock, "
+                + "because it mints nothing and must not serialise every allocator behind it")
+        void theCopyLastKeyTakesNoLock() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000042");
+
+            service.processTransactionAdd(new TransactionAddService.TransactionAddScreenInput(
+                    ACCOUNT_ID, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, KeyAction.PFK05, reSubmission()));
+
+            Mockito.verify(transactionRepository).findAll(ArgumentMatchers.any(Pageable.class));
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .lockIdentifierAllocation(ArgumentMatchers.anyLong());
+        }
+
+        @Test
+        @DisplayName("an identifier already stored is re-minted from a re-read highest key rather than "
+                + "refused, which is the bounded retry the repository contract obliges")
+        void aTakenIdentifierIsReMintedFromAReReadHighestKey() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000009");
+            // The re-read under the lock observes the row the lock-skipping writer committed.
+            Mockito.when(transactionRepository.findAll(ArgumentMatchers.any(Pageable.class)))
+                    .thenReturn(pageOf("0000000000000009"))
+                    .thenReturn(pageOf("0000000000000019"));
+            Mockito.when(transactionRepository.existsById("0000000000000010")).thenReturn(true);
+
+            final TransactionAddService.TransactionAddResult result =
+                    service.processTransactionAdd(validTurn("Y"));
+
+            assertThat(result.transactionAdded())
+                    .as("the second attempt succeeds, so the add is not refused for a reason that has "
+                            + "nothing to do with the transaction")
+                    .isTrue();
+            assertThat(result.transaction().tranId()).isEqualTo("0000000000000020");
+            Mockito.verify(transactionRepository, Mockito.times(2))
+                    .findAll(ArgumentMatchers.any(Pageable.class));
+            Mockito.verify(transactionRepository, Mockito.times(1))
+                    .lockIdentifierAllocation(ArgumentMatchers.anyLong());
+        }
+
+        @Test
+        @DisplayName("the retry is BOUNDED: a highest key that never moves is attempted twice and then "
+                + "reported under the source's duplicate text, never retried forever")
+        void theRetryIsBounded() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000009");
+            Mockito.when(transactionRepository.existsById("0000000000000010")).thenReturn(true);
+
+            final TransactionAddService.TransactionAddResult result =
+                    service.processTransactionAdd(validTurn("Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+            assertThat(result.transaction()).isNull();
+            Mockito.verify(transactionRepository, Mockito.times(2))
+                    .findAll(ArgumentMatchers.any(Pageable.class));
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .save(ArgumentMatchers.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("the existence probe runs before the save, so a taken identifier can never reach "
+                + "the store as a merge that would silently overwrite the existing row")
+        void theProbeRunsBeforeTheSave() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction("0000000000000009");
+
+            service.processTransactionAdd(validTurn("Y"));
+
+            final InOrder inOrder = Mockito.inOrder(transactionRepository);
+            inOrder.verify(transactionRepository).existsById("0000000000000010");
+            inOrder.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("a duplicate raised by the FLUSH is reported and not retried, because a refused "
+                + "flush leaves the transaction unable to commit whatever is attempted next")
+        void aFlushDuplicateIsReportedRatherThanRetried() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction(null);
+            Mockito.doThrow(new DataIntegrityViolationException("duplicate key value"))
+                    .when(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+
+            final TransactionAddService.TransactionAddResult result =
+                    service.processTransactionAdd(validTurn("Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+            assertThat(result.transaction()).isNull();
+            Mockito.verify(transactionRepository, Mockito.times(1))
+                    .findAll(ArgumentMatchers.any(Pageable.class));
+        }
+
+        @Test
+        @DisplayName("a flush failure that is NOT a duplicate reaches the write's catch-all text, so "
+                + "the failure is reported by this paragraph instead of escaping at commit")
+        void aFlushFailureThatIsNotADuplicateReachesTheCatchAll() {
+            seedCrossReferenceByAccount();
+            seedHighestTransaction(null);
+            Mockito.doThrow(new DataAccessResourceFailureException("connection reset"))
+                    .when(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+
+            final TransactionAddService.TransactionAddResult result =
+                    service.processTransactionAdd(validTurn("Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Unable to Add Transaction...");
+            assertThat(result.transaction()).isNull();
         }
     }
 
@@ -656,8 +886,8 @@ final class TransactionAddServiceTest {
                 + "an operator keystroke, which no sibling screen does")
         void aPreSelectedTransactionProcessesTheEnterKeyImmediately() {
             seedCrossReferenceByCard();
-            final NavigationContext firstEntry = new NavigationContext("CT00", "COTRN00C", "CT02",
-                    "COTRN02C", "USER0001", "U", NavigationContext.ProgramContext.ENTER, null, null,
+            final ScreenNavigationState firstEntry = new ScreenNavigationState("CT00", "COTRN00C", "CT02",
+                    "COTRN02C", "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, null, null,
                     null, null, null, null, null, "COTRN2A", "COTRN02");
             final TransactionAddService.TransactionAddScreenInput preSelected =
                     new TransactionAddService.TransactionAddScreenInput(null, null, null, null, null,
@@ -677,8 +907,8 @@ final class TransactionAddServiceTest {
         @Test
         @DisplayName("a first entry with nothing pre-selected sends the screen and reads nothing")
         void aPlainFirstEntrySendsTheScreen() {
-            final NavigationContext firstEntry = new NavigationContext("CT00", "COTRN00C", "CT02",
-                    "COTRN02C", "USER0001", "U", NavigationContext.ProgramContext.ENTER, null, null,
+            final ScreenNavigationState firstEntry = new ScreenNavigationState("CT00", "COTRN00C", "CT02",
+                    "COTRN02C", "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, null, null,
                     null, null, null, null, null, "COTRN2A", "COTRN02");
             final TransactionAddService.TransactionAddScreenInput plain =
                     new TransactionAddService.TransactionAddScreenInput(null, null, null, null, null,

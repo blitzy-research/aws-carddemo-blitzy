@@ -17,6 +17,8 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.DailyTransaction;
+import java.util.List;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
@@ -32,4 +34,14 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * @see DailyTransaction
  */
 public interface DailyTransactionRepository extends JpaRepository<DailyTransaction, String> {
+
+    /**
+     * Reads one bounded primary-key page after the supplied daily-transaction identifier.
+     *
+     * @param dalytranId exclusive lower key bound
+     * @param limit maximum rows returned
+     * @return rows in ascending daily-transaction-key order
+     */
+    List<DailyTransaction> findByDalytranIdGreaterThanOrderByDalytranIdAsc(
+            String dalytranId, Limit limit);
 }

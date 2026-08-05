@@ -42,7 +42,6 @@ import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
-import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.StatementDataAccessService.StatementFileRequest;
 import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
 import com.carddemo.support.SeededRecordFixture;
@@ -83,24 +82,24 @@ class StatementDataAccessServiceTest {
     /** Smallest decoded body the customer entity accepts for a protected value. */
     private static final int ENVELOPE_MINIMUM_BYTES = 28;
 
-    private TransactionRepository transactionRepository;
-
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
     private CustomerRepository customerRepository;
 
     private AccountRepository accountRepository;
 
+    private StatementTransactionSource transactionSource;
+
     private StatementDataAccessService service;
 
     @BeforeEach
     void setUp() {
-        this.transactionRepository = mock(TransactionRepository.class);
         this.cardCrossReferenceRepository = mock(CardCrossReferenceRepository.class);
         this.customerRepository = mock(CustomerRepository.class);
         this.accountRepository = mock(AccountRepository.class);
-        this.service = new StatementDataAccessService(this.transactionRepository,
-                this.cardCrossReferenceRepository, this.customerRepository, this.accountRepository);
+        this.transactionSource = position -> Optional.empty();
+        this.service = new StatementDataAccessService(this.cardCrossReferenceRepository,
+                this.customerRepository, this.accountRepository);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -191,17 +190,17 @@ class StatementDataAccessServiceTest {
                 StatementDataAccessServiceTest::reveal);
     }
 
-    private static Page<Transaction> pageOf(final Transaction transaction) {
-        return new PageImpl<>(List.of(transaction));
-    }
-
     private static Page<CardCrossReference> pageOf(final CardCrossReference crossReference) {
         return new PageImpl<>(List.of(crossReference));
     }
 
     private void verifyNoRepositoryTouched() {
-        verifyNoInteractions(this.transactionRepository, this.cardCrossReferenceRepository,
-                this.customerRepository, this.accountRepository);
+        verifyNoInteractions(this.cardCrossReferenceRepository, this.customerRepository,
+                this.accountRepository);
+    }
+
+    private StatementFileResponse execute(final StatementFileRequest request) {
+        return this.service.execute(request, this.transactionSource);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -214,7 +213,15 @@ class StatementDataAccessServiceTest {
         @DisplayName("rejects a null parameter object")
         void rejectsNullRequest() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> StatementDataAccessServiceTest.this.service.execute(null));
+                    .isThrownBy(() -> StatementDataAccessServiceTest.this.execute(null));
+        }
+
+        @Test
+        @DisplayName("rejects an absent frozen transaction source")
+        void rejectsNullTransactionSource() {
+            assertThatNullPointerException().isThrownBy(() ->
+                    StatementDataAccessServiceTest.this.service.execute(
+                            request("TRNXFILE", StatementDataAccessService.OPERATION_OPEN), null));
         }
 
         @ParameterizedTest
@@ -226,7 +233,7 @@ class StatementDataAccessServiceTest {
                     payloadOf("CARRIED"), 4);
 
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode()).isEqualTo(STALE_STATUS);
             assertThat(actual.payload()).isEqualTo(payloadOf("CARRIED"));
@@ -238,7 +245,7 @@ class StatementDataAccessServiceTest {
         @CsvSource({"TRNXFILE", "XREFFILE", "CUSTFILE", "ACCTFILE"})
         @DisplayName("every declared DD name is routed to a handler that opens successfully")
         void everyDeclaredDdNameIsRouted(final String ddName) {
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request(ddName, StatementDataAccessService.OPERATION_OPEN));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
@@ -263,7 +270,7 @@ class StatementDataAccessServiceTest {
                     STALE_STATUS, "KEY", 3, payloadOf("UNTOUCHED"), 6);
 
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode())
                     .as("the status published on a fall-through is the caller's own")
@@ -281,7 +288,7 @@ class StatementDataAccessServiceTest {
 
             for (final String operation : List.of(StatementDataAccessService.OPERATION_WRITE,
                     StatementDataAccessService.OPERATION_REWRITE)) {
-                final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+                final StatementFileResponse actual = StatementDataAccessServiceTest.this
                         .execute(request("TRNXFILE", operation));
                 assertThat(actual.returnCode()).isEqualTo(STALE_STATUS);
             }
@@ -292,7 +299,7 @@ class StatementDataAccessServiceTest {
         @CsvSource({"TRNXFILE", "XREFFILE"})
         @DisplayName("a sequentially accessed file offers no keyed read [L33, L39]")
         void sequentialFilesRefuseKeyedRead(final String ddName) {
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request(ddName, StatementDataAccessService.OPERATION_READ_KEYED));
 
             assertThat(actual.returnCode()).isEqualTo(STALE_STATUS);
@@ -303,7 +310,7 @@ class StatementDataAccessServiceTest {
         @CsvSource({"CUSTFILE", "ACCTFILE"})
         @DisplayName("a randomly accessed file offers no sequential read [L45, L51]")
         void randomFilesRefuseSequentialRead(final String ddName) {
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request(ddName, StatementDataAccessService.OPERATION_READ));
 
             assertThat(actual.returnCode()).isEqualTo(STALE_STATUS);
@@ -323,7 +330,7 @@ class StatementDataAccessServiceTest {
                     StatementDataAccessService.OPERATION_OPEN, STALE_STATUS, "", 1, blankPayload(), 9);
 
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
             assertThat(actual.sequentialPosition()).isZero();
@@ -338,7 +345,7 @@ class StatementDataAccessServiceTest {
                     StatementDataAccessService.OPERATION_CLOSE, STALE_STATUS, "", 1, blankPayload(), 9);
 
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
             assertThat(actual.sequentialPosition()).isZero();
@@ -350,41 +357,33 @@ class StatementDataAccessServiceTest {
     class SequentialReads {
 
         @Test
-        @DisplayName("a transaction read returns the record image, advances the position and orders by "
-                + "the record key")
+        @DisplayName("a transaction read returns the frozen projected image and advances the position")
         void transactionReadReturnsImageAndAdvances() {
             final Transaction transaction = seededTransaction();
-            when(StatementDataAccessServiceTest.this.transactionRepository.findAll(any(Pageable.class)))
-                    .thenReturn(pageOf(transaction));
+            final String projected = TransactionRecordMapper.toStatementWorkRecord(transaction);
+            StatementDataAccessServiceTest.this.transactionSource =
+                    position -> position == 3 ? Optional.of(projected) : Optional.empty();
 
             final StatementFileRequest given = new StatementFileRequest("TRNXFILE",
                     StatementDataAccessService.OPERATION_READ, STALE_STATUS, "", 1, blankPayload(), 3);
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
             assertThat(actual.payload())
                     .hasSize(StatementDataAccessService.PAYLOAD_WIDTH)
-                    .isEqualTo(payloadOf(TransactionRecordMapper.toRecord(transaction)));
+                    .isEqualTo(payloadOf(projected));
             assertThat(actual.sequentialPosition()).isEqualTo(4);
-
-            final Pageable used = capturedTransactionPageable();
-            assertThat(used.getPageNumber()).isEqualTo(3);
-            assertThat(used.getPageSize()).isOne();
-            assertThat(used.getSort()).isEqualTo(Sort.by(Sort.Direction.ASC, "tranCardNum", "tranId"));
         }
 
         @Test
         @DisplayName("an exhausted transaction file yields the at-end status and changes nothing else")
         void transactionReadAtEnd() {
-            when(StatementDataAccessServiceTest.this.transactionRepository.findAll(any(Pageable.class)))
-                    .thenReturn(Page.empty());
-
             final StatementFileRequest given = new StatementFileRequest("TRNXFILE",
                     StatementDataAccessService.OPERATION_READ, STALE_STATUS, "", 1,
                     payloadOf("PRIOR"), 7);
             final StatementFileResponse actual =
-                    StatementDataAccessServiceTest.this.service.execute(given);
+                    StatementDataAccessServiceTest.this.execute(given);
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.END_OF_FILE.getCode());
             assertThat(actual.payload()).isEqualTo(payloadOf("PRIOR"));
@@ -398,7 +397,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.cardCrossReferenceRepository
                     .findAll(any(Pageable.class))).thenReturn(pageOf(crossReference));
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
@@ -416,18 +415,10 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.cardCrossReferenceRepository
                     .findAll(any(Pageable.class))).thenReturn(Page.empty());
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.END_OF_FILE.getCode());
-        }
-
-        private Pageable capturedTransactionPageable() {
-            final org.mockito.ArgumentCaptor<Pageable> captor =
-                    org.mockito.ArgumentCaptor.forClass(Pageable.class);
-            verify(StatementDataAccessServiceTest.this.transactionRepository)
-                    .findAll(captor.capture());
-            return captor.getValue();
         }
 
         private Pageable capturedCrossReferencePageable() {
@@ -450,7 +441,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.customerRepository.findById("123      "))
                     .thenReturn(Optional.empty());
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(keyedRequest("CUSTFILE", "123456789012345678901234", 3));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
@@ -464,7 +455,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.accountRepository.findById("00000000123"))
                     .thenReturn(Optional.empty());
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(keyedRequest("ACCTFILE", "123456789012345678901234", 3));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
@@ -479,7 +470,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.accountRepository.findById(acctId))
                     .thenReturn(Optional.of(account));
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(keyedRequest("ACCTFILE", acctId, acctId.length()));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
@@ -496,7 +487,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.customerRepository
                     .findById(customer.getCustId())).thenReturn(Optional.of(customer));
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(keyedRequest("CUSTFILE", customer.getCustId(),
                             customer.getCustId().length()));
 
@@ -511,7 +502,7 @@ class StatementDataAccessServiceTest {
             when(StatementDataAccessServiceTest.this.accountRepository.findById(any()))
                     .thenReturn(Optional.empty());
 
-            final StatementFileResponse actual = StatementDataAccessServiceTest.this.service
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(keyedRequest("ACCTFILE", "00000000099", 11));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
@@ -526,7 +517,7 @@ class StatementDataAccessServiceTest {
             final StatementFileRequest given = keyedRequest("ACCTFILE", "12345", keyLength);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> StatementDataAccessServiceTest.this.service.execute(given));
+                    .isThrownBy(() -> StatementDataAccessServiceTest.this.execute(given));
         }
     }
 
@@ -649,21 +640,14 @@ class StatementDataAccessServiceTest {
         @DisplayName("the service rejects null collaborators")
         void rejectsNullCollaborators() {
             assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(null,
-                    StatementDataAccessServiceTest.this.cardCrossReferenceRepository,
                     StatementDataAccessServiceTest.this.customerRepository,
                     StatementDataAccessServiceTest.this.accountRepository));
             assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
-                    StatementDataAccessServiceTest.this.transactionRepository, null,
-                    StatementDataAccessServiceTest.this.customerRepository,
-                    StatementDataAccessServiceTest.this.accountRepository));
-            assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
-                    StatementDataAccessServiceTest.this.transactionRepository,
-                    StatementDataAccessServiceTest.this.cardCrossReferenceRepository, null,
-                    StatementDataAccessServiceTest.this.accountRepository));
-            assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
-                    StatementDataAccessServiceTest.this.transactionRepository,
                     StatementDataAccessServiceTest.this.cardCrossReferenceRepository,
                     StatementDataAccessServiceTest.this.customerRepository, null));
+            assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
+                    StatementDataAccessServiceTest.this.cardCrossReferenceRepository, null,
+                    StatementDataAccessServiceTest.this.accountRepository));
         }
 
         @Test
@@ -671,14 +655,15 @@ class StatementDataAccessServiceTest {
                 + "other, because no cursor is held by the service")
         void interleavedReadsAreIndependent() {
             final Transaction transaction = seededTransaction();
-            when(StatementDataAccessServiceTest.this.transactionRepository.findAll(any(Pageable.class)))
-                    .thenReturn(pageOf(transaction));
+            final String projected = TransactionRecordMapper.toStatementWorkRecord(transaction);
+            StatementDataAccessServiceTest.this.transactionSource =
+                    position -> Optional.of(projected);
 
-            final StatementFileResponse first = StatementDataAccessServiceTest.this.service
-                    .execute(new StatementFileRequest("TRNXFILE",
+            final StatementFileResponse first = StatementDataAccessServiceTest.this.execute(
+                    new StatementFileRequest("TRNXFILE",
                             StatementDataAccessService.OPERATION_READ, "00", "", 1, blankPayload(), 0));
-            final StatementFileResponse second = StatementDataAccessServiceTest.this.service
-                    .execute(new StatementFileRequest("TRNXFILE",
+            final StatementFileResponse second = StatementDataAccessServiceTest.this.execute(
+                    new StatementFileRequest("TRNXFILE",
                             StatementDataAccessService.OPERATION_READ, "00", "", 1, blankPayload(), 40));
 
             assertThat(first.sequentialPosition()).isOne();

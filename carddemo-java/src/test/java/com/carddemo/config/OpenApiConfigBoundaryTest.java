@@ -16,9 +16,19 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.PublishedContractTypeRoster;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -118,7 +128,8 @@ class OpenApiConfigBoundaryTest {
      * @return the published document
      */
     private static OpenAPI documentFor(BuildProperties buildInformation) {
-        return new OpenApiConfig(new FixedBuildInformation(buildInformation)).cardDemoOpenApi();
+        return new OpenApiConfig(new FixedBuildInformation(buildInformation),
+                new PublishedContractTypeRoster()).cardDemoOpenApi();
     }
 
     /**
@@ -189,7 +200,8 @@ class OpenApiConfigBoundaryTest {
         @Test
         @DisplayName("each call produces its own document, so a caller cannot mutate a shared one")
         void eachCallProducesItsOwnDocument() {
-            OpenApiConfig configuration = new OpenApiConfig(new FixedBuildInformation(null));
+            OpenApiConfig configuration = new OpenApiConfig(new FixedBuildInformation(null),
+                    new PublishedContractTypeRoster());
 
             assertThat(configuration.cardDemoOpenApi())
                     .isNotSameAs(configuration.cardDemoOpenApi());
@@ -238,7 +250,8 @@ class OpenApiConfigBoundaryTest {
         @DisplayName("the version is resolved once at construction, not on every call")
         void theVersionIsResolvedOnceAtConstruction() {
             OpenApiConfig configuration = new OpenApiConfig(
-                    new FixedBuildInformation(buildInformationWithVersion(PUBLISHED_VERSION)));
+                    new FixedBuildInformation(buildInformationWithVersion(PUBLISHED_VERSION)),
+                    new PublishedContractTypeRoster());
 
             assertThat(configuration.cardDemoOpenApi().getInfo().getVersion())
                     .isEqualTo(configuration.cardDemoOpenApi().getInfo().getVersion())
@@ -357,6 +370,12 @@ class OpenApiConfigBoundaryTest {
         }
 
         @Test
+        @DisplayName("names the batch prefix as a second administrative region, using the chain's address")
+        void namesTheBatchPrefixTheChainGates() {
+            assertThat(schemeDescription()).contains(SecurityConfig.BATCH_PATH_PREFIX);
+        }
+
+        @Test
         @DisplayName("says the requirement is universal apart from that one exemption, which is what the "
                 + "chain's closing catch-all makes true")
         void describesTheRequirementAsUniversalApartFromSignOn() {
@@ -380,40 +399,65 @@ class OpenApiConfigBoundaryTest {
         }
 
         @Test
-        @DisplayName("does not describe the operational surfaces, which carry no operation here and are "
-                + "reachable without a credential, so the document cannot imply they need one")
+        @DisplayName("the metadata bean itself declares no path, because springdoc adds controller "
+                + "operations only while building the served document")
         void doesNotDescribeTheOperationalSurfaces() {
             OpenAPI document = documentFor(null);
 
             assertThat(document.getPaths())
-                    .as("no path-producing operation is published by this module yet, so a path entry "
-                            + "here would be describing something that does not exist")
+                    .as("a path literal maintained by OpenApiConfig would duplicate the controller scan; "
+                            + "the served document is populated by springdoc after this bean is applied")
                     .isNullOrEmpty();
         }
     }
 
     /**
-     * Holds the published description to the endpoint inventory the document actually carries.
+     * Holds the published description to the endpoint inventory the delivered code actually maps.
      *
-     * <p>The document previously introduced itself as the description of the endpoints derived from the
-     * legacy screens while carrying no path at all, because no request-mapped controller has been
-     * delivered yet. A reader fetching it was told it described an inventory and handed none. The repair
-     * is to say what is delivered and label the inventory as later bound, and the repair is only durable
-     * if something fails when the two stop agreeing.</p>
+     * <p>The document once introduced itself as describing the endpoints derived from the legacy screens
+     * while carrying no path at all, and the first repair was to label the inventory as later bound - to
+     * say, in the contract text, that no request-mapped operation had been delivered. That label was true
+     * when it was written and false as soon as the first controller was mapped, which is exactly the
+     * failure the label was meant to prevent, only in the opposite direction. Nineteen operations are
+     * delivered now.</p>
      *
-     * <p>That is what {@link #saysWhateverIsTrueOfTheInventoryItCarries()} does. It reads the paths and
-     * requires the description to match them in whichever direction they happen to be: while the
-     * inventory is empty the description must say so, and the moment a controller contributes a path the
-     * same assertion fails until the label is removed. Neither an unlabelled empty document nor a stale
-     * label on a populated one can pass, so the correction cannot silently rot back into the claim it
-     * replaced.</p>
+     * <p>So the second repair removes the count from the text altogether rather than correcting it: the
+     * description states where the inventory comes from and says nothing about how large it is, because any
+     * figure written into published contract text goes stale on the next endpoint. What replaces the label
+     * is two assertions here. {@link #carriesNoClaimAboutHowManyPathsExist()} requires that no emptiness
+     * claim has returned, in any of the wordings it could return in - so the text cannot rot back into the
+     * claim it replaced. {@link #theDeliveredOperationCountIsWhatTheCodeMaps()} reads the controllers and
+     * pins the delivered figure, so the inventory itself is measured rather than described, and a new
+     * endpoint is noticed here even though the contract text needs no edit for it.</p>
      */
     @Nested
-    @DisplayName("agreement between the description and the endpoint inventory it carries")
+    @DisplayName("agreement between the description and the endpoint inventory the code maps")
     class TheEndpointInventoryIsLaterBound {
 
-        /** Wording by which the description labels the inventory as not yet delivered. */
-        private static final String EMPTINESS_CLAIM = "no request-mapped operation has been delivered yet";
+        /**
+         * Wordings by which the description could claim an inventory it does not have.
+         *
+         * <p>The first is the exact sentence that was published and became false; the rest are the nearby
+         * phrasings the same claim would reappear in. Held as a list rather than one string because the
+         * defect is the claim, not the sentence.
+         */
+        private static final List<String> EMPTINESS_CLAIMS = List.of(
+                "no request-mapped operation has been delivered yet",
+                "lists no path",
+                "the inventory is empty",
+                "it is empty",
+                "no endpoint has been delivered");
+
+        /** Where the delivered controllers live, so the inventory can be counted rather than described. */
+        private static final Path API_SOURCE_ROOT =
+                Path.of("src", "main", "java", "com", "carddemo", "api");
+
+        /** A method-level request mapping, which is what makes an operation reachable. */
+        private static final Pattern OPERATION_MAPPING =
+                Pattern.compile("^\\s+@(Get|Post|Put|Patch|Delete)Mapping", Pattern.MULTILINE);
+
+        /** How many operations the module delivers. Asserted, not assumed - see the test below. */
+        private static final long DELIVERED_OPERATIONS = 19L;
 
         /**
          * Reads the description from a freshly built document.
@@ -425,71 +469,94 @@ class OpenApiConfigBoundaryTest {
         }
 
         @Test
-        @DisplayName("says whatever is true of the inventory it carries, so an empty document is labelled "
-                + "and a populated one cannot keep the label")
-        void saysWhateverIsTrueOfTheInventoryItCarries() {
-            OpenAPI document = documentFor(null);
-            boolean carriesNoPath = document.getPaths() == null || document.getPaths().isEmpty();
-            int published = carriesNoPath ? 0 : document.getPaths().size();
+        @DisplayName("carries no claim about how many paths exist, in any wording, because a count in "
+                + "published contract text goes stale on the next endpoint")
+        void carriesNoClaimAboutHowManyPathsExist() {
+            String published = description();
 
-            assertThat(description().contains(EMPTINESS_CLAIM))
-                    .as("the document publishes %d path %s, so OpenApiConfig.API_DESCRIPTION "
-                            + "%s say \"%s\"; %s", published,
-                            published == 1 ? "entry" : "entries",
-                            carriesNoPath ? "must" : "must no longer",
-                            EMPTINESS_CLAIM,
-                            carriesNoPath
-                                    ? "an unlabelled empty inventory tells a reader the document "
-                                            + "describes endpoints and then hands them none"
-                                    : "an endpoint has been delivered, so the label is now false and "
-                                            + "the paragraph carrying it must be removed")
-                    .isEqualTo(carriesNoPath);
+            assertThat(EMPTINESS_CLAIMS)
+                    .as("OpenApiConfig.API_DESCRIPTION must describe where the inventory comes from and "
+                            + "not how large it is; %d operations are delivered, so any of these wordings "
+                            + "is now false", DELIVERED_OPERATIONS)
+                    .allSatisfy(claim -> assertThat(published).doesNotContain(claim));
         }
 
         @Test
-        @DisplayName("states that the inventory is derived from the code rather than maintained in the "
-                + "description, which is why it needs no edit when an endpoint arrives")
-        void statesThatTheInventoryIsDerivedFromTheCode() {
-            assertThat(description())
-                    .contains("derived from the code")
-                    .contains("lists no path");
+        @DisplayName("and the delivered operation count is what the controllers actually map, so an "
+                + "endpoint arriving is noticed here even though the contract text needs no edit")
+        void theDeliveredOperationCountIsWhatTheCodeMaps() throws IOException {
+            long mapped = 0;
+            try (Stream<Path> tree = Files.walk(API_SOURCE_ROOT)) {
+                for (Path file : tree.filter(Files::isRegularFile)
+                        .filter(candidate -> candidate.getFileName().toString().endsWith("Controller.java"))
+                        .toList()) {
+                    Matcher mapping =
+                            OPERATION_MAPPING.matcher(Files.readString(file, StandardCharsets.UTF_8));
+                    while (mapping.find()) {
+                        mapped++;
+                    }
+                }
+            }
+
+            assertThat(mapped)
+                    .as("the inventory this document derives is these operations; if the figure has moved, "
+                            + "confirm the new endpoint is classified in "
+                            + "DeliveredRouteSecurityStateTest before updating it here")
+                    .isEqualTo(DELIVERED_OPERATIONS);
         }
 
-        @ParameterizedTest(name = "neither text claims: {0}")
+        @Test
+        @DisplayName("states that springdoc derives served operations from request-mapped controllers")
+        void statesHowTheServedInventoryIsDerived() {
+            assertThat(description())
+                    .contains("derived from the code")
+                    .contains("needs no edit");
+        }
+
+        @ParameterizedTest(name = "the superseded empty-inventory claim stays absent: {0}")
         @ValueSource(strings = {
-            "describes every endpoint",
-            "complete description",
-            "every endpoint, every request"
+            "no request-mapped operation has been delivered yet",
+            "milestone it is empty",
+            "lists no path"
         })
-        @DisplayName("claims no completed endpoint inventory in either text the document publishes, "
-                + "because the overstated form of that claim is the defect being removed")
-        void claimsNoCompletedEndpointInventory(String overstatement) {
+        @DisplayName("claims no hand-maintained complete endpoint list in either published text")
+        void claimsNoHandMaintainedCompleteEndpointList(String overstatement) {
             assertThat(description()).doesNotContain(overstatement);
             assertThat(schemeDescriptionOf(documentFor(null))).doesNotContain(overstatement);
         }
 
         @Test
-        @DisplayName("still names the eventual inventory and its legacy origin, so labelling the gap does "
-                + "not erase what the document is for")
-        void stillNamesTheEventualInventory() {
+        @DisplayName("names the delivered online and operational controller groups and their legacy origin")
+        void namesTheDeliveredControllerGroups() {
             assertThat(description())
+                    .contains("sign-on")
+                    .contains("batch-control operations")
                     .contains("17 legacy")
                     .contains("24x80");
         }
 
         @Test
-        @DisplayName("delivers the content it does claim, so the label describes a gap in the inventory "
-                + "rather than an empty document")
-        void deliversTheContentItDoesClaim() {
+        @DisplayName("the metadata model delivers the reusable content it claims before springdoc adds paths")
+        void deliversTheReusableContentItClaims() {
             OpenAPI document = documentFor(null);
 
             assertThat(document.getInfo()).isNotNull();
             assertThat(document.getComponents()).isNotNull();
             assertThat(document.getComponents().getSecuritySchemes())
                     .containsKey(OpenApiConfig.BEARER_SCHEME_NAME);
+            assertThat(document.getComponents().getHeaders())
+                    .containsKey(OpenApiConfig.AUTHORIZATION_HEADER_COMPONENT);
+            assertThat(document.getComponents().getResponses())
+                    .containsKeys(
+                            OpenApiConfig.BAD_REQUEST_RESPONSE,
+                            OpenApiConfig.UNAUTHORIZED_RESPONSE,
+                            OpenApiConfig.FORBIDDEN_RESPONSE,
+                            OpenApiConfig.NOT_FOUND_RESPONSE,
+                            OpenApiConfig.CONFLICT_RESPONSE,
+                            OpenApiConfig.INTERNAL_SERVER_ERROR_RESPONSE);
             assertThat(document.getSecurity())
-                    .as("the authentication rule the description says it carries is a document-wide "
-                            + "requirement, and it is present even with no operation to apply it to")
+                    .as("the authentication rule the description says it carries is present before "
+                            + "springdoc applies it to controller-derived operations")
                     .isNotEmpty();
         }
     }

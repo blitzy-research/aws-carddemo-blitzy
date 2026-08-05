@@ -89,25 +89,22 @@ import jakarta.validation.constraints.Size;
  *     again.</li>
  * </ul>
  *
- * <p><strong>The expiry day appears in none of those branches.</strong> Each of the four would have
- * rewritten its attribute alongside the others, and in all four the statement that would have done so
- * is commented out - lines 1178, 1185, 1197 and 1205. Nothing else in the program writes that
- * attribute either, so the mapset's declaration at line 142 governs in every state without exception:
- * the field is dark, protected and field-set for the whole life of the conversation. It is
- * consequently the one input the program reads with no guard at all. Every other input is staged
- * through a test for the marker character or all spaces before it is accepted - lines 589 to 628 -
- * and the day alone is taken unconditionally at line 621, which is the program itself recording that
- * it treats the value as machinery rather than as something a person typed.
+ * <p><strong>The expiry day appears in none of those branches.</strong> In all four the statement that
+ * would have rewritten its attribute is commented out - lines 1178, 1185, 1197 and 1205 - and nothing
+ * else in the program writes that attribute, so the mapset's declaration at line 142 governs in every
+ * state: the field is dark, protected and field-set for the whole life of the conversation. It is
+ * consequently the one input the program reads with no guard at all. Every other input is staged through
+ * a test for the marker character or all spaces before it is accepted, at lines 589 to 628, and the day
+ * alone is taken unconditionally at line 621 - the program itself recording that it treats the value as
+ * machinery rather than as something a person typed.
  *
- * <p>Both values then reach the stored record. The write at lines 1461 to 1474 keys the rewrite on the
- * card number, moves the account id into the record's owning-account field, and assembles the
- * ten-character expiry value out of the year, the month and <em>the day the terminal returned</em>.
- * On a 3270 that is safe twice over: the day cannot have been altered, because it was protected, and
- * it cannot have been anything other than the fetched day, because the only value the program ever
- * sends into that field is the one it captured from the record - lines 1110, 1123 and 1127, the
- * alternative at line 1122 being commented out. Over HTTP neither guarantee survives. A request body
- * is not a terminal buffer, and any client may put two characters of its choosing into a field the
- * screen never showed and the operator could never reach.
+ * <p>Both values reach the stored record: the write at lines 1461 to 1474 keys the rewrite on the card
+ * number, moves the account id into the record's owning-account field, and assembles the ten-character
+ * expiry value out of the year, the month and <em>the day the terminal returned</em>. On a 3270 that is
+ * safe twice over - the day was protected, and the only value ever sent into that field is the one
+ * captured from the record at lines 1110, 1123 and 1127. Over HTTP neither guarantee survives, because a
+ * request body is not a terminal buffer and any client may put two characters of its choosing into a
+ * field the screen never showed.
  *
  * <p><strong>The expiry day is therefore accepted from the server and never from the wire.</strong>
  * It remains a component, because the response contract echoes it and the round trip must not lose
@@ -177,39 +174,24 @@ import jakarta.validation.constraints.Size;
  * them</strong>. The rules it delegates, with the diagnostic each produces:
  *
  * <ul>
- * <li>Account id supplied - {@code Account number not provided} (line 178); numeric and non-zero at
- *     eleven digits - {@code Account number must be a non zero 11 digit number}, declared twice, at
- *     lines 190 and 192; and the upper-case filter variant
- *     {@code ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER} at line 745, which has no space
- *     after its comma and reads "A 11" rather than "an 11".</li>
- * <li>Card number supplied - {@code Card number not provided} (line 180); numeric at sixteen digits -
- *     {@code Card number if supplied must be a 16 digit number} (line 194); and the upper-case filter
- *     variant {@code CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER} at line 789.</li>
- * <li>Embossed name supplied - {@code Card name not provided} (line 182); and letters-or-spaces -
- *     {@code Card name can only contain alphabets and spaces} (line 184).</li>
- * <li>Active status restricted to the two declared characters -
- *     {@code Card Active Status must be Y or N} (line 196).</li>
- * <li>Expiry month within the <strong>inclusive range 1 through 12</strong> -
- *     {@code Card expiry month must be between 1 and 12} (line 198). The text names the bounds
- *     unzeroed, which is itself part of the contract.</li>
- * <li>Expiry year within the <strong>inclusive range 1950 through 2099</strong> -
- *     {@code Invalid card expiry year} (line 200). The diagnostic deliberately names no range even
- *     though the rule has one.</li>
- * <li>Nothing typed at all - {@code No input received} (line 186); and nothing actually altered -
- *     {@code No change detected with respect to values fetched.} (line 188).</li>
+ * <li>Account id supplied (line 178), and numeric and non-zero at eleven digits (lines 190 and 192,
+ *     where the same rule is declared twice), plus the upper-case filter variant at line 745.</li>
+ * <li>Card number supplied (line 180) and numeric at sixteen digits (line 194), plus the upper-case
+ *     filter variant at line 789.</li>
+ * <li>Embossed name supplied (line 182) and letters-or-spaces (line 184).</li>
+ * <li>Active status restricted to the two declared characters (line 196).</li>
+ * <li>Expiry month within the <strong>inclusive range 1 through 12</strong> (line 198).</li>
+ * <li>Expiry year within the <strong>inclusive range 1950 through 2099</strong> (line 200).</li>
+ * <li>Nothing typed at all (line 186), and nothing actually altered (line 188).</li>
  * </ul>
  *
  * <p>Neither range is encoded here as an annotation, a constant, a range object or a private check;
  * both are documented above and enforced by the service inside the cascade, because hoisting either
- * out of the cascade would change which single message a bad submission produces. The full catalogue,
- * declared across {@code app/cbl/COCRDUPC.cbl} lines 135 to 214 and continuing at lines 745, 789 and
- * 1023, is <strong>owned by {@code CardUpdateResponse}</strong>, which reproduces every text byte for
- * byte including the ones whose punctuation is inconsistent - the file-error prefix at line 135 ends
- * in a space; the confirmation prompt {@code Changes validated.Press F5 to save} at line 167 has no
- * space after its period while the failure notice at line 171 does; the exit notice at line 176 both
- * omits that space and carries trailing spaces; the concurrency notice at line 208 spells "some one"
- * as two words; and the placeholder at line 214 ends in four dots. <strong>Not one of those texts is
- * declared in this file.</strong>
+ * out of the cascade would change which single message a bad submission produces. The message texts
+ * themselves - declared across {@code app/cbl/COCRDUPC.cbl} lines 135 to 214 and continuing at lines
+ * 745, 789 and 1023, several with inconsistent punctuation that is reproduced byte for byte - are
+ * <strong>owned by {@code CardUpdateResponse}</strong>. <strong>Not one of them is declared in this
+ * file.</strong>
  *
  * <p><strong>The letters-or-spaces rule admits embedded spaces, and a letters-only pattern would
  * break existing data.</strong> The check is the COBOL blank-and-test idiom: the program blanks every
@@ -283,9 +265,8 @@ import jakarta.validation.constraints.Size;
  * optimistic-lock conflict, whose text is the legacy concurrency notice, when it is absent, altered or
  * no longer describes the stored record. It also hands back the two protected values it seals, so the
  * account id and the expiry day the service writes come from the proof rather than from this body.
- * Decision {@code DL-109} in {@code docs/decision-log.md} records this arrangement, and records that
- * an earlier revision of this file declared the opposite - that no concurrency component of any kind
- * was carried - which the stale-update parity requirement overrules.
+ * Decision {@code DL-109} in {@code docs/decision-log.md} records this arrangement and the
+ * stale-update parity requirement that makes carrying a proof mandatory rather than optional.
  *
  * <p><strong>The card entity's version column is a different check, not this one.</strong> The
  * provider's version check catches a change made between reading the record for update and writing it;
@@ -496,7 +477,7 @@ public record CardUpdateRequest(
      * first-error-wins validation cascade the class notes describe is untouched: the constraint scoped
      * to this group asserts an absence rather than a presence, adds no mandatory field, contributes no
      * message and does not fire at all unless a caller names the group explicitly. A submission
-     * validated the ordinary way behaves exactly as it did before this group existed.
+     * validated the ordinary unqualified way is therefore unaffected by this group.
      */
     public interface ConfirmSave {
     }

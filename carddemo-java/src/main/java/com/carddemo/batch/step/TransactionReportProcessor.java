@@ -20,6 +20,7 @@ import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.TransactionCategory;
 import com.carddemo.domain.TransactionType;
+import com.carddemo.service.ReportTransactionInput;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.service.TransactionReportService.TransactionReportResult;
 import com.carddemo.util.ReportLineFormatter;
@@ -54,10 +55,11 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <h2>What one item is</h2>
  *
- * <p>One item is <strong>one date-parameter card</strong>, and one card produces one whole report.
- * That is the legacy program's own shape: it reads a single record from its date-parameter dataset,
- * takes the reporting bounds from it, and then walks the ordered transaction input once from
- * beginning to end. The card is accepted in either of the two widths the estate uses - the
+ * <p>One item is the <strong>date-parameter card plus the frozen ordered transaction
+ * generation</strong>, and one such input produces one whole report. That is the legacy program's own
+ * shape: it reads a single record from its date-parameter dataset, takes the reporting bounds from it,
+ * and then walks the sequential transaction generation once from beginning to end. The card is
+ * accepted in either of the two widths the estate uses - the
  * {@code ReportLineFormatter#DATE_PARAMETER_STRUCTURED_WIDTH}-byte structured record or the
  * {@code ReportLineFormatter#DATE_PARAMETER_CARD_WIDTH}-byte card image whose leading bytes are
  * byte-identical to the in-stream card the online report-request program submits.
@@ -68,7 +70,7 @@ import org.springframework.batch.item.ItemProcessor;
  * nothing here reads past the end date.
  *
  * <p>An absent date-parameter dataset is represented by the parent job's reader producing
- * <em>no item at all</em>, which is why this method never accepts a null card. The legacy read
+ * <em>no item at all</em>, which is why this method never accepts a null input. The legacy read
  * reports end of file for an empty dataset, its driving loop never iterates and the report is
  * empty; a step whose reader yields nothing reaches this processor zero times and writes nothing,
  * which is the same outcome expressed the way a chunk-oriented step expresses it.
@@ -109,13 +111,13 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <p>This class carries no framework annotation, so the job configuration declares it as a bean and
  * hands it the two collaborators its constructor names. Around it the configuration owns three
- * things this class deliberately does not: a reader that yields the date-parameter card - one item,
- * built from the job's validated start and end parameters - the ordered range query that replaces the
- * legacy external sort, and a writer that expands {@code TransactionReportResult#reportLines()} onto
- * the fixed-length destination. It also owns the step's own metering and its failure semantics.
- * <strong>The item type is the card, not a transaction</strong>, which is worth stating plainly
- * because a reader wired to the transaction stream instead would compile and then generate one
- * complete report per transaction.
+ * things this class deliberately does not: a reader that parses the filtered, ordered generation into
+ * a detached {@link ReportTransactionSource}, the date-parameter record built from the validated
+ * bounds, and a writer that expands {@code TransactionReportResult#reportLines()} onto the
+ * fixed-length destination. It also owns the step's own metering and its failure semantics.
+ * <strong>The item type is the complete report input, not one transaction</strong>, which is worth
+ * stating plainly because a reader wired to emit individual transactions would compile and then
+ * generate one complete report per transaction.
  *
  * <h2>The accumulation chain this class must not disturb</h2>
  *
@@ -182,19 +184,18 @@ import org.springframework.batch.item.ItemProcessor;
  * adds no secondary transaction-identifier key. That is not fastidiousness: another job in the same
  * estate types the same physical field differently, so a comparator shared between the two would
  * hand one of them the other's semantics without anything failing to compile. The specification
- * belongs to the job configuration that owns it, together with the query ordering that replaces the
- * external sort.
+ * belongs to the job configuration that owns it and materialises it in the filtered generation.
  *
  * <p>The reporting range is <strong>inclusive at both ends</strong> and is applied as a character
  * comparison of the ten-character prefix of the twenty-six-character processing timestamp: at or
  * above the start date <em>and</em> at or below the end date. It works as characters because the
  * format is fixed ISO with hyphens, so lexical order and calendar order coincide. No temporal type
  * is constructed anywhere on this path - nothing is parsed to a date, no punctuation is normalised
- * and no zone is applied - and the comparison is stated in exactly one place, the service and the
- * range query it issues. Restating it here as a second filter would give the feature two predicates
- * to keep in step.
+ * and no zone is applied. The job's sort step applies the predicate before freezing the generation;
+ * the service retains only the legacy guard over records already admitted by that snapshot.
  *
- * <p>{@link #process(String)} <strong>never returns null</strong>. A null return instructs the batch
+ * <p>{@link #process(ReportTransactionInput)} <strong>never returns null</strong>. A null return
+ * instructs the batch
  * framework to filter the item, and since one item is the whole report, a filtered item would be a
  * report the legacy job produced and this one silently did not. The method has exactly two
  * outcomes: the result, or a thrown exception.
@@ -240,7 +241,7 @@ import org.springframework.batch.item.ItemProcessor;
  * @since 1.0.0
  */
 public final class TransactionReportProcessor
-        implements ItemProcessor<String, TransactionReportResult> {
+        implements ItemProcessor<ReportTransactionInput, TransactionReportResult> {
 
     /**
      * Diagnostics for this stage.
@@ -274,8 +275,8 @@ public final class TransactionReportProcessor
 
     /**
      * Name of the legacy step that filtered the unloaded transactions to the reporting range and
-     * ordered them by card number - work the target expresses as one ordered range query owned by
-     * the job configuration.
+     * ordered them by card number - work the target materialises as the filtered generation consumed
+     * by the following step.
      */
     public static final String LEGACY_SORT_STEP = "STEP05R";
 
@@ -354,12 +355,12 @@ public final class TransactionReportProcessor
      * static file and subprogram linkage. No setter and no field injection exists, so a partially
      * built instance is not representable, and the instance that results holds no mutable state.
      *
-     * <p>Deliberately <strong>not</strong> injected: the three lookup repositories, the ordered
-     * range query and the report layout. The first two belong to {@link TransactionReportService},
-     * which resolves the account identifier and the two descriptions the detail line needs, and the
-     * third belongs to {@link ReportLineFormatter}, whose members are static because a layout has no
-     * per-instance state to carry. Taking any of them here would give the module two owners for one
-     * decision.
+     * <p>Deliberately <strong>not</strong> injected: the three lookup repositories, the frozen
+     * transaction source and the report layout. The lookups belong to
+     * {@link TransactionReportService}, the source arrives in each item from the owning batch
+     * execution, and the layout belongs to {@link ReportLineFormatter}. Taking any of them as a
+     * singleton collaborator here would give the module two owners for one decision or leak one run's
+     * snapshot into another.
      *
      * @param reportService the report generator this stage delegates a whole report to
      * @param meterRegistry the registry the generation timer and the record counter are recorded on
@@ -385,7 +386,7 @@ public final class TransactionReportProcessor
      * <p>Four things happen, in this order, and the order is deliberate:
      *
      * <ol>
-     *   <li>a null card is rejected. One item is one whole report, so a null here would mean the
+     *   <li>a null input is rejected. One item is one whole report, so a null here would mean the
      *       framework contract had been breached rather than that a parameter dataset was empty - an
      *       empty dataset is a reader that yields no item;</li>
      *   <li>the two ten-character bounds are read out of the card by
@@ -429,13 +430,12 @@ public final class TransactionReportProcessor
      * and that ordering must not be disturbed by an intervening handler here. The only exception
      * handling on this path re-tags the timer and rethrows the very same exception.
      *
-     * @param  dateParameterCard the date-parameter card, in either the structured or the
-     *                           eighty-column width; never {@code null}, which the framework's own
-     *                           contract for this method guarantees
+     * @param  input the validated date-parameter card and the frozen ordered transaction generation;
+     *               never {@code null}
      * @return the ordered report content and the run's observations; never {@code null}, because a
      *         null return would filter the only item and silently produce no report
-     * @throws NullPointerException     if {@code dateParameterCard} is {@code null}, or if the
-     *                                  delegate reports no result at all
+     * @throws NullPointerException     if {@code input} is {@code null}, or if the delegate reports
+     *                                  no result at all
      * @throws IllegalArgumentException propagated from the card reader if the card measures neither
      *                                  legal width or is not printable US-ASCII
      * @throws IllegalStateException    if any report record is not exactly
@@ -443,10 +443,11 @@ public final class TransactionReportProcessor
      *                                  a character US-ASCII cannot represent
      */
     @Override
-    public TransactionReportResult process(final String dateParameterCard) {
-        Objects.requireNonNull(dateParameterCard, LEGACY_JOB + " " + LEGACY_REPORT_STEP
-                + " received a null date-parameter card; an absent " + LEGACY_DD_DATEPARM
-                + " dataset is expressed by the reader yielding no item at all");
+    public TransactionReportResult process(final ReportTransactionInput input) {
+        Objects.requireNonNull(input, LEGACY_JOB + " " + LEGACY_REPORT_STEP
+                + " received no frozen report input for " + LEGACY_DD_DATEPARM
+                + " and TRANFILE");
+        final String dateParameterCard = input.dateParameterCard();
 
         final String startDate = ReportLineFormatter.readStartDate(dateParameterCard);
         final String endDate = ReportLineFormatter.readEndDate(dateParameterCard);
@@ -455,7 +456,8 @@ public final class TransactionReportProcessor
         final TransactionReportResult result;
         try {
             result = Objects.requireNonNull(
-                    this.reportService.generateReportFromDateParameterCard(dateParameterCard),
+                    this.reportService.generateReportFromDateParameterCard(
+                            input.transactionSource(), dateParameterCard),
                     () -> LEGACY_PROGRAM + " reported no result for the reporting range "
                             + startDate + " to " + endDate);
             // The width proof is inside the timed region and inside this guard on purpose: it is

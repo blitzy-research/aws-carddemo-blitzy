@@ -17,6 +17,8 @@
 package com.carddemo.config;
 
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.support.InMemoryCredentialMaster;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,9 +31,11 @@ import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -132,6 +136,17 @@ class JwtTokenProviderTest {
     /** Source of every piece of signing material below, so that none of it is written into this file. */
     private static final SecureRandom RANDOM = new SecureRandom();
 
+    /**
+     * Index at which the salt-and-hash part of a BCrypt digest begins: four characters of version tag, two
+     * of cost factor and one separator.
+     *
+     * <p>Stated so that {@link RecordFingerprintClaim#carriesNoPartOfTheStoredDigest()} can assert the
+     * fingerprint carries no fragment of the <em>secret-bearing</em> part of a digest, rather than only
+     * that it does not carry the whole value - the header alone is common to every digest and proves
+     * nothing.</p>
+     */
+    private static final int SALT_AND_HASH_START = 7;
+
     /** Reads a token's payload segment back from the wire, independently of the class under test. */
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -154,9 +169,21 @@ class JwtTokenProviderTest {
      * the implementation being checked. The role claim is taken from the published constant so that the
      * minting side, the filter chain and this expectation cannot drift apart on it, and its wire spelling
      * is pinned separately by {@link ClaimMinimality#namesTheRoleClaimOnTheWire()}.</p>
+     *
+     * <p><strong>{@link JwtTokenProvider#SECURITY_STATE_CLAIM} is enrolled here by name, and the
+     * justification belongs in this file rather than only in the class it describes.</strong> It is not a
+     * third fact about the signed-on identity and it is not a field of the communication area: it is a
+     * fingerprint of the user-security record the other two facts were read from, and it exists because a
+     * signed fact stays true to its signature after it has stopped being true about that record. Without
+     * it, demoting, deleting or resetting the credential of an operator changed nothing until the token
+     * already in that operator's hands expired. It is admitted to this set because it carries no value of
+     * the record - {@link RecordFingerprintClaim} asserts that separately, against the identifier, the raw
+     * type code and the stored digest - and admitting it by name is what keeps every <em>other</em>
+     * widening of the claim set a failure.</p>
      */
     private static final Set<String> PERMITTED_CLAIM_NAMES =
-            Set.of("iss", "sub", "iat", "exp", JwtTokenProvider.ROLE_CLAIM);
+            Set.of("iss", "sub", "iat", "exp", JwtTokenProvider.ROLE_CLAIM,
+                    JwtTokenProvider.SECURITY_STATE_CLAIM);
 
     /**
      * Claim names that would carry a field of the legacy communication area other than the two signed
@@ -243,17 +270,65 @@ class JwtTokenProviderTest {
     }
 
     /**
+     * The credential master every provider below reads, and the only mutable fixture state in this file.
+     *
+     * <p>It is shared rather than per-provider deliberately: the record is what a token is minted from and
+     * what a currency check reads, so a fixture in which two providers saw two different records could
+     * not express "the record changed after the token was issued" - which is the whole of what
+     * {@link RecordFingerprintClaim} and {@link CurrencyOfAVerifiedToken} assert.</p>
+     */
+    private static final InMemoryCredentialMaster CREDENTIAL_MASTER = new InMemoryCredentialMaster();
+
+    /** Re-seeds the two fixture operators, so no test inherits another's record state. */
+    @BeforeEach
+    void seedCredentialMaster() {
+        CREDENTIAL_MASTER.reset()
+                .with(ADMINISTRATOR_ID, UserType.ADMIN.getCode())
+                .with(STANDARD_USER_ID, UserType.USER.getCode());
+    }
+
+    /**
      * Builds a provider on given settings whose clock is pinned to a chosen instant.
      *
      * <p>The same settings instance can be handed to two providers at two instants, which is how an
-     * expiry assertion is made without waiting and without either side reading the platform clock.</p>
+     * expiry assertion is made without waiting and without either side reading the platform clock. Every
+     * provider reads {@link #CREDENTIAL_MASTER}, so two providers agree about the record exactly as two
+     * instances of the running module would.</p>
      *
      * @param properties settings to build from
      * @param at         instant the provider treats as now, for minting and for judging the window
      * @return the provider
      */
     private static JwtTokenProvider providerFor(final JwtProperties properties, final Instant at) {
-        return new JwtTokenProvider(properties, Clock.fixed(at, ZoneOffset.UTC));
+        return new JwtTokenProvider(properties, Clock.fixed(at, ZoneOffset.UTC), stateService());
+    }
+
+    /**
+     * Builds the record reader every provider here is given, over the shared credential master.
+     *
+     * @return a state service reading {@link #CREDENTIAL_MASTER}
+     */
+    private static SignOnStateService stateService() {
+        return new SignOnStateService(CREDENTIAL_MASTER.repository());
+    }
+
+    /**
+     * Seeds the credential master with an operator, then answers a provider that can mint for it.
+     *
+     * <p>Minting requires the record, because the fingerprint the token carries is derived from it and a
+     * session for an identity that does not exist, or for a role its record does not carry, is refused
+     * rather than issued. An assertion about the <em>shape</em> of a token - a fixed-width identifier
+     * preserved byte for byte, a numeric-looking one not parsed, a type code carried raw - therefore has
+     * to say which record it is minting against. Saying it through this helper keeps each such assertion
+     * reading as one statement, and keeps the record and the arguments unable to disagree.</p>
+     *
+     * @param userId   the identifier to seed and to mint for
+     * @param userType the type to seed and to mint
+     * @return a provider over the seeded credential master
+     */
+    private static JwtTokenProvider providerHolding(final String userId, final UserType userType) {
+        CREDENTIAL_MASTER.with(userId, userType.getCode());
+        return provider();
     }
 
     /**
@@ -416,8 +491,8 @@ class JwtTokenProviderTest {
             "USER0001,U", "USER0002,U", "USER0003,U", "USER0004,U", "USER0005,U"})
         @DisplayName("round-trips every identity the provisioning job stream seeds, at its own type")
         void roundTripsEverySeededIdentity(final String seededId, final String typeCode) {
-            final JwtTokenProvider provider = provider();
             final UserType seededType = UserType.fromCode(typeCode).orElseThrow();
+            final JwtTokenProvider provider = providerHolding(seededId, seededType);
 
             final Jwt verified = provider.verify(provider.issue(seededId, seededType)).orElseThrow();
 
@@ -429,7 +504,7 @@ class JwtTokenProviderTest {
         @EnumSource(UserType.class)
         @DisplayName("round-trips either user type the estate declares, carrying the legacy code itself")
         void roundTripsEveryDeclaredUserType(final UserType userType) {
-            final JwtTokenProvider provider = provider();
+            final JwtTokenProvider provider = providerHolding(ADMINISTRATOR_ID, userType);
 
             final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, userType)).orElseThrow();
 
@@ -445,7 +520,7 @@ class JwtTokenProviderTest {
             // Eight characters including trailing blanks, exactly as the fixed-width key is held. Trimming
             // it would stop it matching the record it identifies.
             final String paddedToFullWidth = "USER1   ";
-            final JwtTokenProvider provider = provider();
+            final JwtTokenProvider provider = providerHolding(paddedToFullWidth, UserType.USER);
 
             final Jwt verified = provider.verify(provider.issue(paddedToFullWidth, UserType.USER))
                     .orElseThrow();
@@ -460,7 +535,7 @@ class JwtTokenProviderTest {
             // Leading zeros survive only if the value is never parsed as a number; a parsed subject would
             // read back as a single digit and would identify nothing.
             final String leadingZeros = "00000001";
-            final JwtTokenProvider provider = provider();
+            final JwtTokenProvider provider = providerHolding(leadingZeros, UserType.USER);
 
             final Jwt verified = provider.verify(provider.issue(leadingZeros, UserType.USER)).orElseThrow();
 
@@ -489,7 +564,7 @@ class JwtTokenProviderTest {
             // A provider that folded here would duplicate a responsibility that already sits one layer up,
             // and the duplicate could then disagree with it. Whatever it is handed is what it carries.
             final String asSupplied = "admin001";
-            final JwtTokenProvider provider = provider();
+            final JwtTokenProvider provider = providerHolding(asSupplied, UserType.ADMIN);
 
             final Jwt verified = provider.verify(provider.issue(asSupplied, UserType.ADMIN)).orElseThrow();
 
@@ -580,8 +655,8 @@ class JwtTokenProviderTest {
         @EnumSource(UserType.class)
         @DisplayName("carries the raw one-character legacy type code as its role claim")
         void carriesTheRawTypeCodeAsItsRoleClaim(final UserType userType) throws JsonProcessingException {
-            final Map<String, Object> payload =
-                    payloadOf(provider().issue(STANDARD_USER_ID, userType));
+            final Map<String, Object> payload = payloadOf(
+                    providerHolding(STANDARD_USER_ID, userType).issue(STANDARD_USER_ID, userType));
 
             assertThat(payload).containsEntry(JwtTokenProvider.ROLE_CLAIM, userType.getCode());
             assertThat(String.valueOf(payload.get(JwtTokenProvider.ROLE_CLAIM)))
@@ -621,7 +696,8 @@ class JwtTokenProviderTest {
         @EnumSource(UserType.class)
         @DisplayName("carries none of the communication-area fields that belong to the context record")
         void carriesNoneOfTheCommareaFields(final UserType userType) throws JsonProcessingException {
-            final Map<String, Object> payload = payloadOf(provider().issue(ADMINISTRATOR_ID, userType));
+            final Map<String, Object> payload = payloadOf(
+                    providerHolding(ADMINISTRATOR_ID, userType).issue(ADMINISTRATOR_ID, userType));
 
             assertCarriesNoneOf(payload, FORBIDDEN_COMMAREA_CLAIM_NAMES,
                     "the navigation fields and the customer, account and card selections of the 160-byte "
@@ -968,7 +1044,7 @@ class JwtTokenProviderTest {
             final JwtProperties absent = new JwtProperties(null, ISSUER, FIXTURE_LIFETIME);
             final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
 
-            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(absent, clock));
+            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(absent, clock, stateService()));
 
             assertThat(thrown)
                     .isInstanceOf(IllegalStateException.class)
@@ -981,7 +1057,7 @@ class JwtTokenProviderTest {
             final JwtProperties blank = new JwtProperties("   ", ISSUER, FIXTURE_LIFETIME);
             final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
 
-            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(blank, clock));
+            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(blank, clock, stateService()));
 
             assertThat(thrown)
                     .isInstanceOf(IllegalStateException.class)
@@ -998,7 +1074,7 @@ class JwtTokenProviderTest {
             final JwtProperties properties = new JwtProperties(tooShort, ISSUER, FIXTURE_LIFETIME);
             final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
 
-            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(properties, clock));
+            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(properties, clock, stateService()));
 
             assertThat(thrown)
                     .isInstanceOf(IllegalStateException.class)
@@ -1012,7 +1088,7 @@ class JwtTokenProviderTest {
             final JwtProperties properties = new JwtProperties(tooShort, ISSUER, FIXTURE_LIFETIME);
             final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
 
-            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(properties, clock));
+            final Throwable thrown = catchThrowable(() -> new JwtTokenProvider(properties, clock, stateService()));
             final String message = String.valueOf(thrown.getMessage());
 
             // Compared inside a boolean deliberately: a comparison written the other way round would put
@@ -1027,7 +1103,7 @@ class JwtTokenProviderTest {
         void refusesAbsentSettings() {
             final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
 
-            assertThatNullPointerException().isThrownBy(() -> new JwtTokenProvider(null, clock));
+            assertThatNullPointerException().isThrownBy(() -> new JwtTokenProvider(null, clock, stateService()));
         }
 
         @Test
@@ -1036,7 +1112,19 @@ class JwtTokenProviderTest {
         void refusesAnAbsentClock() {
             final JwtProperties usable = propertiesWith(freshSigningMaterial());
 
-            assertThatNullPointerException().isThrownBy(() -> new JwtTokenProvider(usable, null));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new JwtTokenProvider(usable, null, stateService()));
+        }
+
+        @Test
+        @DisplayName("is refused when no record reader is supplied, since a token could then be minted "
+                + "that nothing is able to revoke")
+        void refusesAnAbsentRecordReader() {
+            final JwtProperties usable = propertiesWith(freshSigningMaterial());
+            final Clock clock = Clock.fixed(ISSUED_AT, ZoneOffset.UTC);
+
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new JwtTokenProvider(usable, clock, null));
         }
     }
 
@@ -1223,5 +1311,289 @@ class JwtTokenProviderTest {
         }
     }
 
+    /**
+     * The record fingerprint a minted token carries, read independently off the wire.
+     *
+     * <p><strong>Why a token needs it at all.</strong> Every legacy terminal turn re-entered a transaction
+     * that read the credential master again, so an entitlement could not go stale: there was nothing
+     * carried to go stale. A signed claim is the opposite - it stays true to its signature after it has
+     * stopped being true about the record it describes - so an administrator who demoted, deleted or reset
+     * the credential of an operator changed nothing until the token that operator already held expired.
+     * The fingerprint is what makes the record consultable again on the next request.</p>
+     *
+     * <p>Every assertion here decodes the payload segment itself, so none can be satisfied by a provider
+     * that is merely self-consistent, and the negative assertions are the load-bearing ones: the claim must
+     * not be the stored credential digest, must not be the type code, and must not be the identifier.</p>
+     */
+    @Nested
+    @DisplayName("The record fingerprint a minted token carries")
+    class RecordFingerprintClaim {
 
+        @Test
+        @DisplayName("is present, and is the fingerprint the record reader derives for that record")
+        void isTheFingerprintTheRecordReaderDerives() throws JsonProcessingException {
+            final Map<String, Object> payload =
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN));
+
+            assertThat(String.valueOf(payload.get(JwtTokenProvider.SECURITY_STATE_CLAIM)))
+                    .isEqualTo(stateService().currentStateOf(ADMINISTRATOR_ID)
+                            .orElseThrow().fingerprint());
+        }
+
+        @Test
+        @DisplayName("names the claim on the wire, which is the part every already-issued token depends on")
+        void namesTheClaimOnTheWire() {
+            assertThat(JwtTokenProvider.SECURITY_STATE_CLAIM)
+                    .as("renaming this claim revokes every token already issued")
+                    .isEqualTo("authstate");
+        }
+
+        @Test
+        @DisplayName("carries no part of the stored credential digest, which is the one value that would "
+                + "make issuing a token a disclosure")
+        void carriesNoPartOfTheStoredDigest() throws JsonProcessingException {
+            final String digest = InMemoryCredentialMaster.nextDigest();
+            CREDENTIAL_MASTER.with(STANDARD_USER_ID, UserType.USER.getCode(), digest);
+
+            final String token = provider().issue(STANDARD_USER_ID, UserType.USER);
+            final String fingerprint =
+                    String.valueOf(payloadOf(token).get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+
+            // Compared inside booleans deliberately: an assertion written the other way round would put
+            // the stored digest into the description a failing run renders.
+            assertThat(fingerprint.contains(digest))
+                    .as("the fingerprint is a one-way digest OF the stored value, never the value")
+                    .isFalse();
+            assertThat(token.contains(digest)).isFalse();
+            assertThat(fingerprint.contains(digest.substring(SALT_AND_HASH_START))).isFalse();
+        }
+
+        @Test
+        @DisplayName("carries the identifier in no readable form, even though it is an input to it")
+        void carriesTheIdentifierInNoReadableForm() throws JsonProcessingException {
+            final String fingerprint = String.valueOf(payloadOf(
+                    provider().issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                    .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+
+            // The raw type code is deliberately NOT asserted absent: it is a single character, and any
+            // 64-character hexadecimal string contains most single hexadecimal characters by chance, so
+            // such an assertion would be satisfied or violated at random rather than by the property. What
+            // establishes that the type code is not readable from the fingerprint is that the value is a
+            // fixed-width digest of the whole canonical image - asserted here - together with
+            // doesNotNameItWhenTheRoleClaimDisagreesWithTheRecord, which shows the code is compared against
+            // the record rather than recovered from the claim.
+            assertThat(fingerprint)
+                    .doesNotContain(ADMINISTRATOR_ID)
+                    .doesNotContain(ADMINISTRATOR_ID.toLowerCase(Locale.ROOT))
+                    .hasSize(SignOnStateService.FINGERPRINT_LENGTH)
+                    .matches("[0-9a-f]+");
+        }
+
+        @Test
+        @DisplayName("differs between two identities, so a fingerprint cannot be replayed against another "
+                + "record")
+        void differsBetweenTwoIdentities() throws JsonProcessingException {
+            final String forAdministrator = String.valueOf(
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                            .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+            final String forStandardUser = String.valueOf(
+                    payloadOf(provider().issue(STANDARD_USER_ID, UserType.USER))
+                            .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+
+            assertThat(forAdministrator).isNotEqualTo(forStandardUser);
+        }
+
+        @Test
+        @DisplayName("is unchanged by minting twice while the record stands still, because it describes the "
+                + "record and not the occasion")
+        void isUnchangedWhileTheRecordStandsStill() throws JsonProcessingException {
+            final JwtTokenProvider provider = provider();
+
+            final String first = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                    .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+            final String second = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                    .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
+
+            assertThat(second)
+                    .as("a per-issue random value could not be recomputed from the record and so could "
+                            + "not revoke anything")
+                    .isEqualTo(first);
+        }
+
+        @Test
+        @DisplayName("refuses to mint at all when the record has gone, rather than issuing a session for "
+                + "an identity that no longer exists")
+        void refusesToMintWhenTheRecordHasGone() {
+            final JwtTokenProvider provider = provider();
+            CREDENTIAL_MASTER.without(ADMINISTRATOR_ID);
+
+            assertThat(catchThrowable(() -> provider.issue(ADMINISTRATOR_ID, UserType.ADMIN)))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("no session is issued");
+        }
+
+        @Test
+        @DisplayName("refuses to mint a role the record does not carry, so a session can never name an "
+                + "entitlement its record denies")
+        void refusesToMintARoleTheRecordDoesNotCarry() {
+            final JwtTokenProvider provider = provider();
+
+            final Throwable thrown =
+                    catchThrowable(() -> provider.issue(STANDARD_USER_ID, UserType.ADMIN));
+
+            assertThat(thrown)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("no session is issued");
+            assertThat(String.valueOf(thrown.getMessage()))
+                    .as("the subject of a credential being minted does not belong in a message")
+                    .doesNotContain(STANDARD_USER_ID);
+        }
+    }
+
+    /**
+     * Whether a verified token still names the record it was minted from - the question that decides
+     * whether an identity is established, as distinct from whether the token is genuine.
+     *
+     * <p>All four revocation cases are asserted through this one predicate, and each is expressed as the
+     * administrative action that causes it: deletion, demotion, promotion and credential reset. The
+     * positive control is asserted first and again after an irrelevant change, so the predicate is shown to
+     * discriminate rather than merely to refuse.</p>
+     */
+    @Nested
+    @DisplayName("Whether a verified token still names its record")
+    class CurrencyOfAVerifiedToken {
+
+        /**
+         * Mints and verifies a token for the administrator, leaving the record untouched.
+         *
+         * @return the verified token
+         */
+        private Jwt administratorToken() {
+            final JwtTokenProvider provider = provider();
+            return provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN)).orElseThrow();
+        }
+
+        @Test
+        @DisplayName("still names it while nothing has changed, which is the control every refusal below "
+                + "is measured against")
+        void stillNamesItWhileNothingHasChanged() {
+            assertThat(provider().namesCurrentState(administratorToken())).isTrue();
+        }
+
+        @Test
+        @DisplayName("no longer names it once the record is deleted, so a deleted operator is refused on "
+                + "the next request rather than at the end of the token's lifetime")
+        void noLongerNamesItOnceTheRecordIsDeleted() {
+            final Jwt verified = administratorToken();
+
+            CREDENTIAL_MASTER.without(ADMINISTRATOR_ID);
+
+            assertThat(provider().namesCurrentState(verified)).isFalse();
+        }
+
+        @Test
+        @DisplayName("no longer names it once the operator is demoted, so an administrative entitlement "
+                + "does not outlive the record that granted it")
+        void noLongerNamesItOnceTheOperatorIsDemoted() {
+            final Jwt verified = administratorToken();
+
+            CREDENTIAL_MASTER.withUserType(ADMINISTRATOR_ID, UserType.USER.getCode());
+
+            assertThat(provider().namesCurrentState(verified)).isFalse();
+        }
+
+        @Test
+        @DisplayName("no longer names it once the operator is promoted either, because the token describes "
+                + "the record and a changed record is a changed description")
+        void noLongerNamesItOnceTheOperatorIsPromoted() {
+            final JwtTokenProvider provider = provider();
+            final Jwt verified =
+                    provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER)).orElseThrow();
+
+            CREDENTIAL_MASTER.withUserType(STANDARD_USER_ID, UserType.ADMIN.getCode());
+
+            assertThat(provider.namesCurrentState(verified)).isFalse();
+        }
+
+        @Test
+        @DisplayName("no longer names it once the credential is reset, so setting a credential ends the "
+                + "sessions issued against the previous one")
+        void noLongerNamesItOnceTheCredentialIsReset() {
+            final Jwt verified = administratorToken();
+
+            CREDENTIAL_MASTER.withResetCredential(ADMINISTRATOR_ID);
+
+            assertThat(provider().namesCurrentState(verified)).isFalse();
+        }
+
+        @Test
+        @DisplayName("still names it after a change that is not a security fact, so correcting a family "
+                + "name does not end anybody's session")
+        void stillNamesItAfterANonSecurityChange() {
+            final Jwt verified = administratorToken();
+
+            CREDENTIAL_MASTER.findById(ADMINISTRATOR_ID).orElseThrow().setSecUsrLname("Corrected");
+
+            assertThat(provider().namesCurrentState(verified))
+                    .as("covering the name fields would end a session because somebody fixed a spelling")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("does not name it when the token carries no fingerprint at all, so a token minted "
+                + "before this claim existed cannot bypass the check")
+        void doesNotNameItWhenTheFingerprintIsAbsent() {
+            final Jwt withoutFingerprint = Jwt.withTokenValue("compact-form-not-parsed-here")
+                    .header("alg", "HS256")
+                    .subject(ADMINISTRATOR_ID)
+                    .claim(JwtTokenProvider.ROLE_CLAIM, UserType.ADMIN.getCode())
+                    .issuedAt(ISSUED_AT)
+                    .expiresAt(ISSUED_AT.plus(FIXTURE_LIFETIME))
+                    .build();
+
+            assertThat(provider().namesCurrentState(withoutFingerprint)).isFalse();
+        }
+
+        @Test
+        @DisplayName("does not name it when the token's role claim disagrees with the record, even though "
+                + "the fingerprint would reconcile on its own")
+        void doesNotNameItWhenTheRoleClaimDisagreesWithTheRecord() {
+            final String currentFingerprint =
+                    stateService().currentStateOf(ADMINISTRATOR_ID).orElseThrow().fingerprint();
+            final Jwt overclaiming = Jwt.withTokenValue("compact-form-not-parsed-here")
+                    .header("alg", "HS256")
+                    .subject(ADMINISTRATOR_ID)
+                    .claim(JwtTokenProvider.ROLE_CLAIM, UserType.USER.getCode())
+                    .claim(JwtTokenProvider.SECURITY_STATE_CLAIM, currentFingerprint)
+                    .issuedAt(ISSUED_AT)
+                    .expiresAt(ISSUED_AT.plus(FIXTURE_LIFETIME))
+                    .build();
+
+            assertThat(provider().namesCurrentState(overclaiming))
+                    .as("the fingerprint proves what the record said, not what the token claimed; the "
+                            + "type-code comparison is what ties the two together")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("does not name it when the record cannot be reached, failing closed rather than "
+                + "leaving a session standing while revocation is not working")
+        void doesNotNameItWhenTheRecordCannotBeReached() {
+            final Jwt verified = administratorToken();
+
+            CREDENTIAL_MASTER.failLookupsWith(new IllegalStateException("credential master unreachable"));
+
+            assertThat(catchThrowable(() -> provider().namesCurrentState(verified)))
+                    .as("the failure is absorbed rather than raised, so the chain refuses instead of "
+                            + "answering with a server error")
+                    .isNull();
+            assertThat(provider().namesCurrentState(verified)).isFalse();
+        }
+
+        @Test
+        @DisplayName("refuses an absent token rather than answering about one")
+        void refusesAnAbsentToken() {
+            assertThatNullPointerException().isThrownBy(() -> provider().namesCurrentState(null));
+        }
+    }
 }

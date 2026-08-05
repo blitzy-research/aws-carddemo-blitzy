@@ -101,6 +101,9 @@ class FixedWidthFlatFileReaderFactoryTest {
     /** Encoded width of one disclosure group record, from the disclosure group copybook. */
     private static final int DISCLOSURE_GROUP_WIDTH = 50;
 
+    /** Encoded width of one transaction record. */
+    private static final int TRANSACTION_WIDTH = 350;
+
     /** Declared width of the disclosure group's account group identifier field. */
     private static final int DISCLOSURE_GROUP_KEY_WIDTH = 10;
 
@@ -196,6 +199,23 @@ class FixedWidthFlatFileReaderFactoryTest {
 
             assertThat(transactions).hasSize(DAILY_TRANSACTION_RECORDS).doesNotContainNull();
             assertThat(transactions.getFirst().getTranId()).isEqualTo("0000000000683580");
+        }
+
+        @Test
+        @DisplayName("the fixed-unblocked transaction reader splits adjacent 350-byte records")
+        void fixedUnblockedTransactionFixture(@TempDir Path directory) throws Exception {
+            final List<String> sourceRecords = lines("dailytran.txt").subList(0, 3);
+            final Path generation = directory.resolve("interest-generation");
+            Files.writeString(generation, String.join("", sourceRecords), StandardCharsets.US_ASCII);
+
+            final List<Transaction> transactions = readAll(
+                    factory.fixedTransactionReader(new FileSystemResource(generation)));
+
+            assertThat(transactions).extracting(Transaction::getTranId)
+                    .containsExactlyElementsOf(sourceRecords.stream()
+                            .map(record -> record.substring(0, 16))
+                            .toList());
+            assertThat(Files.size(generation)).isEqualTo(3L * TRANSACTION_WIDTH);
         }
 
         @Test
@@ -449,6 +469,8 @@ class FixedWidthFlatFileReaderFactoryTest {
                     .isNotSameAs(factory.accountReader(fixture("acctdata.txt")));
             assertThat(factory.dailyTransactionReader(fixture("dailytran.txt")))
                     .isNotSameAs(factory.dailyTransactionReader(fixture("dailytran.txt")));
+            assertThat(factory.fixedTransactionReader(fixture("dailytran.txt")))
+                    .isNotSameAs(factory.fixedTransactionReader(fixture("dailytran.txt")));
         }
 
         @Test
@@ -480,7 +502,7 @@ class FixedWidthFlatFileReaderFactoryTest {
         }
 
         @Test
-        @DisplayName("the eleven reader names are distinct, so no restart key collides")
+        @DisplayName("the reader names are distinct, so no restart key collides")
         void readerNamesAreDistinct() {
             List<String> names = List.of(
                     FixedWidthFlatFileReaderFactory.ACCOUNT_READER_NAME,
@@ -488,6 +510,7 @@ class FixedWidthFlatFileReaderFactoryTest {
                     FixedWidthFlatFileReaderFactory.CARD_CROSS_REFERENCE_READER_NAME,
                     FixedWidthFlatFileReaderFactory.CUSTOMER_READER_NAME,
                     FixedWidthFlatFileReaderFactory.TRANSACTION_READER_NAME,
+                    FixedWidthFlatFileReaderFactory.FIXED_TRANSACTION_READER_NAME,
                     FixedWidthFlatFileReaderFactory.DAILY_TRANSACTION_READER_NAME,
                     FixedWidthFlatFileReaderFactory.TRANSACTION_CATEGORY_BALANCE_READER_NAME,
                     FixedWidthFlatFileReaderFactory.DISCLOSURE_GROUP_READER_NAME,
@@ -495,10 +518,13 @@ class FixedWidthFlatFileReaderFactoryTest {
                     FixedWidthFlatFileReaderFactory.TRANSACTION_CATEGORY_READER_NAME,
                     FixedWidthFlatFileReaderFactory.USER_SECURITY_READER_NAME);
 
-            assertThat(names).doesNotHaveDuplicates().hasSize(11);
+            assertThat(names).doesNotHaveDuplicates().hasSize(12);
             assertThat(FixedWidthFlatFileReaderFactory.TRANSACTION_READER_NAME)
                     .as("the two identical 350-byte layouts must not share a restart key")
                     .isNotEqualTo(FixedWidthFlatFileReaderFactory.DAILY_TRANSACTION_READER_NAME);
+            assertThat(FixedWidthFlatFileReaderFactory.FIXED_TRANSACTION_READER_NAME)
+                    .as("the two physical boundary modes must not share a restart key")
+                    .isNotEqualTo(FixedWidthFlatFileReaderFactory.TRANSACTION_READER_NAME);
         }
 
         @Test

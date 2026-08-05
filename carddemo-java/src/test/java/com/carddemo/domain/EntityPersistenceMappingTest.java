@@ -65,7 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Two artefacts are compared, and neither is derived from the other. The subject is the mapping
  * the persistence provider itself computes from the annotations on the entity classes, obtained by
  * bootstrapping Hibernate's metadata offline. The oracle is
- * {@code src/main/resources/db/migration/schema/V1__create_schema.sql}, read through
+ * {@code src/main/resources/db/migration/V1__create_schema.sql}, read through
  * {@link SchemaColumnCatalog}, which parses the shipped data-definition text. The migration is
  * authored by hand and owns the database; the annotations are authored by hand on the entities. They
  * are two independent statements of the same contract, so agreement between them is evidence rather

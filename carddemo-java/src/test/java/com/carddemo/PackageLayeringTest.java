@@ -59,20 +59,22 @@ import org.junit.jupiter.api.Test;
  * resolved to the package it names. A floor on the number of sources found is asserted first, because
  * an absence assertion over an empty walk is vacuous.
  *
- * <p><strong>The one exemption, and why it is licensed rather than tolerated.</strong>
- * {@code FieldErrorTranslationService} imports {@code api.dto.FieldErrorDecorator}. That single edge is
- * licensed by the platform's own specification for the account-update service, §A5, which explicitly
- * permits a service to name the transport types it returns, and the decorator is the accumulator the
- * legacy validation macro {@code app/cpy/CSSETATY.cpy} expands into - a type whose whole purpose is to
- * be handed back across the boundary. The exemption is named here as a single class-and-type pair
- * rather than as a package-wide hole, so a second service reaching for a transport record fails this
- * test even though the first one is allowed to.
+ * <p><strong>There is no exemption.</strong> This file once carried a licence table naming the upward
+ * edges that were tolerated; the table is gone because the edges are. Not one class under
+ * {@code com.carddemo.service}, {@code com.carddemo.batch}, {@code com.carddemo.batch.step},
+ * {@code com.carddemo.repository}, {@code com.carddemo.domain}, {@code com.carddemo.util} or
+ * {@code com.carddemo.exception} names a type under {@code com.carddemo.api}, and no class under
+ * {@code com.carddemo.api} names one under {@code com.carddemo.batch}. Every value that has to cross
+ * the boundary crosses it in an API-layer adapter - {@code ScreenStateAdapter},
+ * {@code AccountUpdateContractAdapter}, {@code UserContractAdapter}, {@code SignOnContractAdapter} and
+ * {@code ConversationStateAdapter} - and every job launch goes through
+ * {@code service.BatchJobLaunchService}. The absence is asserted as an absence rather than measured
+ * against a table, which is the only form of the rule that cannot be widened by an edit to this file.
  *
- * <p><strong>What this file deliberately does not assert.</strong> The configuration package depends
- * downward on the API, service and utility packages, and that is not a violation: it is the composition
- * root, and wiring a bean requires naming the type being wired. What was wrong was the reverse edge -
- * a service reading a catalogue that happened to be annotated as configuration - and that is what is
- * forbidden below.
+ * <p><strong>The catalog edge is one-way.</strong> Configuration is the composition root and may
+ * implement service-owned ports, but services never import configuration. Shared route, refusal and
+ * publication contracts live below both configuration and the API boundary, so configuration imports
+ * no API type and no reciprocal package pair is introduced.
  *
  * <p>A pure unit test: no Spring context, no connection, no container. It reads files from the module
  * directory the build runs tests from.
@@ -82,7 +84,7 @@ import org.junit.jupiter.api.Test;
  *
  * @since 1.0.0
  */
-@DisplayName("package layering :: nothing depends upward, and the one exemption is named")
+@DisplayName("package layering :: nothing depends upward, and there is no exemption")
 final class PackageLayeringTest {
 
     /** The production source tree, relative to the module directory the build runs tests from. */
@@ -110,99 +112,86 @@ final class PackageLayeringTest {
             "^import\\s+(?:static\\s+)?(com\\.carddemo\\.[A-Za-z0-9_.]+)\\s*;", Pattern.MULTILINE);
 
     /**
-     * The licensed upward edges, as a declaring class paired with the exact transport types it may name.
+     * The classes whose upward edges were closed, named individually so a regression names itself.
      *
-     * <p>Held as exact pairs so a licence covers the edges named here and nothing adjacent to them: a
-     * listed class naming an unlisted transport type still fails, and an unlisted class naming any
-     * transport type still fails. The table is the record of the decision, which is why it enumerates
-     * types rather than granting a class or a package a blanket exemption.
+     * <h2>Why a list of closed classes and not a table of licensed edges</h2>
      *
-     * <h2>The one edge that is a design choice</h2>
+     * <p>This file used to carry the opposite construct: a map naming each upward edge that was allowed
+     * to exist, with a hand-counted total beside it. Review found twenty-eight service-to-transport
+     * edges and nine API-to-batch edges, and the table was how they were recorded rather than removed.
+     * All thirty-seven are now gone, so a table of permitted exceptions would have nothing to hold, and
+     * keeping an empty one would leave the mechanism in place for the next edge to be entered into.
      *
-     * <p>{@code FieldErrorTranslationService} names the field-error decorator because the decorator
-     * <em>is</em> the two-state error contract: the service's whole job is to produce it, and giving it a
-     * service-owned twin would add a type whose only content is a copy of the transport type's.
+     * <p>What replaces it is an inversion. Instead of naming what may point upward, this names the
+     * classes that must never point upward again, and the tests below assert the absence directly. The
+     * difference matters: an empty licence table lets an edge return the moment someone adds a row,
+     * whereas a class named here cannot regain an edge at all without this list changing, and
+     * {@link BothKindsOfUpwardEdgeStayClosed#theClosedServicesAllExist()} fails if a name here stops
+     * matching a real production class.
      *
-     * <h2>The second edge that is a design choice</h2>
+     * <h2>The twelve services and what each took instead</h2>
      *
-     * <p>{@code StatementGenerationService} names the statement summary for the same reason and with the
-     * same narrowness: the summary <em>is</em> the statement work area of
-     * {@code [app/cpy/COSTM01.CPY]}, which {@code [app/cbl/CBSTM03A.CBL]} declares as its own working
-     * storage and populates one line at a time, and producing it is part of what that program does. The
-     * platform specification for this service, §A5, explicitly permits it to name the transport types it
-     * returns, and §B10 requires the summaries to be among the four things one run yields. Giving the
-     * service a private twin of a thirteen-component record would add a type whose only content is a copy
-     * of the transport type's, so this is enrolled on the same footing as the decorator above and remains
-     * a single named type rather than a package-wide hole.
+     * <p>Ten screen services - account view, account update, card detail, card list, card update, bill
+     * payment, transaction add, transaction view, transaction list and user management - each took and
+     * returned wire records directly. Each of those pairs now exists twice: once as the wire record in
+     * {@code api.dto}, with its width bounds, its operation groups and its serialization contract, and
+     * once as a service-owned record in {@code com.carddemo.service} with none of that.
+     * {@code ScreenNavigationState}, {@code ScreenInputState}, {@code BrowseWindow} and
+     * {@code FieldErrorMarks} are the four shared screen carriers; {@code AccountUpdateCommand} and
+     * {@code AccountUpdateOutcome} carry the account-update screen; {@code UserCommand} and
+     * {@code UserOutcome} carry the four user-administration screens; and
+     * {@code ValidationException.FieldError} carries every per-field finding.
      *
-     * <h2>The ten edges that are a recorded deviation, not a design choice</h2>
+     * <p>The remaining two were the last entries in the old licence table, and each was argued there as
+     * a design choice rather than a deviation - the reasoning being that a service whose whole job is to
+     * produce a transport shape should be allowed to name it. Both are now closed on the same terms as
+     * the other ten, because the argument proved to be about convenience rather than about direction:
+     * {@code FieldErrorTranslationService} accumulates into the service-owned {@code FieldErrorMarks},
+     * which is the twin {@code ScreenStateAdapter} already converted at the boundary for the screen
+     * services, and {@code StatementGenerationService} builds the service-owned
+     * {@code StatementLineSummary}, a component-for-component twin of {@code api.dto.StatementSummary}
+     * carrying the same thirteen fields of {@code [app/cpy/COSTM01.CPY]}. Neither closure changed a
+     * field name, a width or an emitted byte.
      *
-     * <p>The ten online screen services below take and return the screen-contract records directly -
-     * the echoed navigation record, the screen work area, the paging metadata, the per-field error
-     * record, and in three cases their own request and response records. That is <strong>not</strong>
-     * the layering this module states, and it is enrolled here rather than silently tolerated.
+     * <p>{@code api.ScreenStateAdapter} converts the four shared screen carriers,
+     * {@code api.AccountUpdateContractAdapter} converts the account-update pair and
+     * {@code api.UserContractAdapter} converts the user-administration pair; those three classes are
+     * the only places any of it happens. The statement twin needs no adapter because no controller
+     * publishes a statement line - the batch tier is its only consumer, and the batch tier may depend
+     * on the service layer.
      *
-     * <p>Why it is enrolled rather than corrected: each of these services reproduces one CICS
-     * transaction paragraph for paragraph, and each carries the eleven echoed communication-area members
-     * - the signed-on identity, the selected account, card and customer, the customer names, and the
-     * previous map and mapset. {@link com.carddemo.service.ConversationState} models the five routing
-     * and mode fields and none of those eleven, so conforming means introducing a service-owned carrier
-     * for each screen family and an adapter for each, and rewriting the accompanying parity suites
-     * against it. That is a design change to the presentation seam rather than a correction, and doing
-     * it as part of wiring these services in would put thousands of lines of byte-parity behaviour at
-     * risk for no behavioural gain.
-     *
-     * <p>What the enrolment therefore buys, and what it does not: it does not weaken the rule for
-     * anything else - every other service, the batch tier, the repositories, the utilities and the
-     * domain remain closed, and these ten cannot widen further without this table changing. It does not
-     * make the deviation invisible either: it is recorded in {@code docs/decision-log.md}, and the
-     * follow-up that closes it is to give each screen family a service-owned carrier and an API-layer
-     * adapter, exactly as the sign-on and menu families already have.
+     * <p>The closure is recorded in {@code docs/decision-log.md}.
      */
-    private static final Map<String, Set<String>> LICENSED_UPWARD_EDGES = Map.ofEntries(
-            Map.entry("com.carddemo.service.FieldErrorTranslationService",
-                    Set.of("com.carddemo.api.dto.FieldErrorDecorator")),
-            Map.entry("com.carddemo.service.StatementGenerationService",
-                    Set.of("com.carddemo.api.dto.StatementSummary")),
-            Map.entry("com.carddemo.service.AccountUpdateService",
-                    Set.of("com.carddemo.api.dto.AccountUpdateRequest",
-                            "com.carddemo.api.dto.AccountUpdateResponse",
-                            "com.carddemo.api.dto.ErrorResponse",
-                            "com.carddemo.api.dto.FieldErrorDecorator",
-                            "com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.ScreenWorkArea")),
-            Map.entry("com.carddemo.service.AccountViewService",
-                    Set.of("com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.ScreenWorkArea")),
-            Map.entry("com.carddemo.service.BillPaymentService",
-                    Set.of("com.carddemo.api.dto.NavigationContext")),
-            Map.entry("com.carddemo.service.CardDetailService",
-                    Set.of("com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.ScreenWorkArea")),
-            Map.entry("com.carddemo.service.CardListService",
-                    Set.of("com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.PageMetadata",
-                            "com.carddemo.api.dto.ScreenWorkArea")),
-            Map.entry("com.carddemo.service.CardUpdateService",
-                    Set.of("com.carddemo.api.dto.FieldErrorDecorator",
-                            "com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.ScreenWorkArea")),
-            Map.entry("com.carddemo.service.TransactionAddService",
-                    Set.of("com.carddemo.api.dto.NavigationContext")),
-            Map.entry("com.carddemo.service.TransactionListService",
-                    Set.of("com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.PageMetadata")),
-            Map.entry("com.carddemo.service.TransactionViewService",
-                    Set.of("com.carddemo.api.dto.NavigationContext")),
-            Map.entry("com.carddemo.service.UserManagementService",
-                    Set.of("com.carddemo.api.dto.ErrorResponse",
-                            "com.carddemo.api.dto.NavigationContext",
-                            "com.carddemo.api.dto.PageMetadata",
-                            "com.carddemo.api.dto.UserRequest",
-                            "com.carddemo.api.dto.UserResponse")));
+    private static final List<String> SERVICES_WITH_CLOSED_UPWARD_EDGES = List.of(
+            "com.carddemo.service.AccountUpdateService",
+            "com.carddemo.service.AccountViewService",
+            "com.carddemo.service.BillPaymentService",
+            "com.carddemo.service.CardDetailService",
+            "com.carddemo.service.CardListService",
+            "com.carddemo.service.CardUpdateService",
+            "com.carddemo.service.FieldErrorTranslationService",
+            "com.carddemo.service.StatementGenerationService",
+            "com.carddemo.service.TransactionAddService",
+            "com.carddemo.service.TransactionListService",
+            "com.carddemo.service.TransactionViewService",
+            "com.carddemo.service.UserManagementService");
 
-    /** How many upward service-to-transport edges the table above licenses, counted by hand. */
-    private static final int LICENSED_UPWARD_EDGE_COUNT = 28;
+    /** How many services the closure covers, counted by hand against the review finding. */
+    private static final int CLOSED_SERVICE_COUNT = 12;
+
+    /**
+     * How many upward service-to-transport edges may exist. Zero, stated as a named budget so the
+     * number appears in the source a reviewer reads rather than only in an emptiness assertion.
+     */
+    private static final int UPWARD_EDGE_BUDGET = 0;
+
+    /**
+     * A floor on the internal edges the service package must declare, so that asserting the absence of
+     * an upward one is not satisfied by a walk that reached no service at all. Well over a hundred are
+     * declared at the time of writing; the floor is set far below that so ordinary refactoring does not
+     * trip it while an empty or misdirected walk still does.
+     */
+    private static final int MINIMUM_SERVICE_EDGES = 40;
 
     /**
      * The permitted downward dependencies of each package, keyed by the depending package.
@@ -213,19 +202,9 @@ final class PackageLayeringTest {
      * prefix rule, so a new sub-package cannot inherit a permission nobody granted it.
      */
     private static final Map<String, Set<String>> PERMITTED_DEPENDENCIES = Map.of(
-            // The edge onto com.carddemo.batch is the one deliberate exception to "the API layer talks to
-            // services". It exists for exactly one class - the batch control surface - and for exactly one
-            // purpose: reading the nine stable job names out of the configurations that publish them,
-            // rather than repeating nine string literals that could drift away from the names the
-            // framework actually registered. It carries no job logic across the boundary, because the
-            // launch itself is issued through the framework's own registry and operator interfaces, which
-            // are not module packages and are therefore not measured here. The edge is one-way and stays
-            // one-way: noBatchClassImportsATransportRecord below asserts that no job configuration and no
-            // step component imports anything under com.carddemo.api in return, so the pair cannot become
-            // a cycle.
             "com.carddemo.api", Set.of("com.carddemo.api.dto", "com.carddemo.service",
                     "com.carddemo.domain", "com.carddemo.domain.enums", "com.carddemo.domain.id",
-                    "com.carddemo.util", "com.carddemo.exception", "com.carddemo.batch"),
+                    "com.carddemo.util", "com.carddemo.exception"),
             "com.carddemo.api.dto", Set.of("com.carddemo.domain.enums"),
             "com.carddemo.service", Set.of("com.carddemo.repository", "com.carddemo.domain",
                     "com.carddemo.domain.enums", "com.carddemo.domain.id", "com.carddemo.util",
@@ -239,8 +218,8 @@ final class PackageLayeringTest {
                     "com.carddemo.util", "com.carddemo.exception"),
             "com.carddemo.repository", Set.of("com.carddemo.domain", "com.carddemo.domain.id",
                     "com.carddemo.domain.enums"),
-            "com.carddemo.config", Set.of("com.carddemo.api", "com.carddemo.api.dto",
-                    "com.carddemo.service", "com.carddemo.batch", "com.carddemo.batch.step",
+            "com.carddemo.config", Set.of("com.carddemo.service",
+                    "com.carddemo.batch", "com.carddemo.batch.step",
                     "com.carddemo.repository", "com.carddemo.domain", "com.carddemo.domain.enums",
                     "com.carddemo.domain.id", "com.carddemo.util", "com.carddemo.exception"),
             "com.carddemo.domain", Set.of("com.carddemo.domain.enums", "com.carddemo.domain.id",
@@ -366,90 +345,146 @@ final class PackageLayeringTest {
         return remaining;
     }
 
-    /**
-     * Reports whether an edge is the one licensed upward dependency.
-     *
-     * @param edge the edge being judged
-     * @return {@code true} when the edge is exactly the licensed pair
-     */
-    private static boolean licensed(final Edge edge) {
-        return LICENSED_UPWARD_EDGES.getOrDefault(edge.fromType(), Set.of()).contains(edge.toType());
-    }
 
     // ----------------------------------------------------------------------------------------
-    // The two edges review found, asserted individually so a regression names itself
+    // The two kinds of upward edge review found - a service naming a transport record, and the batch
+    // control surface naming a job configuration - asserted separately so a regression names itself
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("the two upward edges review found stay closed")
-    final class TheTwoUpwardEdgesStayClosed {
+    @DisplayName("both kinds of upward edge review found stay closed")
+    final class BothKindsOfUpwardEdgeStayClosed {
 
         @Test
-        @DisplayName("no service imports a configuration class, because a service reading a "
-                + "configuration bean is the package cycle that made the catalogue unreachable "
-                + "from a plain unit test")
-        void noServiceImportsAConfigurationClass() {
-            final List<String> offenders = internalEdges().stream()
+        @DisplayName("no service imports configuration; service-owned ports keep the dependency "
+                + "pointing from the composition root toward the service layer")
+        void noServiceImportsConfiguration() {
+            final List<String> configurationEdges = internalEdges().stream()
                     .filter(edge -> edge.fromPackage().equals("com.carddemo.service"))
                     .filter(edge -> edge.toPackage().startsWith("com.carddemo.config"))
                     .map(Edge::describe)
                     .toList();
 
-            assertThat(offenders)
-                    .as("a catalogue a service needs belongs in the service package with a service "
-                            + "stereotype, which is where the menu option catalogue now sits")
+            assertThat(configurationEdges)
+                    .as("MenuOptionSource and the other neutral contracts are owned below "
+                            + "configuration, so service code never reaches up to its wiring")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("no service imports a transport record except the ones the licence table "
-                + "enumerates, so an unenrolled service neither takes nor returns an API type")
-        void noServiceImportsATransportRecordExceptTheLicensedDecorator() {
+        @DisplayName("configuration imports no API type; transport-owned records and controllers stay "
+                + "at the boundary")
+        void noConfigurationClassImportsTheApiBoundary() {
+            final List<String> offenders = internalEdges().stream()
+                    .filter(edge -> edge.fromPackage().equals("com.carddemo.config"))
+                    .filter(edge -> edge.toPackage().startsWith("com.carddemo.api"))
+                    .map(Edge::describe)
+                    .toList();
+
+            assertThat(offenders)
+                    .as("shared routes, refusal rendering and schema rosters are supplied through "
+                            + "base-layer contracts rather than controller or DTO imports")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("no service imports a transport record at all, so no service takes or returns an "
+                + "API type and there is no enrolment that could make one legal")
+        void noServiceImportsATransportRecord() {
             final List<String> offenders = internalEdges().stream()
                     .filter(edge -> edge.fromPackage().equals("com.carddemo.service"))
                     .filter(edge -> edge.toPackage().startsWith("com.carddemo.api"))
-                    .filter(edge -> !licensed(edge))
                     .map(Edge::describe)
                     .toList();
 
             assertThat(offenders)
                     .as("a service that needs a carried value declares a type it owns and lets an "
                             + "adapter in the API layer convert, which is what ConversationState and "
-                            + "the per-service result records are for")
+                            + "the per-service command and outcome records are for")
                     .isEmpty();
         }
 
         @Test
-        @DisplayName("the licensed edges are exactly the ones the table names - none dead and none "
-                + "added - so the exemption can neither quietly widen nor quietly rot")
-        void theLicensedEdgesAreExactlyTheOnesTheTableNames() {
+        @DisplayName("the count of upward service-to-transport edges is zero, stated as a number so a "
+                + "reader sees the claim and a failure names every edge that broke it")
+        void theUpwardEdgeCountIsZero() {
+            // The successor to a test that used to compare the declared edges against a licence table.
+            // Twenty-eight of these existed when review reported the finding; the assertion is now that
+            // there are none, which is a claim a table cannot express and an edit to a table cannot
+            // weaken.
             final List<String> upward = internalEdges().stream()
                     .filter(edge -> edge.fromPackage().equals("com.carddemo.service"))
+                    .filter(edge -> edge.toPackage().startsWith("com.carddemo.api"))
+                    .map(Edge::describe)
+                    .toList();
+
+            // Asserted first, because "no service names a transport record" is worth nothing if the walk
+            // never reached the service package. This proves it did: services declare internal edges in
+            // quantity, and every one of them points somewhere other than the API layer.
+            final long serviceEdges = internalEdges().stream()
+                    .filter(edge -> edge.fromPackage().equals("com.carddemo.service"))
+                    .count();
+            assertThat(serviceEdges)
+                    .as("the walk must really reach the service package, or the absence below is "
+                            + "vacuous")
+                    .isGreaterThan(MINIMUM_SERVICE_EDGES);
+            assertThat(upward)
+                    .as("no upward service-to-transport edge exists anywhere in the module; each of "
+                            + "the twenty-eight review reported was closed by giving the service a "
+                            + "type it owns, never by licensing the edge")
+                    .isEmpty();
+            assertThat(upward).hasSize(UPWARD_EDGE_BUDGET);
+        }
+
+
+        @Test
+        @DisplayName("each of the twelve services whose edges were closed declares no upward edge at "
+                + "all, so the closure cannot be undone by re-adding an enrolment")
+        void theClosedServicesDeclareNoUpwardEdge() {
+            final List<String> offenders = internalEdges().stream()
+                    .filter(edge -> SERVICES_WITH_CLOSED_UPWARD_EDGES.contains(edge.fromType()))
                     .filter(edge -> edge.toPackage().startsWith("com.carddemo.api"))
                     .map(Edge::describe)
                     .sorted()
                     .toList();
 
-            final List<String> expected = LICENSED_UPWARD_EDGES.entrySet().stream()
-                    .flatMap(entry -> entry.getValue().stream()
-                            .map(toType -> entry.getKey() + " -> " + toType))
-                    .sorted()
+            assertThat(offenders)
+                    .as("each of these services owns its carriers; a value that has to reach a response "
+                            + "crosses through an API-layer adapter and never the other way")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the closed list names every service that has an upward edge to lose, so it "
+                + "cannot be narrowed to a subset that happens to pass")
+        void theClosedListNamesEveryServiceReviewReported() {
+            // The list is only as strong as its membership. Review named twelve service classes between
+            // them - the ten screen services plus the two the old licence table argued were design
+            // choices - and every one must be enrolled, or the test above would assert the absence of an
+            // edge for a smaller set than the finding covered while still passing.
+            assertThat(SERVICES_WITH_CLOSED_UPWARD_EDGES)
+                    .as("the enrolment must cover every service the finding named, and each entry must "
+                            + "be distinct")
+                    .hasSize(CLOSED_SERVICE_COUNT)
+                    .doesNotHaveDuplicates()
+                    .allSatisfy(type -> assertThat(type)
+                            .as("only a service class can have a service-to-transport edge closed")
+                            .startsWith("com.carddemo.service."));
+        }
+
+        @Test
+        @DisplayName("every one of the twelve is a production class the walk really reaches, so the "
+                + "list above cannot silently name something that no longer exists")
+        void theClosedServicesAllExist() {
+            final List<String> scannedTypes = internalEdges().stream()
+                    .map(Edge::fromType)
+                    .distinct()
                     .toList();
 
-            // Counted by hand as well as derived, so that an edit which drops a whole entry from the
-            // table cannot make both sides agree on a smaller set.
-            assertThat(expected)
-                    .as("the hand-counted licence total and the table must agree")
-                    .hasSize(LICENSED_UPWARD_EDGE_COUNT);
-            assertThat(upward)
-                    .as("every licensed edge is still declared, and no unlicensed one exists")
-                    .containsExactlyElementsOf(expected);
-
-            assertThat(upward)
-                    .as("the field-error decorator edge is the one that is a design choice rather "
-                            + "than a recorded deviation, so it must never disappear")
-                    .contains("com.carddemo.service.FieldErrorTranslationService "
-                            + "-> com.carddemo.api.dto.FieldErrorDecorator");
+            assertThat(scannedTypes)
+                    .as("a renamed or deleted service must be noticed here rather than turning the "
+                            + "closure test into one that asserts nothing")
+                    .containsAll(SERVICES_WITH_CLOSED_UPWARD_EDGES);
         }
 
         @Test
@@ -474,12 +509,12 @@ final class PackageLayeringTest {
          * tier has no wiring to read" is exactly right. The job tier that has since arrived in
          * {@code com.carddemo.batch} is made of configuration classes: a job configuration exists in
          * order to compose beans, and the two things it composes with are the shared batch
-         * infrastructure - the boundary listener, the parameter incrementer and the two named
-         * condition-code ceilings, all published by {@code config/BatchConfig} for job configurations
+         * infrastructure - the boundary listener, the parameter incrementer and the one named
+         * condition-code ceiling, all published by {@code config/BatchConfig} for job configurations
          * to use - and the settings records that carry a destination it must not hardcode. Denying it
-         * those two would force it either to restate a ceiling that already exists, which is how the
-         * strict and tolerant gate forms would drift into one, or to embed a bucket name, which the
-         * no-hardcoded-configuration standard forbids outright.
+         * those two would force it either to restate a ceiling that already exists, which is how a
+         * second and looser gate form would appear beside the one the plan freezes, or to embed a
+         * bucket name, which the no-hardcoded-configuration standard forbids outright.
          *
          * <p>The licence is therefore granted to the job package and withheld from the step package,
          * rather than granted to the whole tier by prefix, so a step component reaching for wiring
@@ -513,7 +548,7 @@ final class PackageLayeringTest {
         void everyInternalEdgeIsPermitted() {
             final List<String> offenders = new ArrayList<>();
             for (final Edge edge : internalEdges()) {
-                if (edge.fromPackage().equals(edge.toPackage()) || licensed(edge)) {
+                if (edge.fromPackage().equals(edge.toPackage())) {
                     continue;
                 }
                 final Set<String> permitted =
@@ -603,8 +638,9 @@ final class PackageLayeringTest {
             }
 
             assertThat(cycles)
-                    .as("the one licensed upward edge does not create a cycle, because the API DTO "
-                            + "package declares no import of the service package in return")
+                    .as("strict downward dependencies admit no reciprocal package pair; a cycle "
+                            + "would mean at least one side had acquired an edge the direction table "
+                            + "does not permit")
                     .isEmpty();
         }
     }
@@ -651,26 +687,6 @@ final class PackageLayeringTest {
                     .isEqualTo("com.carddemo.domain.enums");
         }
 
-        @Test
-        @DisplayName("the licence recognises only its exact pair, so neither a different service "
-                + "naming the same type nor the same service naming a different type is licensed")
-        void theLicenceRecognisesOnlyItsExactPair() {
-            assertThat(licensed(new Edge("com.carddemo.service.FieldErrorTranslationService",
-                    "com.carddemo.service", "com.carddemo.api.dto.FieldErrorDecorator",
-                    "com.carddemo.api.dto")))
-                    .isTrue();
-            assertThat(licensed(new Edge("com.carddemo.service.MenuService",
-                    "com.carddemo.service", "com.carddemo.api.dto.FieldErrorDecorator",
-                    "com.carddemo.api.dto")))
-                    .as("a second service reaching for the decorator is not covered by the licence")
-                    .isFalse();
-            assertThat(licensed(new Edge("com.carddemo.service.FieldErrorTranslationService",
-                    "com.carddemo.service", "com.carddemo.api.dto.MenuResponse",
-                    "com.carddemo.api.dto")))
-                    .as("the licensed service reaching for a different transport record is not "
-                            + "covered either")
-                    .isFalse();
-        }
 
         @Test
         @DisplayName("the import pattern matches a static import as well as an ordinary one, so an "

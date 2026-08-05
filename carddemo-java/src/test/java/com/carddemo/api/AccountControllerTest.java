@@ -24,8 +24,15 @@ import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Customer;
+import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.AccountUpdateService;
 import com.carddemo.service.AccountViewService;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.service.AccountUpdateCommand;
+import com.carddemo.service.AccountUpdateOutcome;
+import com.carddemo.service.ScreenInputState;
+import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.service.SensitiveFieldEncryptionService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -38,6 +45,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -91,11 +101,43 @@ class AccountControllerTest {
     /** A stored electronic-funds identifier, another regulated component. */
     private static final String EFT_ACCOUNT_ID = "4471902856";
 
+    /** The first national-identifier position as the transaction composes it. */
+    private static final String CLEAR_SSN_PART_1 = "123";
+
+    /** The middle national-identifier position. */
+    private static final String CLEAR_SSN_PART_2 = "45";
+
+    /** The final national-identifier position, which the gate retains by design. */
+    private static final String CLEAR_SSN_PART_3 = "6789";
+
+    /** The birth year as the update screen carries it. */
+    private static final String CLEAR_DOB_YEAR = "1984";
+
+    /** The birth month. */
+    private static final String CLEAR_DOB_MONTH = "07";
+
+    /** The birth day. */
+    private static final String CLEAR_DOB_DAY = "22";
+
+    /** The government-issued identifier, which the gate keeps no character of. */
+    private static final String CLEAR_GOVT_ISSUED_ID = "NY-DL-88231947";
+
     private AccountViewService accountViewService;
 
     private AccountUpdateService accountUpdateService;
 
     private AccountProtectedDataAdapter accountProtectedDataAdapter;
+
+    private ScreenStateAdapter screenStateAdapter;
+
+    /**
+     * The real converter between the account-update wire contract and the service-owned pair.
+     *
+     * <p>The real one rather than a mock: it holds no mutable state and copies forty-six components inbound
+     * and fifty-seven outbound positionally, so stubbing it would leave the delegation test measuring a stub
+     * instead of the crossing.
+     */
+    private AccountUpdateContractAdapter accountUpdateContractAdapter;
 
     private MeterRegistry meterRegistry;
 
@@ -107,9 +149,14 @@ class AccountControllerTest {
         accountUpdateService = mock(AccountUpdateService.class);
         accountProtectedDataAdapter =
                 new AccountProtectedDataAdapter(new SensitiveFieldEncryptionService(FIXTURE_KEY));
+        // The real converter rather than a mock: it holds no state, performs a positional copy and is the
+        // seam under test here, so stubbing it would measure the stub instead of the crossing.
+        screenStateAdapter = new ScreenStateAdapter();
+        accountUpdateContractAdapter = new AccountUpdateContractAdapter(screenStateAdapter);
         meterRegistry = new SimpleMeterRegistry();
         controller = new AccountController(accountViewService, accountUpdateService,
-                accountProtectedDataAdapter, meterRegistry);
+                accountProtectedDataAdapter, screenStateAdapter, accountUpdateContractAdapter,
+                meterRegistry);
     }
 
     /**
@@ -174,7 +221,7 @@ class AccountControllerTest {
             final boolean customerPresented,
             final AccountViewService.Presentation presentation) {
         return new AccountViewService.AccountViewResult(
-                "account-view", NavigationContext.empty(), header, presentation, account, customer,
+                "account-view", ScreenNavigationState.empty(), header, presentation, account, customer,
                 ACCOUNT_ID, "ERROR TEXT", "INFO TEXT", "ACCTSID", true, false,
                 AccountViewService.FilterFlag.VALID, AccountViewService.FilterFlag.VALID,
                 account != null, customer != null, accountPresented, customerPresented,
@@ -189,14 +236,45 @@ class AccountControllerTest {
      * @param fieldErrors the field-level errors the turn composed
      * @return the response
      */
-    private static AccountUpdateResponse updateResponse(final boolean error, final String nextRoute,
-            final List<ErrorResponse.FieldError> fieldErrors) {
-        return new AccountUpdateResponse(
+    private static AccountUpdateOutcome updateResponse(final boolean error, final String nextRoute,
+            final List<ValidationException.FieldError> fieldErrors) {
+        return new AccountUpdateOutcome(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null,
-                error, "ACSTTUS", nextRoute, NavigationContext.empty(), fieldErrors, null);
+                error, "ACSTTUS", nextRoute, ScreenNavigationState.empty(), fieldErrors, null);
+    }
+
+    /**
+     * An update screen carrying the eight regulated components in the clear, exactly as the transaction
+     * composes it before the boundary gates it.
+     *
+     * @return the composed screen
+     */
+    private static AccountUpdateOutcome updateResponseWithRegulatedValues() {
+        return new AccountUpdateOutcome(
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null,
+                CLEAR_SSN_PART_1, CLEAR_SSN_PART_2, CLEAR_SSN_PART_3,
+                CLEAR_DOB_YEAR, CLEAR_DOB_MONTH, CLEAR_DOB_DAY,
+                null, null, null, null, null, null, null, null, null, null, null, null, null,
+                CLEAR_GOVT_ISSUED_ID,
+                null, null, null,
+                EFT_ACCOUNT_ID,
+                null, null, null,
+                false, "ACSTTUS", "account-update", ScreenNavigationState.empty(), List.of(), null);
+    }
+
+    /**
+     * An established identity carrying the authority the chain grants for one user type.
+     *
+     * @param userType the signed-on type
+     * @return the identity
+     */
+    private static Authentication identityOf(final UserType userType) {
+        return new TestingAuthenticationToken("TESTUSR1", null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
     }
 
     /**
@@ -229,16 +307,28 @@ class AccountControllerTest {
         @DisplayName("no collaborator may be absent, so a misassembled context fails at construction")
         void noCollaboratorMayBeAbsent() {
             assertThatNullPointerException().isThrownBy(() -> new AccountController(null,
-                    accountUpdateService, accountProtectedDataAdapter, meterRegistry))
+                    accountUpdateService, accountProtectedDataAdapter, screenStateAdapter,
+                    accountUpdateContractAdapter, meterRegistry))
                     .withMessageContaining("accountViewService");
             assertThatNullPointerException().isThrownBy(() -> new AccountController(accountViewService,
-                    null, accountProtectedDataAdapter, meterRegistry))
+                    null, accountProtectedDataAdapter, screenStateAdapter,
+                    accountUpdateContractAdapter, meterRegistry))
                     .withMessageContaining("accountUpdateService");
             assertThatNullPointerException().isThrownBy(() -> new AccountController(accountViewService,
-                    accountUpdateService, null, meterRegistry))
+                    accountUpdateService, null, screenStateAdapter, accountUpdateContractAdapter,
+                    meterRegistry))
                     .withMessageContaining("accountProtectedDataAdapter");
             assertThatNullPointerException().isThrownBy(() -> new AccountController(accountViewService,
-                    accountUpdateService, accountProtectedDataAdapter, null))
+                    accountUpdateService, accountProtectedDataAdapter, null,
+                    accountUpdateContractAdapter, meterRegistry))
+                    .withMessageContaining("screenStateAdapter");
+            assertThatNullPointerException().isThrownBy(() -> new AccountController(accountViewService,
+                    accountUpdateService, accountProtectedDataAdapter, screenStateAdapter, null,
+                    meterRegistry))
+                    .withMessageContaining("accountUpdateContractAdapter");
+            assertThatNullPointerException().isThrownBy(() -> new AccountController(accountViewService,
+                    accountUpdateService, accountProtectedDataAdapter, screenStateAdapter,
+                    accountUpdateContractAdapter, null))
                     .withMessageContaining("meterRegistry");
         }
     }
@@ -254,9 +344,9 @@ class AccountControllerTest {
 
             controller.viewAccount(ACCOUNT_ID, "DFHENTER", NavigationContext.empty());
 
-            ArgumentCaptor<ScreenWorkArea> captor = ArgumentCaptor.forClass(ScreenWorkArea.class);
+            ArgumentCaptor<ScreenInputState> captor = ArgumentCaptor.forClass(ScreenInputState.class);
             verify(accountViewService).viewAccount(eq("DFHENTER"), captor.capture(), any());
-            ScreenWorkArea assembled = captor.getValue();
+            ScreenInputState assembled = captor.getValue();
             assertThat(assembled.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(assembled.keyAction()).isNull();
             assertThat(assembled.nextProgram()).isNull();
@@ -276,20 +366,29 @@ class AccountControllerTest {
 
             controller.viewAccount(null, null, null);
 
-            ArgumentCaptor<ScreenWorkArea> captor = ArgumentCaptor.forClass(ScreenWorkArea.class);
-            verify(accountViewService).viewAccount(isNull(), captor.capture(), isNull());
+            ArgumentCaptor<ScreenInputState> captor = ArgumentCaptor.forClass(ScreenInputState.class);
+            // An absent body reaches the transaction as the empty carried state rather than as a null
+            // reference, which is what this screen already treats as no carry-over: its own absence test
+            // answers identically for a null reference and for an all-blank state.
+            verify(accountViewService).viewAccount(isNull(), captor.capture(),
+                    eq(ScreenNavigationState.empty()));
             assertThat(captor.getValue().accountId()).isNull();
         }
 
         @Test
         @DisplayName("the echoed navigation record is handed over whole")
         void theEchoedNavigationRecordIsHandedOverWhole() {
-            NavigationContext echoed = NavigationContext.empty();
+            NavigationContext echoed = new NavigationContext("CAVW", "COMEN01C", "CAVW", "COACTVWC",
+                    "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000123", "ANN",
+                    "B", "SMITH", "00000000456", "Y", "4111111111111111", "CACTVWA", "COACTVW");
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
             controller.viewAccount(ACCOUNT_ID, "DFHPF03", echoed);
 
-            verify(accountViewService).viewAccount(eq("DFHPF03"), any(), eq(echoed));
+            // Every one of the sixteen members crosses positionally, so the state the transaction receives
+            // is the echoed record component for component and nothing was trimmed, dropped or defaulted.
+            verify(accountViewService).viewAccount(eq("DFHPF03"), any(),
+                    eq(new ScreenStateAdapter().toNavigationState(echoed)));
         }
     }
 
@@ -590,16 +689,31 @@ class AccountControllerTest {
         @DisplayName("the submitted record and the transmitted key are handed to the update screen and "
                 + "its body is answered unedited")
         void theUpdateRouteDelegatesAndAnswersTheComposedBody() {
-            AccountUpdateRequest submitted = mock(AccountUpdateRequest.class);
-            AccountUpdateResponse composed = updateResponse(false, "account-update", List.of());
-            when(accountUpdateService.handle(submitted, "DFHENTER")).thenReturn(composed);
+            AccountUpdateRequest submitted = new AccountUpdateRequest(ACCOUNT_ID, "Y", "2020", "01",
+                    "15", "5000.00", "2029", "12", "31", "1000.00", "2021", "06", "30", "250.00",
+                    "10.00", "GRP000001A", "5.00", "000000456", "123", "45", "6789", "1984", "07",
+                    "22", "750", "ANN", "B", "SMITH", "1 MAIN ST", "MI", "SUITE 2", "48226",
+                    "DETROIT", "USA", "248", "555", "0188", "GOVT-ID-000000000001", "313", "555",
+                    "0199", "4471902856", "Y", KeyAction.ENTER, NavigationContext.empty(),
+                    "sealed-proof-as-presented");
+            AccountUpdateOutcome composed = updateResponse(false, "account-update", List.of());
+            when(accountUpdateService.handle(any(), eq("DFHENTER"))).thenReturn(composed);
 
             ResponseEntity<AccountUpdateResponse> answer =
-                    controller.updateAccount(submitted, "DFHENTER");
+                    controller.updateAccount(submitted, "DFHENTER", identityOf(UserType.ADMIN));
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).isSameAs(composed);
-            verify(accountUpdateService).handle(submitted, "DFHENTER");
+            // Equality across the whole conversion rather than instance identity, which is the stronger
+            // claim now that a crossing exists: identity would survive a conversion that dropped a
+            // component, whereas this compares all fifty-seven.
+            assertThat(answer.getBody())
+                    .isEqualTo(accountUpdateContractAdapter.toResponse(composed));
+            // And the command the screen received is the submitted record component for component.
+            ArgumentCaptor<AccountUpdateCommand> captor =
+                    ArgumentCaptor.forClass(AccountUpdateCommand.class);
+            verify(accountUpdateService).handle(captor.capture(), eq("DFHENTER"));
+            assertThat(captor.getValue())
+                    .isEqualTo(accountUpdateContractAdapter.toCommand(submitted));
         }
 
         @Test
@@ -608,7 +722,8 @@ class AccountControllerTest {
             when(accountUpdateService.handle(any(), any()))
                     .thenReturn(updateResponse(false, "account-update", List.of()));
 
-            controller.updateAccount(mock(AccountUpdateRequest.class), null);
+            controller.updateAccount(mock(AccountUpdateRequest.class), null,
+                    identityOf(UserType.USER));
 
             assertThat(updateTimed("accepted")).isEqualTo(1L);
         }
@@ -617,12 +732,149 @@ class AccountControllerTest {
         @DisplayName("a turn that raised the input-error switch is timed as rejected")
         void aRejectedTurnIsTimedAsRejected() {
             when(accountUpdateService.handle(any(), any())).thenReturn(updateResponse(true,
-                    "account-update", List.of(new ErrorResponse.FieldError("stateCode", "ACSSTTE",
-                            ErrorResponse.FieldState.INVALID, "not valid"))));
+                    "account-update", List.of(new ValidationException.FieldError("stateCode",
+                            "ACSSTTE", ValidationException.FieldState.INVALID, "not valid"))));
 
-            controller.updateAccount(mock(AccountUpdateRequest.class), "DFHENTER");
+            controller.updateAccount(mock(AccountUpdateRequest.class), "DFHENTER",
+                    identityOf(UserType.USER));
 
             assertThat(updateTimed("rejected")).isEqualTo(1L);
+        }
+    }
+
+    @Nested
+    @DisplayName("The update screen's regulated components, gated by the caller's authority")
+    class UpdateRegulatedComponents {
+
+        @Test
+        @DisplayName("an ordinary signed-on caller receives masks, because the account identifier is a "
+                + "request field and any signed-on caller may name any account")
+        void anOrdinaryCallerReceivesMasks() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponseWithRegulatedValues());
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.ssnPart1()).isEqualTo("*".repeat(CLEAR_SSN_PART_1.length()));
+            assertThat(body.ssnPart2()).isEqualTo("*".repeat(CLEAR_SSN_PART_2.length()));
+            assertThat(body.dateOfBirthYear()).isEqualTo("*".repeat(CLEAR_DOB_YEAR.length()));
+            assertThat(body.dateOfBirthMonth()).isEqualTo("*".repeat(CLEAR_DOB_MONTH.length()));
+            assertThat(body.dateOfBirthDay()).isEqualTo("*".repeat(CLEAR_DOB_DAY.length()));
+            assertThat(body.governmentIssuedId())
+                    .isEqualTo("*".repeat(CLEAR_GOVT_ISSUED_ID.length()));
+            assertThat(body.eftAccountId()).isEqualTo("*".repeat(EFT_ACCOUNT_ID.length()));
+        }
+
+        @Test
+        @DisplayName("no masked screen carries any character of the withheld values, which is what a "
+                + "reviewer has to be able to check by reading one assertion")
+        void noMaskedScreenCarriesTheWithheldValues() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponseWithRegulatedValues());
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.governmentIssuedId()).doesNotContain("88231947");
+            assertThat(body.dateOfBirthYear()).doesNotContain(CLEAR_DOB_YEAR);
+            assertThat(body.eftAccountId()).isNotEqualTo(EFT_ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("the final four national-identifier digits are retained, so an operator can confirm "
+                + "an identity without seeing it - the same asymmetry the view screen takes")
+        void theFinalFourNationalIdentifierDigitsAreRetained() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponseWithRegulatedValues());
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.ssnPart3()).isEqualTo(CLEAR_SSN_PART_3);
+        }
+
+        @Test
+        @DisplayName("an administrator receives the values revealed, because the estate's own split is "
+                + "what decides who may see them")
+        void anAdministratorReceivesTheValuesRevealed() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponseWithRegulatedValues());
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.ADMIN)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.ssnPart1()).isEqualTo(CLEAR_SSN_PART_1);
+            assertThat(body.ssnPart2()).isEqualTo(CLEAR_SSN_PART_2);
+            assertThat(body.ssnPart3()).isEqualTo(CLEAR_SSN_PART_3);
+            assertThat(body.dateOfBirthYear()).isEqualTo(CLEAR_DOB_YEAR);
+            assertThat(body.dateOfBirthMonth()).isEqualTo(CLEAR_DOB_MONTH);
+            assertThat(body.dateOfBirthDay()).isEqualTo(CLEAR_DOB_DAY);
+            assertThat(body.governmentIssuedId()).isEqualTo(CLEAR_GOVT_ISSUED_ID);
+            assertThat(body.eftAccountId()).isEqualTo(EFT_ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("a caller carrying no recognised authority receives masks, so an unresolved type is "
+                + "not treated as a type that may reveal")
+        void aCallerCarryingNoRecognisedAuthorityReceivesMasks() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponseWithRegulatedValues());
+
+            AccountUpdateResponse withoutIdentity = controller.updateAccount(
+                    mock(AccountUpdateRequest.class), "DFHENTER", null).getBody();
+            AccountUpdateResponse withForeignAuthority = controller.updateAccount(
+                    mock(AccountUpdateRequest.class), "DFHENTER",
+                    new TestingAuthenticationToken("TESTUSR1", null,
+                            List.of(new SimpleGrantedAuthority("ROLE_SOMETHING_ELSE")))).getBody();
+
+            assertThat(withoutIdentity).isNotNull();
+            assertThat(withForeignAuthority).isNotNull();
+            assertThat(withoutIdentity.governmentIssuedId())
+                    .isEqualTo("*".repeat(CLEAR_GOVT_ISSUED_ID.length()));
+            assertThat(withForeignAuthority.governmentIssuedId())
+                    .isEqualTo("*".repeat(CLEAR_GOVT_ISSUED_ID.length()));
+        }
+
+        @Test
+        @DisplayName("every component that is not regulated crosses unchanged, so the gate replaces "
+                + "eight values and edits nothing else")
+        void everyOtherComponentCrossesUnchanged() {
+            AccountUpdateOutcome composed = updateResponseWithRegulatedValues();
+            when(accountUpdateService.handle(any(), any())).thenReturn(composed);
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            final AccountUpdateResponse expected = accountUpdateContractAdapter.toResponse(composed);
+            assertThat(body.error()).isEqualTo(expected.error());
+            assertThat(body.errorMessage()).isEqualTo(expected.errorMessage());
+            assertThat(body.focusScreenFieldId()).isEqualTo(expected.focusScreenFieldId());
+            assertThat(body.nextRoute()).isEqualTo(expected.nextRoute());
+            assertThat(body.navigationContext()).isEqualTo(expected.navigationContext());
+            assertThat(body.fieldErrors()).isEqualTo(expected.fieldErrors());
+            assertThat(body.concurrencyToken()).isEqualTo(expected.concurrencyToken());
+        }
+
+        @Test
+        @DisplayName("an absent regulated component stays absent rather than becoming a mask, so an "
+                + "absence is not dressed up as a withheld value")
+        void anAbsentRegulatedComponentStaysAbsent() {
+            when(accountUpdateService.handle(any(), any()))
+                    .thenReturn(updateResponse(false, "account-update", List.of()));
+
+            AccountUpdateResponse body = controller.updateAccount(mock(AccountUpdateRequest.class),
+                    "DFHENTER", identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.ssnPart1()).isNull();
+            assertThat(body.governmentIssuedId()).isNull();
+            assertThat(body.eftAccountId()).isNull();
         }
     }
 

@@ -16,6 +16,8 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.PublishedContractTypeRoster;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Properties;
@@ -93,7 +95,8 @@ class OpenApiConfigSecurityTest {
     }
 
     private static OpenAPI documentWith(final BuildProperties buildProperties) {
-        return new OpenApiConfig(new FixedProvider(buildProperties)).cardDemoOpenApi();
+        return new OpenApiConfig(new FixedProvider(buildProperties),
+                new PublishedContractTypeRoster()).cardDemoOpenApi();
     }
 
     @Nested
@@ -248,6 +251,27 @@ class OpenApiConfigSecurityTest {
             final String requiredName = document.getSecurity().get(0).keySet().iterator().next();
             assertThat(document.getComponents().getSecuritySchemes()).containsKey(requiredName);
         }
+
+        @Test
+        @DisplayName("the issued bearer header and every standard refusal are shared typed components")
+        void theBearerHeaderAndStandardRefusalsAreSharedTypedComponents() {
+            final OpenAPI document = documentWith(null);
+
+            assertThat(document.getComponents().getHeaders())
+                    .containsOnlyKeys(OpenApiConfig.AUTHORIZATION_HEADER_COMPONENT);
+            assertThat(document.getComponents().getResponses())
+                    .containsOnlyKeys(
+                            OpenApiConfig.BAD_REQUEST_RESPONSE,
+                            OpenApiConfig.UNAUTHORIZED_RESPONSE,
+                            OpenApiConfig.FORBIDDEN_RESPONSE,
+                            OpenApiConfig.NOT_FOUND_RESPONSE,
+                            OpenApiConfig.CONFLICT_RESPONSE,
+                            OpenApiConfig.INTERNAL_SERVER_ERROR_RESPONSE)
+                    .allSatisfy((name, response) -> assertThat(response.getContent())
+                            .as(name)
+                            .containsKey(org.springframework.http.MediaType
+                                    .APPLICATION_JSON_VALUE));
+        }
     }
 
     @Nested
@@ -255,7 +279,9 @@ class OpenApiConfigSecurityTest {
     class ContainerContribution {
 
         private final ApplicationContextRunner runner =
-                new ApplicationContextRunner().withUserConfiguration(OpenApiConfig.class);
+                new ApplicationContextRunner()
+                        .withUserConfiguration(OpenApiConfig.class,
+                                PublishedContractTypeRoster.class);
 
         @Test
         @DisplayName("the description bean is contributed to a context that publishes no build-information bean, "

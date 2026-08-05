@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -62,6 +63,7 @@ import org.springframework.batch.core.partition.PartitionHandler;
 import org.springframework.batch.core.partition.support.Partitioner;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.autoconfigure.batch.JobLauncherApplicationRunner;
@@ -84,14 +86,25 @@ import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProc
 import org.springframework.scheduling.annotation.SchedulingConfigurer;
 import org.springframework.transaction.PlatformTransactionManager;
 
+import com.carddemo.batch.step.StagedGenerationStore;
+
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
+import com.carddemo.service.JobCompletionEvent;
+import com.carddemo.service.JobCompletionEventPublisher;
+import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+
+import org.mockito.InOrder;
 
 /**
  * Unit contract for {@link BatchConfig}, the shared infrastructure configuration used by the migrated
@@ -99,68 +112,66 @@ import static org.mockito.Mockito.when;
  * Spring context without launching, scheduling or otherwise starting a job. Jobs remain on-demand
  * operations exposed by {@code com.carddemo.api.BatchJobController}.
  *
- * <p><strong>Startup and framework boundary.</strong> The production configuration contributes only its
- * shared {@link JobExecutionListener} and {@link JobParametersIncrementer}. The repository, transaction
- * manager, launcher and operator are supplied as mocks in the behavioural slice so refresh and shutdown
- * can prove that the launch surface remains untouched. Framework-owned repository infrastructure is not
- * redeclared. The secondary annotation guard records an important Spring Boot 3.x rule:
- * {@link EnableBatchProcessing} would make batch auto-configuration back off and remove the wiring it
- * appears to enable.</p>
- *
- * <p><strong>Schema boundary.</strong> Spring Batch provisions its own {@code BATCH_*} metadata objects.
- * This test therefore verifies the real configuration values and the static exclusion rule: the eleven
- * application table names contain neither a case-insensitive {@code batch_} prefix nor
- * {@code flyway_schema_history}, and the migration text creates no prefixed table. The runtime table
- * census against PostgreSQL belongs to {@code CardDemoApplicationIT}; {@link BatchConfigIT} owns the
- * runtime wiring and no-auto-execution checks. Migration inventory, layout, indexes and foreign keys
- * remain the responsibility of {@link FlywayConfigTest}.</p>
- *
- * <p><strong>Legacy job inventory.</strong> Across 29 JCL members (28 {@code .jcl} and one
- * {@code .JCL}) and two cataloged procedures there are 79 {@code EXEC PGM=} lines. Only nine invoke
- * application programs; the utility histogram is IDCAMS 52, SDSF 8, SORT 5, IEFBR14 3, IEBGENER 1 and
- * DFHCSDUP 1. Those categories total 70 utility invocations, correcting the source plan's inconsistent
- * arithmetic. They map to schema migration, in-job comparison and managed-service concerns rather than
- * extra Spring Batch steps, which explains why the migration has nine job configuration classes rather
- * than 79.</p>
+ * <p><strong>What this class asserts.</strong></p>
  *
  * <ul>
- *   <li>{@code app/jcl/INTCALC.jcl:22 STEP15 -> CBACT04C}</li>
- *   <li>{@code app/jcl/POSTTRAN.jcl:23 STEP15 -> CBTRN02C}</li>
- *   <li>{@code app/jcl/READACCT.jcl:22 STEP05 -> CBACT01C}</li>
- *   <li>{@code app/jcl/READCARD.jcl:22 STEP05 -> CBACT02C}</li>
- *   <li>{@code app/jcl/READCUST.jcl:6 STEP05 -> CBCUS01C}</li>
- *   <li>{@code app/jcl/READXREF.jcl:22 STEP05 -> CBACT03C}</li>
- *   <li>{@code app/jcl/TRANREPT.jcl:59 STEP10R -> CBTRN03C}</li>
- *   <li>{@code app/proc/TRANREPT.prc:57 STEP10R -> CBTRN03C}</li>
- *   <li>{@code app/jcl/CREASTMT.JCL:79 STEP040 -> CBSTM03A}, gated by
- *       {@code COND=(0,NE)}</li>
+ *   <li>The published inventory is exactly two beans - the shared {@link JobExecutionListener} and the
+ *       shared {@link JobParametersIncrementer} - and no job repository, launcher, explorer, registry or
+ *       operator, which is why an isolated context refreshes with no data source at all.</li>
+ *   <li>Nothing fires when that context starts: no runner, no self-starting lifecycle participant, no
+ *       application-event listener, no scheduler and no parallel-execution infrastructure, and both the
+ *       shared document and the suite overlay independently disable launch-on-start and name no job for
+ *       automatic launch. The behavioural slice supplies the repository, transaction manager, launcher
+ *       and operator as mocks purely so refresh and shutdown can prove the launch surface is untouched.</li>
+ *   <li>{@link EnableBatchProcessing} stays absent, because under Spring Boot 3.x declaring it makes
+ *       batch auto-configuration back off and removes the wiring it appears to enable.</li>
+ *   <li>The metadata-table ownership boundary holds: Spring Batch provisions its own {@code BATCH_*}
+ *       objects, the eleven application table names carry neither a case-insensitive {@code batch_}
+ *       prefix nor {@code flyway_schema_history}, and the migration text creates no prefixed table.</li>
+ *   <li>Exactly one condition-code gate constant exists and it admits nothing above zero, so the strict
+ *       rule the migration plan freezes for all four gates cannot be loosened, together with the rules
+ *       for reading a completion code off a step - a clean read for a step that did nothing or ended
+ *       without an exit status, a face-value read for a step that states its own code, a failure code
+ *       for one that did not complete, nothing at all for one that has not ended, and the highest code
+ *       across steps deciding.</li>
+ *   <li>The shared job-boundary diagnostic announces parameter KEYS and never a parameter VALUE, because
+ *       the log stream leaves the process, and reports each terminal outcome at its own level.</li>
  * </ul>
  *
- * <p><strong>Condition-code correction.</strong> Six {@code COND=} occurrences exist, but only four are
- * step gates. {@code CREASTMT.JCL} STEP020, STEP030 and STEP040 use {@code COND=(0,NE)};
- * {@code app/jcl/TRANBKP.jcl:51} STEP10 uses {@code COND=(4,LT)} and therefore tolerates warnings. The
- * occurrences at {@code app/jcl/TRANREPT.jcl:47} and {@code app/proc/TRANREPT.prc:45} are DFSORT
- * {@code INCLUDE COND=} record filters. {@code app/jcl/PRTCATBL.jcl} has no application invocation and
- * is not CBACT03C-driven; CBACT03C is invoked only by {@code READXREF.jcl}. The estate carries four
- * distinct DFSORT specifications, not three.</p>
+ * <p><strong>Condition-code inventory, recorded as metadata.</strong> Six {@code COND=} occurrences
+ * exist, but only four are step gates: {@code CREASTMT.JCL} STEP020, STEP030 and STEP040, and
+ * {@code app/jcl/TRANBKP.jcl:51} STEP10. The occurrences at {@code app/jcl/TRANREPT.jcl:47} and
+ * {@code app/proc/TRANREPT.prc:45} are DFSORT {@code INCLUDE COND=} record filters. The migration plan
+ * is the frozen contract for how the four gates translate and it defines <strong>all four</strong> as
+ * the strict form - run the guarded step only when every earlier step returned exactly zero - which is
+ * the single rule asserted below. The fourth member's literal is spelled differently from the other
+ * three and read on its own would admit a prior warning; that observation is recorded in
+ * {@code docs/decision-log.md} entry DL-145 and is deliberately <em>not</em> asserted as behaviour
+ * here, because a test that protected the looser reading would make a departure from the plan look
+ * correct. {@code app/jcl/PRTCATBL.jcl} has no application invocation and is not CBACT03C-driven;
+ * CBACT03C is invoked only by {@code READXREF.jcl}. The estate carries four distinct DFSORT
+ * specifications, not three.</p>
  *
- * <p><strong>Deliberate exclusions and ordering.</strong>
- * {@code com.carddemo.batch.DailyTransactionReadJobConfig} represents
- * {@code app/cbl/CBTRN01C.cbl}, a complete 491-line, 18-paragraph program that no JCL member, procedure
- * or CSD entry invokes. It is tested while remaining outside the default pipeline, and the estate has no
- * master scheduler. The CLOSEFIL, OPENFIL and CBADMCDJ members are intentionally not migrated and no
- * artifact is expected for them. Parallel and partitioned execution stay absent because the 80-, 100-,
- * 133- and 430-byte fixed-width outputs depend on deterministic record order for byte parity. The exact
- * two-bean inventory exposes no execution-sizing or fault-tolerance value; job-specific configuration
- * remains outside this shared class and is not inspected through private implementation details.</p>
+ * <p><strong>Boundaries.</strong> {@link BatchConfigIT} owns the runtime table census against PostgreSQL
+ * as well as the runtime wiring and no-auto-execution checks. Migration inventory, layout, indexes and
+ * foreign keys belong to {@link FlywayConfigTest}. Execution sequencing, step transitions, rejection
+ * output and fixed-width rendering belong to the batch integration tier, and the launch and status
+ * endpoint contract to the API tests. Logger and metric contracts belong to
+ * {@link ObservabilityConfigTest}. This class uses independent expectations throughout and never asks a
+ * production formatter, mapper or writer to generate the value it then verifies, nor reaches into private
+ * implementation details of a job-specific configuration.
  *
- * <p><strong>Duplication boundary.</strong> Execution sequencing, transitions, rejection output and
- * fixed-width rendering belong to the batch integration tier; the launch and status endpoint contract
- * belongs to API tests. Logger and metric contracts remain in {@link ObservabilityConfigTest}. This class
- * uses independent expectations and never asks production formatters, mappers or writers to generate
- * expected values.</p>
+ * <p><strong>Deliberate absences, and why they are absences rather than gaps.</strong>
+ * {@code com.carddemo.batch.DailyTransactionReadJobConfig} stands for {@code app/cbl/CBTRN01C.cbl}, a
+ * complete 491-line, 18-paragraph program that no JCL member, procedure or CSD entry invokes; it is
+ * therefore exercised by tests while staying outside the default pipeline, and the estate carries no
+ * master scheduler for it to join. The CLOSEFIL, OPENFIL and CBADMCDJ members are intentionally not
+ * migrated, so no artifact is expected for them. Parallel and partitioned execution stay absent because
+ * the 80-, 100-, 133- and 430-byte fixed-width outputs depend on deterministic record order for byte
+ * parity, and the two-bean inventory deliberately exposes no execution-sizing or fault-tolerance value
+ * that could reintroduce either.
  */
-@DisplayName("batch infrastructure: two shared beans, two gates that must not be collapsed, and an inert start-up")
+@DisplayName("batch infrastructure: two shared beans, one strict condition-code gate, and an inert start-up")
 public final class BatchConfigTest {
 
     /** The bean name the shared job-boundary listener is published under. */
@@ -684,38 +695,38 @@ public final class BatchConfigTest {
         }
     }
 
+    /**
+     * The one condition-code step gate, asserted against the plan's single strict rule.
+     *
+     * <p>The plan defines every one of the estate's four {@code COND=} step gates as the strict form, so
+     * exactly one ceiling exists and it is zero. These assertions therefore refuse every code above zero
+     * - one, the four a completion code may state, five and the failure code twelve - and refuse a
+     * completed step whose exit code is a remark rather than a number, which is the case a bare
+     * framework-status transition would have admitted. The differently spelled literal on
+     * {@code app/jcl/TRANBKP.jcl:51} is metadata recorded in the class documentation above and in
+     * {@code docs/decision-log.md} entry DL-145; nothing here asserts a tolerance for it.</p>
+     */
     @Nested
-    @DisplayName("The two condition-code step gates")
+    @DisplayName("The one condition-code step gate")
     class StepGates {
 
         @Test
-        @DisplayName("there are exactly two, and their ceilings differ, so the two forms are not collapsed")
-        void thereAreExactlyTwoGatesWithDifferentCeilings() {
-            assertThat(ConditionCodeGate.values()).containsExactly(
-                    ConditionCodeGate.ALL_PRIOR_STEPS_ZERO, ConditionCodeGate.WARNINGS_TOLERATED);
+        @DisplayName("there is exactly one, and its ceiling is zero, so no looser form exists to select")
+        void thereIsExactlyOneGateWhoseCeilingIsZero() {
+            assertThat(ConditionCodeGate.values())
+                    .as("a second constant would describe a gate the plan does not define")
+                    .containsExactly(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO);
             assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.highestToleratedReturnCode())
-                    .as("the statement-job gate, cited at app/jcl/CREASTMT.JCL lines 56, 66 and 79")
+                    .as("the ceiling of all four gates: app/jcl/CREASTMT.JCL lines 56, 66 and 79 and "
+                            + "app/jcl/TRANBKP.jcl:51")
                     .isZero();
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.highestToleratedReturnCode())
-                    .as("the backup-job gate, cited at app/jcl/TRANBKP.jcl:51, tolerates a warning")
-                    .isEqualTo(4);
-            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.highestToleratedReturnCode())
-                    .isNotEqualTo(ConditionCodeGate.WARNINGS_TOLERATED.highestToleratedReturnCode());
         }
 
-        @ParameterizedTest(name = "the strict gate {1} a highest prior return code of {0}")
+        @ParameterizedTest(name = "the gate {1} a highest prior return code of {0}")
         @CsvSource({"0, admits", "1, refuses", "4, refuses", "5, refuses", "12, refuses"})
-        @DisplayName("the strict gate admits nothing above zero")
-        void theStrictGateAdmitsNothingAboveZero(final int returnCode, final String expectation) {
+        @DisplayName("the gate admits nothing above zero, four included")
+        void theGateAdmitsNothingAboveZero(final int returnCode, final String expectation) {
             assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(returnCode))
-                    .isEqualTo("admits".equals(expectation));
-        }
-
-        @ParameterizedTest(name = "the tolerant gate {1} a highest prior return code of {0}")
-        @CsvSource({"0, admits", "1, admits", "4, admits", "5, refuses", "12, refuses"})
-        @DisplayName("the tolerant gate admits up to and including four, which is the whole correction")
-        void theTolerantGateAdmitsUpToAndIncludingFour(final int returnCode, final String expectation) {
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.permits(returnCode))
                     .isEqualTo("admits".equals(expectation));
         }
 
@@ -723,36 +734,31 @@ public final class BatchConfigTest {
         @ValueSource(ints = {-1, -4, Integer.MIN_VALUE})
         @DisplayName("a negative code is refused outright, because no completion code is negative")
         void aNegativeCodeIsRefusedOutright(final int negative) {
-            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
-                assertThatExceptionOfType(IllegalArgumentException.class)
-                        .isThrownBy(() -> gate.permits(negative))
-                        .withMessageContaining(String.valueOf(negative));
-            }
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.permits(negative))
+                    .withMessageContaining(String.valueOf(negative));
         }
 
         @Test
-        @DisplayName("with no step yet run both gates permit, because there is no earlier code to exceed "
-                + "either ceiling")
-        void withNoStepYetRunBothGatesPermit() {
+        @DisplayName("with no step yet run the gate permits, because there is no earlier code to exceed "
+                + "the ceiling")
+        void withNoStepYetRunTheGatePermits() {
             JobExecution execution = jobExecution();
-            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
-                assertThat(gate.decide(execution, null).getName())
-                        .isEqualTo(ConditionCodeGate.PERMITTED);
-            }
+
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, null).getName())
+                    .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
         @Test
         @DisplayName("a step that completed carrying a framework exit code contributes a clean code, so "
-                + "both gates permit")
-        void aCleanCompletionLetsBothGatesPermit() {
+                + "the gate permits")
+        void aCleanCompletionLetsTheGatePermit() {
             JobExecution execution = jobExecution();
             StepExecution completed = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
                     ExitStatus.COMPLETED);
 
-            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
-                assertThat(gate.decide(execution, completed).getName())
-                        .isEqualTo(ConditionCodeGate.PERMITTED);
-            }
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, completed).getName())
+                    .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
         @Test
@@ -763,11 +769,9 @@ public final class BatchConfigTest {
             StepExecution didNothing = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
                     ExitStatus.NOOP);
 
-            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
-                assertThat(gate.decide(execution, didNothing).getName())
-                        .as("gate %s must admit a step that had nothing to do", gate.name())
-                        .isEqualTo(ConditionCodeGate.PERMITTED);
-            }
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, didNothing).getName())
+                    .as("the gate must admit a step that had nothing to do")
+                    .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
         @Test
@@ -782,46 +786,129 @@ public final class BatchConfigTest {
                     .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
-        @Test
-        @DisplayName("a step that states its own completion code has it taken at face value, and the two "
-                + "gates then disagree - which is exactly why both forms exist")
-        void aStatedCompletionCodeIsTakenAtFaceValue() {
+        @ParameterizedTest(name = "a step stating completion code {0} is refused")
+        @CsvSource({"1", "4", "5", "12", "16"})
+        @DisplayName("a step that states its own completion code has it taken at face value, and any "
+                + "nonzero one is refused - four included")
+        void aStatedCompletionCodeIsTakenAtFaceValue(final String statedCode) {
             JobExecution execution = jobExecution();
-            StepExecution warned = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
-                    new ExitStatus("4"));
+            StepExecution stated = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
+                    new ExitStatus(statedCode));
 
-            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, warned).getName())
-                    .as("the statement job stops on a warning")
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, stated).getName())
+                    .as("the gate stops on a stated code of %s, because its ceiling is zero", statedCode)
                     .isEqualTo(ConditionCodeGate.REFUSED);
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.decide(execution, warned).getName())
-                    .as("the backup job runs through a warning")
-                    .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
         @Test
         @DisplayName("a step that completed carrying an exit code of its own, not written as digits, is "
-                + "read as a warning rather than as clean")
-        void aNonFrameworkExitCodeIsReadAsAWarning() {
+                + "read as a remark rather than as clean, and is refused")
+        void aNonFrameworkExitCodeIsRefused() {
             JobExecution execution = jobExecution();
             StepExecution flagged = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
                     new ExitStatus("COMPLETED WITH A REMARK"));
 
             assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, flagged).getName())
+                    .as("a completed step that had something to say did not report zero, and a bare "
+                            + "framework-status transition would have let it through")
                     .isEqualTo(ConditionCodeGate.REFUSED);
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.decide(execution, flagged).getName())
-                    .isEqualTo(ConditionCodeGate.PERMITTED);
         }
 
-        @ParameterizedTest(name = "a step that ended {0} makes every gate refuse")
+        @ParameterizedTest(name = "a step that ended {0} makes the gate refuse")
         @CsvSource({"FAILED", "ABANDONED", "STOPPED", "UNKNOWN"})
-        @DisplayName("a step that did not complete contributes a failure code, above every ceiling")
-        void aStepThatDidNotCompleteMakesEveryGateRefuse(final BatchStatus status) {
+        @DisplayName("a step that did not complete contributes a failure code, above the ceiling")
+        void aStepThatDidNotCompleteMakesTheGateRefuse(final BatchStatus status) {
             JobExecution execution = jobExecution();
             StepExecution ended = stepEndedWith(execution, STEP_NAME, status, ExitStatus.FAILED);
 
+            assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, ended).getName())
+                    .as("the gate must refuse after a %s step", status)
+                    .isEqualTo(ConditionCodeGate.REFUSED);
+        }
+
+        @ParameterizedTest(name = "a step that ended {0} while claiming exit code 0 still makes every "
+                + "gate refuse")
+        @CsvSource({"FAILED", "ABANDONED", "STOPPED", "UNKNOWN"})
+        @DisplayName("the terminal status is decisive: an unsuccessful step carrying a numeric exit code "
+                + "that reads as clean is still a failure, because a number must never speak for a step "
+                + "that did not complete")
+        void anUnsuccessfulStepClaimingACleanCodeStillMakesEveryGateRefuse(final BatchStatus status) {
+            JobExecution execution = jobExecution();
+            StepExecution ended = stepEndedWith(execution, STEP_NAME, status, new ExitStatus("0"));
+
             for (ConditionCodeGate gate : ConditionCodeGate.values()) {
                 assertThat(gate.decide(execution, ended).getName())
-                        .as("gate %s must refuse after a %s step", gate.name(), status)
+                        .as("gate %s must refuse after a %s step whatever its exit code says",
+                                gate.name(), status)
+                        .isEqualTo(ConditionCodeGate.REFUSED);
+            }
+        }
+
+        @ParameterizedTest(name = "a step that ended {0} while carrying the framework completion code "
+                + "still makes every gate refuse")
+        @CsvSource({"FAILED", "ABANDONED", "STOPPED", "UNKNOWN"})
+        @DisplayName("an unsuccessful step whose exit status was overwritten with the framework's own "
+                + "completion code is still a failure, so an exit status a listener rewrote cannot admit "
+                + "a step the estate would have skipped")
+        void anUnsuccessfulStepCarryingTheCompletionCodeStillMakesEveryGateRefuse(
+                final BatchStatus status) {
+            JobExecution execution = jobExecution();
+            StepExecution ended = stepEndedWith(execution, STEP_NAME, status, ExitStatus.COMPLETED);
+
+            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
+                assertThat(gate.decide(execution, ended).getName())
+                        .as("gate %s must refuse after a %s step even when its exit code says COMPLETED",
+                                gate.name(), status)
+                        .isEqualTo(ConditionCodeGate.REFUSED);
+            }
+        }
+
+        @ParameterizedTest(name = "a step that ended {0} while claiming a tolerable warning still makes "
+                + "every gate refuse")
+        @CsvSource({"FAILED", "ABANDONED", "STOPPED", "UNKNOWN"})
+        @DisplayName("an unsuccessful step is above every ceiling, so not even the tolerant gate admits "
+                + "one that states a code the tolerant gate would otherwise allow")
+        void anUnsuccessfulStepClaimingAToleratedCodeStillMakesEveryGateRefuse(
+                final BatchStatus status) {
+            JobExecution execution = jobExecution();
+            StepExecution ended = stepEndedWith(execution, STEP_NAME, status, new ExitStatus("4"));
+
+            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
+                assertThat(gate.decide(execution, ended).getName())
+                        .as("gate %s must refuse after a %s step, warning ceiling or not",
+                                gate.name(), status)
+                        .isEqualTo(ConditionCodeGate.REFUSED);
+            }
+        }
+
+        @Test
+        @DisplayName("a step still executing by exit code but completed by status is read as clean, "
+                + "because that exit code carries no completion code of its own")
+        void aCompletedStepCarryingTheExecutingCodeIsReadAsClean() {
+            JobExecution execution = jobExecution();
+            StepExecution completed = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
+                    ExitStatus.EXECUTING);
+
+            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
+                assertThat(gate.decide(execution, completed).getName())
+                        .as("gate %s must admit a completed step whose exit code states nothing",
+                                gate.name())
+                        .isEqualTo(ConditionCodeGate.PERMITTED);
+            }
+        }
+
+        @Test
+        @DisplayName("one unsuccessful step dominates a run of clean ones, so a failure earlier in the "
+                + "job cannot be averaged away by later successes")
+        void oneUnsuccessfulStepDominatesARunOfCleanOnes() {
+            JobExecution execution = jobExecution();
+            stepEndedWith(execution, STEP_NAME, BatchStatus.FAILED, new ExitStatus("0"));
+            StepExecution latest = stepEndedWith(execution, OTHER_STEP_NAME, BatchStatus.COMPLETED,
+                    ExitStatus.COMPLETED);
+
+            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
+                assertThat(gate.decide(execution, latest).getName())
+                        .as("gate %s must refuse: the earlier step failed", gate.name())
                         .isEqualTo(ConditionCodeGate.REFUSED);
             }
         }
@@ -840,16 +927,17 @@ public final class BatchConfigTest {
 
         @Test
         @DisplayName("an exit code longer than a completion code is not read as one, so it cannot overflow "
-                + "the parse")
+                + "the parse, and it is refused as a remark")
         void anOverlongDigitRunIsNotReadAsACompletionCode() {
             JobExecution execution = jobExecution();
             StepExecution completed = stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED,
                     new ExitStatus("99999999999999999999"));
 
-            assertThat(ConditionCodeGate.WARNINGS_TOLERATED.decide(execution, completed).getName())
-                    .as("read as a remark rather than as a number, and the tolerant gate admits a remark")
-                    .isEqualTo(ConditionCodeGate.PERMITTED);
+            assertThatCode(() -> ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, completed))
+                    .as("a run of digits too long to be a completion code must not be parsed as one")
+                    .doesNotThrowAnyException();
             assertThat(ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(execution, completed).getName())
+                    .as("read as a remark rather than as a number, and a remark is above the ceiling")
                     .isEqualTo(ConditionCodeGate.REFUSED);
         }
 
@@ -880,10 +968,8 @@ public final class BatchConfigTest {
         @Test
         @DisplayName("a null job execution is refused rather than gated on")
         void aNullJobExecutionIsRefusedRatherThanGatedOn() {
-            for (ConditionCodeGate gate : ConditionCodeGate.values()) {
-                assertThatExceptionOfType(NullPointerException.class)
-                        .isThrownBy(() -> gate.decide(null, null));
-            }
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> ConditionCodeGate.ALL_PRIOR_STEPS_ZERO.decide(null, null));
         }
     }
 
@@ -905,7 +991,7 @@ public final class BatchConfigTest {
 
         @BeforeEach
         void attachRecorder() {
-            listener = new BatchConfig().batchJobBoundaryListener();
+            listener = listenerWith(null, null);
             logger = (Logger) LoggerFactory.getLogger(BatchConfig.class);
             originalLevel = logger.getLevel();
             // Pinned rather than inherited, so this group asserts the listener and not the ambient setup.
@@ -914,6 +1000,24 @@ public final class BatchConfigTest {
             recorder.setContext(logger.getLoggerContext());
             recorder.start();
             logger.addAppender(recorder);
+        }
+
+        /**
+         * Builds the listener with exactly the optional collaborators a test needs.
+         */
+        private JobExecutionListener listenerWith(final StagedGenerationStore store,
+                final JobCompletionEventPublisher completionPublisher) {
+            return new BatchConfig().batchJobBoundaryListener(
+                    providerOf(store), providerOf(completionPublisher));
+        }
+
+        /**
+         * Creates an object provider whose optional value is fixed for the life of the test.
+         */
+        private <T> ObjectProvider<T> providerOf(final T value) {
+            final ObjectProvider<T> provider = mock();
+            when(provider.getIfAvailable()).thenReturn(value);
+            return provider;
         }
 
         @AfterEach
@@ -983,6 +1087,115 @@ public final class BatchConfigTest {
                     .contains("status=COMPLETED")
                     .contains("exitCode=COMPLETED")
                     .contains("stepsExecuted=1");
+        }
+
+        @Test
+        @DisplayName("a terminal outcome is published as one parameter-free completion event")
+        void aTerminalOutcomeIsPublishedAsACompletionEvent() {
+            final JobCompletionEventPublisher publisher = mock();
+            listener = listenerWith(null, publisher);
+            final JobExecution execution = jobExecution();
+            stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+
+            listener.afterJob(execution);
+
+            final ArgumentCaptor<JobCompletionEvent> captured =
+                    ArgumentCaptor.forClass(JobCompletionEvent.class);
+            verify(publisher).publishCompletion(captured.capture());
+            final JobCompletionEvent event = captured.getValue();
+            assertThat(event.jobName()).isEqualTo(JOB_NAME);
+            assertThat(event.jobInstanceId()).isEqualTo(11L);
+            assertThat(event.jobExecutionId()).isEqualTo(22L);
+            assertThat(event.status()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(event.exitCode()).isEqualTo(ExitStatus.COMPLETED.getExitCode());
+            assertThat(event.stepsExecuted()).isOne();
+            assertThat(recorder.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .anySatisfy(message -> assertThat(message)
+                            .contains("Published terminal completion event"));
+        }
+
+        @Test
+        @DisplayName("durable artifacts publish before notification, and a publication failure becomes "
+                + "the persisted job verdict")
+        void durablePublicationPrecedesNotificationAndCanFailTheJob() {
+            final StagedGenerationStore store = mock();
+            final JobCompletionEventPublisher publisher = mock();
+            listener = listenerWith(store, publisher);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(step, "AWS.M2.CARDDEMO.DALYREJS",
+                    Path.of("target", "registered-reject-generation"),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(store.publishRegistered(execution)).thenReturn(List.of());
+
+            listener.afterJob(execution);
+
+            final InOrder order = inOrder(store, publisher);
+            order.verify(store).publishRegistered(execution);
+            order.verify(publisher).publishCompletion(argThat(event ->
+                    event.jobExecutionId().equals(execution.getId())
+                            && event.status() == BatchStatus.COMPLETED));
+
+            final StagedGenerationStore failedStore = mock();
+            final JobCompletionEventPublisher failedPublisher = mock();
+            listener = listenerWith(failedStore, failedPublisher);
+            final JobExecution failedExecution = jobExecution();
+            final StepExecution failedStep = stepEndedWith(failedExecution, STEP_NAME,
+                    BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            failedExecution.setStatus(BatchStatus.COMPLETED);
+            failedExecution.setExitStatus(ExitStatus.COMPLETED);
+            StagedGenerationStore.register(failedStep, "AWS.M2.CARDDEMO.DALYREJS",
+                    Path.of("target", "unpublishable-reject-generation"),
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            when(failedStore.publishRegistered(failedExecution))
+                    .thenThrow(new IllegalStateException("object store refused publication"));
+
+            listener.afterJob(failedExecution);
+
+            assertThat(failedExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(failedExecution.getExitStatus().getExitCode())
+                    .isEqualTo(ExitStatus.FAILED.getExitCode());
+            assertThat(failedExecution.getAllFailureExceptions())
+                    .singleElement()
+                    .isInstanceOf(IllegalStateException.class)
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .contains("durable batch artifact publication failed"));
+            verify(failedPublisher).publishCompletion(argThat(event ->
+                    event.jobExecutionId().equals(failedExecution.getId())
+                            && event.status() == BatchStatus.FAILED));
+        }
+
+        @Test
+        @DisplayName("notification failure is warned and never rewrites the established batch verdict")
+        void notificationFailureIsNonFatal() {
+            final JobCompletionEventPublisher publisher = mock();
+            listener = listenerWith(null, publisher);
+            final JobExecution execution = jobExecution();
+            stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            doThrow(new IllegalStateException("topic unavailable"))
+                    .when(publisher).publishCompletion(argThat(event -> true));
+
+            listener.afterJob(execution);
+
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+            assertThat(execution.getExitStatus()).isEqualTo(ExitStatus.COMPLETED);
+            assertThat(recorder.list)
+                    .anySatisfy(event -> {
+                        assertThat(event.getLevel()).isEqualTo(Level.WARN);
+                        assertThat(event.getFormattedMessage())
+                                .contains("Could not publish terminal completion event")
+                                .contains("failureType=IllegalStateException")
+                                .doesNotContain("topic unavailable");
+                        assertThat(event.getThrowableProxy()).isNull();
+                    });
         }
 
         @Test

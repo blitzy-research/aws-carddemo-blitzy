@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.OptionalInt;
 
 import org.slf4j.Logger;
@@ -38,7 +39,7 @@ import com.carddemo.util.CobolStringUtils;
  * The two CardDemo menu transactions: the main menu a regular user reaches after signing on, and the
  * menu an administrator reaches instead. Legacy authorities are {@code app/cbl/COMEN01C.cbl}
  * (transaction {@code CM00}, ten options) and {@code app/cbl/COADM01C.cbl} (transaction {@code CA00},
- * four options); both option tables live in the injected {@code MenuOptionCatalog} and this class owns
+ * four options); both option tables arrive through the injected {@link MenuOptionSource} and this class owns
  * only the rules applied to them.
  *
  * <p><strong>Two entry points, deliberately not one.</strong> The two programs are almost identical
@@ -146,19 +147,19 @@ public final class MenuService {
 
     private final MessageCatalogService messageCatalogService;
 
-    private final MenuOptionCatalog menuOptionCatalog;
+    private final MenuOptionSource menuOptionCatalog;
 
     private final Clock clock;
 
     /**
      * @param navigationService the single authority for the routes this service returns
      * @param messageCatalogService the source of the common message texts the legacy screens emit
-     * @param menuOptionCatalog the two legacy option tables
+     * @param menuOptionSource the two legacy option tables
      * @param clock the clock the header date and time are read from, injected so tests can fix it
      */
     public MenuService(final NavigationService navigationService,
                        final MessageCatalogService messageCatalogService,
-                       final MenuOptionCatalog menuOptionCatalog,
+                       final MenuOptionSource menuOptionCatalog,
                        final Clock clock) {
         this.navigationService = Objects.requireNonNull(navigationService,
                 "navigationService must not be null");
@@ -261,7 +262,7 @@ public final class MenuService {
                     MessageSeverity.ERROR, true, context);
         }
         final int selectedNumber = optionNumber.getAsInt();
-        final MenuOptionCatalog.UserMenuOption selected = menuOptionCatalog
+        final MenuOptionSource.UserMenuOption selected = menuOptionCatalog
                 .findUserOption(selectedNumber)
                 .orElseThrow(() -> optionTableAbend(USER_MENU_PROGRAM_NAME, selectedNumber));
         if (navigationService.isAdminOnlyOptionDenied(signedOnUserType, selected.userType())) {
@@ -295,7 +296,7 @@ public final class MenuService {
                     MessageSeverity.ERROR, true, context);
         }
         final int selectedNumber = optionNumber.getAsInt();
-        final MenuOptionCatalog.AdminMenuOption selected = menuOptionCatalog
+        final MenuOptionSource.AdminMenuOption selected = menuOptionCatalog
                 .findAdminOption(selectedNumber)
                 .orElseThrow(() -> optionTableAbend(ADMIN_MENU_PROGRAM_NAME, selectedNumber));
         if (!navigationService.isDispatchSuppressed(selected.programName())) {
@@ -306,7 +307,7 @@ public final class MenuService {
                 MessageSeverity.INFORMATIONAL, false, context);
     }
 
-    private MenuScreen dispatchFromUserMenu(final MenuOptionCatalog.UserMenuOption selected,
+    private MenuScreen dispatchFromUserMenu(final MenuOptionSource.UserMenuOption selected,
                                               final ConversationState context,
                                               final UserType signedOnUserType) {
         final ConversationState handOff = withOriginatingIdentity(context,
@@ -319,7 +320,7 @@ public final class MenuService {
         return userMenuTransfer(target, handOff);
     }
 
-    private MenuScreen dispatchFromAdminMenu(final MenuOptionCatalog.AdminMenuOption selected,
+    private MenuScreen dispatchFromAdminMenu(final MenuOptionSource.AdminMenuOption selected,
                                                final ConversationState context) {
         final ConversationState handOff = withOriginatingIdentity(context,
                 ADMIN_MENU_TRANSACTION_ID, ADMIN_MENU_PROGRAM_NAME);
@@ -390,18 +391,18 @@ public final class MenuService {
     }
 
     private List<MenuRow> buildUserMenuOptions() {
-        final List<MenuOptionCatalog.UserMenuOption> catalogued = menuOptionCatalog.userMenuOptions();
+        final List<MenuOptionSource.UserMenuOption> catalogued = menuOptionCatalog.userMenuOptions();
         final List<MenuRow> rows = new ArrayList<>(catalogued.size());
-        for (final MenuOptionCatalog.UserMenuOption option : catalogued) {
+        for (final MenuOptionSource.UserMenuOption option : catalogued) {
             rows.add(new MenuRow(option.number(), option.label()));
         }
         return List.copyOf(rows);
     }
 
     private List<MenuRow> buildAdminMenuOptions() {
-        final List<MenuOptionCatalog.AdminMenuOption> catalogued = menuOptionCatalog.adminMenuOptions();
+        final List<MenuOptionSource.AdminMenuOption> catalogued = menuOptionCatalog.adminMenuOptions();
         final List<MenuRow> rows = new ArrayList<>(catalogued.size());
-        for (final MenuOptionCatalog.AdminMenuOption option : catalogued) {
+        for (final MenuOptionSource.AdminMenuOption option : catalogued) {
             rows.add(new MenuRow(option.number(), option.label()));
         }
         return List.copyOf(rows);
@@ -453,7 +454,7 @@ public final class MenuService {
                 || optionNumber.getAsInt() == NO_OPTION_SELECTED;
     }
 
-    private static String userMenuPlaceholderMessage(final MenuOptionCatalog.UserMenuOption selected) {
+    private static String userMenuPlaceholderMessage(final MenuOptionSource.UserMenuOption selected) {
         return PLACEHOLDER_MESSAGE_PREFIX + firstSpaceDelimitedWord(selected.paddedLabel())
                 + PLACEHOLDER_MESSAGE_SUFFIX;
     }
@@ -473,14 +474,13 @@ public final class MenuService {
     }
 
     /*
-     * The three routing derivations below were once one shared helper that rebuilt the whole
-     * sixteen-field communication-area record, copying the echoed user identifier and type, the
-     * customer identifier and three name parts, the account identifier and status and the primary
-     * account number straight through. That copy was the reason a client-supplied identity could
-     * survive a turn and reach the response as though the server had asserted it. The carried state
-     * this service now works in holds none of those values, so the derivations reduce to the routing
-     * change each one actually intends, and the identity members are reconciled against the
-     * authenticated principal by the adapter at the API boundary instead.
+     * Each of the three routing derivations below produces only the routing change it intends. The
+     * carried state this service works in is the five-field service-tier form, which holds none of the
+     * communication area's identity members - not the echoed user identifier or type, not the customer
+     * identifier or name parts, and not the account identifier, status or primary account number - so a
+     * derivation cannot carry a client-supplied identity forward as though the server had asserted it.
+     * Those members are reconciled against the authenticated principal by the adapter at the API
+     * boundary, which is the only place that may assert them.
      */
 
     private static ConversationState withOriginatingProgram(final ConversationState context,
@@ -551,7 +551,7 @@ public final class MenuService {
      * One presentable menu row: the option number the operator types and the label beside it.
      *
      * <p>Both legacy catalogs reduce to this pair at the point of presentation, which is why one row
-     * type serves both menus even though {@code MenuOptionCatalog} deliberately keeps two entry shapes
+     * type serves both menus even though {@link MenuOptionSource} deliberately keeps two entry shapes
      * apart. The distinction that justifies two catalog types - a user entry carries a one-character
      * user-type code and an administrator entry has no such component - is a dispatch concern that this
      * service has already applied by the time a row is built, and it is not presented to the operator.
@@ -565,10 +565,10 @@ public final class MenuService {
     /**
      * The outcome of one menu turn, expressed entirely in types this service owns.
      *
-     * <p>This is what replaces returning the REST response record directly. A service that returned the
-     * transport type depended upward on the API package, inverting the specification's layering rule;
-     * the adapter in the API layer now maps this record onto that response, so the mapping happens once,
-     * at the boundary, and is testable on its own.
+     * <p>The type is owned by this package rather than by the transport, because a service that returned
+     * the REST response record would depend upward on the API package and invert the specification's
+     * layering rule. The adapter in the API layer maps this record onto that response, so the mapping
+     * happens once, at the boundary, and is testable on its own.
      *
      * <p>The carried state is the five-field service-tier form. The eleven identity and cardholder
      * members of the communication-area contract are not present and are not this service's to supply:

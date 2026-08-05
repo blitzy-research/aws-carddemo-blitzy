@@ -150,11 +150,11 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <p>One neighbouring gate is deliberately <em>not</em> read as licence to add one here. The backup
  * job that mints the first of the two inputs does carry a return-code gate on a later step, and that
- * gate is non-strict: it tolerates a warning-level code and bypasses only on something worse. That
- * is upstream cycle context for the job that produces an input, not a property of the combine job,
- * and it is recorded here because the two are easy to conflate. (The specification describes that
- * gate as the strict form; the member itself is the non-strict form, and the member is what was
- * translated.)
+ * gate is the strict form the migration plan freezes for all four of the estate's gates: it admits a
+ * prior return code of zero and refuses everything above it. That is upstream cycle context for the
+ * job that produces an input, not a property of the combine job, and it is recorded here because the
+ * two are easy to conflate. The differently spelled literal on that member, and why the plan's form
+ * governs it, are recorded in {@code docs/decision-log.md} entry DL-145.
  *
  * <h2>Sequencing, state and instrumentation</h2>
  *
@@ -354,4 +354,3 @@ public final class CombineTransactionsProcessor implements ItemProcessor<Transac
         }
     }
 }
-

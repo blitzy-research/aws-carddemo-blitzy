@@ -20,6 +20,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -27,14 +28,9 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
@@ -43,7 +39,9 @@ import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.PfKeyTranslator;
 
 /**
@@ -57,7 +55,7 @@ import com.carddemo.util.PfKeyTranslator;
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19 in its trailer comment at lines 1558 to 1560.
  * Two further authorities are consulted rather than translated here: {@code app/cpy/CVCRD01Y.cpy}, the
  * screen work area included at line 268, whose sixteen attention-key condition names and three business
- * keys are carried by {@code ScreenWorkArea}; and {@code app/cpy/CSSTRPFY.cpy}, the attention-key store
+ * keys are carried by {@code ScreenInputState}; and {@code app/cpy/CSSTRPFY.cpy}, the attention-key store
  * included with quoted syntax at line 1528, whose two paragraphs are credited to
  * {@code PfKeyTranslator}. No legacy source text is transcribed - member names, transaction ids,
  * paragraph names, line numbers, field names, widths, file names and the operator message literals are
@@ -177,19 +175,12 @@ import com.carddemo.util.PfKeyTranslator;
  * independent and the loop state of the retry path is a local variable rather than a counter field. All
  * collaborators arrive through the constructor.
  *
- * <p><strong>This class is deliberately NOT {@code final}, and it must stay that way.</strong> Every other
- * service in this package is final, so the omission looks like an oversight and invites a reviewer to
- * "restore" the modifier - which would stop the application from starting. The entry point is
- * {@code @Transactional}, this class implements no interface, and so the container proxies it by generating
- * a subclass; a final class cannot be subclassed and the bean definition fails outright with
- * {@code Cannot subclass final class}. It is the only service in the package that declares a transaction,
- * which is exactly why it is the only one that cannot be final. The entry point is non-final for the same
- * reason: a final method would not be overridden by the proxy and the transaction would silently not apply.
- * Immutability is instead guaranteed by the five final collaborator fields and the absence of any mutable
- * state, which is what the paragraph above describes and what actually matters here.
+ * <p>The screen turn is non-transactional. The card rewrite enters
+ * {@link OnlineTransactionBoundary}, allowing the provider's failure to roll back before this service
+ * maps it to the legacy screen result.
  */
 @Service
-public class CardUpdateService {
+public final class CardUpdateService {
 
     private static final Logger LOG = LoggerFactory.getLogger(CardUpdateService.class);
 
@@ -503,6 +494,15 @@ public class CardUpdateService {
     /** The marker character the terminal transmits for a field an operator cleared, lines 589 to 634. */
     private static final String CLEARED_FIELD_MARKER = "*";
 
+    /** One alphanumeric position holding the source's {@code SPACES} figurative value. */
+    private static final char SPACE = ' ';
+
+    /** One alphanumeric position holding the source's {@code LOW-VALUES} figurative value. */
+    private static final char LOW_VALUE = '\0';
+
+    /** One alphanumeric position holding the source's {@code ZEROS} figurative value. */
+    private static final char ZERO = '0';
+
     /** The character the decoration writes into a blank field, lines 1249, 1259, 1270, 1281, 1294, 1305. */
     public static final String BLANK_FIELD_MARKER = "*";
 
@@ -535,6 +535,10 @@ public class CardUpdateService {
 
     private final NavigationService navigationService;
 
+    private final OnlineTransactionBoundary transactionBoundary;
+
+    private final RecordWriter recordWriter;
+
     private final Clock clock;
 
     /**
@@ -549,6 +553,8 @@ public class CardUpdateService {
      *                              titles the header carries; mandatory
      * @param navigationService the dispatch graph replacing the transfer at lines 473 to 476 and the
      *                          re-arm at lines 554 to 558; mandatory
+     * @param transactionBoundary the independent card-rewrite transaction; mandatory
+     * @param recordWriter the immediate flush primitive for the legacy rewrite response; mandatory
      * @param clock the clock the header's date and time read, replacing
      *              {@code FUNCTION CURRENT-DATE} at lines 1055 and 1062; mandatory
      * @throws NullPointerException if any collaborator is {@code null}
@@ -557,6 +563,8 @@ public class CardUpdateService {
             final AbendService abendService,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
+            final OnlineTransactionBoundary transactionBoundary,
+            final RecordWriter recordWriter,
             final Clock clock) {
         this.cardRepository =
                 Objects.requireNonNull(cardRepository, "cardRepository must not be null");
@@ -565,6 +573,9 @@ public class CardUpdateService {
                 Objects.requireNonNull(messageCatalogService, "messageCatalogService must not be null");
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
+        this.transactionBoundary = Objects.requireNonNull(transactionBoundary,
+                "transactionBoundary must not be null");
+        this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -787,10 +798,10 @@ public class CardUpdateService {
          * @return the decorator flag for a failing state
          * @throws IllegalStateException if called for the accepted state, which is never decorated
          */
-        public FieldErrorDecorator.FlagState decorationFlag() {
+        public FieldErrorMarks.FlagState decorationFlag() {
             return switch (this) {
-                case BLANK -> FieldErrorDecorator.FlagState.BLANK;
-                case NOT_OK -> FieldErrorDecorator.FlagState.NOT_OK;
+                case BLANK -> FieldErrorMarks.FlagState.BLANK;
+                case NOT_OK -> FieldErrorMarks.FlagState.NOT_OK;
                 case IS_VALID -> throw new IllegalStateException(
                         "an accepted field is never decorated; guard with decorated() first");
             };
@@ -1006,7 +1017,7 @@ public class CardUpdateService {
          * @return {@code true} when the card number is absent or blank
          */
         public boolean absent() {
-            return this.cardNumber == null || this.cardNumber.isBlank();
+            return CardUpdateService.isBlank(this.cardNumber);
         }
 
         /**
@@ -1076,7 +1087,7 @@ public class CardUpdateService {
                                         String expiryYear,
                                         String expiryDay,
                                         String attentionKeyIdentifier,
-                                        NavigationContext navigationContext,
+                                        ScreenNavigationState navigationContext,
                                         ChangeAction changeAction,
                                         CarriedCardImage carriedImage) {
 
@@ -1275,9 +1286,9 @@ public class CardUpdateService {
      * @param screen the seven screen fields as the turn leaves them
      */
     public record CardUpdateResult(NavigationService.Route route,
-                                   NavigationContext navigationContext,
+                                   ScreenNavigationState navigationContext,
                                    String reArmedTransactionId,
-                                   ScreenWorkArea workArea,
+                                   ScreenInputState workArea,
                                    ChangeAction changeAction,
                                    CardProjection card,
                                    CarriedCardImage carriedImage,
@@ -1290,7 +1301,7 @@ public class CardUpdateService {
                                    boolean changeDetected,
                                    WriteOutcome writeOutcome,
                                    List<ValidationException.FieldError> fieldErrors,
-                                   FieldErrorDecorator decoration,
+                                   FieldErrorMarks decoration,
                                    ScreenHeader header,
                                    ScreenFields screen) {
 
@@ -1432,7 +1443,7 @@ public class CardUpdateService {
         private boolean carriedImageRefreshed;
 
         /** The state echoed back to the client, replacing {@code CARDDEMO-COMMAREA}. */
-        private NavigationContext navigationContext = NavigationContext.empty();
+        private ScreenNavigationState navigationContext = ScreenNavigationState.empty();
 
         /** The destination the turn resolved. */
         private NavigationService.Route route = NavigationService.Route.CARD_UPDATE;
@@ -1447,7 +1458,7 @@ public class CardUpdateService {
         private boolean reEntry;
 
         /** The accumulating decoration, one entry per marked field in legacy marking order. */
-        private FieldErrorDecorator decoration = FieldErrorDecorator.none();
+        private FieldErrorMarks decoration = FieldErrorMarks.none();
 
         /** The per-field detail, in the order the decoration recorded it. */
         private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
@@ -1493,7 +1504,7 @@ public class CardUpdateService {
          * @return {@code true} while no summary message has been raised
          */
         private boolean returnMessageOff() {
-            return this.returnMessage == null || this.returnMessage.isBlank();
+            return CardUpdateService.isBlank(this.returnMessage);
         }
 
         /**
@@ -1502,7 +1513,7 @@ public class CardUpdateService {
          * @return {@code true} while no informational message has been raised
          */
         private boolean noInfoMessage() {
-            return this.infoMessage == null || this.infoMessage.isBlank();
+            return CardUpdateService.isBlank(this.infoMessage);
         }
 
         /**
@@ -1600,7 +1611,6 @@ public class CardUpdateService {
      * @throws com.carddemo.exception.AbendException if the action decision reaches its catch-all arm at
      *         lines 1019 to 1026, which is the one path on which this transaction abends
      */
-    @Transactional
     public CardUpdateResult processCardUpdate(final CardUpdateScreenInput input) {
         Objects.requireNonNull(input, "input must not be null");
 
@@ -1657,7 +1667,7 @@ public class CardUpdateService {
                 LEGACY_MENU_PROGRAM.equals(navigationContextFromProgram(input))
                         && !echoedReEntry(input);
         if (input.carriesNoNavigationState() || arrivingFromMenu) {
-            state.navigationContext = NavigationContext.empty().withFirstEntry();
+            state.navigationContext = ScreenNavigationState.empty().withFirstEntry();
             state.reEntry = false;
             state.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
             state.carriedImage = CarriedCardImage.empty();
@@ -1838,7 +1848,7 @@ public class CardUpdateService {
         // SET CCARD-AID-PFK03 TO TRUE, line 440.
         state.keyAction = KeyAction.PFK03;
 
-        final NavigationContext echoed = state.navigationContext;
+        final ScreenNavigationState echoed = state.navigationContext;
 
         // Lines 442 to 447 and 449 to 454: default both destination fields to the menu when the
         // originating fields are blank. Resolving the route through the module's dispatch graph applies
@@ -1854,7 +1864,7 @@ public class CardUpdateService {
         final boolean cameFromCardList =
                 LEGACY_CARD_LIST_MAPSET.equals(trimmedOrNull(echoed.lastMapset()));
 
-        state.navigationContext = new NavigationContext(
+        state.navigationContext = new ScreenNavigationState(
                 // MOVE LIT-THISTRANID TO CDEMO-FROM-TRANID, line 456.
                 LEGACY_TRANSACTION_ID,
                 // MOVE LIT-THISPGM TO CDEMO-FROM-PROGRAM, line 457.
@@ -1865,7 +1875,7 @@ public class CardUpdateService {
                 // SET CDEMO-USRTYP-USER TO TRUE, line 464.
                 UserType.USER.getCode(),
                 // SET CDEMO-PGM-ENTER TO TRUE, line 465.
-                NavigationContext.ProgramContext.ENTER,
+                ScreenNavigationState.ProgramContext.ENTER,
                 echoed.customerId(),
                 echoed.customerFirstName(),
                 echoed.customerMiddleName(),
@@ -2196,7 +2206,7 @@ public class CardUpdateService {
      */
     private static String normaliseReceivedField(final String transmitted) {
         if (transmitted == null || CLEARED_FIELD_MARKER.equals(transmitted.trim())
-                || transmitted.isBlank()) {
+                || isBlank(transmitted)) {
             return null;
         }
         return transmitted;
@@ -2759,11 +2769,26 @@ public class CardUpdateService {
      * @return {@code true} when the field holds nothing the edit can work with
      */
     private static boolean notSuppliedFixedField(final String value, final int width) {
-        if (value == null || value.isBlank()) {
-            return true;
-        }
+        return value == null
+                || fixedFieldEquals(value, width, SPACE)
+                || fixedFieldEquals(value, width, LOW_VALUE)
+                || fixedFieldEquals(value, width, ZERO);
+    }
+
+    /**
+     * Tests equality of a whole declared fixed-width field with one figurative character.
+     *
+     * <p>The comparison is exact: a field mixing spaces and low values is neither {@code SPACES} nor
+     * {@code LOW-VALUES}, and a tab, line separator or Unicode space is an ordinary supplied character.
+     *
+     * @param value the transmitted value; must not be {@code null}
+     * @param width the declared field width
+     * @param expected the figurative character every position must hold
+     * @return {@code true} when all positions equal {@code expected}
+     */
+    private static boolean fixedFieldEquals(final String value, final int width, final char expected) {
         for (int position = 0; position < width; position++) {
-            if (fixedFieldCharAt(value, position) != '0') {
+            if (fixedFieldCharAt(value, position) != expected) {
                 return false;
             }
         }
@@ -3602,8 +3627,10 @@ public class CardUpdateService {
      * Performs the read the paragraph above dispatches on, choosing between the two access paths.
      *
      * <p>Keyed access by card number is the legacy's live path and uses the inherited primary-key finder.
-     * The account path is the declared non-unique alternate index; its finder returns at most one row
-     * because the index admits duplicates and the screen wants the first of them.
+     * The account path is the declared non-unique alternate index. Its finder returns every matching
+     * row, and {@link #firstByBaseKey(java.util.List)} selects the one a keyed read would have returned -
+     * the lowest card number, which is the cluster's base key. That selection rule belongs to the read
+     * rather than to the index, so it is applied here rather than folded into the query.
      *
      * <p>Records the raw file status and the operation on failure, so the diagnostic and any subsequent
      * abend can name both. The two read sites are distinguishable there even though the source leaves the
@@ -3621,19 +3648,39 @@ public class CardUpdateService {
                 return this.cardRepository.findById(state.recordIdentificationCardNumber.trim());
             }
             if (!isBlank(state.workAreaAccountId)) {
-                return this.cardRepository
-                        .findFirstByCardAcctIdOrderByCardNumAsc(state.workAreaAccountId.trim());
+                return firstByBaseKey(
+                        this.cardRepository.findByCardAcctId(state.workAreaAccountId.trim()));
             }
             return Optional.empty();
-        } catch (final DataAccessException failure) {
+        } catch (final RuntimeException failure) {
             // The catch-all arm at lines 1402 to 1411: a read that neither succeeded nor found nothing.
             state.rawFileStatus = RAW_STATUS_READ_FAILURE;
             state.errorOperationName = operationName;
-            LOG.error("Card file read failed: operation={} resource={} fileStatus={}",
+            LOG.error("Card file read failed: operation={} resource={} fileStatus={} failureChain={}",
                     operationName, resolveReadResourceName(state).trim(), RAW_STATUS_READ_FAILURE,
-                    failure);
+                    FailureDiagnostics.failureChainOf(failure));
             return Optional.empty();
         }
+    }
+
+    /**
+     * Selects the record a keyed read of the non-unique account path would have returned: the one with
+     * the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the card cluster is the card number. The
+     * repository therefore returns every matching row and the selection happens at this call site,
+     * where the behaviour it decides is visible.
+     *
+     * <p>The comparison is on the raw sixteen-character value and is neither trimmed nor numeric:
+     * every stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric
+     * order coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when there is none
+     */
+    private static Optional<Card> firstByBaseKey(final List<Card> candidates) {
+        return candidates.stream().min(Comparator.comparing(Card::getCardNum));
     }
 
     /**
@@ -3865,30 +3912,36 @@ public class CardUpdateService {
         lockedRecord.setCardActiveStatus(state.newActiveStatus);
 
         try {
-            // EXEC CICS REWRITE, lines 1477 to 1483, flushed so the version check lands here.
-            this.cardRepository.saveAndFlush(lockedRecord);
+            // EXEC CICS REWRITE, lines 1477 to 1483. The boundary commits or rolls back before this
+            // method maps the provider outcome, so a rollback-only transaction cannot escape later.
+            final Card saved = this.transactionBoundary.execute(
+                    () -> this.cardRepository.saveAndFlush(lockedRecord));
             state.writeOutcome = WriteOutcome.COMMITTED;
+            state.cardRecord = saved;
             // The working copy now holds what was written, so the projection reflects it.
             state.foldedRecordEmbossedName = state.newEmbossedName;
         } catch (final OptimisticLockingFailureException conflict) {
             // The row version disagreed. The transaction cannot continue, so this is raised rather than
             // returned - carrying the legacy's own text for the same outcome, and never abending.
-            LOG.warn("Card update refused by row version: rule=optimistic-lock resource={} outcome={}",
-                    LEGACY_CARD_FILE_NAME.trim(), WriteOutcome.UPDATE_FAILED_AFTER_LOCK, conflict);
+            LOG.warn("Card update refused by row version: rule=optimistic-lock resource={} outcome={}"
+                    + " failureChain={}", LEGACY_CARD_FILE_NAME.trim(),
+                    WriteOutcome.UPDATE_FAILED_AFTER_LOCK, FailureDiagnostics.failureChainOf(conflict));
             state.writeOutcome = WriteOutcome.UPDATE_FAILED_AFTER_LOCK;
             state.returnMessage = OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED;
             throw new OptimisticLockConflictException(state.writeOutcome.conflictKind(),
                     ENTITY_NAME_CARD, lockedRecord.getCardNum(), conflict);
-        } catch (final DataAccessException failure) {
+        } catch (final RuntimeException failure) {
             // Lines 1488 to 1492: a write that did not succeed for any other reason is reported on the
             // screen, exactly as the source reports it, and the turn continues.
-            LOG.error("Card file rewrite failed: operation={} resource={} fileStatus={}",
-                    OPERATION_REWRITE, LEGACY_CARD_FILE_NAME.trim(), RAW_STATUS_READ_FAILURE, failure);
+            LOG.error("Card file rewrite failed: operation={} resource={} fileStatus={}"
+                    + " failureChain={}", OPERATION_REWRITE, LEGACY_CARD_FILE_NAME.trim(),
+                    RAW_STATUS_READ_FAILURE, FailureDiagnostics.failureChainOf(failure));
             state.errorOperationName = OPERATION_REWRITE;
             state.errorResourceName = LEGACY_CARD_FILE_NAME;
             state.rawFileStatus = RAW_STATUS_READ_FAILURE;
             state.writeOutcome = WriteOutcome.UPDATE_FAILED_AFTER_LOCK;
             state.returnMessage = OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED;
+            this.recordWriter.markRollbackOnly();
         }
     }
 
@@ -4131,7 +4184,7 @@ public class CardUpdateService {
         state.errorResponseCode = "";
         state.errorReasonCode = "";
         state.rawFileStatus = null;
-        state.decoration = FieldErrorDecorator.none();
+        state.decoration = FieldErrorMarks.none();
         state.fieldErrors.clear();
     }
 
@@ -4142,8 +4195,8 @@ public class CardUpdateService {
      * @param context the state to copy
      * @return a copy with both business keys zeroed and the account status cleared
      */
-    private static NavigationContext withClearedBusinessKeys(final NavigationContext context) {
-        return new NavigationContext(
+    private static ScreenNavigationState withClearedBusinessKeys(final ScreenNavigationState context) {
+        return new ScreenNavigationState(
                 context.fromTransactionId(),
                 context.fromProgram(),
                 context.toTransactionId(),
@@ -4176,11 +4229,34 @@ public class CardUpdateService {
      * The {@code EQUAL LOW-VALUES OR EQUAL SPACES} pair the source writes at lines 442 to 443, 449 to 450
      * and 1013 to 1014.
      *
+     * <p>This is exact fixed-width equality, not Java's Unicode white-space classification. Empty values
+     * represent an all-space transmitted item; otherwise every position must be a space or every position
+     * must be a null byte. Mixed spaces and null bytes do not satisfy either source comparison.
+     *
      * @param value the value to test
-     * @return {@code true} when the value is absent or holds nothing but blanks
+     * @return {@code true} when the value is absent, empty, all spaces or all null bytes
      */
     private static boolean isBlank(final String value) {
-        return value == null || value.isBlank();
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        return allCharactersAre(value, SPACE) || allCharactersAre(value, LOW_VALUE);
+    }
+
+    /**
+     * Reports whether every character of a value is the same figurative character.
+     *
+     * @param value the value to inspect
+     * @param expected the character every position must hold
+     * @return {@code true} only when every position holds {@code expected}
+     */
+    private static boolean allCharactersAre(final String value, final char expected) {
+        for (int position = 0; position < value.length(); position++) {
+            if (value.charAt(position) != expected) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -4207,7 +4283,7 @@ public class CardUpdateService {
      * @return the outcome of the turn, never {@code null}
      */
     private static CardUpdateResult toResult(final TurnState state) {
-        final ScreenWorkArea workArea = new ScreenWorkArea(
+        final ScreenInputState workArea = new ScreenInputState(
                 state.keyAction,
                 // MOVE LIT-THISPGM TO CCARD-NEXT-PROG, line 570.
                 LEGACY_PROGRAM_NAME,
@@ -4222,7 +4298,7 @@ public class CardUpdateService {
                 state.workAreaCardNumber,
                 state.navigationContext.customerId());
 
-        final NavigationContext echoed = state.reEntry
+        final ScreenNavigationState echoed = state.reEntry
                 ? state.navigationContext.withReEntry()
                 : state.navigationContext;
 
@@ -4266,7 +4342,7 @@ public class CardUpdateService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

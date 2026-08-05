@@ -31,6 +31,7 @@ import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
@@ -162,6 +163,8 @@ class TransactionValidationProcessorTest {
 
     private TransactionCategoryBalanceRepository categoryBalanceRepository;
 
+    private RecordWriter recordWriter;
+
     private TransactionPostingService postingService;
 
     private SimpleMeterRegistry meterRegistry;
@@ -175,9 +178,15 @@ class TransactionValidationProcessorTest {
         accountRepository = Mockito.mock(AccountRepository.class);
         cardCrossReferenceRepository = Mockito.mock(CardCrossReferenceRepository.class);
         categoryBalanceRepository = Mockito.mock(TransactionCategoryBalanceRepository.class);
+        recordWriter = Mockito.mock(RecordWriter.class, invocation -> {
+            if (invocation.getMethod().getName().equals("insert")) {
+                return invocation.getArgument(0);
+            }
+            return null;
+        });
         postingService = new TransactionPostingService(dailyTransactionRepository,
                 transactionRepository, accountRepository, cardCrossReferenceRepository,
-                categoryBalanceRepository, new AbendService(),
+                categoryBalanceRepository, recordWriter, new AbendService(),
                 Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
         meterRegistry = new SimpleMeterRegistry();
         processor = new TransactionValidationProcessor(postingService, meterRegistry);
@@ -233,17 +242,23 @@ class TransactionValidationProcessorTest {
     private void resolving(final Account acct) {
         resolvingCrossReference();
         Mockito.when(accountRepository.findById(ACCT)).thenReturn(Optional.of(acct));
-        Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.TRUE);
-        Mockito.when(accountRepository.save(ArgumentMatchers.any(Account.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.when(accountRepository.rewritePostingBalances(
+                        ArgumentMatchers.eq(ACCT),
+                        ArgumentMatchers.any(BigDecimal.class),
+                        ArgumentMatchers.any(BigDecimal.class),
+                        ArgumentMatchers.any(BigDecimal.class)))
+                .thenReturn(1);
         Mockito.when(categoryBalanceRepository
                         .findById(ArgumentMatchers.any(TransactionCategoryBalanceId.class)))
                 .thenReturn(Optional.of(new TransactionCategoryBalance(ACCT, TYPE, CAT,
                         new BigDecimal("0.00"))));
         Mockito.when(categoryBalanceRepository
-                        .save(ArgumentMatchers.any(TransactionCategoryBalance.class)))
+                        .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        Mockito.when(transactionRepository.save(ArgumentMatchers.any(Transaction.class)))
+        Mockito.when(recordWriter.insert(
+                        ArgumentMatchers.any(TransactionCategoryBalance.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        Mockito.when(transactionRepository.insertAndFlush(ArgumentMatchers.any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
@@ -259,7 +274,7 @@ class TransactionValidationProcessorTest {
      */
     private Transaction capturePostedTransaction() {
         ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
-        Mockito.verify(transactionRepository).save(captor.capture());
+        Mockito.verify(transactionRepository).insertAndFlush(captor.capture());
         return captor.getValue();
     }
 
@@ -269,9 +284,14 @@ class TransactionValidationProcessorTest {
      * @return the saved account
      */
     private Account captureSavedAccount() {
-        ArgumentCaptor<Account> captor = ArgumentCaptor.forClass(Account.class);
-        Mockito.verify(accountRepository).save(captor.capture());
-        return captor.getValue();
+        ArgumentCaptor<BigDecimal> currentBalance = ArgumentCaptor.forClass(BigDecimal.class);
+        ArgumentCaptor<BigDecimal> currentCycleCredit = ArgumentCaptor.forClass(BigDecimal.class);
+        ArgumentCaptor<BigDecimal> currentCycleDebit = ArgumentCaptor.forClass(BigDecimal.class);
+        Mockito.verify(accountRepository).rewritePostingBalances(ArgumentMatchers.eq(ACCT),
+                currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
+        return account(currentBalance.getValue().toPlainString(), "99999.00",
+                currentCycleCredit.getValue().toPlainString(),
+                currentCycleDebit.getValue().toPlainString(), "2099-01-01");
     }
 
     /**
@@ -282,7 +302,14 @@ class TransactionValidationProcessorTest {
     private TransactionCategoryBalance captureSavedCategoryBalance() {
         ArgumentCaptor<TransactionCategoryBalance> captor =
                 ArgumentCaptor.forClass(TransactionCategoryBalance.class);
-        Mockito.verify(categoryBalanceRepository).save(captor.capture());
+        Mockito.verify(categoryBalanceRepository).saveAndFlush(captor.capture());
+        return captor.getValue();
+    }
+
+    private TransactionCategoryBalance captureInsertedCategoryBalance() {
+        ArgumentCaptor<TransactionCategoryBalance> captor =
+                ArgumentCaptor.forClass(TransactionCategoryBalance.class);
+        Mockito.verify(recordWriter).insert(captor.capture());
         return captor.getValue();
     }
 
@@ -510,7 +537,8 @@ class TransactionValidationProcessorTest {
 
             assertThat(processor.process(record("10.00"))).isNull();
             // Filtered from the chunk, yet persisted: the cascade wrote it before process returned.
-            Mockito.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+            Mockito.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
         }
 
         @Test
@@ -603,7 +631,7 @@ class TransactionValidationProcessorTest {
             // still posts: the legacy status test accepts record-not-found alongside success.
             assertThat(processor.process(record("10.00"))).isNull();
 
-            TransactionCategoryBalance created = captureSavedCategoryBalance();
+            TransactionCategoryBalance created = captureInsertedCategoryBalance();
             assertThat(created.getTrancatAcctId()).isEqualTo(ACCT);
             assertThat(created.getTrancatTypeCd()).isEqualTo(TYPE);
             assertThat(created.getTrancatCd()).isEqualTo(CAT);
@@ -621,9 +649,14 @@ class TransactionValidationProcessorTest {
             InOrder inOrder = Mockito.inOrder(categoryBalanceRepository, accountRepository,
                     transactionRepository);
             inOrder.verify(categoryBalanceRepository)
-                    .save(ArgumentMatchers.any(TransactionCategoryBalance.class));
-            inOrder.verify(accountRepository).save(ArgumentMatchers.any(Account.class));
-            inOrder.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+                    .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
+            inOrder.verify(accountRepository).rewritePostingBalances(
+                    ArgumentMatchers.eq(ACCT),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class));
+            inOrder.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
             inOrder.verifyNoMoreInteractions();
         }
     }
@@ -637,7 +670,12 @@ class TransactionValidationProcessorTest {
         void reason109NeverProducesARejectRecord() {
             resolving(postableAccount());
             // The account was there when it was read and gone when it was rewritten.
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.FALSE);
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
 
             RejectRecordWriter.RejectedTransaction refused = processor.process(record("10.00"));
 
@@ -650,15 +688,21 @@ class TransactionValidationProcessorTest {
         @DisplayName("reject 109 does not prevent the transaction write, and the earlier stage stands")
         void reason109DoesNotPreventTheTransactionWrite() {
             resolving(postableAccount());
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.FALSE);
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
 
             processor.process(record("10.00"));
 
             // The transaction is still written, third and last, exactly as the legacy does.
-            Mockito.verify(transactionRepository).save(ArgumentMatchers.any(Transaction.class));
+            Mockito.verify(transactionRepository)
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
             // The category balance had already been committed before the rewrite was attempted.
             Mockito.verify(categoryBalanceRepository)
-                    .save(ArgumentMatchers.any(TransactionCategoryBalance.class));
+                    .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
             // The account itself is not saved, because the rewrite took its invalid-key arm.
             Mockito.verify(accountRepository, Mockito.never())
                     .save(ArgumentMatchers.any(Account.class));
@@ -668,7 +712,12 @@ class TransactionValidationProcessorTest {
         @DisplayName("reject 109 is counted as a posted record, under its own reason label")
         void reason109IsCountedAsPosted() {
             resolving(postableAccount());
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(Boolean.FALSE);
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
 
             processor.process(record("10.00"));
 

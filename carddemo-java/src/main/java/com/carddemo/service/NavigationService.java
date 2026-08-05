@@ -129,24 +129,14 @@ import com.carddemo.domain.enums.UserType;
  * {@link Route#isAdminScoped()} merely <em>report</em> that a destination is administrative.
  * It touches no database, no repository, no monetary value and no fixed-width record offset.
  *
- * <p><strong>That an administrative destination is actually gated is an obligation on code that does
- * not exist yet, and this class does not discharge it.</strong> The distinction matters because the
- * two halves of the usual claim are in different states. The security configuration does declare a
- * rule - it requires the administrator authority for every request beneath the {@code /api/admin} path
- * prefix - so that half is real. The controller half is not: no endpoint of any kind is mapped in this
- * module, so there is presently no request for that rule to match, and a reader who takes the report
- * from {@link #adminScopedRoutes()} as evidence that the five administrative destinations are already
- * protected would be mistaken.
- *
- * <p>The gap is narrower than "no gating exists" and wider than "gating is enforced elsewhere", and it
- * is worth stating exactly, because it is not closed automatically by adding a controller. A route
- * value here is a logical label - {@code admin-menu}, {@code user-list} - and not a URL, so nothing
- * connects a destination this class reports as administrative to the path prefix the configuration
- * gates. Whatever endpoints eventually serve these five destinations are therefore required either to
- * be mapped beneath that prefix, so the declared rule applies to them, or to carry an equivalent
- * method-level authority guard of their own; and their real route mappings must be exercised by a test
- * that asserts a non-administrative principal is refused. Until then, the administrative marking on a
- * destination is a statement about the legacy transaction it came from and not an access control.
+ * <p><strong>Administrative access is enforced outside this class.</strong> The security chain requires
+ * the administrator authority for every request beneath {@code /api/admin/**}. The delivered boundary
+ * maps the administrative menu at {@code /api/admin/menu} and the four user-maintenance transactions
+ * beneath {@code /api/admin/users}; route-security tests exercise those mappings with a
+ * non-administrative principal. This class therefore does not duplicate the authority decision. Its
+ * route values - {@code admin-menu}, {@code user-list}, and their peers - remain logical response
+ * labels rather than URLs, while {@link #adminScopedRoutes()} remains descriptive metadata rather than
+ * the mechanism that enforces the HTTP rule.
  *
  * <p><strong>Immutability and thread safety.</strong> Every lookup table is built once during class
  * initialization and published only through an unmodifiable view, and the class declares no mutable
@@ -839,16 +829,13 @@ public final class NavigationService {
      * chooses.
      *
      * <p>Access to the administrative menu itself is what restricts these destinations - never anything
-     * this method does. <strong>That restriction is an obligation on code that does not exist yet.</strong>
-     * The legacy design placed the whole gate on reaching the administrative menu, so a caller who is
-     * already dispatching from it is, by that design, already an administrator; this method therefore
-     * cannot re-check what it was never given. The consequence is that the gate has to exist upstream,
-     * and today it does not: the security configuration declares an authority requirement for the
-     * {@code /api/admin} path prefix, but no endpoint is mapped anywhere in this module, so nothing
-     * currently prevents a caller from reaching this method with any catalogue entry it chooses. The
-     * endpoint that eventually serves the administrative menu must therefore be gated itself - see the
-     * class comment for the two acceptable ways to do that - because a missing gate here is not a
-     * defect in this method but an unmet precondition of calling it.
+     * this method does. That upstream restriction is delivered: the administrative menu is mapped at
+     * {@code /api/admin/menu}, the user-maintenance operations are mapped beneath
+     * {@code /api/admin/users}, and the security chain requires the administrator authority for every
+     * request beneath {@code /api/admin/**}. A caller reaching this method through the published HTTP
+     * surface has therefore crossed the legacy-equivalent menu gate already. Direct Java callers remain
+     * responsible for satisfying that precondition; this method intentionally accepts no principal and
+     * performs no second, potentially divergent authorization decision.
      *
      * @param catalogProgramName the program name of the selected catalogue entry; may be {@code null}
      * @return the destination to dispatch to, or an empty result when suppression applies or the name
@@ -926,14 +913,11 @@ public final class NavigationService {
      * <p>This <strong>reports</strong> scope; it enforces nothing. This class performs no access check
      * and holds no dependency on the configuration layer.
      *
-     * <p><strong>No consumer of this set currently applies it, so the set is a description and not yet
-     * a control.</strong> It is offered so that a controller layer can consume it, and no controller
-     * layer exists to do so - no endpoint is mapped anywhere in this module. A caller must therefore not
-     * read the membership of a destination in this set as evidence that the destination is protected;
-     * membership records that the legacy transaction behind it was reachable only from the
-     * administrative menu, which is a fact about the migrated design rather than a runtime guarantee.
-     * The obligation to turn it into one falls on the endpoints that eventually serve these five
-     * destinations, in the manner the class comment sets out.
+     * <p>No consumer needs to turn this set into an authorization table. The delivered HTTP surfaces are
+     * mapped beneath {@code /api/admin/**}, where the security chain enforces the administrator
+     * authority independently of these logical route labels. A caller must therefore not treat
+     * membership as the control itself; membership records the legacy scope, while the controller
+     * mappings and security rule provide the runtime guarantee.
      *
      * @return an immutable set of the five administrative destinations
      */

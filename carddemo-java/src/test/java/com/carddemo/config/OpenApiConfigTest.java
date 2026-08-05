@@ -16,6 +16,8 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.PublishedContractTypeRoster;
+
 import com.carddemo.CardDemoApplication;
 import com.carddemo.api.AuthController;
 import com.carddemo.api.dto.ErrorResponse;
@@ -397,7 +399,7 @@ final class OpenApiConfigTest {
      * @return the published document
      */
     private static OpenAPI publishedDocument() {
-        return new OpenApiConfig(new AbsentBuildInformation()).cardDemoOpenApi();
+        return new OpenApiConfig(new AbsentBuildInformation(), new PublishedContractTypeRoster()).cardDemoOpenApi();
     }
 
     /**
@@ -414,7 +416,8 @@ final class OpenApiConfigTest {
         if (publishedVersion != null) {
             entries.setProperty("version", publishedVersion);
         }
-        return new OpenApiConfig(new PresentBuildInformation(new BuildProperties(entries)))
+        return new OpenApiConfig(new PresentBuildInformation(new BuildProperties(entries)),
+                new PublishedContractTypeRoster())
                 .cardDemoOpenApi();
     }
 
@@ -788,12 +791,12 @@ final class OpenApiConfigTest {
         }
 
         @Test
-        @DisplayName("the scheme description names no address beyond the two the filter chain owns, so the "
+        @DisplayName("the scheme description names no address beyond the three the filter chain owns, so the "
                 + "published contract cannot describe a rule the chain does not enforce")
         void theSchemeDescriptionNamesNoThirdAddress() {
-            // The two addresses are interpolated from SecurityConfig rather than written out in the
-            // description, which is what keeps the contract and the rule identical. Asserting that the two
-            // are *present* does not prove a third is absent - and a third address would be a documented
+            // The three addresses are interpolated from SecurityConfig rather than written out in the
+            // description, which is what keeps the contract and the rule identical. Asserting that they
+            // are present does not prove a fourth is absent - and an unowned address would be a documented
             // rule with nothing enforcing it, which is worse than an undocumented one.
             final String description = registeredScheme(publishedDocument()).getDescription();
 
@@ -803,12 +806,13 @@ final class OpenApiConfigTest {
                     .forEach(match -> addresses.add(match.group()));
 
             assertThat(addresses)
-                    .as("the description must name at least the two addresses the chain owns, or this "
+                    .as("the description must name the addresses the chain owns, or this "
                             + "census would pass by finding nothing at all")
                     .isNotEmpty();
             assertThat(addresses)
-                    .as("no address beyond the two the filter chain owns")
-                    .containsOnly(SecurityConfig.SIGN_ON_PATH, SecurityConfig.ADMIN_PATH_PREFIX);
+                    .as("no address beyond the three the filter chain owns")
+                    .containsOnly(SecurityConfig.SIGN_ON_PATH, SecurityConfig.ADMIN_PATH_PREFIX,
+                            SecurityConfig.BATCH_PATH_PREFIX);
         }
 
         @Test
@@ -942,7 +946,7 @@ final class OpenApiConfigTest {
      * Verifies that the document publishes a named schema for every request and response contract.
      *
      * <p>Without this, the document declares who may call the module and says nothing about what they may
-     * send or expect: a consumer would have twenty-eight record types to reverse-engineer from source. The
+     * send or expect: a consumer would have thirty-two record types to reverse-engineer from source. The
      * schemas are derived from the declaring types rather than written here, so these tests assert that the
      * derivation reached every type and produced one uniquely named schema per shape.</p>
      *
@@ -958,30 +962,32 @@ final class OpenApiConfigTest {
         /**
          * Every request and response type declared in the contract package, by simple name.
          *
-         * <p>Twenty-eight entries, matching the twenty-eight files of {@code com.carddemo.api.dto}. Each is a
+         * <p>Thirty-two entries, matching the thirty-two files of {@code com.carddemo.api.dto}. Each is a
          * top-level type a consumer sends or receives.</p>
          */
         private static final List<String> CONTRACT_FAMILIES = List.of(
-                "AccountUpdateRequest", "AccountUpdateResponse", "AccountViewResponse", "BillPaymentRequest",
-                "BillPaymentResponse", "CardDetailResponse", "CardListRequest", "CardListResponse",
-                "CardUpdateRequest", "CardUpdateResponse", "ErrorResponse", "FieldErrorDecorator",
-                "MenuResponse", "NavigationContext", "PageMetadata", "ReportRequest", "ReportResponse",
-                "ScreenWorkArea", "SignOnRequest", "SignOnResponse", "StatementSummary",
-                "TransactionAddRequest", "TransactionAddResponse", "TransactionListRequest",
-                "TransactionListResponse", "TransactionViewResponse", "UserRequest", "UserResponse");
+                "AccountUpdateRequest", "AccountUpdateResponse", "AccountViewResponse",
+                "BatchJobExecutionResponse", "BatchJobLaunchRequest", "BatchJobLaunchResponse",
+                "BillPaymentRequest", "BillPaymentResponse", "CardDetailRequest", "CardDetailResponse",
+                "CardListRequest", "CardListResponse", "CardUpdateRequest", "CardUpdateResponse",
+                "ErrorResponse", "FieldErrorDecorator", "MenuResponse", "NavigationContext",
+                "PageMetadata", "ReportRequest", "ReportResponse", "ScreenWorkArea", "SignOnRequest",
+                "SignOnResponse", "StatementSummary", "TransactionAddRequest",
+                "TransactionAddResponse", "TransactionListRequest", "TransactionListResponse",
+                "TransactionViewResponse", "UserRequest", "UserResponse");
 
         /**
          * Every nested shape that is published as a schema of its own rather than inlined.
          *
          * <p>A nested record becomes its own named schema because it appears as the element type of a
          * collection or as a component of another shape; a nested enumeration does not, because its permitted
-         * values are inlined on the property that declares it. These eight are the record and record-like
+         * values are inlined on the property that declares it. These nine are the record and record-like
          * shapes, and the list is asserted to be complete so an inlined shape cannot quietly become a named
          * one, or the reverse, without this test noticing.</p>
          */
         private static final List<String> NESTED_SHAPES = List.of(
                 "AdminMenuOption", "CardListRow", "FieldError", "MarkedField", "PageCursorRequest",
-                "TransactionRow", "UserMenuOption", "UserRow");
+                "ScreenContinuation", "TransactionRow", "UserMenuOption", "UserRow");
 
         @Test
         @DisplayName("every contract family is published as a named schema, so a consumer reads the shape "
@@ -1063,7 +1069,8 @@ final class OpenApiConfigTest {
 
             assertThat(document.getPaths()).isNull();
             assertThat(document.getComponents().getSecuritySchemes()).hasSize(1);
-            assertThat(document.getComponents().getResponses()).isNull();
+            assertThat(document.getComponents().getResponses()).hasSize(6);
+            assertThat(document.getComponents().getHeaders()).hasSize(1);
             assertThat(document.getComponents().getParameters()).isNull();
         }
     }
@@ -1160,6 +1167,8 @@ final class OpenApiConfigTest {
             final List<String> offenders = nodesOf(publishedDocument()).stream()
                     .filter(node -> names(node.fieldName(), EXAMPLE_FIELD_NAME_FRAGMENTS))
                     .filter(node -> node.value() != null)
+                    .filter(node -> !("exampleSetFlag".equals(node.fieldName())
+                            && Boolean.FALSE.equals(node.value())))
                     .map(DocumentNode::pointer)
                     .toList();
 
@@ -1212,7 +1221,9 @@ final class OpenApiConfigTest {
 
         /** A slice registering nothing but the class under test. No web server and no datasource. */
         private final ApplicationContextRunner runner =
-                new ApplicationContextRunner().withUserConfiguration(OpenApiConfig.class);
+                new ApplicationContextRunner()
+                        .withUserConfiguration(OpenApiConfig.class,
+                                PublishedContractTypeRoster.class);
 
         @Test
         @DisplayName("exactly one OpenAPI bean is contributed, and it carries the published title")
@@ -1300,7 +1311,7 @@ final class OpenApiConfigTest {
                 + "configuration produces reports the same version")
         void theBuildInformationIsConsultedOnceAtConstruction() {
             final CountingBuildInformation provider = new CountingBuildInformation();
-            final OpenApiConfig configuration = new OpenApiConfig(provider);
+            final OpenApiConfig configuration = new OpenApiConfig(provider, new PublishedContractTypeRoster());
 
             final String first = configuration.cardDemoOpenApi().getInfo().getVersion();
             final String second = configuration.cardDemoOpenApi().getInfo().getVersion();
@@ -1313,7 +1324,7 @@ final class OpenApiConfigTest {
         @DisplayName("each call yields an independent document, so a consumer that decorates one cannot "
                 + "reach the one the container published")
         void eachCallYieldsAnIndependentDocument() {
-            final OpenApiConfig configuration = new OpenApiConfig(new AbsentBuildInformation());
+            final OpenApiConfig configuration = new OpenApiConfig(new AbsentBuildInformation(), new PublishedContractTypeRoster());
 
             assertThat(configuration.cardDemoOpenApi()).isNotSameAs(configuration.cardDemoOpenApi());
         }

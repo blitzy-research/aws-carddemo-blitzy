@@ -25,14 +25,18 @@ import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
+import com.carddemo.util.BatchCancellation;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -240,8 +244,13 @@ public final class DailyTransactionReadJobConfig {
      *
      * <p>Original to this module. No job member names this program, so there is no legacy job name to
      * inherit and none to look for.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String JOB_NAME = "dailyTransactionReadJob";
+    public static final String JOB_NAME = BatchJobCatalog.DAILY_TRANSACTION_READ_JOB_NAME;
 
     /**
      * The stable step name, published for the same reason as {@link #JOB_NAME} and original for the same
@@ -351,6 +360,8 @@ public final class DailyTransactionReadJobConfig {
 
     private final ResourceLoader resourceLoader;
 
+    private final BatchStagingArea stagingArea;
+
     private final String dalytranLocation;
 
     private final String custfileLocation;
@@ -380,6 +391,7 @@ public final class DailyTransactionReadJobConfig {
      * @param dailyTransactionReadService the translated program, which owns all eighteen paragraphs
      * @param meterRegistry the registry this step's timer is recorded on
      * @param resourceLoader the loader that turns a configured location into a resource
+     * @param stagingArea the shared object-store staging boundary
      * @param dalytranLocation location of the staged daily-transaction dataset, or blank
      * @param custfileLocation location of the staged customer dataset, or blank
      * @param xreffileLocation location of the staged cross-reference dataset, or blank
@@ -395,6 +407,7 @@ public final class DailyTransactionReadJobConfig {
             final DailyTransactionReadService dailyTransactionReadService,
             final MeterRegistry meterRegistry,
             final ResourceLoader resourceLoader,
+            final BatchStagingArea stagingArea,
             @Value("${" + DALYTRAN_RESOURCE_PROPERTY + ":}") final String dalytranLocation,
             @Value("${" + CUSTFILE_RESOURCE_PROPERTY + ":}") final String custfileLocation,
             @Value("${" + XREFFILE_RESOURCE_PROPERTY + ":}") final String xreffileLocation,
@@ -409,6 +422,7 @@ public final class DailyTransactionReadJobConfig {
                 "dailyTransactionReadService must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         this.resourceLoader = Objects.requireNonNull(resourceLoader, "resourceLoader must not be null");
+        this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
         this.dalytranLocation = requireLocation(dalytranLocation, DD_DALYTRAN);
         this.custfileLocation = requireLocation(custfileLocation, DD_CUSTFILE);
         this.xreffileLocation = requireLocation(xreffileLocation, DD_XREFFILE);
@@ -494,7 +508,15 @@ public final class DailyTransactionReadJobConfig {
      */
     public Tasklet dailyTransactionExtractTasklet() {
         return (contribution, chunkContext) -> {
-            runExtractPass();
+            if (chunkContext == null) {
+                runExtractPass();
+                return RepeatStatus.FINISHED;
+            }
+            try {
+                runExtractPass(BatchCancellation.requestedBy(chunkContext));
+            } catch (final CancellationException stopped) {
+                throw BatchCancellation.interrupted(stopped);
+            }
             return RepeatStatus.FINISHED;
         };
     }
@@ -526,14 +548,22 @@ public final class DailyTransactionReadJobConfig {
      *         diagnostic and the raw status have been emitted
      */
     public DailyTransactionReadResult runExtractPass() {
+        return runExtractPass(null);
+    }
+
+    private DailyTransactionReadResult runExtractPass(final BooleanSupplier stopRequested) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         try {
             final Optional<List<DailyTransaction>> stagedInput = stagedDailyTransactionInput();
             final DailyTransactionReadResult result;
             if (stagedInput.isPresent()) {
-                result = this.dailyTransactionReadService.execute(stagedInput.get());
+                result = stopRequested == null
+                        ? this.dailyTransactionReadService.execute(stagedInput.get())
+                        : this.dailyTransactionReadService.execute(stagedInput.get(), stopRequested);
             } else {
-                result = this.dailyTransactionReadService.execute();
+                result = stopRequested == null
+                        ? this.dailyTransactionReadService.execute()
+                        : this.dailyTransactionReadService.execute(stopRequested);
             }
 
             recordStepDuration(sample, OUTCOME_COMPLETED);
@@ -801,7 +831,11 @@ public final class DailyTransactionReadJobConfig {
         if (location.isBlank()) {
             return Optional.empty();
         }
-        return Optional.of(this.resourceLoader.getResource(location.strip()));
+        final String normalized = location.strip();
+        if (this.stagingArea.holds(normalized)) {
+            return Optional.of(this.stagingArea.stagedInput(normalized));
+        }
+        return Optional.of(this.resourceLoader.getResource(normalized));
     }
 
     /**
@@ -818,6 +852,3 @@ public final class DailyTransactionReadJobConfig {
                         + " means no sequential dataset is staged for it");
     }
 }
-
-
-

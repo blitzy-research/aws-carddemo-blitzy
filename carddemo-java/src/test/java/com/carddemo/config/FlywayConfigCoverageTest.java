@@ -98,20 +98,11 @@ final class FlywayConfigCoverageTest {
     /** The profile the refusal is scoped to. */
     private static final String EXPECTED_PROFILE = "prod";
 
-    /** The schema location every profile resolves, typed independently of the class under test. */
-    private static final String EXPECTED_SCHEMA_LOCATION = "classpath:db/migration/schema";
+    /** The one location every profile resolves, typed independently of the class under test. */
+    private static final String EXPECTED_MIGRATION_LOCATION = "classpath:db/migration";
 
-    /** The seed location only local and test resolve, typed independently of the class under test. */
-    private static final String EXPECTED_SEED_LOCATION = "classpath:db/migration/seed";
-
-    /** Class-path path behind {@link #EXPECTED_SCHEMA_LOCATION}, as a resource pattern reads it. */
-    private static final String EXPECTED_SCHEMA_PATH = "db/migration/schema";
-
-    /** Class-path path behind {@link #EXPECTED_SEED_LOCATION}, as a resource pattern reads it. */
-    private static final String EXPECTED_SEED_PATH = "db/migration/seed";
-
-    /** The shared parent of the two delivered locations, which must hold no script at all. */
-    private static final String EXPECTED_PARENT_PATH = "db/migration";
+    /** Class-path path behind {@link #EXPECTED_MIGRATION_LOCATION}, as a pattern reads it. */
+    private static final String EXPECTED_MIGRATION_PATH = "db/migration";
 
     /**
      * A Base64 key decoding to exactly thirty-two bytes, matching the shape the encryption service
@@ -149,24 +140,15 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("names both delivered locations as siblings, neither containing the other, which "
-                + "is what makes the location list the boundary rather than a label")
+        @DisplayName("names the one delivered location every profile shares, which is why the version "
+                + "ceiling rather than the location list has to be the boundary")
         void namesTheOneDeliveredLocation() {
-            assertThat(FlywayConfig.SCHEMA_LOCATION).isEqualTo(EXPECTED_SCHEMA_LOCATION);
-            assertThat(FlywayConfig.SEED_LOCATION).isEqualTo(EXPECTED_SEED_LOCATION);
-            assertThat(FlywayConfig.SCHEMA_LOCATION)
-                    .as("a location is scanned recursively, so neither delivered location may sit inside "
-                            + "the other or a single listing would resolve both and production could not "
-                            + "be given the schema alone")
-                    .isNotEqualTo(FlywayConfig.SEED_LOCATION)
-                    .doesNotStartWith(FlywayConfig.SEED_LOCATION);
-            assertThat(FlywayConfig.SEED_LOCATION)
-                    .doesNotStartWith(FlywayConfig.SCHEMA_LOCATION);
-            assertThat(FlywayConfig.SCHEMA_LOCATION)
-                    .as("both must sit under the plan's own db/migration delivery pattern")
-                    .startsWith("classpath:" + EXPECTED_PARENT_PATH + "/");
-            assertThat(FlywayConfig.SEED_LOCATION)
-                    .startsWith("classpath:" + EXPECTED_PARENT_PATH + "/");
+            assertThat(FlywayConfig.MIGRATION_LOCATION).isEqualTo(EXPECTED_MIGRATION_LOCATION);
+            assertThat(FlywayConfig.MIGRATION_LOCATION)
+                    .as("the delivered directory is flat, so there is no second location to scope a "
+                            + "profile to; a location list cannot separate V3 and V4 from V1 and V2 "
+                            + "when all four sit in one folder")
+                    .isEqualTo("classpath:" + EXPECTED_MIGRATION_PATH);
         }
 
         @Test
@@ -185,10 +167,10 @@ final class FlywayConfigCoverageTest {
         void reachesTheSchemaAndStopsBelowTheSeeds() {
             MigrationVersion ceiling = MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET);
 
-            assertThat(deliveredMigrations(EXPECTED_PARENT_PATH))
+            assertThat(deliveredMigrations(EXPECTED_MIGRATION_PATH))
                     .as("every claim below is about the delivered set, so a migration added or removed "
-                            + "must be accounted for here first; the four are split across the two "
-                            + "sibling locations and are additionally told apart by version")
+                            + "must be accounted for here first; the four share one flat location and "
+                            + "are told apart by version alone")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
 
@@ -208,30 +190,20 @@ final class FlywayConfigCoverageTest {
         }
 
         @Test
-        @DisplayName("the delivered inventory is exactly the four scripts the frozen plan names, split "
-                + "across the two sibling locations, with nothing interleaved")
+        @DisplayName("the delivered inventory is exactly the four scripts the frozen plan names, all "
+                + "four flat in one location, with nothing interleaved and nothing hidden below")
         void theDeliveredInventoryIsExactlyTheFourNamedScripts() {
-            assertThat(deliveredMigrations(EXPECTED_PARENT_PATH))
+            assertThat(deliveredMigrations(EXPECTED_MIGRATION_PATH))
                     .as("a recursive scan of the whole migration tree must find exactly the four "
                             + "delivered scripts and no fifth: an extra script is what would make the "
                             + "delivered inventory stop describing what a profile applies")
                     .containsExactlyInAnyOrderElementsOf(Stream.concat(SCHEMA_MIGRATIONS.stream(),
                             SEED_MIGRATIONS.stream()).toList());
-            assertThat(deliveredMigrations(EXPECTED_SCHEMA_PATH))
-                    .as("the schema location must hold the schema scripts and NOTHING else: a seed "
-                            + "resolved from here would be resolved by production, which resolves this "
-                            + "location alone")
-                    .containsExactlyInAnyOrderElementsOf(SCHEMA_MIGRATIONS);
-            assertThat(deliveredMigrations(EXPECTED_SEED_PATH))
-                    .as("the seed location must hold the seed scripts and nothing else, so that adding "
-                            + "it to a profile adds exactly the fixtures and no schema")
-                    .containsExactlyInAnyOrderElementsOf(SEED_MIGRATIONS);
-            assertThat(scriptsDirectlyInTheSharedParent())
-                    .as("no script may sit directly in the shared parent %s. A Flyway location is "
-                            + "scanned recursively, so a script there is reached by any profile that "
-                            + "names either location's parent, and the location list stops being the "
-                            + "boundary that keeps the seeds away from production",
-                            EXPECTED_PARENT_PATH)
+            assertThat(scriptsBelowTheMigrationDirectory())
+                    .as("every script must sit DIRECTLY in %s. The delivered layout is flat and no "
+                            + "subdirectory exists or may be created, so a script one level down is a "
+                            + "regression towards the split arrangement the migration specifications "
+                            + "prohibit", EXPECTED_MIGRATION_PATH)
                     .isEmpty();
 
             MigrationVersion first = versionOf("V1__create_schema.sql");
@@ -281,7 +253,7 @@ final class FlywayConfigCoverageTest {
                 assertThat(context).hasNotFailed().hasSingleBean(FlywayConfigurationCustomizer.class);
 
                 FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .locations(EXPECTED_MIGRATION_LOCATION)
                         .target(MigrationVersion.fromVersion(UNPINNED_TARGET));
 
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
@@ -298,7 +270,7 @@ final class FlywayConfigCoverageTest {
         void refusesABoundCeilingThatReachesTheSeeds() {
             runner(EXPECTED_PROFILE).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .locations(EXPECTED_MIGRATION_LOCATION)
                         .target(MigrationVersion.fromVersion(UNPINNED_TARGET));
 
                 assertThat(configuration.getTarget())
@@ -321,7 +293,7 @@ final class FlywayConfigCoverageTest {
                 + "migrates to the latest version and silence is therefore the dangerous case")
         void refusesAnAbsentCeiling() {
             runner(EXPECTED_PROFILE).run(context -> {
-                FluentConfiguration configuration = Flyway.configure().locations(EXPECTED_SCHEMA_LOCATION);
+                FluentConfiguration configuration = Flyway.configure().locations(EXPECTED_MIGRATION_LOCATION);
 
                 assertThatExceptionOfType(IllegalStateException.class)
                         .isThrownBy(() -> context.getBean(FlywayConfigurationCustomizer.class)
@@ -336,7 +308,7 @@ final class FlywayConfigCoverageTest {
         void acceptsTheDeclaredCeilingAndChangesNothingElse() {
             runner(EXPECTED_PROFILE).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .locations(EXPECTED_MIGRATION_LOCATION)
                         .target(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET));
                 boolean cleanDisabledBefore = configuration.isCleanDisabled();
                 boolean validateBefore = configuration.isValidateOnMigrate();
@@ -367,7 +339,7 @@ final class FlywayConfigCoverageTest {
                 FlywayConfigurationCustomizer customizer =
                         context.getBean(FlywayConfigurationCustomizer.class);
                 FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .locations(EXPECTED_MIGRATION_LOCATION)
                         .target(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET));
 
                 customizer.customize(configuration);
@@ -376,7 +348,7 @@ final class FlywayConfigCoverageTest {
                 assertThat(configuration.getTarget())
                         .isEqualTo(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET));
                 assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
-                        .containsExactly(EXPECTED_SCHEMA_LOCATION);
+                        .containsExactly(EXPECTED_MIGRATION_LOCATION);
             });
         }
 
@@ -387,7 +359,7 @@ final class FlywayConfigCoverageTest {
         void liftsASeedingProfilesInheritedCeiling(final String profile) {
             runner(profile).run(context -> {
                 FluentConfiguration configuration = Flyway.configure()
-                        .locations(EXPECTED_SCHEMA_LOCATION)
+                        .locations(EXPECTED_MIGRATION_LOCATION)
                         .target(MigrationVersion.fromVersion(FlywayConfig.SCHEMA_ONLY_TARGET));
 
                 context.getBean(FlywayConfigurationCustomizer.class).customize(configuration);
@@ -397,10 +369,10 @@ final class FlywayConfigCoverageTest {
                                 + "none of the fixtures the profile exists to load", profile)
                         .isEqualTo(MigrationVersion.LATEST);
                 assertThat(Stream.of(configuration.getLocations()).map(Object::toString).toList())
-                        .as("%s handed over the schema location alone, so the seed location is appended "
-                                + "for it: without that location the lifted ceiling has no seed script "
-                                + "to reach, and the fixtures would still not load", profile)
-                        .containsExactly(EXPECTED_SCHEMA_LOCATION, EXPECTED_SEED_LOCATION);
+                        .as("%s already resolves the one shared location, so lifting the ceiling is "
+                                + "the whole of the completion: all four scripts sit in that location "
+                                + "and only the ceiling decides which of them apply", profile)
+                        .containsExactly(EXPECTED_MIGRATION_LOCATION);
                 for (final String seedMigration : SEED_MIGRATIONS) {
                     assertThat(versionOf(seedMigration))
                             .as("%s must be reachable once the ceiling is lifted", seedMigration)
@@ -436,7 +408,7 @@ final class FlywayConfigCoverageTest {
                 .withPropertyValues(
                         "spring.flyway.enabled=true",
                         "spring.flyway.target=" + FlywayConfig.SCHEMA_ONLY_TARGET,
-                        "spring.flyway.locations=" + EXPECTED_SCHEMA_LOCATION);
+                        "spring.flyway.locations=" + EXPECTED_MIGRATION_LOCATION);
         return profiles.length == 0 ? runner : runner.withPropertyValues(
                 "spring.profiles.active=" + String.join(",", profiles));
     }
@@ -459,28 +431,27 @@ final class FlywayConfigCoverageTest {
     }
 
     /**
-     * Returns the delivered migration file names that sit directly in the shared parent of the two
-     * delivered locations rather than inside one of them.
+     * Returns the delivered migration file names that sit in a subdirectory of the migration
+     * directory rather than directly in it.
      *
-     * <p>This is the guard that keeps the location list a boundary. A Flyway location is scanned
-     * recursively, so a script left in the parent is reached by any profile naming the parent, and a
-     * profile naming the parent reaches the seeds through the child directory - which is exactly the
-     * observation that made two earlier revisions abandon the location mechanism. The delivered
-     * arrangement answers it by leaving the parent empty, and this guard is what stops a script
-     * drifting back into it.</p>
+     * <p>This is the guard that keeps the delivered layout flat. Directory-scoped locations cannot
+     * separate {@code V3} and {@code V4} from {@code V1} and {@code V2} when all four sit in one
+     * folder, so the version ceiling is the boundary and a subdirectory would be reaching for a
+     * mechanism the artefacts do not support. Creating one is prohibited by both seed-migration
+     * specifications, and this guard is what stops a script drifting into one.</p>
      *
-     * @return the offending file names, or an empty list when the parent holds no script
+     * @return the offending file names, or an empty list when every script is flat
      */
-    private static List<String> scriptsDirectlyInTheSharedParent() {
-        final String parentPrefix = EXPECTED_PARENT_PATH + "/";
-        return Stream.of(migrationResources(EXPECTED_PARENT_PATH))
+    private static List<String> scriptsBelowTheMigrationDirectory() {
+        final String directoryPrefix = EXPECTED_MIGRATION_PATH + "/";
+        return Stream.of(migrationResources(EXPECTED_MIGRATION_PATH))
                 .map(FlywayConfigCoverageTest::describeResource)
                 .filter(location -> {
-                    final int start = location.indexOf(parentPrefix);
-                    // A script inside a delivered location still carries a separator after the parent
-                    // prefix; one sitting directly in the parent does not.
+                    final int start = location.indexOf(directoryPrefix);
+                    // A script sitting directly in the migration directory carries no further
+                    // separator after the directory prefix; one inside a subdirectory does.
                     return start >= 0
-                            && !location.substring(start + parentPrefix.length()).contains("/");
+                            && location.substring(start + directoryPrefix.length()).contains("/");
                 })
                 .sorted()
                 .toList();

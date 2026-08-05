@@ -136,12 +136,12 @@ public final class TransactionController {
      *
      * <p>Declared here, and read from here by anything that needs it, for the reason the sign-on route
      * constant is declared on its own controller: a route and the rules that protect it must name one
-     * authority. It deliberately sits outside the administrative prefix the security rules gate,
-     * because all three transactions are reachable by any signed-on caller - the resource definition
-     * classifies {@code CT00}, {@code CT01} and {@code CT02} as ordinary transactions, and the sign-on
-     * program's alternative branch admits every non-administrative user type unconditionally. The
-     * closing authentication rule therefore protects these routes without a rule of their own, so the
-     * failure mode of a mapping typo is a refused request rather than an open surface.
+     * authority. It deliberately sits outside the administrative prefix and is named by the separate
+     * online-data operator rule. The resource definition classifies {@code CT00}, {@code CT01} and
+     * {@code CT02} as ordinary transactions, so both CardDemo user types retain access; an unrelated
+     * authenticated principal does not inherit transaction-wide access merely from the catch-all. The
+     * sign-on record carries no account ownership relation, so the boundary deliberately does not invent
+     * one from a caller-supplied transaction or account identifier.
      *
      * <p>It shadows neither the management endpoints nor the API-description endpoints, both of which
      * are published under roots of their own.
@@ -196,6 +196,9 @@ public final class TransactionController {
 
     /** Outcome of an add turn that raised no error and wrote nothing, the confirmation gate. */
     private static final String OUTCOME_UNCONFIRMED = "unconfirmed";
+
+    /** Outcome of a turn that raised before returning a screen. */
+    private static final String OUTCOME_FAILED = "failed";
 
     /** Tag value used when a turn resolved no route, which no current path does. */
     private static final String ROUTE_ABSENT = "none";
@@ -319,6 +322,19 @@ public final class TransactionController {
     /** The transaction-add screen, legacy transaction {@code CT02}. */
     private final TransactionAddService transactionAddService;
 
+    /**
+     * The only permitted converter between the wire screen carriers and the service-owned ones.
+     *
+     * <p>All three transactions take the echoed navigation record, and return it, in the form the service
+     * layer owns, and the list transaction additionally takes the inbound cursor pair and returns the
+     * assembled browse window in that form, because nothing may depend upward on {@code api.dto}. This
+     * collaborator is where every one of those crossings happens, and it converts positionally: neither
+     * the sixteen blank-significant communication-area members, nor the two boundary cursors, nor the
+     * operator-facing page indicator with its significant leading zeros is trimmed, padded, defaulted or
+     * reconciled on the way through.
+     */
+    private final ScreenStateAdapter screenStateAdapter;
+
     /** Registry the three turn timers are registered against. */
     private final MeterRegistry meterRegistry;
 
@@ -331,12 +347,15 @@ public final class TransactionController {
      * @param transactionListService the transaction-list screen, never {@code null}
      * @param transactionViewService the transaction-view screen, never {@code null}
      * @param transactionAddService the transaction-add screen, never {@code null}
+     * @param screenStateAdapter the converter between the wire screen carriers and the service-owned
+     *     ones, never {@code null}
      * @param meterRegistry the metrics registry, never {@code null}
      * @throws NullPointerException if any argument is {@code null}
      */
     public TransactionController(final TransactionListService transactionListService,
                                 final TransactionViewService transactionViewService,
                                 final TransactionAddService transactionAddService,
+                                final ScreenStateAdapter screenStateAdapter,
                                 final MeterRegistry meterRegistry) {
         this.transactionListService = Objects.requireNonNull(transactionListService,
                 "transactionListService must not be null");
@@ -344,6 +363,8 @@ public final class TransactionController {
                 "transactionViewService must not be null");
         this.transactionAddService = Objects.requireNonNull(transactionAddService,
                 "transactionAddService must not be null");
+        this.screenStateAdapter = Objects.requireNonNull(screenStateAdapter,
+                "screenStateAdapter must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -388,6 +409,21 @@ public final class TransactionController {
      */
     @PostMapping(path = LIST_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "List and select transactions",
+            description = "One turn of legacy transaction CT00 using one bounded continuation body.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200",
+                description = "The turn completed and returns the displayed transaction page.")})
+    public TransactionListResponse listTransactions(
+            @Valid @RequestBody final TransactionListRequest request) {
+        final TransactionListRequest.ScreenContinuation continuation =
+                request.continuation() == null
+                        ? TransactionListRequest.ScreenContinuation.empty()
+                        : request.continuation();
+        return listTransactions(request, continuation.displayedTransactionIds(),
+                continuation.currentPageNumber(), continuation.nextPageAvailable());
+    }
+
     @Operation(summary = "List or search transactions",
             description = "One turn of legacy transaction CT00. The screen presents ten rows; paging "
                     + "is cursor-based in both directions and a backward page arrives in the order "
@@ -403,7 +439,9 @@ public final class TransactionController {
                 description = "The submission exceeded a width the transaction-list map declares, "
                         + "carried more selectors than the screen has rows, or supplied a negative "
                         + "page counter."),
-        @ApiResponse(responseCode = "401", description = "No valid session was presented.")})
+        @ApiResponse(responseCode = "401", description = "No valid session was presented."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public TransactionListResponse listTransactions(
             @Valid @RequestBody final TransactionListRequest request,
             @RequestParam(name = "displayedTransactionIds", required = false)
@@ -413,31 +451,37 @@ public final class TransactionController {
             @RequestParam(name = "nextPageAvailable", required = false, defaultValue = "false")
                     final boolean nextPageAvailable) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        String route = ROUTE_ABSENT;
+        try {
+            final TransactionListService.TransactionListResult result =
+                    this.transactionListService.listTransactions(
+                            new TransactionListService.TransactionListCommand(
+                                    attentionKeyOrUnnamed(request.keyAction()),
+                                    this.screenStateAdapter.toNavigationState(
+                                            request.navigationContext()),
+                                    request.transactionIdFilter(),
+                                    request.rowSelectors(),
+                                    displayedTransactionIds,
+                                    this.screenStateAdapter.toCursorRequest(request.pageMetadata()),
+                                    nextPageAvailable,
+                                    currentPageNumber));
 
-        final PageMetadata.PageCursorRequest pageCursor = request.pageMetadata();
-        final TransactionListService.TransactionListResult result =
-                this.transactionListService.listTransactions(
-                        new TransactionListService.TransactionListCommand(
-                                attentionKeyOrUnnamed(request.keyAction()),
-                                request.navigationContext(),
-                                request.transactionIdFilter(),
-                                request.rowSelectors(),
-                                displayedTransactionIds,
-                                pageCursor,
-                                nextPageAvailable,
-                                currentPageNumber));
+            final String nextRoute =
+                    (result.route() == null) ? null : result.route().getRouteValue();
+            final TransactionListResponse body =
+                    toListResponse(result, request.rowSelectors(), nextRoute);
 
-        final String nextRoute =
-                (result.route() == null) ? null : result.route().getRouteValue();
-        final TransactionListResponse body =
-                toListResponse(result, request.rowSelectors(), nextRoute);
-
-        recordTurn(sample, METRIC_LIST_TURN,
-                "Elapsed time of one CardDemo transaction-list turn, transaction CT00",
-                outcomeOf(result.error()), nextRoute);
-        LOG.debug("Transaction-list turn complete: route={} rejected={} rowCount={} reEntry={}",
-                nextRoute, result.error(), body.rows().size(), result.reEntry());
-        return body;
+            outcome = outcomeOf(result.error());
+            route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
+            LOG.debug("Transaction-list turn complete: route={} rejected={} rowCount={} reEntry={}",
+                    nextRoute, result.error(), body.rows().size(), result.reEntry());
+            return body;
+        } finally {
+            recordTurn(sample, METRIC_LIST_TURN,
+                    "Elapsed time of one CardDemo transaction-list turn, transaction CT00",
+                    outcome, route);
+        }
     }
 
     /**
@@ -488,7 +532,9 @@ public final class TransactionController {
                         + "should call next."),
         @ApiResponse(responseCode = "400",
                 description = "The echoed navigation record exceeded a width its contract declares."),
-        @ApiResponse(responseCode = "401", description = "No valid session was presented.")})
+        @ApiResponse(responseCode = "401", description = "No valid session was presented."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public TransactionViewResponse viewTransaction(
             @RequestParam(name = "transactionId", required = false) final String transactionId,
             @RequestParam(name = "selectedTransactionId", required = false)
@@ -496,23 +542,30 @@ public final class TransactionController {
             @RequestParam(name = "keyAction", required = false) final KeyAction keyAction,
             @Valid @RequestBody(required = false) final NavigationContext navigationContext) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        String route = ROUTE_ABSENT;
+        try {
+            final TransactionViewService.TransactionViewResult result =
+                    this.transactionViewService.viewTransaction(
+                            new TransactionViewService.TransactionViewInput(transactionId,
+                                    selectedTransactionId, keyAction,
+                                    this.screenStateAdapter.toNavigationState(navigationContext)));
 
-        final TransactionViewService.TransactionViewResult result =
-                this.transactionViewService.viewTransaction(
-                        new TransactionViewService.TransactionViewInput(transactionId,
-                                selectedTransactionId, keyAction, navigationContext));
+            final String nextRoute =
+                    (result.route() == null) ? null : result.route().getRouteValue();
+            final TransactionViewResponse body = toViewResponse(result, nextRoute);
 
-        final String nextRoute =
-                (result.route() == null) ? null : result.route().getRouteValue();
-        final TransactionViewResponse body = toViewResponse(result, nextRoute);
-
-        recordTurn(sample, METRIC_VIEW_TURN,
-                "Elapsed time of one CardDemo transaction-view turn, transaction CT01",
-                outcomeOf(result.errorFlag()), nextRoute);
-        LOG.debug("Transaction-view turn complete: route={} rejected={} recordRetrieved={} reEntry={}",
-                nextRoute, result.errorFlag(), result.retrievedTransaction().isPresent(),
-                result.reEntry());
-        return body;
+            outcome = outcomeOf(result.errorFlag());
+            route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
+            LOG.debug("Transaction-view turn complete: route={} rejected={} recordRetrieved={} reEntry={}",
+                    nextRoute, result.errorFlag(), result.retrievedTransaction().isPresent(),
+                    result.reEntry());
+            return body;
+        } finally {
+            recordTurn(sample, METRIC_VIEW_TURN,
+                    "Elapsed time of one CardDemo transaction-view turn, transaction CT01",
+                    outcome, route);
+        }
     }
 
     /**
@@ -562,46 +615,55 @@ public final class TransactionController {
                         + "the cursor returns to and the route the client should call next."),
         @ApiResponse(responseCode = "400",
                 description = "The submission exceeded a width the transaction-add map declares."),
-        @ApiResponse(responseCode = "401", description = "No valid session was presented.")})
+        @ApiResponse(responseCode = "401", description = "No valid session was presented."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public TransactionAddResponse addTransaction(
             @Valid @RequestBody final TransactionAddRequest request,
             @RequestParam(name = "selectedTransaction", required = false)
                     final String selectedTransaction) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        String route = ROUTE_ABSENT;
+        try {
+            final TransactionAddService.TransactionAddResult result =
+                    this.transactionAddService.processTransactionAdd(
+                            new TransactionAddService.TransactionAddScreenInput(
+                                    request.accountId(),
+                                    request.cardNumber(),
+                                    request.typeCode(),
+                                    request.categoryCode(),
+                                    request.transactionSource(),
+                                    request.description(),
+                                    request.amount(),
+                                    request.originationDate(),
+                                    request.processingDate(),
+                                    request.merchantId(),
+                                    request.merchantName(),
+                                    request.merchantCity(),
+                                    request.merchantZip(),
+                                    request.confirm(),
+                                    selectedTransaction,
+                                    request.keyAction(),
+                                    this.screenStateAdapter.toNavigationState(
+                                            request.navigationContext())));
 
-        final TransactionAddService.TransactionAddResult result =
-                this.transactionAddService.processTransactionAdd(
-                        new TransactionAddService.TransactionAddScreenInput(
-                                request.accountId(),
-                                request.cardNumber(),
-                                request.typeCode(),
-                                request.categoryCode(),
-                                request.transactionSource(),
-                                request.description(),
-                                request.amount(),
-                                request.originationDate(),
-                                request.processingDate(),
-                                request.merchantId(),
-                                request.merchantName(),
-                                request.merchantCity(),
-                                request.merchantZip(),
-                                request.confirm(),
-                                selectedTransaction,
-                                request.keyAction(),
-                                request.navigationContext()));
+            final String nextRoute =
+                    (result.route() == null) ? null : result.route().getRouteValue();
+            final TransactionAddResponse body = toAddResponse(result, nextRoute);
 
-        final String nextRoute =
-                (result.route() == null) ? null : result.route().getRouteValue();
-        final TransactionAddResponse body = toAddResponse(result, nextRoute);
-
-        recordTurn(sample, METRIC_ADD_TURN,
-                "Elapsed time of one CardDemo transaction-add turn, transaction CT02",
-                addOutcome(result), nextRoute);
-        LOG.debug("Transaction-add turn complete: route={} rejected={} transactionAdded={}"
-                        + " fieldErrors={} reEntry={}",
-                nextRoute, result.errorFlag(), result.transactionAdded(),
-                body.fieldErrors().size(), result.reEnter());
-        return body;
+            outcome = addOutcome(result);
+            route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
+            LOG.debug("Transaction-add turn complete: route={} rejected={} transactionAdded={}"
+                            + " fieldErrors={} reEntry={}",
+                    nextRoute, result.errorFlag(), result.transactionAdded(),
+                    body.fieldErrors().size(), result.reEnter());
+            return body;
+        } finally {
+            recordTurn(sample, METRIC_ADD_TURN,
+                    "Elapsed time of one CardDemo transaction-add turn, transaction CT02",
+                    outcome, route);
+        }
     }
 
     /**
@@ -643,7 +705,7 @@ public final class TransactionController {
      * @param nextRoute the resolved route token, or {@code null} when the turn resolved none
      * @return the transport response, never {@code null}
      */
-    private static TransactionListResponse toListResponse(
+    private TransactionListResponse toListResponse(
             final TransactionListService.TransactionListResult result,
             final List<String> submittedSelectors,
             final String nextRoute) {
@@ -658,11 +720,12 @@ public final class TransactionController {
                     row.tranAmt()));
         }
 
-        final PageMetadata pageMetadata = result.pageMetadata();
+        final PageMetadata pageMetadata =
+                this.screenStateAdapter.toPageMetadata(result.pageMetadata());
         return new TransactionListResponse(
                 rows,
                 pageMetadata,
-                result.navigationContext(),
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()),
                 nextRoute,
                 result.transactionIdFilterEcho(),
                 (pageMetadata == null) ? null : pageMetadata.displayedPageNumber(),
@@ -760,7 +823,7 @@ public final class TransactionController {
      * @param nextRoute the resolved route token, or {@code null} when the turn resolved none
      * @return the transport response, never {@code null}
      */
-    private static TransactionViewResponse toViewResponse(
+    private TransactionViewResponse toViewResponse(
             final TransactionViewService.TransactionViewResult result, final String nextRoute) {
         final TransactionViewService.ScreenHeader header = Objects.requireNonNullElseGet(
                 result.header(),
@@ -795,7 +858,7 @@ public final class TransactionController {
                 result.errorFlag(),
                 result.focusField(),
                 nextRoute,
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**
@@ -818,7 +881,7 @@ public final class TransactionController {
      * @param nextRoute the resolved route token, or {@code null} when the turn resolved none
      * @return the transport response, never {@code null}
      */
-    private static TransactionAddResponse toAddResponse(
+    private TransactionAddResponse toAddResponse(
             final TransactionAddService.TransactionAddResult result, final String nextRoute) {
         final TransactionAddService.ScreenFields screen = result.screen();
         final TransactionAddService.ScreenHeader header = result.header();
@@ -851,7 +914,7 @@ public final class TransactionController {
                 toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 nextRoute,
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**

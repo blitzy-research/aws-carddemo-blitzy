@@ -181,7 +181,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment silent = new MockEnvironment();
             silent.setActiveProfiles(PRODUCTION);
             silent.setProperty(TARGET_KEY, FlywayConfig.SCHEMA_ONLY_TARGET);
-            silent.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
+            silent.setProperty(LOCATIONS_KEY, FlywayConfig.MIGRATION_LOCATION);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
@@ -211,7 +211,7 @@ final class ProductionMigrationSourceGuardTest {
             final MockEnvironment silent = new MockEnvironment();
             silent.setActiveProfiles(PRODUCTION);
             silent.setProperty(ENABLED_KEY, "true");
-            silent.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
+            silent.setProperty(LOCATIONS_KEY, FlywayConfig.MIGRATION_LOCATION);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
@@ -237,7 +237,7 @@ final class ProductionMigrationSourceGuardTest {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(environment))
-                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION)
+                    .withMessageContaining(FlywayConfig.MIGRATION_LOCATION)
                     .satisfies(refusal -> assertCarriesNoRawTerminator(refusal.getMessage()));
         }
 
@@ -252,7 +252,7 @@ final class ProductionMigrationSourceGuardTest {
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(environment))
                     .satisfies(refusal -> assertThat(refusal.getMessage())
-                            .contains(FlywayConfig.SCHEMA_LOCATION)
+                            .contains(FlywayConfig.MIGRATION_LOCATION)
                             .doesNotContain("/var/tmp/planted")
                             .doesNotContain("planted"));
         }
@@ -300,7 +300,7 @@ final class ProductionMigrationSourceGuardTest {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(silent))
-                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+                    .withMessageContaining(FlywayConfig.MIGRATION_LOCATION);
         }
 
         @Test
@@ -309,12 +309,12 @@ final class ProductionMigrationSourceGuardTest {
         void aSecondLocationSuppliedCommaSeparatedIsRefused() {
             final MockEnvironment two = canonicalProduction();
             two.setProperty(LOCATIONS_KEY,
-                    FlywayConfig.SCHEMA_LOCATION + ",filesystem:/tmp/attacker");
+                    FlywayConfig.MIGRATION_LOCATION + ",filesystem:/tmp/attacker");
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(two))
-                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+                    .withMessageContaining(FlywayConfig.MIGRATION_LOCATION);
         }
 
         @Test
@@ -332,13 +332,13 @@ final class ProductionMigrationSourceGuardTest {
                             + "that saw nothing would have had nothing to refuse")
                     .isThrownBy(() ->
                             FlywayConfig.requireCanonicalProductionMigrationSource(indexed))
-                    .withMessageContaining(FlywayConfig.SCHEMA_LOCATION);
+                    .withMessageContaining(FlywayConfig.MIGRATION_LOCATION);
 
             final MockEnvironment canonical = new MockEnvironment();
             canonical.setActiveProfiles(PRODUCTION);
             canonical.setProperty(ENABLED_KEY, "true");
             canonical.setProperty(TARGET_KEY, FlywayConfig.SCHEMA_ONLY_TARGET);
-            canonical.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.SCHEMA_LOCATION);
+            canonical.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.MIGRATION_LOCATION);
 
             assertThatNoException()
                     .as("and the canonical value supplied the same way is accepted, so the indexed "
@@ -355,7 +355,7 @@ final class ProductionMigrationSourceGuardTest {
             two.setActiveProfiles(PRODUCTION);
             two.setProperty(ENABLED_KEY, "true");
             two.setProperty(TARGET_KEY, FlywayConfig.SCHEMA_ONLY_TARGET);
-            two.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.SCHEMA_LOCATION);
+            two.setProperty(LOCATIONS_KEY + "[0]", FlywayConfig.MIGRATION_LOCATION);
             two.setProperty(LOCATIONS_KEY + "[1]", "filesystem:/tmp/attacker/db/migration");
 
             assertThatExceptionOfType(IllegalStateException.class)
@@ -411,7 +411,7 @@ final class ProductionMigrationSourceGuardTest {
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=false",
                             TARGET_KEY + "=" + FlywayConfig.SCHEMA_ONLY_TARGET,
-                            LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
+                            LOCATIONS_KEY + "=" + FlywayConfig.MIGRATION_LOCATION)
                     .run(context -> assertThat(context)
                             .hasFailed()
                             .getFailure()
@@ -433,7 +433,7 @@ final class ProductionMigrationSourceGuardTest {
                             .hasFailed()
                             .getFailure()
                             .isInstanceOf(IllegalStateException.class)
-                            .hasMessageContaining(FlywayConfig.SCHEMA_LOCATION));
+                            .hasMessageContaining(FlywayConfig.MIGRATION_LOCATION));
         }
 
         @Test
@@ -445,7 +445,7 @@ final class ProductionMigrationSourceGuardTest {
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=true",
                             TARGET_KEY + "=" + FlywayConfig.SCHEMA_ONLY_TARGET,
-                            LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
+                            LOCATIONS_KEY + "=" + FlywayConfig.MIGRATION_LOCATION)
                     .run(context -> assertThat(context).hasNotFailed());
         }
     }
@@ -546,7 +546,7 @@ final class ProductionMigrationSourceGuardTest {
                             "spring.profiles.active=" + PRODUCTION,
                             ENABLED_KEY + "=true",
                             TARGET_KEY + "=" + FlywayConfig.SCHEMA_ONLY_TARGET,
-                            LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION)
+                            LOCATIONS_KEY + "=" + FlywayConfig.MIGRATION_LOCATION)
                     .run(context -> assertThat(context)
                             .hasNotFailed()
                             .hasSingleBean(InitializingBean.class));
@@ -571,7 +571,7 @@ final class ProductionMigrationSourceGuardTest {
         environment.setActiveProfiles(PRODUCTION);
         environment.setProperty(ENABLED_KEY, "true");
         environment.setProperty(TARGET_KEY, FlywayConfig.SCHEMA_ONLY_TARGET);
-        environment.setProperty(LOCATIONS_KEY, FlywayConfig.SCHEMA_LOCATION);
+        environment.setProperty(LOCATIONS_KEY, FlywayConfig.MIGRATION_LOCATION);
         return environment;
     }
 
@@ -585,7 +585,7 @@ final class ProductionMigrationSourceGuardTest {
             "spring.profiles.active=" + PRODUCTION,
             ENABLED_KEY + "=true",
             TARGET_KEY + "=" + FlywayConfig.SCHEMA_ONLY_TARGET,
-            LOCATIONS_KEY + "=" + FlywayConfig.SCHEMA_LOCATION,
+            LOCATIONS_KEY + "=" + FlywayConfig.MIGRATION_LOCATION,
         };
     }
 

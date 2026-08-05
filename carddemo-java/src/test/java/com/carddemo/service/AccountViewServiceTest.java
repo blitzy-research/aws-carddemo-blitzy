@@ -19,8 +19,6 @@ package com.carddemo.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
@@ -33,6 +31,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -160,15 +159,15 @@ final class AccountViewServiceTest {
      * @param  accountIdFilter the value keyed into the filter, or {@code null} for an absent field
      * @return the work area
      */
-    private static ScreenWorkArea filter(final String accountIdFilter) {
-        return new ScreenWorkArea(KeyAction.ENTER, null, null, null, null, null, accountIdFilter,
+    private static ScreenInputState filter(final String accountIdFilter) {
+        return new ScreenInputState(KeyAction.ENTER, null, null, null, null, null, accountIdFilter,
                 null, null);
     }
 
     /** @return a carried state that reads as a re-submission of this screen */
-    private static NavigationContext reSubmission() {
-        return new NavigationContext("CAVW", "COACTVWC", "CAVW", "COACTVWC", "USER0001", "U",
-                NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null, null,
+    private static ScreenNavigationState reSubmission() {
+        return new ScreenNavigationState("CAVW", "COACTVWC", "CAVW", "COACTVWC", "USER0001", "U",
+                ScreenNavigationState.ProgramContext.REENTER, null, null, null, null, null, null, null,
                 "CACTVWA", "COACTVW");
     }
 
@@ -247,8 +246,8 @@ final class AccountViewServiceTest {
         @DisplayName("arriving from the user main menu on a turn that is not a re-entry discards the "
                 + "carried state, which is the second arm of the adoption test at lines 282 to 293")
         void arrivingFromTheMenuOnAFirstEntryDiscardsTheCarriedState() {
-            final NavigationContext staleFromMenu = new NavigationContext("CM00", MENU_PROGRAM, null,
-                    null, "USER0001", "U", NavigationContext.ProgramContext.ENTER, CUSTOMER_ID, null,
+            final ScreenNavigationState staleFromMenu = new ScreenNavigationState("CM00", MENU_PROGRAM, null,
+                    null, "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, CUSTOMER_ID, null,
                     null, null, ACCOUNT_ID, "Y", CARD_NUMBER, "CACTVWA", "COACTVW");
 
             final AccountViewService.AccountViewResult result =
@@ -287,9 +286,9 @@ final class AccountViewServiceTest {
             // COBOL lines 324 to 352. The destination is computed from the originating pair BEFORE that
             // pair is overwritten at lines 341 to 342, and line 344 assigns the standard-user code
             // unconditionally - so an administrator leaves this screen as a standard user.
-            final NavigationContext fromMenuAsAdministrator = new NavigationContext("CM00",
+            final ScreenNavigationState fromMenuAsAdministrator = new ScreenNavigationState("CM00",
                     MENU_PROGRAM, "CAVW", "COACTVWC", "ADMIN001", UserType.ADMIN.getCode(),
-                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null,
+                    ScreenNavigationState.ProgramContext.REENTER, null, null, null, null, null, null,
                     null, "CACTVWA", "COACTVW");
 
             final AccountViewService.AccountViewResult result =
@@ -397,8 +396,8 @@ final class AccountViewServiceTest {
                 + "the card number arrives from the cross-reference because nothing else can supply it")
         void aValidFilterResolvesAllThree() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
@@ -428,8 +427,8 @@ final class AccountViewServiceTest {
                 + "master is never read and the miss text names the resource and the status")
         void aCrossReferenceMissStopsTheSequence() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of());
 
             final AccountViewService.AccountViewResult result =
                     service.viewAccount("DFHENTER", filter(ACCOUNT_ID), reSubmission());
@@ -447,8 +446,8 @@ final class AccountViewServiceTest {
                 + "guard at line 704 compares a literal whose only assignment is commented out")
         void anAccountMissFallsThroughToTheCustomerRead() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(customerRow(CUSTOMER_ID)));
@@ -473,8 +472,8 @@ final class AccountViewServiceTest {
                 + "told apart from the other two on a screen with one cursor position")
         void aCustomerMissRaisesItsOwnFlag() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.empty());
@@ -498,8 +497,8 @@ final class AccountViewServiceTest {
                 + "the screen's only input and all three legacy arms position it identically")
         void theCursorAlwaysSitsOnTheFilterField() {
             Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findByXrefAcctId(ACCOUNT_ID))
+                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))

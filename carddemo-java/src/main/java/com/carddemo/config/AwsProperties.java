@@ -16,12 +16,12 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.util.AwsResourceNamingRules;
 import com.carddemo.util.SqsNamingRules;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.Optional;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -74,12 +74,15 @@ import org.springframework.validation.annotation.Validated;
  * suffix, which {@link Sqs} refuses to bind without, and the group id must be a single stable value,
  * which is what preserves the append order acceptance drains a real queue to verify.
  *
- * <p>All four names are namespaced after this module, the queue included: it is
- * {@code carddemo-jobs.fifo}, which is the name the migration plan states and requires byte-identically,
- * and an intermediate revision that carried the bare legacy resource name instead was withdrawn. The
- * legacy name is not lost by that - it survives in the operator-visible failure message, which is the
- * text acceptance compares character for character, and nothing composes one of the two from the other.
- * The reasoning is recorded in {@code docs/decision-log.md} DL-092.
+ * <p>Three of the four names are namespaced after this module; the queue is not, because it is the one
+ * AWS resource the migration plan names. The plan calls for the SQS FIFO queue {@code JOBS}, which with
+ * the suffix {@link Sqs} demands is {@code JOBS.fifo}, and it asks for the other three only as "an S3
+ * staging bucket", "message-group ordering" and "an SNS topic" - so those three are this module's
+ * choices while the queue is prescribed. A revision that namespaced the queue as well, on the reading
+ * that all four names were prescribed byte-identically, was withdrawn. Neither decision reaches the
+ * legacy name in the operator-visible failure message, which is the text acceptance compares character
+ * for character; nothing composes one of the two from the other. The reasoning is recorded in
+ * {@code docs/decision-log.md} DL-092.
  *
  * <h2>The region and the endpoint redirection are bound here; the credentials are not</h2>
  *
@@ -265,31 +268,51 @@ public record AwsProperties(
     public static final String ENDPOINT_OVERRIDE_PROPERTY = PREFIX + ".endpoint-override";
 
     /**
-     * Refuses a configured endpoint override that no client could address.
+     * Refuses a configured region that is not shaped like one, and an endpoint override that no client
+     * could address.
      *
-     * <p>This is the endpoint's counterpart to the queue's suffix check, and it exists for the same
-     * reason: an override is applied to a client builder, so a value that is not a usable absolute
-     * address fails at the first request rather than at start-up, and the operator sees a failed
-     * submission instead of a failed deployment. A value is usable here when it carries a scheme and a
-     * host - {@code http://localhost:4566} does, a bare host or a path does not.</p>
+     * <p>Both checks exist for the reason the queue's suffix check exists: these values are handed to
+     * client builders, so a value that is well formed as text but unusable as an address fails at the
+     * first request rather than at start-up, and the operator sees a failed batch run instead of a failed
+     * deployment. Neither rule is stated here - both are stated once in
+     * {@link AwsResourceNamingRules}, which is also where the object-store and notification rules live,
+     * so that the five AWS values this type binds are held to one authority rather than to five local
+     * opinions.</p>
      *
-     * <p><strong>An absent or blank value is deliberately accepted</strong>, because absence is this
-     * component's normal production state and not a fault. That is also why no presence constraint is
-     * declared on it: a constraint would refuse the very configuration a production deployment ships.</p>
+     * <p>The region is checked as a shape rather than against a list of names: a list would refuse a
+     * region that comes into existence after this file was written, which is a worse failure than
+     * accepting a shape that happens not to name a region yet. The endpoint override is additionally
+     * restricted to the two transports these clients speak, and refused if it carries credentials, a
+     * query or a fragment - see that class for why each of the three is refused.</p>
      *
-     * <p>The diagnostic names the property key and what the key requires, and does not repeat the
+     * <p><strong>A configured name is checked exactly as configured, and never stripped first.</strong>
+     * The services compare a resource name byte for byte, so a name carrying a leading or trailing space
+     * is a different name, and accepting one here would store it padded and hand it to a client builder -
+     * the deferred failure these checks exist to prevent. The queue has always been treated this way and
+     * the other three now match it. The endpoint override is the one exception, and it is an exception
+     * about its grammar rather than about its value: it is an address rather than a name, whitespace
+     * around it cannot be represented in a parsed address at all, and it is therefore trimmed before it
+     * is read - see {@link AwsResourceNamingRules#requireEndpointOverride(String, String)}.</p>
+     *
+     * <p><strong>An absent or blank endpoint override is deliberately accepted</strong>, because absence
+     * is this component's normal production state and not a fault. That is also why no presence
+     * constraint is declared on it: a constraint would refuse the very configuration a production
+     * deployment ships. A blank <em>region</em>, by contrast, is refused by the constraint above, so the
+     * grammar rule here only ever sees a value that states something.</p>
+     *
+     * <p>Every diagnostic names the property key and what the key requires, and none repeats the
      * configured value, per {@code docs/decision-log.md} DL-041.</p>
      *
-     * @throws IllegalArgumentException if a non-blank endpoint override is not an absolute address
-     *                                  carrying a scheme and a host
+     * @throws IllegalArgumentException if the region is not shaped like a region name, or if a non-blank
+     *                                  endpoint override is not a usable plain- or secure-transport
+     *                                  address
      */
     public AwsProperties {
-        if (endpointOverride != null && !endpointOverride.isBlank()
-                && parsedEndpointOverride(endpointOverride) == null) {
-            throw new IllegalArgumentException("property " + ENDPOINT_OVERRIDE_PROPERTY
-                    + " must be an absolute address carrying a scheme and a host, such as an emulator's"
-                    + " edge endpoint, or must be left unset so that each client resolves the region's"
-                    + " own endpoint, but the configured value is neither");
+        if (region != null && !region.isBlank()) {
+            AwsResourceNamingRules.requireRegion(region, REGION_PROPERTY);
+        }
+        if (endpointOverride != null && !endpointOverride.isBlank()) {
+            AwsResourceNamingRules.requireEndpointOverride(endpointOverride, ENDPOINT_OVERRIDE_PROPERTY);
         }
     }
 
@@ -310,39 +333,17 @@ public record AwsProperties(
      * Returns the configured endpoint override as an address, or nothing when none is configured.
      *
      * <p>The value is parsed rather than handed over as text because that is the form a client builder
-     * takes, and because parsing it here means the compact constructor has already refused anything
-     * unusable: an empty result therefore means "no redirection was configured", never "a redirection was
-     * configured and could not be understood".</p>
+     * takes, and it is parsed by the very rule the compact constructor applied, so an instance that
+     * exists cannot fail here: an empty result therefore means "no redirection was configured", never "a
+     * redirection was configured and could not be understood".</p>
      *
      * @return the endpoint override, or an empty optional when the deployment configured none
      */
     public Optional<URI> endpointOverrideUri() {
         return hasEndpointOverride()
-                ? Optional.ofNullable(parsedEndpointOverride(this.endpointOverride))
+                ? Optional.of(AwsResourceNamingRules.requireEndpointOverride(
+                        this.endpointOverride, ENDPOINT_OVERRIDE_PROPERTY))
                 : Optional.empty();
-    }
-
-    /**
-     * Parses a configured endpoint override, returning {@code null} when it is not a usable address.
-     *
-     * <p>Used by the compact constructor to refuse an unusable value and by {@link #endpointOverrideUri()}
-     * to produce the parsed form, so that one definition of "usable" serves both and they cannot
-     * disagree.</p>
-     *
-     * @param configured the configured text, which the caller has established is non-blank
-     * @return the parsed address, or {@code null} when the text is not an absolute address carrying a
-     *         scheme and a host
-     */
-    private static URI parsedEndpointOverride(final String configured) {
-        final URI parsed;
-        try {
-            parsed = new URI(configured.strip());
-        } catch (final URISyntaxException malformed) {
-            return null;
-        }
-        return parsed.isAbsolute() && parsed.getHost() != null && !parsed.getHost().isEmpty()
-                ? parsed
-                : null;
     }
 
     /**
@@ -370,6 +371,22 @@ public record AwsProperties(
                     + S3.BATCH_STAGING_BUCKET_PROPERTY
                     + " is defaulted in the shared baseline and must not be blanked")
             String batchStagingBucket) {
+
+        /**
+         * Refuses a bucket name that could not name a bucket in any account.
+         *
+         * <p>Delegated to {@link AwsResourceNamingRules}, so the service's own naming rules are stated
+         * once. A blank value is left to the constraint above, which reports the absence for what it is;
+         * this check only ever sees a value that states something.</p>
+         *
+         * @throws IllegalArgumentException if the configured name breaks the bucket naming rules
+         */
+        public S3 {
+            if (batchStagingBucket != null && !batchStagingBucket.isBlank()) {
+                AwsResourceNamingRules.requireBucketName(batchStagingBucket,
+                        BATCH_STAGING_BUCKET_PROPERTY);
+            }
+        }
 
         /**
          * Key path {@link #batchStagingBucket()} binds from.
@@ -499,6 +516,25 @@ public record AwsProperties(
                     + Sns.JOB_NOTIFICATION_TOPIC_PROPERTY
                     + " is defaulted in the shared baseline and must not be blanked")
             String jobNotificationTopic) {
+
+        /**
+         * Refuses a notification destination that is neither a legal topic name nor a resource
+         * identifier naming one.
+         *
+         * <p>Delegated to {@link AwsResourceNamingRules}, alongside the object-store and region rules. A
+         * blank value is left to the constraint above. The rule refuses a dot in a bare name, because
+         * this module's topic is a standard topic and a dot is admitted only in the ordered variant's
+         * mandatory suffix - a name carrying one would bind here and be refused by the service.</p>
+         *
+         * @throws IllegalArgumentException if the configured destination could not name this module's
+         *                                  topic
+         */
+        public Sns {
+            if (jobNotificationTopic != null && !jobNotificationTopic.isBlank()) {
+                AwsResourceNamingRules.requireTopicDestination(jobNotificationTopic,
+                        JOB_NOTIFICATION_TOPIC_PROPERTY);
+            }
+        }
 
         /** Key path {@link #jobNotificationTopic()} binds from. */
         public static final String JOB_NOTIFICATION_TOPIC_PROPERTY = PREFIX + ".sns.job-notification-topic";

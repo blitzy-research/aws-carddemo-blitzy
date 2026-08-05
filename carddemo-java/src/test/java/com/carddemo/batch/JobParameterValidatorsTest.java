@@ -17,6 +17,7 @@
 package com.carddemo.batch;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -1323,6 +1324,7 @@ class JobParameterValidatorsTest {
                     () -> validators.fileProbeModeValidator(legalProbeModes())
                             .validate(parameters(KEY_PROBE_MODE, "nonsense"))))
                     .isInstanceOf(JobParametersInvalidException.class);
+
         }
 
         @ParameterizedTest(name = "the rejection of [{1}] under {0} names both the key and the value")
@@ -1497,6 +1499,56 @@ class JobParameterValidatorsTest {
             Mockito.verify(calendarAuthority, Mockito.never())
                     .validateDate(LEGACY_WINDOW_END, HYPHENATED_MASK);
             Mockito.verifyNoInteractions(calendarAuthority);
+        }
+    }
+
+    @Nested
+    @DisplayName("the staged-input location boundary canonicalises accepted names and refuses escapes")
+    final class TheStagedInputLocationBoundary {
+
+        /** The one object-store bucket the batch staging boundary owns. */
+        private static final String STAGING_BUCKET = "carddemo-batch-staging";
+
+        /** Name of the location parameter in refusal diagnostics. */
+        private static final String LOCATION_KEY = "transactionBackupCurrentGeneration";
+
+        @Test
+        @DisplayName("an object in the configured bucket is returned in canonical object-store form")
+        void anObjectInTheConfiguredBucketIsAccepted() {
+            assertThat(JobParameterValidators.requireStagedInputLocation(
+                    "s3://" + STAGING_BUCKET + "/combine/backup.G0001V00",
+                    LOCATION_KEY,
+                    STAGING_BUCKET,
+                    System.getProperty("java.io.tmpdir")))
+                    .isEqualTo("s3://" + STAGING_BUCKET + "/combine/backup.G0001V00");
+        }
+
+        @Test
+        @DisplayName("a relative name is resolved beneath the configured local staging root")
+        void aRelativeNameIsCanonicalisedBeneathTheStagingRoot() {
+            final String stagingRoot = System.getProperty("java.io.tmpdir");
+            final String canonical = JobParameterValidators.requireStagedInputLocation(
+                    "transaction-backup.G0001V00",
+                    LOCATION_KEY,
+                    STAGING_BUCKET,
+                    stagingRoot);
+
+            assertThat(canonical).isEqualTo(Path.of(stagingRoot).toAbsolutePath().normalize()
+                    .resolve("transaction-backup.G0001V00").toUri().toString());
+        }
+
+        @Test
+        @DisplayName("another bucket is refused with the parameter and both bucket names identified")
+        void anotherBucketIsRefused() {
+            assertThatIllegalArgumentException()
+                    .isThrownBy(() -> JobParameterValidators.requireStagedInputLocation(
+                            "s3://other-bucket/combine/backup.G0001V00",
+                            LOCATION_KEY,
+                            STAGING_BUCKET,
+                            System.getProperty("java.io.tmpdir")))
+                    .withMessageContaining(LOCATION_KEY)
+                    .withMessageContaining("other-bucket")
+                    .withMessageContaining(STAGING_BUCKET);
         }
     }
 

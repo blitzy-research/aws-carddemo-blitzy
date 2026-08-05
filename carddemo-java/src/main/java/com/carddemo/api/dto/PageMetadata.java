@@ -155,13 +155,23 @@ public record PageMetadata(
      *
      * <p><strong>Why the bound is the maximum of the three rather than the exact figure for one.</strong>
      * One contract serves three screens with two different row counts, so this record cannot know which
-     * screen it is describing and therefore cannot require seven or ten specifically. That requirement
-     * is real and it is <em>endpoint-owned</em>: the endpoint serving the card list must supply
-     * {@link #CARD_LIST_PAGE_SIZE}, the transaction list {@link #TRANSACTION_LIST_PAGE_SIZE} and the
-     * user list {@link #USER_LIST_PAGE_SIZE}, taking the figure from the named constant rather than from
-     * anything a caller sent, so that the count a page is built with is a property of the screen and
-     * never of the request. Until those endpoints exist, the exact-figure obligation is unbuilt; this
-     * bound is what holds in the meantime, and it is a ceiling rather than a substitute for it.</p>
+     * screen it is describing and therefore cannot require seven or ten specifically. That requirement is
+     * real and it is <em>screen-owned</em>, and it is discharged by the three response contracts that do
+     * know which screen they are: {@link CardListResponse} refuses a page larger than
+     * {@link #CARD_LIST_PAGE_SIZE}, {@link TransactionListResponse} larger than
+     * {@link #TRANSACTION_LIST_PAGE_SIZE}, and {@link UserResponse} larger than
+     * {@link #USER_LIST_PAGE_SIZE} - each reading the named constant here rather than a figure a caller
+     * sent, so the count a page carries is a property of the screen and never of the request. All three
+     * screens are served by delivered operations: {@code /api/cards/list}, {@code /api/transactions/list}
+     * and {@code /api/admin/users/list}.</p>
+     *
+     * <p>So this bound is a ceiling that sits behind three exact figures rather than standing in for them.
+     * It still earns its place, because it is evaluated at the request boundary where the exact figure is
+     * not yet known: what it prevents is an inbound page size larger than any screen amplifying the work a
+     * query does before the screen-specific contract ever sees the result. One residual duplication is
+     * worth naming rather than glossing - the browse services carry their own private row counts, which
+     * agree in value with the constants here but are separate declarations, so the agreement is asserted by
+     * their tests rather than guaranteed by a single reference.</p>
      *
      * <p><strong>Why a declarative bound and not a construction check.</strong> This record is a
      * carrier, and its canonical constructor deliberately evaluates no numeric bound at all - the

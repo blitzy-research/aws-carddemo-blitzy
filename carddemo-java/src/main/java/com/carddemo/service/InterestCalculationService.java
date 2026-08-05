@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -30,9 +31,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
@@ -45,8 +45,10 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
-import com.carddemo.repository.TransactionRepository;
+import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -57,17 +59,6 @@ import com.carddemo.util.ZonedDecimalCodec;
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is transcribed here;
  * every claim below is a citation of a member, a paragraph, a line, a field name or a status code.
- *
- * <h2>Rules provenance</h2>
- *
- * <p><strong>No user-specified rules were provided for this engagement.</strong> The project's rules
- * document contains one line saying so, confirmed by a default read and by an explicit full-range
- * read. No file therefore enters scope by rule and no rule conflict exists. That absence is not
- * permission to lower the bar: this class is held to enterprise-standard best practice instead -
- * pinned dependencies, a zero-warning build, strict layer separation, no code generation and no
- * reflection, constructor injection, structured logging, and a paragraph-level traceability record.
- * The ten-row construct mapping is a <em>requirement</em> and the eight validation gates are
- * <em>acceptance criteria</em>; neither is a rule, and neither is weakened by the absence of rules.
  *
  * <h2>Record authorities and their byte widths</h2>
  *
@@ -86,86 +77,22 @@ import com.carddemo.util.ZonedDecimalCodec;
  *       synthesizes, whose two 26-character timestamps sit at offsets 278 and 304.</li>
  * </ul>
  *
- * <h2>The load-bearing line sites of the source member</h2>
+ * <h2>Paragraph mapping</h2>
  *
- * <p>Every one of these is cited again at the method that reproduces it; they are gathered here so a
- * reviewer can find each behaviour in the source without reading the whole translation first.
- *
- * <ul>
- *   <li>lines <strong>150 to 165</strong> - the batch timestamp group and its byte-by-byte
- *       redefinition, which is what fixes the separator positions and the 26-character width</li>
- *   <li>lines <strong>167 to 173</strong> - the working-storage items: the previous account key, the
- *       monthly interest and running total at nine integer digits and two decimals, the first-time
- *       flag, the record count and the six-digit identifier suffix</li>
- *   <li>lines <strong>175 to 180</strong> - the linkage area: a signed four-digit binary length and
- *       the ten-character date</li>
- *   <li>lines <strong>194 to 206</strong> - the control-break driver, including the first-time guard,
- *       the running-total reset and the once-per-group account and cross-reference reads</li>
- *   <li>lines <strong>210 to 212</strong> - the disclosure-key moves, whose order is <em>not</em> the
- *       key's order</li>
- *   <li>lines <strong>214 to 217</strong> - the rate gate, enclosing both the computation and the fee
- *       invocation at line <strong>216</strong></li>
- *   <li>lines <strong>219 to 221</strong> - the end-of-file control break</li>
- *   <li>lines <strong>350 to 370</strong> - the account control break, which zeroes both cycle
- *       accumulators</li>
- *   <li>lines <strong>415 to 440</strong> - the rate lookup, with the default-group move at line
- *       <strong>437</strong></li>
- *   <li>lines <strong>443 to 460</strong> - the single fallback probe, which retries exactly once</li>
- *   <li>lines <strong>462 to 470</strong> - the interest computation, whose decisive statement is at
- *       lines <strong>464 to 465</strong></li>
- *   <li>lines <strong>473 to 515</strong> - the synthesized transaction, with the identical timestamps
- *       at lines <strong>497 to 498</strong></li>
- *   <li>lines <strong>518 to 520</strong> - the empty fee paragraph</li>
- *   <li>line <strong>632</strong> - the language-environment abort call</li>
- * </ul>
- *
- * <h2>Every one of the 22 paragraphs resolves to one named method</h2>
- *
- * <p>The traceability matrix therefore carries one row per paragraph, in source order. The numeric
- * prefix is cited here rather than embedded in the identifier, because a Java identifier cannot begin
- * with a digit:
- *
- * <ol>
- *   <li>{@code 0000-TCATBALF-OPEN} line 234 &rarr; {@code tcatbalfOpen}</li>
- *   <li>{@code 0100-XREFFILE-OPEN} line 252 &rarr; {@code xreffileOpen}</li>
- *   <li>{@code 0200-DISCGRP-OPEN} line 270 &rarr; {@code discgrpOpen}</li>
- *   <li>{@code 0300-ACCTFILE-OPEN} line 289 &rarr; {@code acctfileOpen}</li>
- *   <li>{@code 0400-TRANFILE-OPEN} line 307 &rarr; {@code tranfileOpen}</li>
- *   <li>{@code 1000-TCATBALF-GET-NEXT} line 325 &rarr; {@code tcatbalfGetNext}</li>
- *   <li>{@code 1050-UPDATE-ACCOUNT} lines 350 to 370 &rarr; {@code updateAccount}</li>
- *   <li>{@code 1100-GET-ACCT-DATA} line 372 &rarr; {@code getAcctData}</li>
- *   <li>{@code 1110-GET-XREF-DATA} line 393 &rarr; {@code getXrefData}</li>
- *   <li>{@code 1200-GET-INTEREST-RATE} lines 415 to 440 &rarr; {@code getInterestRate}, with the
- *       default-group move at line 437</li>
- *   <li>{@code 1200-A-GET-DEFAULT-INT-RATE} lines 443 to 460 &rarr; {@code getDefaultIntRate}</li>
- *   <li>{@code 1300-COMPUTE-INTEREST} lines 462 to 470 &rarr; {@code computeInterest}, whose
- *       decisive statement is at lines 464 to 465</li>
- *   <li>{@code 1300-B-WRITE-TX} lines 473 to 515 &rarr; {@code writeTx}, with the identical
- *       timestamps at lines 497 to 498</li>
- *   <li>{@code 1400-COMPUTE-FEES} lines 518 to 520 &rarr; {@code computeFees}. <strong>Empty in the
- *       source and genuinely invoked at line 216</strong>; a documented non-implementation, marked as
- *       such in the traceability matrix</li>
- *   <li>{@code 9000-TCATBALF-CLOSE} line 522 &rarr; {@code tcatbalfClose}</li>
- *   <li>{@code 9100-XREFFILE-CLOSE} line 541 &rarr; {@code xreffileClose}</li>
- *   <li>{@code 9200-DISCGRP-CLOSE} line 559 &rarr; {@code discgrpClose}</li>
- *   <li>{@code 9300-ACCTFILE-CLOSE} line 577 &rarr; {@code acctfileClose}</li>
- *   <li>{@code 9400-TRANFILE-CLOSE} line 595 &rarr; {@code tranfileClose}</li>
- *   <li>{@code Z-GET-DB2-FORMAT-TIMESTAMP} lines 613 to 626 &rarr; {@code zGetDb2FormatTimestamp}</li>
- *   <li>{@code 9999-ABEND-PROGRAM} line 628, whose language-environment abort call is at line 632
- *       &rarr; {@code abendProgram}</li>
- *   <li>{@code 9910-DISPLAY-IO-STATUS} line 635 &rarr; {@code displayIoStatus}</li>
- * </ol>
+ * <p>Each of the member's paragraphs resolves to one named method here, and every method states its own
+ * paragraph name and source line range. {@code docs/traceability-matrix.md} carries the full row-per-
+ * paragraph inventory, including the one documented non-implementation: {@code 1400-COMPUTE-FEES} at
+ * lines 518 to 520 is empty in the source and genuinely invoked at line 216, so {@link #computeFees}
+ * is an invoked no-op and no fee logic may be invented for it.
  *
  * <p>The linkage area at lines 175 to 180 holds a signed four-digit binary length and a
  * <strong>ten-character date</strong>. Only the date crosses into Java, as a validated job parameter,
  * and it stays a ten-character string throughout because it is also the first ten characters of every
  * identifier this run mints. It is never converted to a temporal type.
  *
- * <p>A verb census over this member returns <strong>zero</strong> {@code EVALUATE} statements, zero
- * {@code GO TO} statements, zero {@code SORT} statements and zero {@code MERGE} statements. There is
- * consequently no clause-ordered switch to preserve here and no backward jump to turn into a loop -
- * every transfer of control in this member is a {@code PERFORM} of a named paragraph, which is why
- * the mapping above is one-to-one and total.
+ * <p>The member carries no {@code EVALUATE}, no {@code GO TO}, no {@code SORT} and no {@code MERGE}, so
+ * there is no clause-ordered switch to preserve and no backward jump to turn into a loop; every transfer
+ * of control is a {@code PERFORM} of a named paragraph, which is why the mapping is one-to-one and total.
  *
  * <h2>The six behaviours a plausible translation gets wrong</h2>
  *
@@ -415,11 +342,8 @@ public class InterestCalculationService {
     private static final String ERROR_READING_DEFAULT_DISCGRP =
             "ERROR READING DEFAULT DISCLOSURE GROUP";
 
-    /** Line 510, the write failure on the transaction file. */
-    private static final String ERROR_WRITING_TRANFILE = "ERROR WRITING TRANSACTION RECORD";
-
     /** Lines 375 and 397 both report a missing key with this text. */
-    private static final String ACCOUNT_NOT_FOUND = "ACCOUNT NOT FOUND: ";
+    private static final String ACCOUNT_NOT_FOUND = "ACCOUNT NOT FOUND";
 
     /** Line 418. */
     private static final String DISCGRP_RECORD_MISSING = "DISCLOSURE GROUP RECORD MISSING";
@@ -448,19 +372,17 @@ public class InterestCalculationService {
     /** The operation reported when the account rewrite fails. */
     private static final String OPERATION_REWRITE = "REWRITE";
 
-    /** The operation reported when the transaction write fails. */
-    private static final String OPERATION_WRITE = "WRITE";
-
     /**
      * The ordering the sequential scan asks for: the record key of the category-balance master, which
      * lines 63 to 66 declare as the account identifier, then the type code, then the category code.
      * The repository imposes no ordering of its own, so the scan states this explicitly - without it
      * the control break would see the same account's rows scattered and would break on every row.
      */
-    private static final Sort RECORD_KEY_ORDER = Sort.by(
-            Sort.Order.asc("trancatAcctId"),
-            Sort.Order.asc("trancatTypeCd"),
-            Sort.Order.asc("trancatCd"));
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
+
+    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
+
+    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
 
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
@@ -470,7 +392,7 @@ public class InterestCalculationService {
 
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
-    private final TransactionRepository transactionRepository;
+    private final InterestGroupTransactionBoundary groupTransactionBoundary;
 
     private final AbendService abendService;
 
@@ -478,15 +400,16 @@ public class InterestCalculationService {
 
     /**
      * Constructs the service. Constructor injection throughout, and every collaborator is required:
-     * this member reads five datasets and abends on any failure, so there is no degraded mode in which
-     * a missing collaborator would be acceptable.
+     * this member reads four masters, rewrites the account master and assembles the sequential output
+     * record, so there is no degraded mode in which a missing collaborator would be acceptable.
      *
      * @param transactionCategoryBalanceRepository the category-balance master, read sequentially in
      *                                             record-key order
      * @param disclosureGroupRepository            the disclosure group, read by its three-part key
      * @param accountRepository                    the account master, read and rewritten per group
      * @param cardCrossReferenceRepository         the cross-reference, read by the account identifier
-     * @param transactionRepository                the transaction output, written record at a time
+     * @param groupTransactionBoundary             the independent commit boundary for one closed
+     *                                             account group
      * @param abendService                         the language-environment abort call's replacement
      * @param clock                                the source of the batch timestamp's instant
      */
@@ -495,7 +418,7 @@ public class InterestCalculationService {
             final DisclosureGroupRepository disclosureGroupRepository,
             final AccountRepository accountRepository,
             final CardCrossReferenceRepository cardCrossReferenceRepository,
-            final TransactionRepository transactionRepository,
+            final InterestGroupTransactionBoundary groupTransactionBoundary,
             final AbendService abendService,
             final Clock clock) {
         this.transactionCategoryBalanceRepository = Objects.requireNonNull(
@@ -507,8 +430,8 @@ public class InterestCalculationService {
                 "accountRepository must not be null");
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
                 "cardCrossReferenceRepository must not be null");
-        this.transactionRepository = Objects.requireNonNull(transactionRepository,
-                "transactionRepository must not be null");
+        this.groupTransactionBoundary = Objects.requireNonNull(groupTransactionBoundary,
+                "groupTransactionBoundary must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
@@ -650,7 +573,6 @@ public class InterestCalculationService {
      *                                   member treats as a failure, or when a group's rate cannot be
      *                                   resolved even from the default group
      */
-    @Transactional
     public InterestRunResult calculateInterest(final String parameterDate) {
         final String validatedDate = validatedParameterDate(parameterDate);
         return calculateInterest(validatedDate, readCategoryBalanceMasterInKeyOrder());
@@ -685,9 +607,8 @@ public class InterestCalculationService {
      *                                   the row list is {@code null}
      * @throws com.carddemo.exception.AbendException on any failure this member abends on
      */
-    @Transactional
     public InterestRunResult calculateInterest(final String parameterDate,
-            final List<TransactionCategoryBalance> orderedCategoryBalances) {
+            final Iterable<TransactionCategoryBalance> orderedCategoryBalances) {
         final String validatedDate = validatedParameterDate(parameterDate);
         Objects.requireNonNull(orderedCategoryBalances,
                 "orderedCategoryBalances must not be null: an absent source is not an empty source");
@@ -778,12 +699,14 @@ public class InterestCalculationService {
      * running total to the account's current balance, zeroes <strong>both</strong> cycle accumulators
      * and rewrites the account.
      *
-     * <p>The declarative transaction annotation puts the commit at that control break, matching where
-     * the legacy hardened the account rewrite. <strong>No rollback is forced anywhere</strong>: this
-     * member contains no rollback site at all - the estate's only explicit one is in the account-update
-     * program - so nothing here marks a transaction for rollback. The account carries a version
-     * attribute and this member has no conflict-handling arm, so a concurrent-modification failure is
-     * allowed to propagate rather than being translated into an abend. No pessimistic lock is taken.
+     * <p>The separate {@link InterestGroupTransactionBoundary} puts the commit at this control break,
+     * matching where the legacy hardened the account rewrite. It always opens a new transaction, so a
+     * later account failure cannot roll back a group that already completed. <strong>No rollback is
+     * forced anywhere</strong>: this member contains no rollback site at all - the estate's only
+     * explicit one is in the account-update program - so nothing here marks a transaction for rollback.
+     * The account carries a version attribute and this member has no conflict-handling arm, so a
+     * concurrent-modification failure is allowed to propagate rather than being translated into an
+     * abend. No pessimistic lock is taken.
      *
      * @param parameterDate            the ten-character date from the linkage area at line 178
      * @param accountId                the eleven-digit account identifier every row of the group keys
@@ -801,8 +724,29 @@ public class InterestCalculationService {
      *                                   read, when the rate cannot be resolved even from the default
      *                                   group, or when a write fails
      */
-    @Transactional
     public GroupInterestResult calculateGroupInterest(final String parameterDate,
+            final String accountId,
+            final List<TransactionCategoryBalance> groupCategoryBalances,
+            final long initialTranIdSuffix) {
+        return this.groupTransactionBoundary.execute(() -> calculateGroupInterestWithinBoundary(
+                parameterDate, accountId, groupCategoryBalances, initialTranIdSuffix));
+    }
+
+    /**
+     * Performs one account group's work inside {@link InterestGroupTransactionBoundary}.
+     *
+     * <p>Kept separate from the public boundary method so both the batch control break and this
+     * service's whole-file driver take the same proxied transaction path. Calling a transactionally
+     * annotated method on this same instance would bypass Spring interception and silently recreate
+     * the whole-pass rollback defect.
+     *
+     * @param parameterDate         the ten-character date from the linkage area
+     * @param accountId             the group account identifier
+     * @param groupCategoryBalances the rows belonging to the group
+     * @param initialTranIdSuffix   the run suffix entering the group
+     * @return the completed account-group result
+     */
+    private GroupInterestResult calculateGroupInterestWithinBoundary(final String parameterDate,
             final String accountId,
             final List<TransactionCategoryBalance> groupCategoryBalances,
             final long initialTranIdSuffix) {
@@ -969,7 +913,8 @@ public class InterestCalculationService {
                 rawFileStatus = FileStatus.END_OF_FILE.getCode();
             }
         } catch (final DataAccessException unreadable) {
-            LOG.error(ERROR_READING_TCATBAL, unreadable);
+            LOG.error("{} failureChain={}", ERROR_READING_TCATBAL,
+                    FailureDiagnostics.failureChainOf(unreadable));
             fetched = Optional.empty();
             rawFileStatus = FileStatus.PERMANENT_ERROR.getCode();
         }
@@ -1027,7 +972,9 @@ public class InterestCalculationService {
             // propagated for the caller to see rather than being reported as a file-status abend.
             throw conflict;
         } catch (final DataAccessException unwritable) {
-            LOG.error(ERROR_REWRITING_ACCTFILE, unwritable);                        // Line 365.
+            // Line 365.
+            LOG.error("{} failureChain={}", ERROR_REWRITING_ACCTFILE,
+                    FailureDiagnostics.failureChainOf(unwritable));
             final String rawFileStatus = FileStatus.PERMANENT_ERROR.getCode();
             displayIoStatus(rawFileStatus, OPERATION_REWRITE, RESOURCE_ACCTFILE);   // Lines 366-367.
             throw abendProgram(rawFileStatus, OPERATION_REWRITE, RESOURCE_ACCTFILE); // Line 368.
@@ -1056,7 +1003,8 @@ public class InterestCalculationService {
                     ? FileStatus.SUCCESS.getCode()
                     : FileStatus.RECORD_NOT_FOUND.getCode();
         } catch (final DataAccessException unreadable) {
-            LOG.error(ERROR_READING_ACCTFILE, unreadable);
+            LOG.error("{} failureChain={}", ERROR_READING_ACCTFILE,
+                    FailureDiagnostics.failureChainOf(unreadable));
             final String failureStatus = FileStatus.PERMANENT_ERROR.getCode();
             displayIoStatus(failureStatus, OPERATION_READ, RESOURCE_ACCTFILE);
             throw abendProgram(failureStatus, OPERATION_READ, RESOURCE_ACCTFILE);
@@ -1065,7 +1013,7 @@ public class InterestCalculationService {
         if (keyedReadApplResult(rawFileStatus).isAok()) {          // Lines 378 to 384.
             return fetched.orElseThrow();
         }
-        LOG.error("{}{}", ACCOUNT_NOT_FOUND, accountId);           // Lines 374 to 375.
+        LOG.error(ACCOUNT_NOT_FOUND);                              // Lines 374 to 375.
         LOG.error(ERROR_READING_ACCTFILE);                         // Line 386.
         displayIoStatus(rawFileStatus, OPERATION_READ, RESOURCE_ACCTFILE);    // Lines 387 to 388.
         throw abendProgram(rawFileStatus, OPERATION_READ, RESOURCE_ACCTFILE); // Line 389.
@@ -1093,13 +1041,14 @@ public class InterestCalculationService {
         try {
             // Lines 394 to 398: READ ... KEY IS the alternate key. The finder resolves the first
             // matching row, which is what a non-unique alternate-key read returns.
-            fetched = this.cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountId);
+            fetched = firstXrefByBaseKey(
+                    this.cardCrossReferenceRepository.findByXrefAcctId(accountId));
             rawFileStatus = fetched.isPresent()
                     ? FileStatus.SUCCESS.getCode()
                     : FileStatus.RECORD_NOT_FOUND.getCode();
         } catch (final DataAccessException unreadable) {
-            LOG.error(ERROR_READING_XREFFILE, unreadable);
+            LOG.error("{} failureChain={}", ERROR_READING_XREFFILE,
+                    FailureDiagnostics.failureChainOf(unreadable));
             final String failureStatus = FileStatus.PERMANENT_ERROR.getCode();
             displayIoStatus(failureStatus, OPERATION_READ, RESOURCE_XREFFILE);
             throw abendProgram(failureStatus, OPERATION_READ, RESOURCE_XREFFILE);
@@ -1108,7 +1057,7 @@ public class InterestCalculationService {
         if (keyedReadApplResult(rawFileStatus).isAok()) {          // Lines 400 to 406.
             return fetched.orElseThrow();
         }
-        LOG.error("{}{}", ACCOUNT_NOT_FOUND, accountId);           // Lines 396 to 397.
+        LOG.error(ACCOUNT_NOT_FOUND);                              // Lines 396 to 397.
         LOG.error(ERROR_READING_XREFFILE);                         // Line 408.
         displayIoStatus(rawFileStatus, OPERATION_READ, RESOURCE_XREFFILE);    // Lines 409 to 410.
         throw abendProgram(rawFileStatus, OPERATION_READ, RESOURCE_XREFFILE); // Line 411.
@@ -1246,8 +1195,9 @@ public class InterestCalculationService {
     }
 
     /**
-     * Paragraph {@code 1300-B-WRITE-TX}, lines 473 to 515: synthesizes and writes the interest
-     * transaction, field by field, in the order the source assigns them.
+     * Paragraph {@code 1300-B-WRITE-TX}, lines 473 to 515: synthesizes the interest transaction,
+     * field by field, in the order the source assigns them, for the batch job's guarded SYSTRAN
+     * generation writer.
      *
      * <ul>
      *   <li>Line 474 increments the six-digit suffix, whose initial value is zero, so the first
@@ -1275,14 +1225,15 @@ public class InterestCalculationService {
      *       byte-identical.</li>
      * </ul>
      *
-     * <p>The write's own status check is at lines 501 to 514. A concurrent-modification failure
-     * propagates untranslated for the reason given on the control break; anything else is the write
-     * error arm at lines 510 to 513.
+     * <p>The legacy WRITE targets the sequential {@code SYSTRAN(+1)} generation allocated by
+     * {@code INTCALC.jcl}; it does not target the live transaction master. This method therefore
+     * returns the complete record without persisting it. The job configuration owns the sole guarded
+     * write and maps its output status at the actual file-I/O boundary.
      *
      * @param monthlyInterest the amount to carry, at the monetary scale
      * @param context         the group's account, cross-reference and parameter date
      * @param group           the group's per-invocation state, which holds the identifier suffix
-     * @return the transaction as it was written
+     * @return the transaction ready for the guarded generation writer
      */
     private Transaction writeTx(final BigDecimal monthlyInterest, final GroupContext context,
             final GroupState group) {
@@ -1313,18 +1264,9 @@ public class InterestCalculationService {
                 batchTimestamp,                                           // Line 497.
                 batchTimestamp);                                          // Line 498, the same value.
 
-        try {
-            // Line 500: WRITE.
-            return this.transactionRepository.save(interestTransaction);
-        } catch (final OptimisticLockingFailureException conflict) {
-            // Not translated, for the reason given on the control break.
-            throw conflict;
-        } catch (final DataAccessException unwritable) {
-            LOG.error(ERROR_WRITING_TRANFILE, unwritable);                          // Line 510.
-            final String rawFileStatus = FileStatus.PERMANENT_ERROR.getCode();
-            displayIoStatus(rawFileStatus, OPERATION_WRITE, RESOURCE_TRANSACT);     // Lines 511-512.
-            throw abendProgram(rawFileStatus, OPERATION_WRITE, RESOURCE_TRANSACT);  // Line 513.
-        }
+        // Line 500 is performed by InterestCalculationJobConfig's guarded SYSTRAN writer. Returning
+        // the record here keeps INTCALC from exposing it in the live master before COMBTRAN runs.
+        return interestTransaction;
     }
 
     /**
@@ -1519,8 +1461,11 @@ public class InterestCalculationService {
         // Line 214 to line 217: the gate around BOTH line 215 and line 216.
         if (disclosedRate.signum() == 0) {
             group.markRateGateSkipped();
-            LOG.debug("rate gate skipped account={} type={} category={} rate=0",
-                    row.getTrancatAcctId(), row.getTrancatTypeCd(), row.getTrancatCd());
+            LOG.debug("rate gate skipped type={} category={} reason=ZERO_RATE",
+                    row.getTrancatTypeCd(), row.getTrancatCd());
+            LOG.debug("rate gate skipped accountRef={} type={} category={} rate=0",
+                    SensitiveLogRedactor.redact(row.getTrancatAcctId()),
+                    row.getTrancatTypeCd(), row.getTrancatCd());
             return new CategoryInterest(row.getTrancatAcctId(),
                     row.getTrancatTypeCd(),
                     row.getTrancatCd(),
@@ -1551,10 +1496,9 @@ public class InterestCalculationService {
     /**
      * Closes one buffered account group and folds its outcome back into the run.
      *
-     * <p>The group boundary carries the declarative transaction annotation. Reaching it from inside the
-     * driving operation is a call on this same instance, so it joins the transaction the driving
-     * operation already opened rather than starting a second one - which is why the driving operation is
-     * itself transactional and never left to run outside one.
+     * <p>The group boundary is entered through {@link InterestGroupTransactionBoundary}, even when this
+     * whole-file driver reaches it on the same service instance. Every closed account therefore commits
+     * independently; no encompassing driver transaction can absorb the control break.
      *
      * <p>The identifier suffix is threaded through here: the group is told where to continue from and
      * reports back where it finished, because the suffix at line 173 belongs to the run and not to any
@@ -1585,15 +1529,44 @@ public class InterestCalculationService {
      *
      * @return every category-balance row, in record-key order
      */
-    private List<TransactionCategoryBalance> readCategoryBalanceMasterInKeyOrder() {
+    private Iterable<TransactionCategoryBalance> readCategoryBalanceMasterInKeyOrder() {
+        return () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                this::loadCategoryBalancePage,
+                InterestCalculationService::categoryBalanceKey,
+                Comparator.naturalOrder());
+    }
+
+    private List<TransactionCategoryBalance> loadCategoryBalancePage(
+            final String cursor, final Integer pageSize) {
         try {
-            return this.transactionCategoryBalanceRepository.findAll(RECORD_KEY_ORDER);
+            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
+            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
+            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
+            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
+            final String categoryCode = cursor.length() <= categoryOffset
+                    ? ""
+                    : cursor.substring(categoryOffset);
+            return this.transactionCategoryBalanceRepository.findAfterKey(
+                    accountId, typeCode, categoryCode,
+                    PageRequest.of(0, pageSize.intValue()));
         } catch (final DataAccessException unreadable) {
-            LOG.error(ERROR_READING_TCATBAL, unreadable);
+            LOG.error("{} failureChain={}", ERROR_READING_TCATBAL,
+                    FailureDiagnostics.failureChainOf(unreadable));
             final String rawFileStatus = FileStatus.PERMANENT_ERROR.getCode();
             displayIoStatus(rawFileStatus, OPERATION_READ, RESOURCE_TCATBALF);
             throw abendProgram(rawFileStatus, OPERATION_READ, RESOURCE_TCATBALF);
         }
+    }
+
+    private static String keyPart(final String key, final int offset, final int width) {
+        if (key.length() <= offset) {
+            return "";
+        }
+        return key.substring(offset, Math.min(key.length(), offset + width));
+    }
+
+    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
+        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 
     /**
@@ -1619,18 +1592,19 @@ public class InterestCalculationService {
     /**
      * Line 193: reports the record just read.
      *
-     * <p>The legacy statement writes the whole 50-byte record image to the console for every row. That
-     * was the only diagnostic channel available; here it is a debug-level structured line carrying the
-     * same fields, so a run that is not being diagnosed does not pay for it. The balance is included
-     * because it is the input to the interest expression and is the first thing anyone reconciling a run
-     * asks for.
+     * <p>The legacy statement writes the whole 50-byte record image to the console for every row. The
+     * account identifier and balance form protected financial telemetry and are deliberately withheld
+     * from the exported log. The two reference codes are retained because they identify the decision
+     * table branch without identifying an account or disclosing a value.
      *
      * @param row the record just read
      */
     private static void logCategoryBalanceRecord(final TransactionCategoryBalance row) {
-        LOG.debug("category balance read account={} type={} category={} balance={}",
-                row.getTrancatAcctId(), row.getTrancatTypeCd(), row.getTrancatCd(),
-                row.getTranCatBal());
+        LOG.debug("category balance read type={} category={}",
+                row.getTrancatTypeCd(), row.getTrancatCd());
+        LOG.debug("category balance read accountRef={} type={} category={}",
+                SensitiveLogRedactor.redact(row.getTrancatAcctId()),
+                row.getTrancatTypeCd(), row.getTrancatCd());
     }
 
     /**
@@ -1655,7 +1629,8 @@ public class InterestCalculationService {
         try {
             return this.disclosureGroupRepository.findById(key);
         } catch (final DataAccessException unreadable) {
-            LOG.error(diagnostic, unreadable);
+            LOG.error("{} failureChain={}", diagnostic,
+                    FailureDiagnostics.failureChainOf(unreadable));
             final String rawFileStatus = FileStatus.PERMANENT_ERROR.getCode();
             displayIoStatus(rawFileStatus, OPERATION_READ, resourceName);
             throw abendProgram(rawFileStatus, OPERATION_READ, resourceName);
@@ -2082,5 +2057,27 @@ public class InterestCalculationService {
         private void markDefaultGroupUsed() {
             this.defaultGroupUsed = true;
         }
+    }
+
+    /**
+     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
+     * with the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
+     * number. That is a property of the read being reproduced rather than of the index, so
+     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
+     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
+     *
+     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
+     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
+     * coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when the account has none
+     */
+    private static Optional<CardCrossReference> firstXrefByBaseKey(
+            final List<CardCrossReference> candidates) {
+        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

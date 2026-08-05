@@ -136,9 +136,9 @@
 #                                  restating the value, so the region is stated once per profile and
 #                                  the two namespaces cannot name different regions.
 #                                  The six s3.prefix.* keys an earlier revision declared under this
-#                                  prefix are gone rather than inherited: nothing bound them and no
-#                                  writer read one. The key each staged object is written under is
-#                                  composed by the job that writes it.
+#                                  prefix are gone rather than inherited: BatchStagingArea is the one
+#                                  adapter for every staged input and output, and each job composes the
+#                                  key for its own dataset generation.
 #     spring.batch.job.enabled     the baseline already sets it to false and this overlay leaves it
 #                                  alone, exactly as application-local.yml does. See the batch
 #                                  block for why the value matters and how it is guaranteed.
@@ -221,28 +221,24 @@ spring:
         highlight_sql: false
 
   # -----------------------------------------------------------------------------------------------
-  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTINGS IN THIS FILE ARE THE ADDED SEED LOCATION AND THE LIFTED
-  # VERSION CEILING. WITHOUT EITHER, THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
+  # SCHEMA EVOLUTION - THE LOAD-BEARING SETTING IN THIS FILE IS THE LIFTED VERSION CEILING. WITHOUT IT,
+  # THIS PROFILE MIGRATES AN UNSEEDED DATABASE.
   #
-  # Two locations, split by purpose, and this profile resolves both:
+  # One flat location, resolved identically by every profile:
   #
-  #   classpath:db/migration/schema  - what every profile resolves        EVERY profile
+  #   classpath:db/migration                                              EVERY profile
   #     V1__create_schema.sql          the eleven application tables
   #     V2__create_indexes.sql         keys and alternate-index equivalents
+  #     V3__seed_reference_data.sql    sample rows                        local and test ONLY
+  #     V4__seed_user_security.sql     sign-on identities, hashed         local and test ONLY
   #
-  #   classpath:db/migration/seed    - added by this profile              local and test ONLY
-  #     V3__seed_reference_data.sql    sample rows
-  #     V4__seed_user_security.sql     sign-on identities, hashed
-  #
-  # The production overlay resolves the schema location ALONE, so V3 and V4 are not resolved there at
-  # all - it migrates schema and indexes without inheriting sample rows or seeded identities. That is
-  # what AAP 0.3.1 and 0.4.2 require directly: FlywayConfig resolves V3 and V4 from profile-scoped
-  # locations, and it refuses the seed location outright while production is active. The shared baseline
-  # additionally pins spring.flyway.target to "2" and the production overlay re-asserts it, so the
-  # ceiling stands behind the location list rather than in place of it. See docs/decision-log.md DL-127,
-  # which supersedes DL-102 and DL-119. This profile adds the seed location AND raises the ceiling, and
-  # both are needed. Any seed script added belongs in the seed location, must be numbered above 2, and
-  # must store a sign-on credential only as a hash.
+  # All four scripts sit directly in that directory; there is no schema/ or seed/ child directory and
+  # none may be created, so the location list cannot carry any part of the separation. The production
+  # overlay pins spring.flyway.target to "2", so V3 and V4 sit above its ceiling and are never executed
+  # there - it migrates schema and indexes without inheriting sample rows or seeded identities. See
+  # docs/decision-log.md DL-127, which supersedes DL-102 and DL-119. This profile raises the ceiling,
+  # and that is the one setting that applies the seeds. Any seed script added must be numbered above 2
+  # and must store a sign-on credential only as a hash.
   #
   # LOSING THAT SETTING DOES NOT PRODUCE AN ERROR - IT PRODUCES EMPTY RESULT SETS. Without the
   # seeds the container-backed tiers have nothing to assert against: acceptance reads the seeded
@@ -329,26 +325,23 @@ spring:
   # validate-on-migrate stays on so a locally edited script cannot diverge from what was applied.
   # clean-disabled is relaxed here and in the development profile only, so a test that needs a
   # pristine schema can drop and re-apply; the baseline and the production overlay both forbid it.
-  # The seed location and `target: latest` together lift the schema-only scoping the shared baseline
-  # declares, so a migration under this overlay applies V1 and V2 and then the two seeds. The baseline
-  # and the production overlay declare the schema location alone and pin `target: 2`, and
-  # com.carddemo.config.FlywayConfig re-applies BOTH restrictions unconditionally whenever the
-  # production profile is active, so seeded reference rows and seeded sign-on identities cannot reach
-  # a production migration however this file is edited.
+  # `target: latest` lifts the version ceiling the shared baseline pins at "2", so a migration under
+  # this overlay applies V1 and V2 and then the two seeds. The baseline and the production overlay
+  # both pin `target: 2`, and com.carddemo.config.FlywayConfig re-applies that ceiling unconditionally
+  # whenever the production profile is active, so seeded reference rows and seeded sign-on identities
+  # cannot reach a production migration however this file is edited.
   flyway:
     enabled: true
     # See docs/decision-log.md DL-127.
     #
-    # BOTH DELIVERED LOCATIONS. The schema location is what every profile resolves; the seed location
-    # is added here, and adding it is what makes the reference and sign-on seeds resolvable at all so
-    # the fixtures have rows to assert against. Production is refused the seed location outright by
-    # FlywayConfig. Both are restated in full rather than inherited so this document reads on its own.
-    #
-    # The shared parent classpath:db/migration is never declared: a location is scanned recursively, so
-    # naming the parent beside a child would resolve every script twice.
-    locations: classpath:db/migration/schema,classpath:db/migration/seed
-    # AND THE CEILING IS LIFTED TO MATCH. The shared baseline pins target at "2", which would stop a
-    # migration at the schema even with the seed location resolved, so both halves are required here.
+    # THE ONE DELIVERED LOCATION, restated in full rather than inherited so this document reads on its
+    # own. All four scripts are physically flat in this single directory and no child directory exists,
+    # so the location is identical in every profile and carries no part of the production separation.
+    locations: classpath:db/migration
+    # THE CEILING IS LIFTED, AND IT IS THE ONLY SETTING THAT MAKES THE SEEDS EXECUTABLE. The shared
+    # baseline pins target at "2", which stops a migration after the indexes; lifting it here is what
+    # applies V3 and V4 so the fixtures have rows to assert against. Production keeps the ceiling at 2
+    # and FlywayConfig refuses to start it at any higher value.
     target: latest
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -422,6 +415,7 @@ spring:
         path-style-access-enabled: true
       sqs:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+        observation-enabled: true
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
@@ -540,13 +534,15 @@ logging:
 # addressed and which must read identically in every profile so that a job parameter is
 # profile-independent.
 #
-# THESE FOUR NAMES ARE MANDATED, NOT CHOSEN, and must be byte-identical in all six places that speak
-# them: application.yml, application-local.yml, this file, the twin, docker-compose.yml,
+# THESE FOUR NAMES ARE FIXED, NOT LOCAL CHOICES, and must be byte-identical in all six places that
+# speak them: application.yml, application-local.yml, this file, the twin, docker-compose.yml,
 # localstack/init/01-create-aws-resources.sh and the running emulator. A disagreement yields a stack
 # that starts cleanly and then fails on the first publish, with no start-up error naming the cause.
+# The QUEUE name is prescribed by the migration plan, which names this resource JOBS; the other three
+# are module-namespaced because the plan names no value for them.
 #
 #   carddemo-batch-staging       object-store bucket
-#   carddemo-jobs.fifo           first-in-first-out submission queue
+#   JOBS.fifo                    first-in-first-out submission queue
 #   carddemo-job-submission      message group id
 #   carddemo-job-notifications   notification topic
 #   us-east-1                    region, bound at carddemo.aws.region in application.yml and derived
@@ -574,10 +570,11 @@ logging:
 # is rejected outright without that suffix - a start-up failure, not a style preference. The group id
 # MUST be one stable value, for the ordering reason above.
 #
-# The object store replaces the sequential output datasets and the generation bases that retained
-# their history; retention becomes object versioning on the staging bucket. The key each staged object
-# is written under is composed by the job that writes it rather than configured, so no output family
-# depends on a prefix key staying in step with a writer.
+# The object store replaces the sequential datasets and the generation bases that retained their
+# history; retention becomes object versioning on the staging bucket. BatchStagingArea is the single
+# S3 boundary: readers prefer an existing staged object, and every dataset-producing job publishes its
+# completed local writer buffer through the same adapter. The key is composed by the job rather than
+# configured, so no output family depends on a prefix key staying in step with a writer.
 #
 # THE ENDPOINT OVERRIDE IS DECLARED HERE for the same reason the four spring.cloud.aws endpoint
 # settings above are: an absent AWS endpoint does not fail closed, it resolves the region's real public
@@ -591,7 +588,7 @@ carddemo:
     s3:
       batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     sqs:
-      job-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
       # The 80-character card width and the tolerate-a-publish-failure behaviour are NOT declared as
       # properties. Both are fixed by the legacy queue definition rather than chosen by a deployment,

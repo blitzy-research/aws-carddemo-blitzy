@@ -37,6 +37,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.web.authentication.preauth.PreAuthenticatedAuthenticationToken;
@@ -49,12 +50,16 @@ import org.springframework.web.bind.annotation.RestController;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -107,6 +112,12 @@ class ReportControllerTest {
     /** The prompt the confirmation gate composes when the confirmation has not been answered. */
     private static final String CONFIRMATION_PROMPT = "Please confirm to print the Monthly report...";
 
+    /** Stable token a client repeats when retrying one logical report request. */
+    private static final String RETRY_TOKEN = "report-request-retry-001";
+
+    /** Token the service mints when the client deliberately starts a new request. */
+    private static final String MINTED_TOKEN = "report-request-minted-002";
+
     /** The report-request turn, stubbed: its behaviour is asserted by its own suite. */
     private ReportRequestService reportRequestService;
 
@@ -145,6 +156,15 @@ class ReportControllerTest {
     private static ReportRequestService.ReportRequestResult resultOf(final ReportPeriod period,
             final int cardsPublished, final boolean blockedByConfirm, final String message,
             final boolean errorFlag, final String focusField) {
+        return resultOf(period, cardsPublished, blockedByConfirm, message, errorFlag, focusField, null);
+    }
+
+    /**
+     * A turn outcome carrying an optional logical-request token.
+     */
+    private static ReportRequestService.ReportRequestResult resultOf(final ReportPeriod period,
+            final int cardsPublished, final boolean blockedByConfirm, final String message,
+            final boolean errorFlag, final String focusField, final String submissionToken) {
         return new ReportRequestService.ReportRequestResult(
                 NavigationService.Route.REPORT_REQUEST,
                 new ConversationState("CR00", "CORPT00C", "CR00", "CORPT00C",
@@ -155,6 +175,7 @@ class ReportControllerTest {
                 "2022-07-01",
                 "2022-07-31",
                 cardsPublished,
+                submissionToken,
                 blockedByConfirm,
                 message,
                 !errorFlag,
@@ -171,6 +192,12 @@ class ReportControllerTest {
     private static ReportRequestService.ReportRequestResult submitted() {
         return resultOf(ReportPeriod.MONTHLY, JclCardImageBuilder.CARD_COUNT, false, ACKNOWLEDGEMENT,
                 false, "MONTHLY");
+    }
+
+    /** @return the outcome of a submitted request carrying the given retry token */
+    private static ReportRequestService.ReportRequestResult submittedWithToken(final String token) {
+        return resultOf(ReportPeriod.MONTHLY, JclCardImageBuilder.CARD_COUNT, false, ACKNOWLEDGEMENT,
+                false, "MONTHLY", token);
     }
 
     /** @return the outcome of a request the confirmation gate stopped */
@@ -322,7 +349,8 @@ class ReportControllerTest {
         @DisplayName("a submitted request answers 200 carrying the acknowledgement, the resolved period "
                 + "and the route the client drives its next call from")
         void aSubmittedRequestAnswersTheAcknowledgement() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(submitted());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(submitted());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
                             .principal(principalOf(UserType.ADMIN))
@@ -337,14 +365,16 @@ class ReportControllerTest {
                             .value(NavigationService.Route.REPORT_REQUEST.getRouteValue()))
                     .andExpect(jsonPath("$.navigationContext.toTransactionId").value("CR00"));
 
-            verify(reportRequestService, times(1)).processReportRequest(any());
+            verify(reportRequestService, times(1))
+                    .processReportRequest(any(), nullable(String.class));
         }
 
         @Test
         @DisplayName("a submission the confirmation gate stopped also answers 200, because a prompt is a "
                 + "screen the legacy program composed and sent rather than a transport failure")
         void aBlockedConfirmationStillAnswersOk() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(awaitingConfirmation());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(awaitingConfirmation());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
                             .principal(principalOf(UserType.USER))
@@ -356,7 +386,8 @@ class ReportControllerTest {
                     .andExpect(jsonPath("$.generalError").value(true))
                     .andExpect(jsonPath("$.focusScreenFieldId").value("CONFIRM"));
 
-            verify(reportRequestService, times(1)).processReportRequest(any());
+            verify(reportRequestService, times(1))
+                    .processReportRequest(any(), nullable(String.class));
         }
 
         @Test
@@ -369,7 +400,8 @@ class ReportControllerTest {
                             .content("{\"monthlySelection\":\"SS\",\"keyAction\":\"ENTER\"}"))
                     .andExpect(status().isBadRequest());
 
-            verify(reportRequestService, never()).processReportRequest(any());
+            verify(reportRequestService, never())
+                    .processReportRequest(any(), nullable(String.class));
         }
 
         @Test
@@ -382,7 +414,42 @@ class ReportControllerTest {
                             .content(body("TOOLONGUSERID")))
                     .andExpect(status().isBadRequest());
 
-            verify(reportRequestService, never()).processReportRequest(any());
+            verify(reportRequestService, never())
+                    .processReportRequest(any(), nullable(String.class));
+        }
+
+        @Test
+        @DisplayName("a caller retry token is passed to the service and returned in the response header")
+        void aCallerRetryTokenRoundTripsThroughTheHeader() throws Exception {
+            when(reportRequestService.processReportRequest(any(), eq(RETRY_TOKEN)))
+                    .thenReturn(submittedWithToken(RETRY_TOKEN));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .header(ReportController.IDEMPOTENCY_KEY_HEADER, RETRY_TOKEN)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(
+                            ReportController.IDEMPOTENCY_KEY_HEADER, RETRY_TOKEN));
+
+            verify(reportRequestService).processReportRequest(any(), eq(RETRY_TOKEN));
+        }
+
+        @Test
+        @DisplayName("when the caller supplies no token the service-minted token is returned for a retry")
+        void aMintedTokenIsReturnedToTheCaller() throws Exception {
+            when(reportRequestService.processReportRequest(any(), isNull()))
+                    .thenReturn(submittedWithToken(MINTED_TOKEN));
+
+            mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
+                            .principal(principalOf(UserType.ADMIN))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(null)))
+                    .andExpect(status().isOk())
+                    .andExpect(header().string(
+                            ReportController.IDEMPOTENCY_KEY_HEADER, MINTED_TOKEN))
+                    .andExpect(header().doesNotExist(HttpHeaders.LOCATION));
         }
     }
 
@@ -398,7 +465,8 @@ class ReportControllerTest {
         @DisplayName("an echoed identity is overwritten by the authenticated one, so a client-chosen "
                 + "identity cannot survive a turn and come back looking server-asserted")
         void anEchoedIdentityIsOverwritten() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(submitted());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(submitted());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
                             .principal(principalOf(UserType.USER))
@@ -414,7 +482,8 @@ class ReportControllerTest {
         @DisplayName("each user type the security layer grants an authority for is resolved to that type, "
                 + "so the controller's matching cannot drift from the layer that issues it")
         void everyGrantedUserTypeIsResolved() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(submitted());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(submitted());
 
             for (final UserType userType : UserType.values()) {
                 mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
@@ -432,7 +501,8 @@ class ReportControllerTest {
         @DisplayName("with no credential established the response asserts no identity at all rather than "
                 + "republishing the claim the request carried")
         void withNoCredentialNoIdentityIsAsserted() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(submitted());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(submitted());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -446,7 +516,8 @@ class ReportControllerTest {
         @DisplayName("an identity carrying no authority this module grants resolves to no identity, so "
                 + "nothing is inferred from the absence of a known authority")
         void anUnrecognisedAuthorityResolvesToNoIdentity() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(submitted());
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
+                    .thenReturn(submitted());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
                             .principal(new PreAuthenticatedAuthenticationToken(
@@ -462,7 +533,7 @@ class ReportControllerTest {
         @DisplayName("each turn is timed and tagged by the outcome it reached and the period it resolved, "
                 + "so a rise in blocked confirmations can be told from a rise in submissions")
         void eachTurnIsTimedAndTagged() throws Exception {
-            when(reportRequestService.processReportRequest(any()))
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
                     .thenReturn(submitted(), awaitingConfirmation());
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
@@ -494,7 +565,7 @@ class ReportControllerTest {
         @DisplayName("a turn that resolved no report type is still timed, under a fixed period name, so "
                 + "the label stays bounded and no series is lost")
         void aTurnResolvingNoPeriodIsStillTimed() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(
+            when(reportRequestService.processReportRequest(any(), nullable(String.class))).thenReturn(
                     resultOf(null, 0, false, "Select a report type to print report...", true,
                             "MONTHLY"));
 
@@ -517,7 +588,7 @@ class ReportControllerTest {
         @DisplayName("a turn that neither submitted nor faulted is timed as a served screen, which is the "
                 + "first-entry and return-to-previous shape")
         void aServedScreenIsTimedAsSuch() throws Exception {
-            when(reportRequestService.processReportRequest(any())).thenReturn(
+            when(reportRequestService.processReportRequest(any(), nullable(String.class))).thenReturn(
                     resultOf(null, 0, false, "", false, "MONTHLY"));
 
             mockMvc.perform(post(ReportController.REPORT_REQUEST_PATH)
@@ -537,7 +608,7 @@ class ReportControllerTest {
         @DisplayName("every observed outcome tag is one of the four fixed names, so the label cannot "
                 + "become a high-cardinality series")
         void everyOutcomeTagIsOneOfTheFourFixedNames() throws Exception {
-            when(reportRequestService.processReportRequest(any()))
+            when(reportRequestService.processReportRequest(any(), nullable(String.class)))
                     .thenReturn(submitted(), awaitingConfirmation(),
                             resultOf(null, 0, false, "", false, "MONTHLY"));
 

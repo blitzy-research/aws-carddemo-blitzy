@@ -423,6 +423,33 @@ public class Customer {
         this.ficoCreditScore = ficoCreditScore;
     }
 
+    /**
+     * Creates a detached field-for-field image for compare-and-set persistence.
+     *
+     * @param source customer image to copy
+     */
+    public Customer(final Customer source) {
+        this(
+                Objects.requireNonNull(source, "source").custId,
+                source.firstName,
+                source.middleName,
+                source.lastName,
+                source.addrLine1,
+                source.addrLine2,
+                source.addrLine3,
+                source.addrStateCd,
+                source.addrCountryCd,
+                source.addrZip,
+                source.phoneNum1,
+                source.phoneNum2,
+                source.custSsn,
+                source.govtIssuedId,
+                source.custDob,
+                source.eftAccountId,
+                source.priCardHolderInd,
+                source.ficoCreditScore);
+    }
+
     public String getCustId() {
         return custId;
     }

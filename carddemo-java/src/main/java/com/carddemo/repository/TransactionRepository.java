@@ -19,9 +19,6 @@ package com.carddemo.repository;
 import com.carddemo.domain.Transaction;
 import java.util.List;
 import java.util.Optional;
-import org.springframework.data.domain.Limit;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -84,12 +81,16 @@ import org.springframework.data.repository.query.Param;
  * and for the concrete reason a sequence is not an acceptable substitute. The shipped schema declares
  * no sequence and no auto-generated column anywhere, for exactly this reason.
  *
- * <p><strong>Sharing a transaction is not by itself enough to make that rule safe, so allocation is
- * serialised explicitly.</strong> Under the {@code READ COMMITTED} isolation this module runs at, an
- * insert another transaction has not yet committed is invisible, so two allocators can read the same
- * maximum, compute the same successor and collide on the primary key. An allocator therefore takes
- * {@link #lockIdentifierAllocation(long)} first, which holds the read-modify-write open for one
- * allocator at a time and releases at commit or rollback. The precondition the maximum depends on -
+ * <p><strong>Sharing a transaction is not by itself enough to make that rule safe, and the
+ * serialisation that makes it safe is the allocating service's, not this interface's.</strong> Under
+ * the {@code READ COMMITTED} isolation this module runs at, an insert another transaction has not yet
+ * committed is invisible, so two allocators can read the same maximum, compute the same successor and
+ * collide on the primary key. Closing that window is a concurrency policy - how allocation is
+ * serialised, how many attempts a loser makes and what it reports when they are exhausted - and a
+ * policy belongs with the component that owns the transactional boundary and can observe the outcome
+ * of the insert. This interface can do neither, so it declares no lock, and the bill-payment service
+ * carries the obligation deliberately where it mints an identifier. The precondition the maximum
+ * depends on -
  * that every stored identifier is exactly sixteen digit characters - is enforced twice over rather
  * than assumed: the entity refuses any other shape before an insert or an update reaches the
  * database, and {@code V1__create_schema.sql} carries the matching check constraint
@@ -124,7 +125,7 @@ import org.springframework.data.repository.query.Param;
  * index, customer, transaction base cluster and user-security files. Both card-side alternate-index
  * paths are among them; the transaction alternate-index path is not, and the transaction entry
  * addresses the base cluster directly. No online request could therefore reach this index, so its
- * Java realisation - {@link #findByProcessingDateRange(String, String, Pageable)} - serves the
+ * Java realisation - {@link #findByProcessingDateRange(String, String)} - serves the
  * reporting job alone.
  *
  * <p>{@code V2__create_indexes.sql} additionally declares {@code fk_transaction_card}, from this
@@ -149,14 +150,13 @@ import org.springframework.data.repository.query.Param;
  *
  * <p><strong>The legacy browse computes no row number and no offset.</strong> It remembers the first
  * and last identifier of the page it displayed - the screen's own FIRST and LAST commarea fields, each
- * sixteen characters wide - and repositions on one of them. The Java counterpart is therefore a keyset
- * read: {@link #findByTranIdGreaterThanOrderByTranIdAsc(String, Limit)} resumes a forward browse after
- * the last identifier displayed and {@link #findByTranIdLessThanOrderByTranIdDesc(String, Limit)}
- * resumes a backward browse before the first. Only the opening page of a browse, which has no cursor
- * to resume from, uses the inherited paged {@code findAll} - at page zero, where an offset costs
- * nothing. Paging deeper by offset would make the database re-count and discard every earlier row on
- * each turn, and would let a row inserted or removed between two turns shift the window so that a row
- * is shown twice or skipped; a cursor cannot do either.
+ * sixteen characters wide - and repositions on one of them. <strong>No keyset finder is declared here
+ * for it.</strong> The browse is served by the inherited {@code findAll(Pageable)} carrying an
+ * identifier sort, and the cursor semantics - which identifier to resume from, in which direction, and
+ * how a further page is discovered - live in the service that reproduces the screen, because they are
+ * properties of the screen's retained state rather than of this table. Declaring a pair of
+ * cursor-shaped finders here would publish four permutations of one screen's paging strategy as
+ * persistence contract, and a second screen with a different strategy would have to add four more.
  *
  * <p><strong>A backward page is read descending and presented ascending.</strong> The legacy backward
  * path seeds its screen index with 10 and decrements it, so the first record it reads - the highest
@@ -205,7 +205,7 @@ import org.springframework.data.repository.query.Param;
  * belong to the service and batch tiers. This interface therefore declares no exception type and no
  * status enumeration. Its own expressions of "nothing there" are an empty {@link Optional} from
  * {@link #findMaxId()}, an empty {@link Optional} from the inherited single-row lookup, and an empty
- * {@link Slice} from {@link #findByProcessingDateRange(String, String, Pageable)}.
+ * {@link List} from {@link #findByProcessingDateRange(String, String)}.
  *
  * <p>The interface carries no stereotype annotation: the repository infrastructure discovers it
  * through the component scan rooted at the base package, so annotating it would add nothing and
@@ -223,73 +223,8 @@ import org.springframework.data.repository.query.Param;
  * @see JpaRepository
  * @since 1.0.0
  */
-public interface TransactionRepository extends JpaRepository<Transaction, String> {
-
-    /**
-     * The advisory-lock key that serialises identifier allocation on this table: {@code 350016}.
-     *
-     * <p>The value is arbitrary but fixed, and it is spelled so that it names its own subject - the
-     * legacy record length followed by the legacy key width, 350 bytes and 16 characters, as
-     * {@code app/jcl/TRANFILE.jcl} declares them through its record size and its key definition.
-     * Nothing in the database interprets it. The only requirement an advisory lock places on its key is
-     * that every participant uses the same one, which is why the constant is declared here, beside the
-     * method that consumes it, rather than restated at each call site. It is the module's only
-     * advisory-lock key, so it cannot collide with another purpose.
-     */
-    long IDENTIFIER_ALLOCATION_LOCK_KEY = 350_016L;
-
-    /**
-     * Acquires the transaction-scoped advisory lock that serialises identifier allocation, blocking
-     * until it is held and releasing automatically when the surrounding transaction ends.
-     *
-     * <p><strong>Call this before {@link #findMaxId()} whenever the maximum is being read in order to
-     * mint a new identifier.</strong> Reading the maximum and inserting its successor inside one
-     * transaction is not sufficient on its own: under {@code READ COMMITTED} an uncommitted insert is
-     * invisible, so two concurrent allocators can observe the same maximum, derive the same successor
-     * and then collide on the primary key - the loser failing rather than receiving the next
-     * identifier. This lock makes the read-modify-write sequence one allocator at a time, which is the
-     * serialisation the legacy region obtained from holding a record-level browse position across its
-     * own read, increment and write.
-     *
-     * <p><strong>It is a lock and not a sequence, and that distinction is the whole point.</strong> A
-     * sequence never reissues a value it handed out, so the first rollback after an identifier was
-     * consumed would step the numbering permanently past that value and diverge from the legacy rule
-     * for the remaining life of the table; {@link #findMaxId()} develops that argument. An advisory
-     * lock adds no object to the schema, hands out no value of its own and leaves the
-     * maximum-plus-one rule exactly as the legacy program states it - it only decides who executes
-     * that rule next.
-     *
-     * <p><strong>Transaction-scoped, so no failure path can leak it.</strong> The lock is released by
-     * commit and by rollback alike, with no explicit unlock to forget and nothing to release in a
-     * finally block. A caller outside a transaction would take a lock that is released immediately and
-     * would gain nothing, which is why the transactional boundary belongs to the calling service and
-     * not to this interface.
-     *
-     * <p><strong>Why this is the module's only native statement.</strong> An advisory lock is a
-     * function of the database session and has no expression in the query language: there is no derived
-     * form and no query-language form of it. The pessimistic row locks the query language does offer
-     * cannot substitute, because the row to lock is the current maximum and on an empty table there is
-     * no such row - the very first two allocators would still collide, which is precisely the case a
-     * seeded-from-empty table starts in. The statement is a fixed literal carrying one bound parameter:
-     * it concatenates nothing, interpolates nothing and so introduces no injection surface, and the
-     * module still calls {@code createNativeQuery} nowhere at all.
-     *
-     * <p><strong>What the allocating service still owes, and why it is not owed here.</strong> Two
-     * allocators that both take this lock cannot collide, so no retry is needed between them. A retry is
-     * needed only against a writer that reached the table without taking it - a bulk load, a migration
-     * script, or a future caller that forgot - and the response to a duplicate key from such a source is
-     * to re-read the maximum under the lock and try once more. That belongs to the service that owns the
-     * transactional boundary, because only it can decide how many attempts are reasonable and what to
-     * report when they are exhausted; this interface can neither open a new transaction nor observe the
-     * outcome of the insert. The obligation is recorded here so the service that mints identifiers
-     * carries it deliberately rather than discovering it.
-     *
-     * @param lockKey the advisory-lock key, always {@link #IDENTIFIER_ALLOCATION_LOCK_KEY}
-     * @return the constant {@code 1}, which exists only because a select must project something; the
-     *         value carries no meaning and the useful effect is that the lock is now held
-     */
-    @Query(value = "SELECT 1 FROM pg_advisory_xact_lock(:lockKey)", nativeQuery = true)
-    int lockIdentifierAllocation(@Param("lockKey") long lockKey);
+public interface TransactionRepository
+        extends JpaRepository<Transaction, String>, TransactionInsertRepository {
 
     /**
      * Returns the highest transaction identifier currently stored, or empty when the table holds no
@@ -310,16 +245,30 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * Splitting the read from the write, or caching the last value issued, would break that
      * correspondence, so no state of any kind is held here.
      *
-     * <p><strong>A shared transaction is necessary but not sufficient, and the caller must take
-     * {@link #lockIdentifierAllocation(long)} first.</strong> Under the {@code READ COMMITTED}
-     * isolation this module runs at, a row another transaction has inserted but not yet committed is
-     * invisible to this query, so two concurrent allocators inside their own transactions can both
-     * observe the same maximum. They then compute the same successor and collide on the primary key, so
-     * one of them fails outright instead of receiving the next identifier - the duplicate never reaches
-     * the table, because the identifier is the primary key, but the payment that lost the race is
-     * rejected for a reason that has nothing to do with the payment. The advisory lock declared above
-     * closes that window by admitting one allocator at a time, and it is the reason this method's
-     * result can be relied on for the length of the transaction that read it.
+     * <p><strong>A shared transaction is necessary but not sufficient, and closing the remaining
+     * window is the caller's concurrency policy rather than this method's.</strong> Under the
+     * {@code READ COMMITTED} isolation this module runs at, a row another transaction has inserted but
+     * not yet committed is invisible to this query, so two concurrent allocators inside their own
+     * transactions can both observe the same maximum. They then compute the same successor and collide
+     * on the primary key, so one of them fails outright instead of receiving the next identifier - the
+     * duplicate never reaches the table, because the identifier is the primary key, but the payment
+     * that lost the race is rejected for a reason that has nothing to do with the payment.
+     *
+     * <p>How that window is answered - by serialising allocators, by retrying a loser, or by
+     * reporting the collision - is a decision only the component owning the transactional boundary can
+     * take, because only it can observe whether the insert succeeded and decide what to report when it
+     * did not. This interface can neither open a transaction nor see the outcome, so it declares no
+     * lock of its own and states the obligation here instead: <strong>a caller minting an identifier
+     * from this maximum owns the response to a collision.</strong>
+     *
+     * <p>The bill-payment service is the one such caller, and it answers the window the way the legacy
+     * program did rather than by adding a mechanism the legacy program had no equivalent of. The legacy
+     * write of a duplicate key returned a duplicate response and the program reported it on the screen;
+     * the service reproduces that arm exactly, so a losing allocator receives the source's own
+     * already-exists message and the operator retries. Serialising allocators would make the loser wait
+     * and then succeed, which is a better outcome and a different one, and adding a retry loop would
+     * likewise be unrequested behaviour - so neither is done, and the correspondence is recorded rather
+     * than improved.
      *
      * <p><strong>An empty result is the analogue of the legacy end-of-file response.</strong> The
      * maximum over zero rows is null, which the repository infrastructure materialises as an empty
@@ -363,57 +312,6 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     Optional<String> findMaxId();
 
     /**
-     * Reads the transactions that follow a boundary identifier, in ascending identifier order, limited
-     * to the number of rows the caller asks for.
-     *
-     * <p>The forward half of the transaction-list keyset browse. The cursor is the identifier of the
-     * last row the previous page displayed - the screen's LAST commarea field - and the comparison is
-     * strict, so that row is not shown twice. The identifier is the primary key and therefore unique,
-     * which is what makes a single-column cursor total and the sequence free of ties.
-     *
-     * <p><strong>Ask for one row more than the screen holds.</strong> The legacy program discovers that
-     * a further page exists by attempting one more read and observing the outcome, never by counting the
-     * cluster. Requesting eleven rows for a ten-row screen reproduces that exactly: eleven returned
-     * means a further page follows and the eleventh row is discarded, ten or fewer means this is the
-     * last page. That is why the limit is the caller's and why this method neither counts nor reports
-     * availability.
-     *
-     * @param tranId the exclusive lower bound - the last identifier already displayed - matched exactly
-     *               as supplied and never trimmed or padded
-     * @param limit  the maximum number of rows to read, which the caller sets to the screen's row count
-     *               plus one
-     * @return the matching rows in ascending identifier order, at most {@code limit} of them, possibly
-     *         empty and never {@code null}
-     */
-    List<Transaction> findByTranIdGreaterThanOrderByTranIdAsc(String tranId, Limit limit);
-
-    /**
-     * Reads the transactions that precede a boundary identifier, in descending identifier order,
-     * limited to the number of rows the caller asks for.
-     *
-     * <p>The backward half of the transaction-list keyset browse, and the direct counterpart of the
-     * legacy backward read. The cursor is the identifier of the first row the previous page displayed -
-     * the screen's FIRST commarea field - and the comparison is strict, so that row is not repeated.
-     *
-     * <p><strong>Descending is the read order, not the presentation order.</strong> The legacy backward
-     * path seeds its screen index with 10 and decrements it, so the highest identifier below the cursor
-     * fills the bottom screen slot and the page the operator sees ascends exactly like a forward page.
-     * The calling service therefore reverses these rows before building the response. Handing them to a
-     * response in the order they arrive would invert the screen.
-     *
-     * <p>The one-extra-row convention of the forward method applies here too, and answers the
-     * preceding-page question rather than the following-page one.
-     *
-     * @param tranId the exclusive upper bound - the first identifier already displayed - matched
-     *               exactly as supplied and never trimmed or padded
-     * @param limit  the maximum number of rows to read, which the caller sets to the screen's row count
-     *               plus one
-     * @return the matching rows in descending identifier order, at most {@code limit} of them, possibly
-     *         empty and never {@code null}
-     */
-    List<Transaction> findByTranIdLessThanOrderByTranIdDesc(String tranId, Limit limit);
-
-    /**
      * Returns one caller-sized slice of the transactions whose processing date falls within an
      * inclusive date range, ordered by card number ascending.
      *
@@ -423,34 +321,20 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * {@code idx_transaction_tran_proc_ts}, so the range resolves through that index rather than by
      * scanning the transaction master.
      *
-     * <h2>The result is sliced, because the range is operator-chosen and the table is append-only</h2>
+     * <h2>The whole selection is returned, in one ordering</h2>
      *
-     * <p>The two bounds arrive from a job parameter that an operator supplies, and rows are only ever
-     * added to this table - by the posting run, by the interest run and by the online add path. The
-     * number of rows a range selects is therefore unbounded in principle and grows for the life of the
-     * deployment, so materialising a whole range into one collection would make the reporting job's
-     * memory a function of how much history had accumulated and of how wide a range somebody typed.
-     * The reader consumes the range a page at a time instead.
+     * <p>The report's reader consumes the range in a single pass and breaks its pages and its totals
+     * from the rows themselves, line by line, so what it needs is the selection in the legacy sort's
+     * order and nothing besides - no total count, no page window and no availability flag. A list is
+     * exactly that, and it is what the legacy job's own input was: one sorted sequential dataset,
+     * read from the front.
      *
-     * <p>A {@link Slice} rather than a {@link org.springframework.data.domain.Page}: a page carries a
-     * total count, which costs a second aggregate query over the same range on every fetch and which
-     * the report has no use for - it breaks its pages and its totals from the rows themselves, line by
-     * line. A slice reports only whether another page follows, which is exactly what a sequential
-     * reader needs.
-     *
-     * <p><strong>The ordering carries a tie-break so that paging is deterministic.</strong> Card
-     * number is not unique across transactions, so an ordering on it alone leaves rows that share a
-     * card number in an order the engine may choose differently for each page - which would let a row
-     * be returned twice, or skipped, as the reader advances. The identifier is appended as a second,
-     * unique ordering term to make the sequence total. That is faithful rather than additive: the
-     * legacy external sort declares one key and no {@code EQUALS} option, so it guarantees nothing at
-     * all about the relative order of records sharing a card number, and any total order refining the
-     * declared key is admissible. The primary ordering is unchanged.
-     *
-     * <p>The ordering above is declared in the query text, so it is applied before anything a caller's
-     * {@link Pageable} adds. A sort supplied through the pageable is appended after it and can only
-     * refine an already total order, so the contract cannot be overridden from a call site; passing an
-     * unsorted pageable is the intended usage.
+     * <p><strong>One ordering term, because the legacy sort declares one.</strong> The report
+     * procedure sorts on the card-number field ascending and specifies no {@code EQUALS} option, so it
+     * guarantees nothing at all about the relative order of records sharing a card number. Appending a
+     * second, unique term would make the sequence total, which reads like an improvement and is in
+     * fact a different contract from the one the legacy job states - so the declared key is reproduced
+     * alone, and a consumer that needs a total order imposes it where it needs it.
      *
      * <h2>The legacy comparison is a ten-character prefix compare</h2>
      *
@@ -490,42 +374,21 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * scan on {@code idx_transaction_tran_proc_ts} survives. Wrapping it would defeat that index for
      * no gain.
      *
-     * <h2>The upper side carries a redundant pre-bound so the index constrains both ends</h2>
+     * <h2>The upper predicate is a function of the column, and that is accepted deliberately</h2>
      *
      * <p>The consequence of that asymmetry is that the authoritative upper predicate is wrapped in a
      * function of the column, and a predicate over a function of a column cannot serve as a bound for
-     * an index built on the column itself. Left at that, the index would be entered at the start date
-     * and then read to the end of the table, with every row beyond the end date fetched and discarded
-     * and the whole remainder sorted. The query therefore carries a <em>third</em> predicate,
-     * {@code t.tranProcTs <= CONCAT(:endDate, } sixteen nines{@code )}, whose right-hand side mentions
-     * no column and so is evaluated once and used as the index's upper bound.
+     * an index built on the column itself. So the index is entered at the start date and read forward,
+     * with rows beyond the end date fetched and discarded by the prefix comparison.
      *
-     * <p><strong>It is a pre-bound and never the authority.</strong> The ten-character prefix
-     * comparison stays in the same {@code WHERE} clause and is what decides membership; the pre-bound
-     * only has to be wide enough never to exclude a row the authority keeps. That property is provable
-     * from the record layout rather than assumed, and it holds under both a byte-ordered and a
-     * language-aware collation:
-     *
-     * <ul>
-     *   <li>A populated processing timestamp is a ten-character date, then a separating space, then a
-     *       time of day - so its eleventh character is a space. An unprocessed transaction carries 26
-     *       spaces. Under byte ordering the comparison against the pre-bound is decided at the first
-     *       character where the two differ: if the ten-character prefixes differ, the prefix decides
-     *       it and the row is below the pre-bound exactly when it is below the end date; if the
-     *       prefixes are equal, the eleventh character decides it, and a space is below the digit
-     *       nine. So every row the authority keeps satisfies the pre-bound.</li>
-     *   <li>Under a language-aware collation, which weighs letters and digits ahead of spaces and
-     *       punctuation, the pre-bound contributes the date's digits followed by sixteen nines while a
-     *       stored value contributes the same date's digits followed by the time's digits, of which
-     *       the first is the tens digit of an hour and so at most two. Nine outranks it, and a blank
-     *       timestamp contributes no digits at all. The pre-bound is again the greater value.</li>
-     * </ul>
-     *
-     * <p>The invariant those two arguments rest on is the record layout's own: <strong>a stored
-     * processing timestamp is either blank throughout or carries a space in its eleventh
-     * character.</strong> Every writer must preserve it. Widening the filler, or replacing it with a
-     * character that a language-aware collation ignores, would break the second argument; shortening
-     * it below the sixteen characters that follow the date prefix would break the first.
+     * <p><strong>No redundant pre-bound is added to narrow it.</strong> A second, column-only upper
+     * predicate - the end date concatenated with filler wide enough never to exclude a row the
+     * authority keeps - would give the index an upper bound, but it is a third predicate the legacy
+     * selection does not have, and its safety rests on an invariant about the eleventh character of a
+     * stored timestamp that holds under one collation and has to be re-argued under another. The
+     * selection reproduced here is the legacy one: a bare lower bound and a prefix-compared upper
+     * bound, and nothing else. Performance engineering beyond parity is out of scope, and the lower
+     * bound already confines the scan to the range's start.
      *
      * <p><strong>This must remain a character comparison.</strong> It is never converted to
      * {@code LocalDate}, {@code LocalDateTime}, {@code Instant}, a database date or date-time type, or
@@ -579,21 +442,16 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *                  reformatted
      * @param endDate   the inclusive upper bound of the range, likewise a ten-character date; a
      *                  transaction processed on this date is returned
-     * @param pageable  the reader's window over the range - page number and page size, supplied by the
-     *                  caller and never defaulted here; the ordering is fixed by this method and a
-     *                  sort carried on the pageable can only refine it
-     * @return the requested slice of matching transactions in ascending card-number order, reporting
-     *         whether a further slice follows; possibly empty, never {@code null}
+     * @return every matching transaction in ascending card-number order, possibly empty, never
+     *         {@code null}
      */
     @Query("""
             SELECT t
             FROM Transaction t
             WHERE t.tranProcTs >= :startDate
-              AND t.tranProcTs <= CONCAT(:endDate, '9999999999999999')
               AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
-            ORDER BY t.tranCardNum ASC, t.tranId ASC
+            ORDER BY t.tranCardNum ASC
             """)
-    Slice<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
-                                                 @Param("endDate") String endDate,
-                                                 Pageable pageable);
+    List<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
+                                                @Param("endDate") String endDate);
 }

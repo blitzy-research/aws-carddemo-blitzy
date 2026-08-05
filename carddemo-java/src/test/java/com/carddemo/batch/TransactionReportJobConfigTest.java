@@ -66,7 +66,9 @@ import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.TransactionReportProcessor;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.service.DateValidationService;
+import com.carddemo.service.ReportTransactionSource;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.service.TransactionReportService.TransactionReportResult;
 import com.carddemo.util.ReportLineFormatter;
@@ -160,6 +162,12 @@ final class TransactionReportJobConfigTest {
      */
     private TransactionReportJobConfig configuration(final TransactionRepository repository,
             final TransactionReportService reportService) {
+        final TransactionScanRepository scanRepository = (cursor, limit) ->
+                repository.findAll(Sort.by(Sort.Direction.ASC, "tranId"))
+                        .stream()
+                        .filter(record -> record.getTranId().compareTo(cursor) > 0)
+                        .limit(limit.max())
+                        .toList();
 
         return new TransactionReportJobConfig(
                 mock(JobRepository.class),
@@ -167,7 +175,7 @@ final class TransactionReportJobConfigTest {
                 mock(JobExecutionListener.class),
                 new RunIdIncrementer(),
                 new JobParameterValidators(new DateValidationService()),
-                repository,
+                scanRepository,
                 new FixedWidthFlatFileReaderFactory(),
                 reportService,
                 new SimpleMeterRegistry(),
@@ -412,7 +420,8 @@ final class TransactionReportJobConfigTest {
             assertThat(configuration.transactionReportFilterAndOrderStep().getName())
                     .isEqualTo(TransactionReportJobConfig.FILTER_AND_ORDER_STEP_NAME);
             assertThat(configuration
-                    .transactionReportEmitStep(configuration.transactionReportProcessor()).getName())
+                    .transactionReportEmitStep(configuration.transactionReportProcessor(),
+                            mock(BatchStagingArea.class)).getName())
                     .isEqualTo(TransactionReportJobConfig.EMIT_STEP_NAME);
         }
 
@@ -515,7 +524,7 @@ final class TransactionReportJobConfigTest {
             final Step unload = configuration.transactionReportUnloadStep();
             final Step filterAndOrder = configuration.transactionReportFilterAndOrderStep();
             final Step emit = configuration.transactionReportEmitStep(
-                    configuration.transactionReportProcessor());
+                    configuration.transactionReportProcessor(), mock(BatchStagingArea.class));
             return configuration.transactionReportJob(unload, filterAndOrder, emit);
         }
     }
@@ -840,12 +849,15 @@ final class TransactionReportJobConfigTest {
         @DisplayName("the report tasklet writes the report generation its job execution owns")
         void theReportTaskletWritesItsOwnGeneration() throws IOException {
             final TransactionReportService reportService = mock(TransactionReportService.class);
-            when(reportService.generateReportFromDateParameterCard(anyString()))
+            when(reportService.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), anyString()))
                     .thenReturn(new TransactionReportResult(
                             ReportLineFormatter.buildHeaderBlock(WINDOW_START, WINDOW_END),
                             new BigDecimal("0.00"), 0, 4L, 0));
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class), reportService);
+            Files.writeString(configuration.filteredGeneration(JOB_EXECUTION_ID), "",
+                    StandardCharsets.US_ASCII);
 
             assertThat(configuration.emitReport(configuration.transactionReportProcessor(),
                     chunkContext(WINDOW_START, WINDOW_END)))
@@ -883,16 +895,16 @@ final class TransactionReportJobConfigTest {
         }
 
         @Test
-        @DisplayName("a generation number stays inside the four digits the absolute-generation form "
-                + "reserves for it")
-        void aGenerationNumberStaysInsideItsFourDigits() {
+        @DisplayName("a generation number is never reduced modulo an earlier execution")
+        void aGenerationNumberDoesNotWrap() {
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class),
                             mock(TransactionReportService.class));
 
             final String name = configuration.reportGeneration(1_234_567L).getFileName().toString();
 
-            assertThat(name).isEqualTo(String.format(Locale.ROOT, "%s.G%04dV00", REPORT_BASE, 4567));
+            assertThat(name).isEqualTo(REPORT_BASE + ".G0001234567V00")
+                    .isNotEqualTo(configuration.reportGeneration(4567L).getFileName().toString());
         }
     }
 
@@ -918,6 +930,7 @@ final class TransactionReportJobConfigTest {
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(),
                     configuration.dateParameterCard(chunkContext(WINDOW_START, WINDOW_END)),
+                    configuration.filteredGeneration(JOB_EXECUTION_ID),
                     configuration.reportGeneration(JOB_EXECUTION_ID));
             program.run();
 
@@ -931,6 +944,50 @@ final class TransactionReportJobConfigTest {
                             .as("the report record length is a byte contract, so it is measured on "
                                     + "encoded bytes and never on a character count")
                             .isEqualTo(TransactionReportJobConfig.REPORT_RECORD_LENGTH));
+        }
+
+        @Test
+        @DisplayName("the emitter parses the filtered generation once and preserves that frozen order "
+                + "even if the backing file changes after report generation")
+        void theFilteredGenerationIsTheFrozenReportInput() throws IOException {
+            final Transaction first =
+                    transaction("0000000000000001", "4111111111111111", INSIDE_WINDOW, "10.00");
+            final Transaction second =
+                    transaction("0000000000000002", "4222222222222222", INSIDE_WINDOW, "20.00");
+            final Transaction replacement =
+                    transaction("0000000000000003", "4333333333333333", INSIDE_WINDOW, "30.00");
+            final TransactionReportResult report = report();
+            final TransactionReportService reportService = mock(TransactionReportService.class);
+            when(reportService.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), anyString())).thenReturn(report);
+            final TransactionReportJobConfig configuration =
+                    configuration(mock(TransactionRepository.class), reportService);
+            final Path filtered = configuration.filteredGeneration(JOB_EXECUTION_ID);
+            Files.writeString(filtered,
+                    TransactionRecordMapper.toRecord(first) + "\n"
+                            + TransactionRecordMapper.toRecord(second) + "\n",
+                    StandardCharsets.US_ASCII);
+
+            final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
+                    configuration.transactionReportProcessor(),
+                    configuration.dateParameterCard(chunkContext(WINDOW_START, WINDOW_END)),
+                    filtered, configuration.reportGeneration(JOB_EXECUTION_ID));
+            program.run();
+
+            final ArgumentCaptor<ReportTransactionSource> source =
+                    ArgumentCaptor.forClass(ReportTransactionSource.class);
+            verify(reportService).generateReportFromDateParameterCard(
+                    source.capture(), anyString());
+            Files.writeString(filtered, TransactionRecordMapper.toRecord(replacement) + "\n",
+                    StandardCharsets.US_ASCII);
+
+            assertThat(source.getValue().readAt(0)).get().extracting(Transaction::getTranId)
+                    .isEqualTo(first.getTranId());
+            assertThat(source.getValue().readAt(1)).get().extracting(Transaction::getTranId)
+                    .isEqualTo(second.getTranId());
+            assertThat(source.getValue().readAt(2)).isEmpty();
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> source.getValue().readAt(-1));
         }
 
         @Test
@@ -948,6 +1005,7 @@ final class TransactionReportJobConfigTest {
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(),
                     configuration.dateParameterCard(chunkContext(WINDOW_START, WINDOW_END)),
+                    configuration.filteredGeneration(JOB_EXECUTION_ID),
                     configuration.reportGeneration(JOB_EXECUTION_ID));
             program.run();
 
@@ -969,6 +1027,7 @@ final class TransactionReportJobConfigTest {
 
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(), null,
+                    configuration.filteredGeneration(JOB_EXECUTION_ID),
                     configuration.reportGeneration(JOB_EXECUTION_ID));
             program.run();
 
@@ -992,6 +1051,7 @@ final class TransactionReportJobConfigTest {
                             configuration.transactionReportProcessor(),
                             configuration.dateParameterCard(
                                     chunkContext(WINDOW_START, WINDOW_END)),
+                            configuration.filteredGeneration(JOB_EXECUTION_ID),
                             generation).run());
         }
 
@@ -1027,8 +1087,17 @@ final class TransactionReportJobConfigTest {
                 final TransactionReportResult report) {
 
             final TransactionReportService reportService = mock(TransactionReportService.class);
-            when(reportService.generateReportFromDateParameterCard(anyString())).thenReturn(report);
-            return configuration(mock(TransactionRepository.class), reportService);
+            when(reportService.generateReportFromDateParameterCard(
+                    any(ReportTransactionSource.class), anyString())).thenReturn(report);
+            final TransactionReportJobConfig configuration =
+                    configuration(mock(TransactionRepository.class), reportService);
+            try {
+                Files.writeString(configuration.filteredGeneration(JOB_EXECUTION_ID), "",
+                        StandardCharsets.US_ASCII);
+            } catch (IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+            return configuration;
         }
 
         /**
@@ -1138,7 +1207,7 @@ final class TransactionReportJobConfigTest {
                             mock(JobExecutionListener.class),
                             new RunIdIncrementer(),
                             new JobParameterValidators(new DateValidationService()),
-                            mock(TransactionRepository.class),
+                            mock(TransactionScanRepository.class),
                             new FixedWidthFlatFileReaderFactory(),
                             mock(TransactionReportService.class),
                             new SimpleMeterRegistry(),
@@ -1203,7 +1272,7 @@ final class TransactionReportJobConfigTest {
                             mock(JobExecutionListener.class),
                             new RunIdIncrementer(),
                             new JobParameterValidators(new DateValidationService()),
-                            mock(TransactionRepository.class),
+                            mock(TransactionScanRepository.class),
                             new FixedWidthFlatFileReaderFactory(),
                             null,
                             new SimpleMeterRegistry(),

@@ -146,10 +146,11 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("TransactionListResponse :: response contract of legacy transaction CT00")
 class TransactionListResponseCoverageTest {
 
-    /** The fifteen components, in the order the record declares them. */
+    /** The sixteen components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
+            "continuation",
             "navigationContext",
             "nextRoute",
             "transactionIdFilter",
@@ -179,7 +180,8 @@ class TransactionListResponseCoverageTest {
 
     /** The five components that carry no declared maximum length. */
     private static final List<String> UNBOUNDED_COMPONENTS =
-            List.of("rows", "pageMetadata", "navigationContext", "nextRoute", "error");
+            List.of("rows", "pageMetadata", "continuation", "navigationContext", "nextRoute",
+                    "error");
 
     /** The five row components, in the order the nested record declares them. */
     private static final List<String> EXPECTED_ROW_COMPONENTS =
@@ -534,7 +536,7 @@ class TransactionListResponseCoverageTest {
             return size.max();
         }
 
-        /** The fifteen components appear in the documented order. */
+        /** The sixteen components appear in the documented order. */
         @Test
         @DisplayName("declares fifteen components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
@@ -554,7 +556,8 @@ class TransactionListResponseCoverageTest {
 
             assertThat(declared[0].getName()).isEqualTo("rows");
             assertThat(declared[1].getName()).isEqualTo("pageMetadata");
-            assertThat(declared[2].getName()).isEqualTo("navigationContext");
+            assertThat(declared[2].getName()).isEqualTo("continuation");
+            assertThat(declared[3].getName()).isEqualTo("navigationContext");
         }
 
         /**
@@ -1952,7 +1955,7 @@ class TransactionListResponseCoverageTest {
 
         /** The three components this type replaces with a fixed placeholder in its rendering. */
         private static final List<String> WITHHELD_BY_THIS_TYPE =
-                List.of("rows", "pageMetadata", "transactionIdFilter");
+                List.of("rows", "pageMetadata", "continuation", "transactionIdFilter");
 
         /** The three row components the nested row replaces with a fixed placeholder. */
         private static final List<String> WITHHELD_BY_THE_ROW =
@@ -1974,6 +1977,7 @@ class TransactionListResponseCoverageTest {
             String withheld = "***REDACTED***";
             List<String> renderedValues =
                     List.of(
+                            withheld,
                             withheld,
                             withheld,
                             "null",

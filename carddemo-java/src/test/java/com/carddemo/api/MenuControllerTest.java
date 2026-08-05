@@ -18,10 +18,10 @@ package com.carddemo.api;
 
 import com.carddemo.api.dto.MenuResponse;
 import com.carddemo.api.dto.NavigationContext;
+import com.carddemo.config.MenuOptionCatalog;
 import com.carddemo.config.SecurityConfig;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
-import com.carddemo.service.MenuOptionCatalog;
 import com.carddemo.service.MenuService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;

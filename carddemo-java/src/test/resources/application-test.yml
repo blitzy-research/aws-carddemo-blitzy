@@ -94,26 +94,23 @@ spring:
 
   flyway:
     enabled: true
-    # TWO SETTINGS ADMIT THE SEEDS, AND BOTH ARE REQUIRED: the seed LOCATION and the lifted target.
-    # The four delivered scripts sit in two sibling locations - classpath:db/migration/schema carries
-    # V1__create_schema.sql and V2__create_indexes.sql, and classpath:db/migration/seed carries
+    # ONE SETTING ADMITS THE SEEDS: the lifted target. All four delivered scripts sit FLAT in one
+    # location, classpath:db/migration - V1__create_schema.sql and V2__create_indexes.sql, then
     # V3__seed_reference_data.sql and V4__seed_user_security.sql, the reference-data and sign-on seeds
-    # the gate fixtures assert against. A directory separates them, which is what AAP 0.3.1 and 0.4.2
-    # require: production resolves the schema location alone and is refused the seed location outright
-    # by com.carddemo.config.FlywayConfig. See docs/decision-log.md DL-127.
+    # the gate fixtures assert against. There is no schema/ or seed/ child directory and none may be
+    # created, so the location is identical in every profile and separates nothing. What separates them
+    # is the version ceiling: the shared baseline pins spring.flyway.target at "2", which stops a
+    # migration after the indexes, and this overlay lifts the pin to latest. Do not drop that setting
+    # here - it leaves every fixture asserting against an empty result set. Production keeps the ceiling
+    # at 2 and com.carddemo.config.FlywayConfig re-applies it after binding. See
+    # docs/decision-log.md DL-127.
     #
-    # The shared baseline also pins spring.flyway.target at "2", which would stop a migration at the
-    # schema even with the seed location resolved, so this overlay lifts the pin to latest as well. Do
-    # not drop either setting here - that leaves every fixture asserting against an empty result set.
-    # The shared parent classpath:db/migration is never declared and holds no script: a location is
-    # scanned recursively, so naming the parent beside a child would resolve every script twice.
-    #
-    # Written as ONE comma-separated scalar rather than a YAML sequence. A sequence flattens to
-    # spring.flyway.locations[0] and [1], which no consumer of this contract reads.
+    # Written as ONE scalar rather than a YAML sequence. A sequence flattens to
+    # spring.flyway.locations[0], which no consumer of this contract reads.
     #
     # The ten sign-on identities V4 seeds are BCrypt digests and belong to the non-production
     # profiles alone; no cleartext credential appears in this file, in a comment or in a message.
-    locations: classpath:db/migration/schema,classpath:db/migration/seed
+    locations: classpath:db/migration
     target: latest
     # A suite may drop and rebuild the schema it owns; production may not, and the baseline keeps it
     # disabled there. baseline-on-migrate and validate-on-migrate are inherited from the baseline
@@ -180,6 +177,7 @@ spring:
         path-style-access-enabled: true
       sqs:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
+        observation-enabled: true
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
@@ -235,12 +233,13 @@ carddemo:
     s3:
       batch-staging-bucket: carddemo-batch-staging
     sqs:
-      # The name the migration plan mandates, namespaced after this module like the other three
-      # resources and suffixed because a FIFO queue must be; the operator-visible message text still
-      # names the transient-data queue as plain JOBS, and nothing composes one from the other. The
-      # 80-byte record width and the ignore-on-error tolerance are deliberately not keys here -
-      # both are enforced in the publisher instead. See docs/decision-log.md DL-092 and DL-094.
-      job-queue: carddemo-jobs.fifo
+      # The name the migration plan prescribes - it names this resource JOBS - suffixed because a
+      # FIFO queue must be. The other three resources are module-namespaced because the plan names
+      # no value for them. The operator-visible message text names the transient-data queue as plain
+      # JOBS, and nothing composes one from the other. The 80-byte record width and the
+      # ignore-on-error tolerance are deliberately not keys here - both are enforced in the
+      # publisher instead. See docs/decision-log.md DL-092 and DL-094.
+      job-queue: JOBS.fifo
       message-group-id: carddemo-job-submission
     sns:
       job-notification-topic: carddemo-job-notifications

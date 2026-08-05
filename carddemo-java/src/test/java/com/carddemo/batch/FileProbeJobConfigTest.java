@@ -17,10 +17,8 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.FileProbeJobConfig.ProbeMode;
-import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
-import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.service.FileMaintenanceService;
 import com.carddemo.service.FileMaintenanceService.FileReadSummary;
@@ -40,7 +38,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -119,8 +116,6 @@ class FileProbeJobConfigTest {
 
     private FileMaintenanceService fileMaintenanceService;
 
-    private CardCrossReferenceRepository cardCrossReferenceRepository;
-
     private MeterRegistry meterRegistry;
 
     private Clock clock;
@@ -134,8 +129,19 @@ class FileProbeJobConfigTest {
         this.jobParameterValidators = new JobParameterValidators(new DateValidationService());
         this.jobBoundaryListener = Mockito.mock(JobExecutionListener.class);
         this.jobRunIncrementer = Mockito.mock(JobParametersIncrementer.class);
-        this.fileMaintenanceService = Mockito.mock(FileMaintenanceService.class);
-        this.cardCrossReferenceRepository = Mockito.mock(CardCrossReferenceRepository.class);
+        this.fileMaintenanceService = Mockito.mock(FileMaintenanceService.class, invocation -> {
+            if (invocation.getMethod().getParameterTypes().length == 1) {
+                return switch (invocation.getMethod().getName()) {
+                    case "readAccountFile" -> this.fileMaintenanceService.readAccountFile();
+                    case "readCardFile" -> this.fileMaintenanceService.readCardFile();
+                    case "readCustomerFile" -> this.fileMaintenanceService.readCustomerFile();
+                    case "readCardCrossReferenceFile" ->
+                            this.fileMaintenanceService.readCardCrossReferenceFile();
+                    default -> org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+                };
+            }
+            return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+        });
         this.meterRegistry = new SimpleMeterRegistry();
         this.clock = Clock.systemUTC();
         this.configuration = newConfiguration();
@@ -144,8 +150,7 @@ class FileProbeJobConfigTest {
     private FileProbeJobConfig newConfiguration() {
         return new FileProbeJobConfig(this.jobRepository, this.transactionManager,
                 this.jobParameterValidators, this.jobBoundaryListener, this.jobRunIncrementer,
-                this.fileMaintenanceService, this.cardCrossReferenceRepository, this.meterRegistry,
-                this.clock);
+                this.fileMaintenanceService, this.meterRegistry, this.clock);
     }
 
     private static FileReadSummary summary(final String program, final String resource,
@@ -189,34 +194,28 @@ class FileProbeJobConfigTest {
         void everyCollaboratorIsMandatory() {
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(null,
                     transactionManager, jobParameterValidators, jobBoundaryListener,
-                    jobRunIncrementer, fileMaintenanceService, cardCrossReferenceRepository,
-                    meterRegistry, clock));
+                    jobRunIncrementer, fileMaintenanceService, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     null, jobParameterValidators, jobBoundaryListener, jobRunIncrementer,
-                    fileMaintenanceService, cardCrossReferenceRepository, meterRegistry, clock));
+                    fileMaintenanceService, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, null, jobBoundaryListener, jobRunIncrementer,
-                    fileMaintenanceService, cardCrossReferenceRepository, meterRegistry, clock));
+                    fileMaintenanceService, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, jobParameterValidators, null, jobRunIncrementer,
-                    fileMaintenanceService, cardCrossReferenceRepository, meterRegistry, clock));
+                    fileMaintenanceService, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, jobParameterValidators, jobBoundaryListener, null,
-                    fileMaintenanceService, cardCrossReferenceRepository, meterRegistry, clock));
+                    fileMaintenanceService, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, jobParameterValidators, jobBoundaryListener,
-                    jobRunIncrementer, null, cardCrossReferenceRepository, meterRegistry, clock));
+                    jobRunIncrementer, null, meterRegistry, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, jobParameterValidators, jobBoundaryListener,
-                    jobRunIncrementer, fileMaintenanceService, null, meterRegistry, clock));
+                    jobRunIncrementer, fileMaintenanceService, null, clock));
             assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
                     transactionManager, jobParameterValidators, jobBoundaryListener,
-                    jobRunIncrementer, fileMaintenanceService, cardCrossReferenceRepository, null,
-                    clock));
-            assertThatNullPointerException().isThrownBy(() -> new FileProbeJobConfig(jobRepository,
-                    transactionManager, jobParameterValidators, jobBoundaryListener,
-                    jobRunIncrementer, fileMaintenanceService, cardCrossReferenceRepository,
-                    meterRegistry, null));
+                    jobRunIncrementer, fileMaintenanceService, meterRegistry, null));
         }
 
         @Test
@@ -464,9 +463,10 @@ class FileProbeJobConfigTest {
 
             assertThat(run(ProbeMode.ACCOUNT.parameterValue())).isEqualTo(RepeatStatus.FINISHED);
 
+            Mockito.verify(fileMaintenanceService)
+                    .readAccountFile(Mockito.any(java.util.function.BooleanSupplier.class));
             Mockito.verify(fileMaintenanceService).readAccountFile();
             Mockito.verifyNoMoreInteractions(fileMaintenanceService);
-            Mockito.verifyNoInteractions(cardCrossReferenceRepository);
         }
 
         @Test
@@ -477,6 +477,8 @@ class FileProbeJobConfigTest {
 
             assertThat(run(ProbeMode.CARD.parameterValue())).isEqualTo(RepeatStatus.FINISHED);
 
+            Mockito.verify(fileMaintenanceService)
+                    .readCardFile(Mockito.any(java.util.function.BooleanSupplier.class));
             Mockito.verify(fileMaintenanceService).readCardFile();
             Mockito.verifyNoMoreInteractions(fileMaintenanceService);
         }
@@ -489,6 +491,8 @@ class FileProbeJobConfigTest {
 
             assertThat(run(ProbeMode.CUSTOMER.parameterValue())).isEqualTo(RepeatStatus.FINISHED);
 
+            Mockito.verify(fileMaintenanceService)
+                    .readCustomerFile(Mockito.any(java.util.function.BooleanSupplier.class));
             Mockito.verify(fileMaintenanceService).readCustomerFile();
             Mockito.verifyNoMoreInteractions(fileMaintenanceService);
         }
@@ -518,7 +522,6 @@ class FileProbeJobConfigTest {
                     .isThrownBy(() -> configuration.fileProbeTasklet("tcatbalf"));
 
             Mockito.verifyNoInteractions(fileMaintenanceService);
-            Mockito.verifyNoInteractions(cardCrossReferenceRepository);
         }
 
         @Test
@@ -583,46 +586,40 @@ class FileProbeJobConfigTest {
     @DisplayName("the cross-reference mode, which is the correction this configuration carries")
     class TheCrossReferenceMode {
 
-        /** Three rows whose keys are deliberately supplied out of order. */
-        private final List<CardCrossReference> rows = List.of(
-                new CardCrossReference("4111111111111111", "000000001", "00000000001"),
-                new CardCrossReference("4111111111111112", "000000002", "00000000002"),
-                new CardCrossReference("4111111111111113", "000000003", "00000000003"));
-
         @Test
-        @DisplayName("it scans the card cross-reference and never the transaction category balance, "
-                + "which shares the fifty-byte width and nothing else")
-        void itScansTheCardCrossReference() throws Exception {
-            Mockito.when(cardCrossReferenceRepository.findAll(Mockito.any(Sort.class)))
-                    .thenReturn(rows);
+        @DisplayName("it delegates to the one service method that owns the CBACT03C paragraphs")
+        void itDelegatesToTheCrossReferenceReader() throws Exception {
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile())
+                    .thenReturn(summary("CBACT03C", "XREFFILE", 3L));
 
             assertThat(run(ProbeMode.CROSS_REFERENCE.parameterValue()))
                     .isEqualTo(RepeatStatus.FINISHED);
 
-            Mockito.verify(cardCrossReferenceRepository).findAll(Mockito.any(Sort.class));
-            Mockito.verifyNoMoreInteractions(cardCrossReferenceRepository);
-            Mockito.verifyNoInteractions(fileMaintenanceService);
+            Mockito.verify(fileMaintenanceService)
+                    .readCardCrossReferenceFile(
+                            Mockito.any(java.util.function.BooleanSupplier.class));
+            Mockito.verify(fileMaintenanceService).readCardCrossReferenceFile();
+            Mockito.verifyNoMoreInteractions(fileMaintenanceService);
         }
 
         @Test
-        @DisplayName("the scan is issued with an explicit ascending order on the cross-reference card "
-                + "number, so the record stream cannot depend on the database's own plan")
-        void theScanIsIssuedAscendingOnTheCardNumber() throws Exception {
-            final ArgumentCaptor<Sort> order = ArgumentCaptor.forClass(Sort.class);
-            Mockito.when(cardCrossReferenceRepository.findAll(order.capture())).thenReturn(rows);
+        @DisplayName("it never delegates to the equally wide category-balance reader")
+        void itNeverDelegatesToTheCategoryBalanceReader() throws Exception {
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile())
+                    .thenReturn(summary("CBACT03C", "XREFFILE", 3L));
 
             run(ProbeMode.CROSS_REFERENCE.parameterValue());
 
-            assertThat(order.getValue()).isEqualTo(ProbeMode.CROSS_REFERENCE.keyOrder());
-            assertThat(order.getValue()).containsExactly(Sort.Order.asc("xrefCardNum"));
+            Mockito.verify(fileMaintenanceService, Mockito.never())
+                    .readTransactionCategoryBalanceFile();
         }
 
         @Test
         @DisplayName("every row is delivered and the count is published, which is what proves the loop "
                 + "ran to the end of the file")
         void everyRowIsDeliveredAndCounted() throws Exception {
-            Mockito.when(cardCrossReferenceRepository.findAll(Mockito.any(Sort.class)))
-                    .thenReturn(rows);
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile())
+                    .thenReturn(summary("CBACT03C", "XREFFILE", 3L));
 
             run(ProbeMode.CROSS_REFERENCE.parameterValue());
 
@@ -637,8 +634,8 @@ class FileProbeJobConfigTest {
         @DisplayName("an empty file completes normally, because end of file is a distinct outcome and "
                 + "never an error")
         void anEmptyFileCompletesNormally() {
-            Mockito.when(cardCrossReferenceRepository.findAll(Mockito.any(Sort.class)))
-                    .thenReturn(List.of());
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile())
+                    .thenReturn(summary("CBACT03C", "XREFFILE", 0L));
 
             assertThatCode(() -> run(ProbeMode.CROSS_REFERENCE.parameterValue()))
                     .doesNotThrowAnyException();
@@ -653,16 +650,14 @@ class FileProbeJobConfigTest {
         @DisplayName("a failure of the scan reaches the ordered abend path rather than being reported "
                 + "as an empty file")
         void aFailureOfTheScanAbends() {
-            Mockito.when(cardCrossReferenceRepository.findAll(Mockito.any(Sort.class)))
-                    .thenThrow(new IllegalStateException("the cluster is unavailable"));
+            final AbendException raised =
+                    new AbendException(AbendException.BATCH_ABEND_CODE, "CBACT03C", "STATUS 31",
+                            "ERROR READING XREFFILE");
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile()).thenThrow(raised);
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> run(ProbeMode.CROSS_REFERENCE.parameterValue()))
-                    .satisfies(abend -> {
-                        assertThat(abend.culprit()).isEqualTo("CBACT03C");
-                        assertThat(abend.reason()).contains("XREFFILE");
-                        assertThat(abend.code()).isEqualTo(AbendException.BATCH_ABEND_CODE);
-                    });
+                    .isSameAs(raised);
 
             assertThat(meterRegistry.get("carddemo.batch.fileprobe.step")
                     .tag("mode", "crossReference")
@@ -676,8 +671,8 @@ class FileProbeJobConfigTest {
         void aFixedClockIsHonoured() {
             clock = Clock.fixed(java.time.Instant.parse("2022-07-19T23:23:07Z"), ZoneOffset.UTC);
             configuration = newConfiguration();
-            Mockito.when(cardCrossReferenceRepository.findAll(Mockito.any(Sort.class)))
-                    .thenReturn(rows);
+            Mockito.when(fileMaintenanceService.readCardCrossReferenceFile())
+                    .thenReturn(summary("CBACT03C", "XREFFILE", 3L));
 
             assertThatCode(() -> run(ProbeMode.CROSS_REFERENCE.parameterValue()))
                     .doesNotThrowAnyException();

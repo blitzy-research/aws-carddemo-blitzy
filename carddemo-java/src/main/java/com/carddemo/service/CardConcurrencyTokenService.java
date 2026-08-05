@@ -209,6 +209,9 @@ public class CardConcurrencyTokenService {
     /** Marker standing alone in place of a carried value the record did not hold. */
     private static final String CARRIED_ABSENT = "-";
 
+    /** Fixed diagnostic stand-in for the sensitive carried image. */
+    private static final String CONTINUATION_IMAGE_PLACEHOLDER = "***REDACTED***";
+
     /** Number of parts a well-formed payload splits into: scheme, digest, and the two carried values. */
     private static final int PAYLOAD_PART_COUNT = 4;
 
@@ -223,6 +226,24 @@ public class CardConcurrencyTokenService {
 
     /** Index of the carried expiry day within a split payload. */
     private static final int EXPIRY_DAY_PART = 3;
+
+    /** Number of components in {@link CardUpdateService.CarriedCardImage}. */
+    private static final int CONTINUATION_IMAGE_FIELD_COUNT = 8;
+
+    /** Binding used only for the update conversation continuation. */
+    public static final String CONTINUATION_TOKEN_FIELD = "card_update.continuation_token";
+
+    /** Versioned scheme marker opening a continuation payload. */
+    public static final String CONTINUATION_SCHEME = "CCUPS1";
+
+    /** Expected continuation parts: scheme, action, and the eight image fields. */
+    private static final int CONTINUATION_PART_COUNT = 2 + CONTINUATION_IMAGE_FIELD_COUNT;
+
+    private static final int CONTINUATION_SCHEME_PART = 0;
+
+    private static final int CONTINUATION_ACTION_PART = 1;
+
+    private static final int CONTINUATION_IMAGE_PART = 2;
 
     /** Zero-based position at which the stored expiry value's year part begins. */
     private static final int EXPIRY_YEAR_OFFSET = 0;
@@ -342,6 +363,104 @@ public class CardConcurrencyTokenService {
                     + " value");
         }
         return new CarriedState(accountId, expiryDay);
+    }
+
+    /**
+     * Seals the update conversation state and fetched card image for the next turn.
+     *
+     * @param changeAction the state this turn settled on
+     * @param carriedImage the fetched image handed forward
+     * @return an authenticated encrypted continuation token
+     */
+    public String sealContinuation(final CardUpdateService.ChangeAction changeAction,
+                                   final CardUpdateService.CarriedCardImage carriedImage) {
+        Objects.requireNonNull(changeAction, "changeAction must not be null");
+        Objects.requireNonNull(carriedImage, "carriedImage must not be null");
+
+        final StringBuilder payload = new StringBuilder(256);
+        payload.append(CONTINUATION_SCHEME)
+                .append(UNIT_SEPARATOR)
+                .append(changeAction.name());
+        for (final String field : imageFields(carriedImage)) {
+            payload.append(UNIT_SEPARATOR).append(carried(field));
+        }
+        return fieldEncryption.protect(CONTINUATION_TOKEN_FIELD, payload.toString());
+    }
+
+    /**
+     * Opens a continuation, treating an absent token as the genuine first turn.
+     *
+     * @param token the token echoed by the client, or {@code null}
+     * @return the trusted conversation state and carried image
+     * @throws OptimisticLockConflictException if a present token cannot be trusted
+     */
+    public Continuation openContinuation(final String token) {
+        if (token == null || token.isBlank()) {
+            return Continuation.firstEntry();
+        }
+
+        final String payload;
+        try {
+            payload = fieldEncryption.reveal(CONTINUATION_TOKEN_FIELD, token);
+        } catch (IllegalArgumentException | IllegalStateException rejected) {
+            throw continuationConflict("the presented continuation token could not be authenticated");
+        }
+
+        final String[] parts = split(payload);
+        if (parts.length != CONTINUATION_PART_COUNT
+                || !CONTINUATION_SCHEME.equals(parts[CONTINUATION_SCHEME_PART])) {
+            throw continuationConflict(
+                    "the presented continuation token carries an unrecognised payload");
+        }
+
+        final CardUpdateService.ChangeAction changeAction =
+                changeActionNamed(parts[CONTINUATION_ACTION_PART]);
+        final String[] fields = new String[CONTINUATION_IMAGE_FIELD_COUNT];
+        for (int index = 0; index < CONTINUATION_IMAGE_FIELD_COUNT; index++) {
+            final String part = parts[CONTINUATION_IMAGE_PART + index];
+            final String field = uncarried(part);
+            if (!carried(field).equals(part)) {
+                throw continuationConflict(
+                        "the presented continuation token carries an unreadable image field");
+            }
+            fields[index] = field;
+        }
+        return new Continuation(changeAction, imageOf(fields));
+    }
+
+    private static CardUpdateService.ChangeAction changeActionNamed(final String name) {
+        for (final CardUpdateService.ChangeAction candidate
+                : CardUpdateService.ChangeAction.values()) {
+            if (candidate.name().equals(name)) {
+                return candidate;
+            }
+        }
+        throw continuationConflict("the presented continuation token names no known screen state");
+    }
+
+    private static String[] imageFields(final CardUpdateService.CarriedCardImage image) {
+        return new String[] {
+            image.accountId(),
+            image.cardNumber(),
+            image.verificationCode(),
+            image.embossedName(),
+            image.expiryYear(),
+            image.expiryMonth(),
+            image.expiryDay(),
+            image.activeStatus(),
+        };
+    }
+
+    private static CardUpdateService.CarriedCardImage imageOf(final String[] fields) {
+        return new CardUpdateService.CarriedCardImage(fields[0], fields[1], fields[2], fields[3],
+                fields[4], fields[5], fields[6], fields[7]);
+    }
+
+    private static OptimisticLockConflictException continuationConflict(final String reason) {
+        LOGGER.warn("Refusing card-update continuation: {}", reason);
+        return new OptimisticLockConflictException(
+                OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
+                CARD_ENTITY, null);
     }
 
     /**
@@ -528,5 +647,24 @@ public class CardConcurrencyTokenService {
      *                  when the record held no expiry value
      */
     public record CarriedState(String accountId, String expiryDay) {
+    }
+
+    /**
+     * Trusted state carried between two turns of the card-update conversation.
+     */
+    public record Continuation(CardUpdateService.ChangeAction changeAction,
+                               CardUpdateService.CarriedCardImage carriedImage) {
+
+        /** Returns the state represented by an absent continuation token. */
+        public static Continuation firstEntry() {
+            return new Continuation(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED,
+                    CardUpdateService.CarriedCardImage.empty());
+        }
+
+        @Override
+        public String toString() {
+            return "Continuation[changeAction=" + changeAction
+                    + ", carriedImage=" + CONTINUATION_IMAGE_PLACEHOLDER + ']';
+        }
     }
 }

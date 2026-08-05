@@ -343,6 +343,55 @@ public final class AccountProtectedDataAdapter {
                 maskOf(customer.getEftAccountId()));
     }
 
+    /**
+     * Applies the same gate to the update screen's eight regulated values when they arrive already
+     * revealed rather than as a stored record.
+     *
+     * <p><strong>Why this form exists alongside {@link #revealForUpdate(Customer, RevealAuthorization)}.</strong>
+     * The update transaction is reproduced paragraph for paragraph in the service layer, and that layer
+     * legitimately holds the cleartext: it compares every typed field against the stored value to decide
+     * whether a change occurred, and the national identifier and the government-issued identifier are two
+     * of the fields it compares. The layering direction forbids a service from naming this class, so the
+     * service cannot apply the gate itself, and the boundary that can does not receive the record - it
+     * receives the screen the service composed. This method is the gate for exactly that shape.
+     *
+     * <p>The masking is the same masking, produced by the same helper, so the two forms cannot come to
+     * disagree about what a masked value looks like. The one asymmetry is deliberate and matches
+     * {@link #revealForUpdate}: the final four digits of the national identifier are retained, so an
+     * operator can confirm an identity without seeing it, and nothing else keeps any digit.
+     *
+     * <p><strong>What it does not and cannot check.</strong> It cannot verify that the values handed to it
+     * came out of an envelope, because they arrive already revealed. That check belongs to whoever read
+     * the column, and the service that does so reads it through the field-encryption service, which
+     * refuses a value that is not an envelope. The guarantee this method adds is the other one: on a
+     * denied path no cleartext leaves, because every returned value is built from the mask helper rather
+     * than from the value it replaces.
+     *
+     * @param cleartext the eight values as the screen composed them, never {@code null}; individual
+     *                  components may be {@code null} when the screen presents no record
+     * @param authorization the caller's authority for this record and operation, never {@code null}
+     * @return the same eight values when the authority permits a reveal, and their masks otherwise
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public AccountUpdateProtectedValues gateForUpdate(final AccountUpdateProtectedValues cleartext,
+                                                      final RevealAuthorization authorization) {
+        Objects.requireNonNull(cleartext, "cleartext must not be null");
+        Objects.requireNonNull(authorization, "authorization must not be null");
+
+        if (authorization.permitsReveal()) {
+            return cleartext;
+        }
+        return new AccountUpdateProtectedValues(
+                maskOf(cleartext.ssnPart1()),
+                maskOf(cleartext.ssnPart2()),
+                cleartext.ssnPart3(),
+                maskOf(cleartext.dateOfBirthYear()),
+                maskOf(cleartext.dateOfBirthMonth()),
+                maskOf(cleartext.dateOfBirthDay()),
+                maskOf(cleartext.governmentIssuedId()),
+                maskOf(cleartext.eftAccountId()));
+    }
+
     // ------------------------------------------------------------------------------------------
     // Inbound: seal cleartext for the columns that accept only envelopes
     // ------------------------------------------------------------------------------------------

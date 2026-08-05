@@ -1009,10 +1009,22 @@ final class AbstractCobolStepTest {
             // The secondary is reported at warning level, naming the program, and is not promoted to
             // an error: promoting it would put two failures at the same severity in the log and leave
             // an operator unable to tell which one ended the run.
+            //
+            // This assertion previously ended at "RETAINED AS SUPPRESSED", because the secondary was
+            // handed to the logger as a throwable and rendered separately from the message. That was
+            // the defect: rendering a throwable publishes its own narrative, which is where a data
+            // layer quotes the connection string it failed on. The diagnostic now names the classified
+            // failure chain in the message itself, so a reader still learns what kind of failure the
+            // release refused with while nothing the failure said is published.
             assertThat(warningDiagnostics())
-                    .as("the retained secondary must be reported once, at warning level")
+                    .as("the retained secondary must be reported once, at warning level, naming its "
+                            + "classified chain rather than its own narrative")
                     .containsExactly("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM "
-                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED");
+                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED; failureChain="
+                            + IllegalStateException.class.getSimpleName());
+            assertThat(warningDiagnostics())
+                    .as("and the secondary's own message must not reach the warning stream either")
+                    .noneMatch(text -> text.contains(secondary.getMessage()));
 
             // The primary's own diagnostics are untouched by the secondary. Running the whole
             // lifecycle emits the terminal pair plus one run-level line reporting the abnormal
@@ -1089,10 +1101,20 @@ final class AbstractCobolStepTest {
                     .as("an unguarded processing failure must not fabricate a status diagnostic")
                     .noneMatch(text -> text.contains(ORACLE_ABEND_ANNOUNCEMENT))
                     .noneMatch(text -> text.contains(secondary.getMessage()));
+
+            // As in the open-failure arm above, this expectation used to end at "RETAINED AS
+            // SUPPRESSED" because the throwable was rendered alongside the message. The classified
+            // chain now appears in the message and the throwable is no longer handed over, so the
+            // secondary's own narrative is absent from the warning stream as well as the error one.
             assertThat(warningDiagnostics())
-                    .as("the retained secondary must be reported once, at warning level")
+                    .as("the retained secondary must be reported once, at warning level, naming its "
+                            + "classified chain rather than its own narrative")
                     .containsExactly("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM "
-                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED");
+                            + PROGRAM_NAME + "; RETAINED AS SUPPRESSED; failureChain="
+                            + IllegalStateException.class.getSimpleName());
+            assertThat(warningDiagnostics())
+                    .as("and the secondary's own message must not reach the warning stream either")
+                    .noneMatch(text -> text.contains(secondary.getMessage()));
         }
 
         @Test
@@ -1623,7 +1645,7 @@ final class AbstractCobolStepTest {
 
         @Test
         @DisplayName("the template is a single-pass tasklet, so one execution is one whole lifecycle")
-        void theTemplateIsASinglePassTasklet() {
+        void theTemplateIsASinglePassTasklet() throws Exception {
             final ScriptedStep step = stepDelivering(List.of(FIRST_RECORD));
 
             assertThat(step).isInstanceOf(Tasklet.class);

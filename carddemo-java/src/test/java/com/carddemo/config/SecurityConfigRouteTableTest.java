@@ -16,9 +16,14 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.JsonRefusalBodyRenderer;
+import com.carddemo.api.BatchJobController;
+
 import com.carddemo.config.SecurityConfig.Gating;
 import com.carddemo.config.SecurityConfig.TransactionRoute;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.support.InMemoryCredentialMaster;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -161,6 +166,11 @@ class SecurityConfigRouteTableTest {
      * long enough only because the signature algorithm fixes a minimum length; the lifetime is a fixture
      * value and asserts no service level.</p>
      *
+     * <p>The credential master handed to the token provider is empty, and stays empty, because nothing
+     * here mints or checks a token: the provider is a constructor argument and no more. An empty fixture
+     * is the honest expression of that - a seeded one would suggest these assertions depended on a
+     * record.</p>
+     *
      * @return a configuration instance
      */
     private static SecurityConfig configuration() {
@@ -169,8 +179,9 @@ class SecurityConfigRouteTableTest {
                 "carddemo-java",
                 Duration.ofMinutes(30));
         return new SecurityConfig(
-                new JwtTokenProvider(properties, Clock.systemUTC()),
-                new ObjectMapper(),
+                new JwtTokenProvider(properties, Clock.systemUTC(),
+                        new SignOnStateService(new InMemoryCredentialMaster().repository())),
+                new JsonRefusalBodyRenderer(new ObjectMapper()),
                 false,
                 false,
                 false,
@@ -508,6 +519,42 @@ class SecurityConfigRouteTableTest {
                 + "reachable without a credential")
         void keepTheAnonymousSurfaceToOnePattern() {
             assertThat(TransactionRoute.enforcementPatternsFor(Gating.ANONYMOUS)).hasSize(1);
+        }
+    }
+
+    @Nested
+    @DisplayName("The batch prefix, the one gated prefix with no transaction behind it")
+    class BatchPrefix {
+
+        @Test
+        @DisplayName("covers the address the batch controller publishes, because the surface is gated by "
+                + "prefix and an address outside it would fall through to the closing catch-all")
+        void coversTheAddressTheBatchControllerPublishes() {
+            assertThat(BatchJobController.BATCH_JOBS_PATH)
+                    .startsWith(SecurityConfig.BATCH_PATH_PREFIX + "/");
+        }
+
+        @Test
+        @DisplayName("is disjoint from the administrative prefix, so the five administrative transactions "
+                + "and the non-transaction batch surface stay separately countable")
+        void isDisjointFromTheAdministrativePrefix() {
+            assertThat(SecurityConfig.BATCH_PATH_PREFIX)
+                    .isNotEqualTo(SecurityConfig.ADMIN_PATH_PREFIX)
+                    .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX);
+            assertThat(SecurityConfig.ADMIN_PATH_PREFIX)
+                    .doesNotStartWith(SecurityConfig.BATCH_PATH_PREFIX);
+        }
+
+        @Test
+        @DisplayName("is behind no registered transaction, which is why the gate is a rule of its own "
+                + "rather than a row in the table")
+        void isBehindNoRegisteredTransaction() {
+            assertThat(TransactionRoute.registeredTransactions())
+                    .as("a fabricated row would corrupt an audit whose value is matching the resource "
+                            + "definition exactly")
+                    .noneSatisfy(route -> assertThat(route.getGating().enforcementPattern())
+                            .hasValueSatisfying(pattern -> assertThat(pattern)
+                                    .startsWith(SecurityConfig.BATCH_PATH_PREFIX)));
         }
     }
 

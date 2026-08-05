@@ -21,6 +21,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -29,21 +30,26 @@ import java.util.Objects;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Transaction {@code CC00}, the sign-on screen: the translation of {@code app/cbl/COSGN00C.cbl}.
  *
- * <p><strong>What this class is for.</strong> It is the module's first repository-backed path. Every
- * other service reaches its data through a collaborator or works on values handed to it; this one reads
- * the credential master directly, because the legacy program does exactly one file access and the whole
- * transaction is that access plus the decision it drives. It is therefore also the smallest honest place
- * to establish the entity-to-result conversion the rest of the online tier will follow.
+ * <p><strong>The contract.</strong> One turn arrives as an attention key with a submitted identifier and
+ * credential, and the service answers with a {@link Decision} plus, where the turn succeeded, the signed-on
+ * identity and its user type. The exit key ends the session, an unmapped key is reported as such, and the
+ * enter key runs the sign-on. Sign-on screens the submission through an ordered blank-field cascade, folds
+ * both submitted values to upper case, reads the credential master once, and verifies the presented secret
+ * against the stored digest. An administrator user type routes to the administrative menu and every other
+ * type to the main menu, which is the only role decision this transaction makes. This service reads the
+ * credential master directly rather than through a collaborator, because the legacy program performs
+ * exactly one file access and the whole transaction is that access plus the decision it drives.
  *
- * <p><strong>The six paragraphs and where they went.</strong> {@code MAIN-PARA} becomes
- * {@link #handle(KeyAction, String, String)}, whose attention-key {@code EVALUATE} is reproduced clause
- * for clause and in source order. {@code PROCESS-ENTER-KEY} becomes {@link #signOn(String, String)}.
+ * <p><strong>The six paragraphs and where they went.</strong> {@code MAIN-PARA} becomes the explicit
+ * first-entry operation {@link #initialEntry()} plus {@link #handle(KeyAction, String, String)}, whose
+ * attention-key {@code EVALUATE} is reproduced clause for clause and in source order.
+ * {@code PROCESS-ENTER-KEY} becomes {@link #signOn(String, String)}.
  * {@code READ-USER-SEC-FILE} becomes {@link #verifyCredential(String, String)}. {@code SEND-SIGNON-SCREEN}
  * and {@code SEND-PLAIN-TEXT} have no counterpart here at all: they are terminal-write operations, and
  * what they wrote is the result this method returns. {@code POPULATE-HEADER-INFO} becomes
@@ -86,10 +92,19 @@ import org.springframework.transaction.annotation.Transactional;
  * @since 1.0.0
  */
 @Service
-public class AuthenticationService {
+public final class AuthenticationService {
+
+    /** Width of the legacy credential-master key. */
+    private static final int USER_ID_WIDTH = 8;
 
     /** Diagnostic channel, replacing the program's console writes. */
     private static final Logger LOG = LoggerFactory.getLogger(AuthenticationService.class);
+
+    /** The fixed-width space character used by the source's {@code SPACES} comparison. */
+    private static final char SPACE = ' ';
+
+    /** The null character used to represent one byte of {@code LOW-VALUES}. */
+    private static final char LOW_VALUE = '\0';
 
     /**
      * Symbolic name of the identifier field, from {@code USERIDI} of {@code app/cpy-bms/COSGN00.CPY}.
@@ -155,6 +170,25 @@ public class AuthenticationService {
     }
 
     /**
+     * Serves the first entry to transaction {@code CC00}, before any attention key is evaluated.
+     *
+     * <p>{@code COSGN00C} lines 80 to 83 test the communication-area length before the key dispatch,
+     * clear the output map and return the cursor to the user-id field. A separate operation is required
+     * in the stateless REST surface because the absence of a request body is the replacement for that
+     * zero-length communication area; treating it as an absent key would incorrectly take the
+     * {@link Decision#KEY_NOT_MAPPED} arm.
+     *
+     * @return the blank sign-on screen with the user-id field focused
+     */
+    public SignOnScreen initialEntry() {
+        LOG.debug("Sign-on screen initialized: rule=empty-communication-area");
+        final ScreenHeader header = screenHeader();
+        return new SignOnScreen(Decision.INITIAL_ENTRY, null, null, null, null, false, FIELD_USER_ID,
+                messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
+                header.currentDate(), header.currentTime());
+    }
+
+    /**
      * Handles one turn of transaction {@code CC00}, dispatching on the attention key.
      *
      * <p>Reproduces the {@code EVALUATE EIBAID} of {@code MAIN-PARA} clause for clause and in source
@@ -168,7 +202,6 @@ public class AuthenticationService {
      * @param presentedPassword the secret the operator typed, possibly absent
      * @return the screen the turn produces
      */
-    @Transactional(readOnly = true)
     public SignOnScreen handle(final KeyAction keyAction,
                               final String presentedUserId,
                               final String presentedPassword) {
@@ -193,19 +226,23 @@ public class AuthenticationService {
      * @param presentedPassword the secret the operator typed, possibly absent
      * @return the screen the attempt produces
      */
-    @Transactional(readOnly = true)
     public SignOnScreen signOn(final String presentedUserId, final String presentedPassword) {
-        if (isBlank(presentedUserId)) {
+        // Lines 132 to 136 sit after END-EVALUATE and therefore execute on every ENTER turn, including
+        // turns whose ordered blank cascade has already selected a prompt.
+        final String foldedUserId = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedUserId));
+        final String foldedPassword = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedPassword));
+
+        if (isBlank(foldedUserId)) {
             LOG.debug("Sign-on rejected: rule=identifier-required");
             return rejection(Decision.USER_ID_MISSING, true, FIELD_USER_ID);
         }
-        if (isBlank(presentedPassword)) {
+        if (isBlank(foldedPassword)) {
             LOG.debug("Sign-on rejected: rule=secret-required");
             return rejection(Decision.PASSWORD_MISSING, true, FIELD_PASSWORD);
         }
-        // Lines 130 and 134: both fields are folded, and the comparison is against the folded secret.
-        return verifyCredential(CobolStringUtils.asciiUpperFold(presentedUserId),
-                CobolStringUtils.asciiUpperFold(presentedPassword));
+        return verifyCredential(
+                CobolStringUtils.leftJustifySpaceFill(foldedUserId, USER_ID_WIDTH),
+                foldedPassword);
     }
 
     /**
@@ -213,44 +250,47 @@ public class AuthenticationService {
      *
      * <p>The legacy {@code EVALUATE WS-RESP-CD} has three arms. Response zero is a record that was found,
      * and the secret is then compared. Response thirteen is the not-found condition, which the repository
-     * expresses as an empty result. Every other response is the catch-all, which reaches this translation
-     * as a stored user type that cannot be classified - the one remaining way for a record to be present
-     * and yet unusable, now that the transport-level failures the legacy arm also covered are raised as
-     * exceptions rather than returned as codes.
+     * expresses as an empty result. Every other response is the catch-all; a Spring Data transport failure
+     * reaches this non-transactional outer method as a {@link DataAccessException} after the repository
+     * proxy has ended its own failed transaction, and is translated here to
+     * {@link Decision#UNABLE_TO_VERIFY}. Role interpretation is deliberately separate from that mapping:
+     * an undeclared role code is still a successful read and follows the source's non-administrator route.
      *
      * @param userId the folded identifier
      * @param password the folded secret
      * @return the screen the read produces
      */
     private SignOnScreen verifyCredential(final String userId, final String password) {
-        final Optional<UserSecurity> stored = userSecurityRepository.findById(userId);
+        final Optional<UserSecurity> stored;
+        try {
+            stored = userSecurityRepository.findById(userId);
+        } catch (final DataAccessException storeFailure) {
+            LOG.warn("Sign-on rejected: rule=credential-store-unavailable failureChain={}",
+                    FailureDiagnostics.failureChainOf(storeFailure));
+            return rejection(Decision.UNABLE_TO_VERIFY, true, FIELD_USER_ID);
+        }
         if (stored.isEmpty()) {
-            LOG.info("Sign-on rejected: rule=identifier-not-on-file userId={}", userId);
+            LOG.info("Sign-on rejected: rule=identifier-not-on-file");
             return rejection(Decision.USER_NOT_FOUND, true, FIELD_USER_ID);
         }
 
         final UserSecurity record = stored.orElseThrow();
-        final Optional<UserType> userType = UserType.fromCode(record.getSecUsrType());
-        if (userType.isEmpty()) {
-            // A stored type outside the declared two. The legacy catch-all arm answers this way, and
-            // admitting the operator with an unresolvable role would be the one genuinely unsafe outcome.
-            LOG.warn("Sign-on rejected: rule=stored-user-type-unclassifiable userId={}", userId);
-            return rejection(Decision.UNABLE_TO_VERIFY, true, FIELD_USER_ID);
-        }
-
         if (!credentialDigestService.matches(password, record.credentialDigest())) {
             // Line 240: this branch composes a message and leaves the error flag lowered.
-            LOG.info("Sign-on rejected: rule=secret-does-not-match userId={}", userId);
+            LOG.info("Sign-on rejected: rule=secret-does-not-match");
             return rejection(Decision.WRONG_PASSWORD, false, FIELD_PASSWORD);
         }
 
-        final NavigationService.Route route = navigationService.resolveSignOnRoute(userType.orElseThrow());
+        final String rawUserTypeCode = record.getSecUsrType();
+        final UserType authorityUserType = UserType.fromCode(rawUserTypeCode).orElse(UserType.USER);
+        final NavigationService.Route route =
+                navigationService.resolveSignOnRouteForUserTypeCode(rawUserTypeCode);
         final ScreenHeader header = screenHeader();
-        LOG.info("Sign-on admitted: userId={} userType={} route={}", userId,
-                userType.orElseThrow().getCode(), route.getRouteValue());
-        return new SignOnScreen(Decision.ADMITTED, userId, userType.orElseThrow(), route, false, null,
-                messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
-                header.currentDate(), header.currentTime());
+        LOG.info("Sign-on admitted: outcome=admitted userType={} route={}",
+                rawUserTypeCode, route.getRouteValue());
+        return new SignOnScreen(Decision.ADMITTED, userId, authorityUserType, rawUserTypeCode, route,
+                false, null, messageCatalogService.screenTitle01(),
+                messageCatalogService.screenTitle02(), header.currentDate(), header.currentTime());
     }
 
     /**
@@ -290,7 +330,7 @@ public class AuthenticationService {
      */
     private SignOnScreen terminalTurn(final Decision decision, final boolean errorFlag) {
         final ScreenHeader header = screenHeader();
-        return new SignOnScreen(decision, null, null, null, errorFlag, null,
+        return new SignOnScreen(decision, null, null, null, null, errorFlag, null,
                 messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
                 header.currentDate(), header.currentTime());
     }
@@ -312,7 +352,7 @@ public class AuthenticationService {
                                    final boolean errorFlag,
                                    final String focusScreenFieldId) {
         final ScreenHeader header = screenHeader();
-        return new SignOnScreen(decision, null, null, null, errorFlag, focusScreenFieldId,
+        return new SignOnScreen(decision, null, null, null, null, errorFlag, focusScreenFieldId,
                 messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
                 header.currentDate(), header.currentTime());
     }
@@ -337,7 +377,37 @@ public class AuthenticationService {
      * @return {@code true} when the operator supplied nothing
      */
     private static boolean isBlank(final String value) {
-        return value == null || value.isBlank();
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        return allCharactersAre(value, SPACE) || allCharactersAre(value, LOW_VALUE);
+    }
+
+    /**
+     * Substitutes the empty transported value for an absent fixed-width item so the unconditional fold can
+     * run before the ordered blank cascade.
+     *
+     * @param value the transported value
+     * @return the value, or the empty string when it was absent
+     */
+    private static String nullToEmpty(final String value) {
+        return value == null ? "" : value;
+    }
+
+    /**
+     * Tests exact fixed-width equality with one figurative character.
+     *
+     * @param value the value to inspect
+     * @param expected the character every position must hold
+     * @return {@code true} only when every position holds {@code expected}
+     */
+    private static boolean allCharactersAre(final String value, final char expected) {
+        for (int index = 0; index < value.length(); index++) {
+            if (value.charAt(index) != expected) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** The rendered header date and time of one turn. */
@@ -351,6 +421,9 @@ public class AuthenticationService {
      * a new decision cannot be added here without the wire text for it being added there.
      */
     public enum Decision {
+
+        /** The transaction was entered with no prior communication area and presents the blank screen. */
+        INITIAL_ENTRY,
 
         /** The credential verified. A destination and a user type are carried. */
         ADMITTED,
@@ -367,7 +440,7 @@ public class AuthenticationService {
         /** The record was found and the secret did not verify. The error flag stays lowered. */
         WRONG_PASSWORD,
 
-        /** The record was found and could not be used - the legacy catch-all response. */
+        /** The credential store failed with a response other than not-found - the legacy catch-all. */
         UNABLE_TO_VERIFY,
 
         /** The operator pressed the exit key. The error flag stays lowered. */
@@ -391,7 +464,8 @@ public class AuthenticationService {
      *
      * @param decision the decision the program reached
      * @param userId the folded identifier, present only when the operator was admitted
-     * @param userType the resolved role, present only when the operator was admitted
+     * @param userType the effective security authority, present only when the operator was admitted
+     * @param userTypeCode the raw one-character code read from the credential record
      * @param route the destination, present only when the operator was admitted
      * @param errorFlag whether the program raised its error flag
      * @param focusScreenFieldId the field the cursor returns to, absent when none is singled out
@@ -403,6 +477,7 @@ public class AuthenticationService {
     public record SignOnScreen(Decision decision,
                                String userId,
                                UserType userType,
+                               String userTypeCode,
                                NavigationService.Route route,
                                boolean errorFlag,
                                String focusScreenFieldId,
@@ -414,9 +489,11 @@ public class AuthenticationService {
         /**
          * Rejects an internally inconsistent turn.
          *
-         * <p>Only an admitted turn may name an operator, a role or a destination, and an admitted turn
-         * must name all three. Asserting it here rather than trusting each producer means the boundary can
-         * rely on the pairing when it decides whether to issue a session.
+         * <p>Only an admitted turn may name an operator, an effective role, a raw role code or a destination,
+         * and an admitted turn must name the operator, effective role and destination. The raw code may be
+         * absent because the legacy alternative treats every non-administrator value the same. Asserting
+         * the invariant here means the boundary can rely on the pairing when it decides whether to issue a
+         * session.
          */
         public SignOnScreen {
             Objects.requireNonNull(decision, "decision must not be null");
@@ -424,11 +501,11 @@ public class AuthenticationService {
                 Objects.requireNonNull(userId, "an admitted turn must name the operator");
                 Objects.requireNonNull(userType, "an admitted turn must name the resolved role");
                 Objects.requireNonNull(route, "an admitted turn must nominate a destination");
-            } else if (userId != null || userType != null || route != null) {
+            } else if (userId != null || userType != null || userTypeCode != null || route != null) {
                 throw new IllegalArgumentException(
-                        "a turn that did not admit the operator must name no operator, no role and no "
-                                + "destination, because the boundary decides whether to issue a session "
-                                + "from those components being present");
+                        "a turn that did not admit the operator must name no operator, no role code, no "
+                                + "effective role and no destination, because the boundary decides whether "
+                                + "to issue a session from those components being present");
             }
         }
     }

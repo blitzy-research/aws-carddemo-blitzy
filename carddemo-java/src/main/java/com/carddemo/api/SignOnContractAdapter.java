@@ -46,8 +46,9 @@ import org.springframework.stereotype.Component;
  * the originating transaction and program. Nothing in it comes from the request. That is the whole point:
  * this is the one turn that establishes identity, so identity here is derived and never accepted.
  *
- * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, whose screen writes at lines 88, 93, 121, 126, 244, 250
- * and 255 are the seven outcomes mapped below, read as read-only reference at commit SHA
+ * <p>Provenance: {@code app/cbl/COSGN00C.cbl}, whose first-entry screen at lines 80 to 83 and screen
+ * writes at lines 88, 93, 121, 126, 244, 250 and 255 are the outcomes mapped below, read as read-only
+ * reference at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
  *
@@ -85,7 +86,7 @@ public final class SignOnContractAdapter {
                 screen.route() == null ? null : screen.route().getRouteValue(),
                 navigationContextFor(screen),
                 screen.userId(),
-                screen.userType() == null ? null : screen.userType().getCode(),
+                screen.userTypeCode(),
                 SignOnResponse.TRANSACTION_NAME,
                 SignOnResponse.PROGRAM_NAME,
                 screen.title01(),
@@ -109,6 +110,7 @@ public final class SignOnContractAdapter {
      */
     private String messageFor(final AuthenticationService.Decision decision) {
         return switch (decision) {
+            case INITIAL_ENTRY -> null;
             case ADMITTED -> null;
             case USER_ID_MISSING -> SignOnResponse.MSG_PROMPT_USERID;
             case PASSWORD_MISSING -> SignOnResponse.MSG_PROMPT_PASSWD;
@@ -144,7 +146,7 @@ public final class SignOnContractAdapter {
                 screen.route().getLegacyTransactionId(),
                 screen.route().getLegacyProgramName(),
                 screen.userId(),
-                screen.userType().getCode(),
+                screen.userTypeCode(),
                 NavigationContext.ProgramContext.ENTER,
                 null, null, null, null, null, null, null, null, null);
     }

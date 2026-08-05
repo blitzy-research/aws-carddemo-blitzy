@@ -16,17 +16,18 @@
  */
 package com.carddemo.service;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,7 +38,10 @@ import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
-import com.carddemo.util.ZonedDecimalCodec;
+import com.carddemo.util.BatchCancellation;
+import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SensitiveLogRedactor;
 
 /**
  * The daily-transaction extract-and-verify pass: it walks the daily-transaction input in order and,
@@ -141,7 +145,7 @@ public class DailyTransactionReadService {
     private static final String PROGRAM_NAME = "CBTRN01C";
 
     /** JPA property backing the daily-transaction record identity, used to order the sequential scan. */
-    private static final String DALYTRAN_ID_PROPERTY = "dalytranId";
+    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
     private static final String DD_DALYTRAN = "DALYTRAN";
 
@@ -197,20 +201,16 @@ public class DailyTransactionReadService {
 
     private static final String INVALID_ACCOUNT_NUMBER_FOUND = "INVALID ACCOUNT NUMBER FOUND";
 
-    private static final String CARD_NUMBER_LABEL = "CARD NUMBER: ";
-
-    /** Line 237 aligns its label with a single space before the colon; the spacing is reproduced. */
-    private static final String ACCOUNT_ID_LABEL = "ACCOUNT ID : ";
-
-    private static final String CUSTOMER_ID_LABEL = "CUSTOMER ID: ";
-
-    private static final String ACCOUNT_NOT_FOUND = "ACCOUNT {} NOT FOUND";
+    private static final String ACCOUNT_NOT_FOUND =
+            "ACCOUNT RECORD NOT FOUND FOR RESOLVED CROSS-REFERENCE";
 
     private static final String CARD_NOT_VERIFIED =
-            "CARD NUMBER {} COULD NOT BE VERIFIED. SKIPPING TRANSACTION ID-{}";
+            "CARD NUMBER COULD NOT BE VERIFIED; SKIPPING DAILY TRANSACTION RECORD";
 
-    /** Stands in for a field the legacy program would have displayed as spaces. */
-    private static final String NOT_SUPPLIED = "(none)";
+    private static final String REDACTED_CARD_NUMBER = "***REDACTED***";
+
+    private static final String DALYTRAN_RECORD_READ =
+            "DALYTRAN-RECORD read fileStatus=00";
 
     /** {@code WS-XREF-READ-STATUS} and {@code WS-ACCT-READ-STATUS} after a successful keyed read. */
     private static final int READ_STATUS_OK = 0;
@@ -263,7 +263,18 @@ public class DailyTransactionReadService {
      *         treats as an error, after the diagnostic and the raw status have been emitted
      */
     public DailyTransactionReadResult execute() {
-        return mainPara(null);
+        return mainPara(null, Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Runs the repository-backed pass while observing a cooperative stop probe.
+     *
+     * @param stopRequested live stop probe
+     * @return the completed pass
+     */
+    public DailyTransactionReadResult execute(final BooleanSupplier stopRequested) {
+        return mainPara(null,
+                Objects.requireNonNull(stopRequested, "stopRequested must not be null"));
     }
 
     /**
@@ -277,10 +288,25 @@ public class DailyTransactionReadService {
      * @throws com.carddemo.exception.AbendException if any file operation reports a status the member
      *         treats as an error, after the diagnostic and the raw status have been emitted
      */
-    public DailyTransactionReadResult execute(final List<DailyTransaction> orderedDailyTransactions) {
+    public DailyTransactionReadResult execute(
+            final Iterable<DailyTransaction> orderedDailyTransactions) {
+        return execute(orderedDailyTransactions, Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Runs the ordered pass while observing a cooperative stop probe between records.
+     *
+     * @param orderedDailyTransactions ordered input
+     * @param stopRequested live stop probe
+     * @return the completed pass
+     */
+    public DailyTransactionReadResult execute(
+            final Iterable<DailyTransaction> orderedDailyTransactions,
+            final BooleanSupplier stopRequested) {
         Objects.requireNonNull(orderedDailyTransactions,
                 "orderedDailyTransactions must not be null");
-        return mainPara(orderedDailyTransactions);
+        return mainPara(orderedDailyTransactions,
+                Objects.requireNonNull(stopRequested, "stopRequested must not be null"));
     }
 
     /**
@@ -313,10 +339,13 @@ public class DailyTransactionReadService {
      *                       program issues its first read
      * @return the counts, the per-record outcomes and the terminal result value
      */
-    private DailyTransactionReadResult mainPara(final List<DailyTransaction> suppliedSource) {
+    private DailyTransactionReadResult mainPara(
+            final Iterable<DailyTransaction> suppliedSource,
+            final BooleanSupplier stopRequested) {
         LOG.info(START_OF_EXECUTION);
         final RunState state = new RunState();
 
+        BatchCancellation.checkpoint(stopRequested);
         dalytranOpen(state);
         custfileOpen(state);
         xreffileOpen(state);
@@ -326,6 +355,7 @@ public class DailyTransactionReadService {
 
         final Iterator<DailyTransaction> cursor = openCursor(suppliedSource);
         while (!state.endOfDailyTransFile) {
+            BatchCancellation.checkpoint(stopRequested);
             // Line 165 re-tests the flag the loop condition has already tested. It cannot be false
             // here, and it is kept because the source keeps it: a reader comparing the two should
             // find the same guard in the same place.
@@ -386,7 +416,7 @@ public class DailyTransactionReadService {
                     .orElse(null);
             readAccount(accountId, state);
             if (state.acctReadStatus != READ_STATUS_OK) {
-                LOG.warn(ACCOUNT_NOT_FOUND, orNotSupplied(accountId));
+                LOG.warn(ACCOUNT_NOT_FOUND);
                 state.accountsNotFound++;
             }
             return new DailyTransactionVerification(
@@ -399,8 +429,9 @@ public class DailyTransactionReadService {
                     afterEndOfFile);
         }
 
-        LOG.warn(CARD_NOT_VERIFIED, orNotSupplied(cardNumber),
-                orNotSupplied(sourceRecord == null ? null : sourceRecord.getDalytranId()));
+        LOG.warn(CARD_NOT_VERIFIED);
+        LOG.warn("CARD NUMBER: {}",
+                redactedCardNumber(cardNumber, REDACTED_CARD_NUMBER));
         state.cardsNotVerified++;
         return new DailyTransactionVerification(
                 sourceRecord == null ? null : sourceRecord.getDalytranId(),
@@ -468,11 +499,12 @@ public class DailyTransactionReadService {
             return crossReference;
         }
 
-        final CardCrossReference resolved = crossReference.get();
+        final CardCrossReference resolved = crossReference.orElseThrow();
         LOG.info(SUCCESSFUL_READ_OF_XREF);
-        LOG.info("{}{}", CARD_NUMBER_LABEL, resolved.getXrefCardNum());
-        LOG.info("{}{}", ACCOUNT_ID_LABEL, resolved.getXrefAcctId());
-        LOG.info("{}{}", CUSTOMER_ID_LABEL, resolved.getXrefCustId());
+        LOG.info("CARD NUMBER: {}",
+                redactedCardNumber(resolved.getXrefCardNum(), REDACTED_CARD_NUMBER));
+        LOG.info("ACCOUNT ID : {}", SensitiveLogRedactor.redact(resolved.getXrefAcctId()));
+        LOG.info("CUSTOMER ID: {}", SensitiveLogRedactor.redact(resolved.getXrefCustId()));
         return crossReference;
     }
 
@@ -735,8 +767,9 @@ public class DailyTransactionReadService {
             gateway.count();
             return FileStatus.SUCCESS.getCode();
         } catch (final DataAccessException unavailable) {
-            LOG.error("resource={} is not accessible; reporting file status {}",
-                    resourceName, FileStatus.PERMANENT_ERROR.getCode(), unavailable);
+            LOG.error("resource={} is not accessible; reporting file status {} failureChain={}",
+                    resourceName, FileStatus.PERMANENT_ERROR.getCode(),
+                    FailureDiagnostics.failureChainOf(unavailable));
             return FileStatus.PERMANENT_ERROR.getCode();
         }
     }
@@ -790,13 +823,16 @@ public class DailyTransactionReadService {
      * @param suppliedSource the caller's ordered records, or {@code null} to scan
      * @return a cursor over the records to walk
      */
-    private Iterator<DailyTransaction> openCursor(final List<DailyTransaction> suppliedSource) {
+    private Iterator<DailyTransaction> openCursor(
+            final Iterable<DailyTransaction> suppliedSource) {
         if (suppliedSource != null) {
             return suppliedSource.iterator();
         }
-        return this.dailyTransactionRepository
-                .findAll(Sort.by(Sort.Direction.ASC, DALYTRAN_ID_PROPERTY))
-                .iterator();
+        return new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                (cursor, size) -> this.dailyTransactionRepository
+                        .findByDalytranIdGreaterThanOrderByDalytranIdAsc(
+                                cursor, Limit.of(size.intValue())),
+                DailyTransaction::getDalytranId, Comparator.naturalOrder());
     }
 
     /**
@@ -829,16 +865,12 @@ public class DailyTransactionReadService {
     /**
      * {@code DISPLAY DALYTRAN-RECORD} - line 168.
      *
-     * <p>The legacy statement writes the whole record area to the console. Here it becomes one
-     * structured event carrying the same fields by name, which is how the estate's console diagnostics
-     * are translated throughout; the fixed-width 350-byte image itself belongs to the daily
-     * transaction's record mapper and is deliberately not rebuilt in this layer. No byte-parity
-     * obligation attaches to it, because this program writes no file at all.
-     *
-     * <p>The amount is brought to the canonical monetary scale through the shared codec, which
-     * truncates rather than rounds, so the logged value shows exactly the two decimals the
-     * two-decimal field holds. An absent amount is reported as absent rather than allowed to fail a
-     * diagnostic.
+     * <p>The legacy statement writes the whole record area, including the full card number, amount,
+     * merchant details, description and timestamps, to the console. Reproducing those values in an
+     * exported application log would create a second uncontrolled copy of protected transaction data.
+     * The translated diagnostic therefore preserves the one-event-per-record observation while
+     * reporting only the successful raw read status. The fixed-width image remains available to the
+     * business path and its mapper; the diagnostic is deliberately not another representation of it.
      *
      * @param dailyTransaction the record area to display
      */
@@ -846,45 +878,15 @@ public class DailyTransactionReadService {
         if (!LOG.isInfoEnabled() || dailyTransaction == null) {
             return;
         }
-        LOG.info("DALYTRAN-RECORD id={} typeCd={} catCd={} source={} desc={} amt={} merchantId={}"
-                        + " merchantName={} merchantCity={} merchantZip={} cardNum={} origTs={}"
-                        + " procTs={}",
-                orNotSupplied(dailyTransaction.getDalytranId()),
-                orNotSupplied(dailyTransaction.getDalytranTypeCd()),
-                orNotSupplied(dailyTransaction.getDalytranCatCd()),
-                orNotSupplied(dailyTransaction.getDalytranSource()),
-                orNotSupplied(dailyTransaction.getDalytranDesc()),
-                monetaryText(dailyTransaction.getDalytranAmt()),
-                orNotSupplied(dailyTransaction.getDalytranMerchantId()),
-                orNotSupplied(dailyTransaction.getDalytranMerchantName()),
-                orNotSupplied(dailyTransaction.getDalytranMerchantCity()),
-                orNotSupplied(dailyTransaction.getDalytranMerchantZip()),
-                orNotSupplied(dailyTransaction.getDalytranCardNum()),
-                orNotSupplied(dailyTransaction.getDalytranOrigTs()),
-                orNotSupplied(dailyTransaction.getDalytranProcTs()));
+        LOG.info(DALYTRAN_RECORD_READ);
+        LOG.info("CARD NUMBER: {}",
+                redactedCardNumber(dailyTransaction.getDalytranCardNum(),
+                        REDACTED_CARD_NUMBER));
     }
 
-    /**
-     * Renders a monetary value at the canonical scale, truncating as a COBOL store into a two-decimal
-     * field does.
-     *
-     * @param amount the value to render; may be {@code null}
-     * @return the rendered value, or the absent marker
-     */
-    private static String monetaryText(final BigDecimal amount) {
-        if (amount == null) {
-            return NOT_SUPPLIED;
-        }
-        return ZonedDecimalCodec.toMonetaryScale(amount).toPlainString();
-    }
-
-    /**
-     * @param value the value to render
-     * @return the value, or the marker standing in for a field the legacy program would have shown as
-     *         spaces
-     */
-    private static String orNotSupplied(final String value) {
-        return isAbsent(value) ? NOT_SUPPLIED : value;
+    private static String redactedCardNumber(final String value, final String standIn) {
+        Objects.requireNonNull(standIn, "standIn");
+        return SensitiveLogRedactor.redact(value);
     }
 
     /**

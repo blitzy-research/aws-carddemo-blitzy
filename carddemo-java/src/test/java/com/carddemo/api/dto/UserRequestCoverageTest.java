@@ -128,11 +128,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DisplayName("UserRequest :: user-maintenance request contract of legacy transactions CU00 to CU03")
 class UserRequestCoverageTest {
 
-    /** The twelve components in declaration order. */
+    /** The thirteen components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "userId", "searchUserId", "firstName", "lastName", "password", "userType",
-            "rowSelections", "displayedPageNumber", "firstUserIdOnPage", "lastUserIdOnPage", "keyAction",
-            "navigationContext");
+            "rowSelections", "displayedPageNumber", "firstUserIdOnPage", "lastUserIdOnPage",
+            "rowSnapshotToken", "keyAction", "navigationContext");
 
     /** Declared width of a user identifier, restated from the symbolic maps. */
     private static final int EXPECTED_USER_ID_WIDTH = 8;
@@ -237,7 +237,7 @@ class UserRequestCoverageTest {
     private static UserRequest fullyPopulated() {
         return new UserRequest("ADMIN001", "SRCH0001", "FIRSTNAMEEXACTLY20AB",
                 "LASTNAMEEXACTLY20ABC", CREDENTIAL, "A", tenRowsWithOneMark(4, "U"),
-                "00000002", "PAGEFRST", "PAGELAST", KeyAction.PFK08,
+                "00000002", "PAGEFRST", "PAGELAST", "sealed-page-token", KeyAction.PFK08,
                 JsonContractSupport.populatedNavigation());
     }
 
@@ -258,7 +258,7 @@ class UserRequestCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the twelve components are declared in the order the four screens submit them")
+        @DisplayName("the thirteen components are declared in screen and protected-snapshot order")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(UserRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
@@ -326,8 +326,9 @@ class UserRequestCoverageTest {
             RecordComponent[] components = UserRequest.class.getRecordComponents();
 
             assertThat(components[6].getType()).isEqualTo(List.class);
-            assertThat(components[10].getType()).isEqualTo(KeyAction.class);
-            assertThat(components[11].getType()).isEqualTo(NavigationContext.class);
+            assertThat(components[10].getType()).isEqualTo(String.class);
+            assertThat(components[11].getType()).isEqualTo(KeyAction.class);
+            assertThat(components[12].getType()).isEqualTo(NavigationContext.class);
         }
 
         @Test
@@ -522,21 +523,20 @@ class UserRequestCoverageTest {
          * Eleven of the twelve components are written outbound; the credential is not one of them.
          *
          * <p>The credential is bound write-only, so it is accepted from a client and never written
-         * back. That is a directional binding rather than a redaction: the value still reaches the
-         * service that hashes it, and only the outbound direction is closed, so a response echoing a
-         * submitted request cannot carry it. The count is therefore one fewer than the component count,
-         * and asserting the exact difference - rather than relaxing the count - is what makes a future
-         * change to the binding visible here.</p>
+         * back. The authenticated page token is likewise inbound-only on the request type: the list
+         * response publishes it, while a request echo must never be serialized as response content.
          */
         @Test
-        @DisplayName("eleven of the twelve members are written outbound, the credential being bound "
-                + "write-only")
+        @DisplayName("the credential and page token are omitted from an outbound request rendering")
         void aFullyPopulatedRequestRendersAllTwelveMembers() throws JsonProcessingException {
             JsonNode payload = payloadOf(fullyPopulated());
 
-            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 1);
+            assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 2);
             assertThat(payload.has("password"))
-                    .as("the one component not written outbound is the credential")
+                    .as("the credential is write-only")
+                    .isFalse();
+            assertThat(payload.has("rowSnapshotToken"))
+                    .as("the echoed page token is write-only on the request")
                     .isFalse();
             assertThat(payload.get("userId").asText()).isEqualTo("ADMIN001");
             assertThat(payload.get("searchUserId").asText()).isEqualTo("SRCH0001");
@@ -624,15 +624,15 @@ class UserRequestCoverageTest {
          * that number entirely from its own retained counter, so a submitted value could never have
          * influenced a page, and accepting one would create an input the legacy never had.</p>
          *
-         * <p>A round trip therefore cannot return an equal instance, and asserting that it does would
-         * require reopening one of the two bindings. What is asserted instead is that the loss is
-         * precisely those two components and that everything else survives - which is a stronger
+         * <p>A round trip therefore cannot return an equal instance. What is asserted instead is that
+         * the loss is precisely the three directionally bound components and everything else survives,
+         * which is a stronger
          * statement than equality, because it names what may change and would fail if a third component
          * silently acquired a directional binding.</p>
          */
         @Test
-        @DisplayName("a round trip loses exactly the write-only credential and the read-only page "
-                + "number, and returns every other component unchanged")
+        @DisplayName("a round trip loses the write-only credential and page token plus the read-only "
+                + "page number, and returns every other component unchanged")
         void aFullyPopulatedRequestRoundTripsWithoutItsDirectionalComponents()
                 throws JsonProcessingException {
             UserRequest request = fullyPopulated();
@@ -642,7 +642,7 @@ class UserRequestCoverageTest {
                     mapper.writeValueAsString(request), UserRequest.class);
 
             assertThat(returned)
-                    .as("two components are bound in one direction only, so equality cannot hold")
+                    .as("three components are bound in one direction only, so equality cannot hold")
                     .isNotEqualTo(request);
             assertThat(returned.password())
                     .as("the credential is write-only, so serialising dropped it")
@@ -650,13 +650,16 @@ class UserRequestCoverageTest {
             assertThat(returned.displayedPageNumber())
                     .as("the page number is read-only, so deserialising ignored it")
                     .isNull();
+            assertThat(returned.rowSnapshotToken())
+                    .as("the page token is write-only on the request, so serialising dropped it")
+                    .isNull();
 
             assertThat(returned)
-                    .as("everything else survives, so the loss is exactly those two")
+                    .as("everything else survives, so the loss is exactly those three")
                     .isEqualTo(new UserRequest(request.userId(), request.searchUserId(),
                             request.firstName(), request.lastName(), null, request.userType(),
                             request.rowSelections(), null, request.firstUserIdOnPage(),
-                            request.lastUserIdOnPage(), request.keyAction(),
+                            request.lastUserIdOnPage(), null, request.keyAction(),
                             request.navigationContext()));
             assertThat(returned.rowSelections()).containsExactlyElementsOf(request.rowSelections());
         }

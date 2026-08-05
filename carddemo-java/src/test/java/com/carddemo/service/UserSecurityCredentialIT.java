@@ -72,7 +72,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * The credential used here is an obviously synthetic phrase. The eight-character literal carried
  * in-stream by {@code app/jcl/DUSRSECJ.jcl} appears nowhere in this file.
  *
- * <p>{@code src/main/resources/db/migration/seed/V4__seed_user_security.sql} applies under this profile, so
+ * <p>{@code src/main/resources/db/migration/V4__seed_user_security.sql} applies under this profile, so
  * the table already holds the ten legacy sign-on identities when a test method begins. Every row this
  * test writes is therefore keyed inside a reserved range the seed never occupies, and the cleanup and
  * the emptiness assertions are both scoped to that range: nothing here deletes or counts a seeded row.

@@ -214,6 +214,10 @@ final class DailyTransactionReadJobConfigTest {
     /** Resolves a configured location the way a deployment does. */
     private ResourceLoader resourceLoader;
 
+    /** The shared object-store staging boundary used before a local or classpath fallback. */
+    @Mock
+    private BatchStagingArea stagingArea;
+
     /** The registry the step timer records on. */
     private MeterRegistry meterRegistry;
 
@@ -268,7 +272,7 @@ final class DailyTransactionReadJobConfigTest {
             final String tranfile) {
         return new DailyTransactionReadJobConfig(this.jobRepository, this.transactionManager,
                 this.readerFactory, this.readService, this.meterRegistry, this.resourceLoader,
-                dalytran, custfile, xreffile, cardfile, acctfile, tranfile);
+                this.stagingArea, dalytran, custfile, xreffile, cardfile, acctfile, tranfile);
     }
 
     /**
@@ -796,7 +800,8 @@ final class DailyTransactionReadJobConfigTest {
             when(readService.execute(anyList())).thenReturn(emptyPass());
             final DailyTransactionReadJobConfig configuration = new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, scriptedReaderFactory, readService, meterRegistry,
-                    resourceLoader, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED);
+                    resourceLoader, stagingArea, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED,
+                    UNSTAGED, UNSTAGED);
 
             configuration.runExtractPass();
 
@@ -820,7 +825,8 @@ final class DailyTransactionReadJobConfigTest {
             when(scriptedReaderFactory.dailyTransactionReader(any())).thenReturn(stagedReader);
             final DailyTransactionReadJobConfig configuration = new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, scriptedReaderFactory, readService, meterRegistry,
-                    resourceLoader, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED);
+                    resourceLoader, stagingArea, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED,
+                    UNSTAGED, UNSTAGED);
 
             final AbendException thrown =
                     catchThrowableOfType(AbendException.class, configuration::runExtractPass);
@@ -843,28 +849,32 @@ final class DailyTransactionReadJobConfigTest {
         void everyCollaboratorIsRequired() {
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     null, transactionManager, readerFactory, readService, meterRegistry, resourceLoader,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("jobRepository");
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     jobRepository, null, readerFactory, readService, meterRegistry, resourceLoader,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("transactionManager");
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, null, readService, meterRegistry, resourceLoader,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("readerFactory");
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, readerFactory, null, meterRegistry, resourceLoader,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("dailyTransactionReadService");
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, readerFactory, readService, null, resourceLoader,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("meterRegistry");
             assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, readerFactory, readService, meterRegistry, null,
-                    UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    stagingArea, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
                     .withMessageContaining("resourceLoader");
+            assertThatNullPointerException().isThrownBy(() -> new DailyTransactionReadJobConfig(
+                    jobRepository, transactionManager, readerFactory, readService, meterRegistry,
+                    resourceLoader, null, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED))
+                    .withMessageContaining("stagingArea");
         }
 
         @Test

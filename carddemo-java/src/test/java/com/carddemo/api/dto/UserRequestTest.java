@@ -199,16 +199,17 @@ class UserRequestTest {
      * The number of components the rendering withholds, and therefore the number of times the
      * placeholder appears in it.
      *
-     * <p>Nine: both identifiers, the browse start key, the two retained page anchors, the two name
-     * parts, the user type and the credential. The production rendering withholds each of them
+     * <p>Ten: both identifiers, the browse start key, the two retained page anchors, the two name
+     * parts, the user type, the credential and the authenticated page token. The production rendering withholds each of them
      * unconditionally, so this count does not vary with how many of them a given instance populates.
      */
-    private static final int WITHHELD_COMPONENT_COUNT = 9;
+    private static final int WITHHELD_COMPONENT_COUNT = 10;
 
     /** The labels the rendering keeps against its withheld components, in rendering order. */
     private static final List<String> WITHHELD_LABELS = List.of(
             "userId=", "searchUserId=", "firstName=", "lastName=", "password=", "userType=",
-            "firstUserIdOnPage=", "lastUserIdOnPage=", "navigationContext=");
+            "firstUserIdOnPage=", "lastUserIdOnPage=", "rowSnapshotToken=",
+            "navigationContext=");
 
     /**
      * Builds a mapper equivalent to the one the module configures.
@@ -728,9 +729,9 @@ class UserRequestTest {
             String rendered = fullyPopulated().toString();
 
             assertThat(occurrencesOf(rendered, REDACTION_PLACEHOLDER))
-                    .describedAs("nine components are withheld, so the placeholder appears nine "
+                    .describedAs("ten components are withheld, so the placeholder appears ten "
                             + "times: both identifiers, the browse key, the two page anchors, the "
-                            + "two name parts, the user type and the credential")
+                            + "two name parts, the user type, the credential and the page token")
                     .isEqualTo(WITHHELD_COMPONENT_COUNT);
         }
 
@@ -801,7 +802,7 @@ class UserRequestTest {
                         .doesNotContain(CREDENTIAL)
                         .doesNotContainIgnoringCase(CREDENTIAL);
                 assertThat(occurrencesOf(rendered, REDACTION_PLACEHOLDER))
-                        .describedAs("rendering of %s must withhold every one of the nine "
+                        .describedAs("rendering of %s must withhold every one of the ten "
                                 + "components", describePath(request))
                         .isEqualTo(WITHHELD_COMPONENT_COUNT);
             }
@@ -1704,13 +1705,20 @@ class UserRequestTest {
         }
 
         @Test
-        @DisplayName("reads the same value from an accessor however many times it is called")
+        @DisplayName("reads the value it was built from however many times an accessor is called")
         void readsTheSameValueHoweverManyTimesAnAccessorIsCalled() {
+            // The expectations are the values the add-shaped constructor was handed, restated here rather
+            // than read back from the instance: an accessor compared with itself passes on a stable but
+            // wrong value and demonstrates neither the stored value nor immutability. The selection
+            // sequence was submitted absent and is expected to read back as the frozen empty sequence on
+            // every call, never as null and never as a list that has acquired a member.
             UserRequest request = addShaped();
 
-            assertThat(request.userId()).isEqualTo(request.userId());
-            assertThat(request.password()).isEqualTo(request.password());
-            assertThat(request.rowSelections()).isEqualTo(request.rowSelections());
+            for (int read = 0; read < 2; read++) {
+                assertThat(request.userId()).isEqualTo(USER_ID);
+                assertThat(request.password()).isEqualTo(CREDENTIAL);
+                assertThat(request.rowSelections()).isEmpty();
+            }
         }
 
         @Test

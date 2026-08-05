@@ -19,6 +19,7 @@ package com.carddemo.service;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -104,7 +105,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 class JobSubmissionServiceParityTest {
 
     /** A first-in-first-out queue name, which the constructor requires. */
-    private static final String QUEUE_NAME = "carddemo-jobs.fifo";
+    private static final String QUEUE_NAME = "JOBS.fifo";
 
     /** The message group that carries one submission's cards in order. */
     private static final String MESSAGE_GROUP_ID = "carddemo-job-submission";
@@ -205,9 +206,11 @@ class JobSubmissionServiceParityTest {
      * @param payload         the body the production code set, recorded untouched
      * @param messageGroupId  the message group the production code set
      * @param deduplicationId the deduplication identifier the production code set
+     * @param headers         the message attributes the production code set, which carry the reassembly
+     *                        envelope and nothing else
      */
     private record PublishAttempt(String queue, Object payload, String messageGroupId,
-            String deduplicationId) {
+            String deduplicationId, Map<String, Object> headers) {
     }
 
     /**
@@ -288,7 +291,7 @@ class JobSubmissionServiceParityTest {
             options.accept(recorder);
 
             final PublishAttempt attempt = new PublishAttempt(recorder.queue, recorder.payload,
-                    recorder.messageGroupId, recorder.deduplicationId);
+                    recorder.messageGroupId, recorder.deduplicationId, Map.copyOf(recorder.headers));
             this.attempts.add(attempt);
 
             if (this.attempts.size() == this.failingAttempt) {
@@ -395,6 +398,20 @@ class JobSubmissionServiceParityTest {
         /** The deduplication identifier set by the caller. */
         private String deduplicationId;
 
+        /**
+         * The message attributes set by the caller.
+         *
+         * <p>Recorded rather than refused. Both header setters used to throw, on the reasoning that the
+         * eighty-byte body was the whole of what crossed the bridge. That reasoning did not survive the
+         * multi-instance case: the process-local submission lock cannot keep two instances from
+         * interleaving their cards in the one message group, and the remedy that needs no coordination
+         * service is a reassembly envelope the consumer can undo the interleaving with. The envelope is
+         * therefore a deliberate, reviewed addition to what crosses the bridge, and the guard below now
+         * asserts its exact contents instead of asserting its absence - which is a narrower assertion, not
+         * a weaker one.
+         */
+        private final Map<String, Object> headers = new LinkedHashMap<>();
+
         @Override
         public SqsSendOptions<T> queue(final String value) {
             this.queue = value;
@@ -409,12 +426,14 @@ class JobSubmissionServiceParityTest {
 
         @Override
         public SqsSendOptions<T> header(final String name, final Object value) {
-            throw new UnsupportedOperationException("the job-submission bridge sets no message header");
+            this.headers.put(name, value);
+            return this;
         }
 
         @Override
         public SqsSendOptions<T> headers(final Map<String, Object> values) {
-            throw new UnsupportedOperationException("the job-submission bridge sets no message header");
+            this.headers.putAll(values);
+            return this;
         }
 
         @Override
@@ -573,21 +592,16 @@ class JobSubmissionServiceParityTest {
         }
 
         @Test
-        @DisplayName("resubmitting the same reporting period reproduces the same seventeen card payloads "
-                + "byte for byte and the same seventeen deduplication identifiers, because the identity "
-                + "is a pure function of the request and a random one would defeat idempotency")
-        void resubmittingTheSamePeriodReproducesTheSameCardsAndTheSameIdentifiers() {
-            // Both halves of the submission are a pure function of the two date slots: nothing random
-            // and nothing time-derived takes part in composing a card, and nothing does in deriving the
-            // identity either. That is what makes a replay safe - a caller repeating an interrupted
-            // submission reissues the identifiers the first pass used, so the cards that already landed
-            // are collapsed and the ones that never did are added. A submission that is genuinely a
-            // second unit of work says so through the identity-bearing entry point instead.
+        @DisplayName("a retry under the returned identity reproduces the identifiers while the payload "
+                + "remains a pure function of the reporting period")
+        void aTrueRetryReproducesTheSameCardsAndIdentifiers() {
             final RecordingSqsOperations first = RecordingSqsOperations.acceptingEverything();
             final RecordingSqsOperations second = RecordingSqsOperations.acceptingEverything();
 
-            serviceOver(first).submitTransactionReportJob(START_DATE, END_DATE);
-            serviceOver(second).submitTransactionReportJob(START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult firstResult =
+                    serviceOver(first).submitTransactionReportJob(START_DATE, END_DATE);
+            serviceOver(second).submitTransactionReportJob(
+                    firstResult.submissionId(), START_DATE, END_DATE);
 
             final List<String> firstPayloads = new ArrayList<>();
             final List<String> firstIdentifiers = new ArrayList<>();
@@ -606,11 +620,38 @@ class JobSubmissionServiceParityTest {
                     .as("the card stream is a pure function of the two date slots")
                     .containsExactlyElementsOf(firstPayloads);
             assertThat(secondIdentifiers)
-                    .as("a replay reproduces the identifiers card for card")
+                    .as("an explicit retry reproduces the identifiers card for card")
                     .containsExactlyElementsOf(firstIdentifiers);
             assertThat(second.published().get(0).deduplicationId())
-                    .as("the identity carries the reporting period as a readable prefix")
-                    .startsWith(START_DATE);
+                    .startsWith(firstResult.submissionId() + "-");
+        }
+
+        @Test
+        @DisplayName("a replay under the SAME identity reproduces every deduplication identifier, which "
+                + "is what completes an interrupted stream instead of doubling its prefix")
+        void aReplayUnderTheSameIdentityReproducesEveryIdentifier() {
+            final RecordingSqsOperations first = RecordingSqsOperations.acceptingEverything();
+            final RecordingSqsOperations retry = RecordingSqsOperations.acceptingEverything();
+
+            final JobSubmissionService.SubmissionResult outcome =
+                    serviceOver(first).submitTransactionReportJob(START_DATE, END_DATE);
+            // The outcome reports the identity, which is the only way a caller that did not mint it can
+            // retry: the identity carries a nonce and is not recomputable from the request.
+            serviceOver(retry).submitTransactionReportJob(outcome.submissionId(), START_DATE, END_DATE);
+
+            final List<String> firstIdentifiers = new ArrayList<>();
+            for (final PublishAttempt attempt : first.published()) {
+                firstIdentifiers.add(attempt.deduplicationId());
+            }
+            final List<String> retryIdentifiers = new ArrayList<>();
+            for (final PublishAttempt attempt : retry.published()) {
+                retryIdentifiers.add(attempt.deduplicationId());
+            }
+
+            assertThat(retryIdentifiers)
+                    .as("the replay reproduces the identifiers card for card, so the queue collapses the "
+                            + "cards that already landed")
+                    .containsExactlyElementsOf(firstIdentifiers);
         }
 
         @Test
@@ -647,12 +688,10 @@ class JobSubmissionServiceParityTest {
         }
 
         @Test
-        @DisplayName("a space-padded date slot never reaches a card or an identity at all, because the slot "
-                + "is a ten-column date rather than a padded field; the derived identity is nonetheless "
-                + "free of whitespace, which is what the queue service requires of it")
-        void aSpacePaddedDateSlotIsRefusedAndTheDerivedIdentityCarriesNoWhitespace() {
+        @DisplayName("a space-padded date slot is refused, while a valid request receives a whitespace-free identity")
+        void aSpacePaddedDateSlotIsRefusedAndTheMintedIdentityCarriesNoWhitespace() {
             // Two properties are asserted together because they used to be one. A deduplication
-            // identifier may hold no whitespace, so the identity derivation condenses what it is given -
+            // identifier may hold no whitespace, so the minting condenses what it is given -
             // that condensation is retained and asserted on a well-formed submission below. But a
             // space-padded slot is no longer something that can arrive: the slot occupies ten columns of
             // an eighty-column card and every one of them is fixed by the legacy work field, so a space
@@ -671,13 +710,13 @@ class JobSubmissionServiceParityTest {
                     .as("publish attempts after a refused slot").isEmpty();
 
             final RecordingSqsOperations accepted = RecordingSqsOperations.acceptingEverything();
-            serviceOver(accepted).submitTransactionReportJob(START_DATE, END_DATE);
+            final JobSubmissionService.SubmissionResult result =
+                    serviceOver(accepted).submitTransactionReportJob(START_DATE, END_DATE);
 
             assertThat(accepted.published().get(0).deduplicationId())
-                    .as("the identity derived from the slots carries no whitespace, so the queue"
-                            + " service accepts it")
+                    .as("the minted identity carries no whitespace, so the queue service accepts it")
                     .doesNotContain(" ")
-                    .startsWith(START_DATE)
+                    .startsWith(result.submissionId())
                     .endsWith(DEDUPLICATION_ID_SEPARATOR + 1);
         }
 
@@ -1285,26 +1324,84 @@ class JobSubmissionServiceParityTest {
     class MessagingApiUse {
 
         @Test
-        @DisplayName("no message header, delay or batch send is used, so the eighty-byte body is the whole "
-                + "of what crosses the bridge")
-        void noHeaderDelayOrBatchSendIsUsed() {
+        @DisplayName("no delay and no batch send is used, and the only message attributes set are the "
+                + "three of the reassembly envelope, so the eighty-byte body is still the whole payload")
+        void noDelayOrBatchSendIsUsedAndTheOnlyAttributesAreTheEnvelope() {
             final RecordingSqsOperations queue = RecordingSqsOperations.acceptingEverything();
 
-            // Every messaging method other than send(Consumer) refuses to run, and every send option
-            // other than the four the legacy contract needs refuses to be set, so this completing at all
-            // is the assertion: the production code touched none of them.
+            // Every messaging method other than send(Consumer) refuses to run, and delaySeconds still
+            // refuses to be set, so this completing at all is part of the assertion: the production code
+            // touched none of them.
             assertThatCode(() -> serviceOver(queue).submitTransactionReportJob(START_DATE, END_DATE))
                     .doesNotThrowAnyException();
 
             assertThat(queue.published())
-                    .as("only the four contractual options are set on each message")
+                    .as("the four contractual send options, plus the enrolled envelope and nothing else")
                     .hasSize(EXPECTED_CARD_COUNT)
                     .allSatisfy(attempt -> {
                         assertThat(attempt.queue()).isNotNull();
                         assertThat(attempt.payload()).isNotNull();
                         assertThat(attempt.messageGroupId()).isNotNull();
                         assertThat(attempt.deduplicationId()).isNotNull();
+                        assertThat(attempt.headers())
+                                .as("exactly the three envelope attributes are enrolled; a fourth "
+                                        + "attribute is a widening of what crosses the bridge and must "
+                                        + "be reviewed here rather than appear silently")
+                                .containsOnlyKeys(JobSubmissionService.SUBMISSION_ID_HEADER,
+                                        JobSubmissionService.CARD_ORDINAL_HEADER,
+                                        JobSubmissionService.CARD_COUNT_HEADER);
+                        assertThat(payloadOf(attempt))
+                                .as("the envelope is carried as message attributes, so the body is still "
+                                        + "exactly the eighty-column card")
+                                .hasSize(RECORD_SIZE);
                     });
+        }
+
+        @Test
+        @DisplayName("the envelope totally orders one submission: every card names the same submission, "
+                + "the ordinals run one to seventeen, and every card declares the same total")
+        void theEnvelopeTotallyOrdersOneSubmission() {
+            final RecordingSqsOperations queue = RecordingSqsOperations.acceptingEverything();
+
+            final JobSubmissionService.SubmissionResult result =
+                    serviceOver(queue).submitTransactionReportJob(START_DATE, END_DATE);
+
+            final List<PublishAttempt> published = queue.published();
+            assertThat(published).hasSize(EXPECTED_CARD_COUNT);
+            for (int ordinal = 1; ordinal <= EXPECTED_CARD_COUNT; ordinal++) {
+                final Map<String, Object> envelope = published.get(ordinal - 1).headers();
+                assertThat(envelope.get(JobSubmissionService.SUBMISSION_ID_HEADER))
+                        .as("card %s names the submission the outcome reports, so a consumer groups by "
+                                + "the same value the caller would retry under", ordinal)
+                        .isEqualTo(result.submissionId());
+                assertThat(envelope.get(JobSubmissionService.CARD_ORDINAL_HEADER))
+                        .as("the ordinal is the card's one-based position, published as text")
+                        .isEqualTo(Integer.toString(ordinal));
+                assertThat(envelope.get(JobSubmissionService.CARD_COUNT_HEADER))
+                        .as("every card declares the same total, so a consumer knows when it holds a "
+                                + "whole stream without relying on arrival order")
+                        .isEqualTo(Integer.toString(EXPECTED_CARD_COUNT));
+            }
+        }
+
+        @Test
+        @DisplayName("the single-card entry point declares no total, because a caller driving its own "
+                + "loop has not decided one and this bridge may not invent it")
+        void theSingleCardEntryPointDeclaresNoTotal() {
+            final RecordingSqsOperations queue = RecordingSqsOperations.acceptingEverything();
+            final List<String> firstCardOnly =
+                    List.of(JclCardImageBuilder.build(START_DATE, END_DATE).get(0));
+
+            assertThat(serviceOver(queue)
+                    .writeJobSubmissionQueue(SUBMISSION_ID, firstCardOnly.get(0), 1))
+                    .isTrue();
+
+            assertThat(queue.published()).hasSize(1);
+            assertThat(queue.published().get(0).headers())
+                    .as("the submission and the ordinal are published; the total is not, and the "
+                            + "transmitted sentinel remains the stream's own end marker")
+                    .containsOnlyKeys(JobSubmissionService.SUBMISSION_ID_HEADER,
+                            JobSubmissionService.CARD_ORDINAL_HEADER);
         }
     }
 
@@ -1317,7 +1414,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a successful result normalises its failure text to the empty string")
         void aSuccessfulResultNormalisesItsFailureTextToEmpty() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(17, 17, false, "ignored text");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 17, false, "ignored text");
 
             assertThat(result.failureMessage()).isEmpty();
             assertThat(result.complete()).isTrue();
@@ -1328,7 +1425,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a failed result with no supplied text adopts the frozen operator-facing literal")
         void aFailedResultWithNoTextAdoptsTheFrozenLiteral() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(17, 8, true, "");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 8, true, "");
 
             assertThat(result.failureMessage()).isEqualTo(JobSubmissionException.DEFAULT_MESSAGE);
         }
@@ -1337,7 +1434,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a failed result never carries the text null, whatever it was constructed with")
         void aFailedResultNeverCarriesTheTextNull() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(17, 0, true, null);
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 0, true, null);
 
             assertThat(result.failureMessage())
                     .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE)
@@ -1348,7 +1445,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a failed result keeps supplied text when text was supplied")
         void aFailedResultKeepsSuppliedText() {
             final JobSubmissionService.SubmissionResult result =
-                    new JobSubmissionService.SubmissionResult(17, 3, true, "supplied text");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 3, true, "supplied text");
 
             assertThat(result.failureMessage()).isEqualTo("supplied text");
         }
@@ -1357,7 +1454,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a negative requested count is refused")
         void aNegativeRequestedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(-1, 0, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(SUBMISSION_ID, -1, 0, false, ""))
                     .withMessageContaining("cardsRequested");
         }
 
@@ -1365,7 +1462,7 @@ class JobSubmissionServiceParityTest {
         @DisplayName("a negative published count is refused")
         void aNegativePublishedCountIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(17, -1, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, -1, false, ""))
                     .withMessageContaining("cardsPublished");
         }
 
@@ -1374,7 +1471,7 @@ class JobSubmissionServiceParityTest {
                 + "one stream")
         void publishingMoreThanRequestedIsRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(17, 18, false, ""))
+                    .isThrownBy(() -> new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 18, false, ""))
                     .withMessageContaining("exceed");
         }
 
@@ -1383,11 +1480,11 @@ class JobSubmissionServiceParityTest {
                 + "with nothing published")
         void theThreeDistinguishableStatesAreDistinguishable() {
             final JobSubmissionService.SubmissionResult complete =
-                    new JobSubmissionService.SubmissionResult(17, 17, false, "");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 17, false, "");
             final JobSubmissionService.SubmissionResult partial =
-                    new JobSubmissionService.SubmissionResult(17, 8, true, "");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 8, true, "");
             final JobSubmissionService.SubmissionResult nothingPublished =
-                    new JobSubmissionService.SubmissionResult(17, 0, true, "");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 17, 0, true, "");
 
             assertThat(complete.complete()).isTrue();
             assertThat(complete.partial()).isFalse();
@@ -1404,7 +1501,7 @@ class JobSubmissionServiceParityTest {
                 + "which is a fourth, legitimate state")
         void aStreamStoppedOnTheMarkerIsNeitherCompleteNorFailed() {
             final JobSubmissionService.SubmissionResult stoppedEarly =
-                    new JobSubmissionService.SubmissionResult(3, 2, false, "");
+                    new JobSubmissionService.SubmissionResult(SUBMISSION_ID, 3, 2, false, "");
 
             assertThat(stoppedEarly.failed()).isFalse();
             assertThat(stoppedEarly.complete()).isFalse();

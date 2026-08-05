@@ -21,6 +21,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,20 +37,21 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.data.domain.Limit;
+import org.mockito.Mockito;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.domain.Example;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.repository.query.FluentQuery.FetchableFluentQuery;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
-import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
-import com.carddemo.api.dto.UserRequest;
-import com.carddemo.api.dto.UserResponse;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.exception.ValidationException;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.UserSecurityRepository;
 
 import ch.qos.logback.classic.Level;
@@ -174,6 +177,12 @@ class UserManagementServiceTest {
 
     private static final PasswordEncoder ENCODER = new BCryptPasswordEncoder(12);
 
+    private static final UserListPageTokenService PAGE_TOKEN_SERVICE =
+            new UserListPageTokenService(new SensitiveFieldEncryptionService(
+                    Base64.getEncoder().encodeToString(
+                            "carddemo-user-page-token-key-001"
+                                    .getBytes(StandardCharsets.UTF_8))));
+
     /**
      * One digest reused by the bulk list fixtures. Produced from a throwaway value at class load, so
      * it is a real digest the entity accepts without paying for twenty-five separate hashes in a test
@@ -206,7 +215,21 @@ class UserManagementServiceTest {
 
     private UserManagementService serviceFor(final FakeRepository repository) {
         return new UserManagementService(repository, messageCatalogService, navigationService,
+                PAGE_TOKEN_SERVICE, new OnlineTransactionBoundary(), recordWriterFor(repository),
                 ENCODER, FIXED_CLOCK);
+    }
+
+    private static RecordWriter recordWriterFor(final FakeRepository repository) {
+        return Mockito.mock(RecordWriter.class, invocation -> {
+            if (invocation.getMethod().getName().equals("insertIndependently")) {
+                final UserSecurity record = invocation.getArgument(0);
+                if (repository.findById(record.getSecUsrId()).isPresent()) {
+                    throw new DuplicateKeyException("duplicate test identifier");
+                }
+                return repository.save(record);
+            }
+            return null;
+        });
     }
 
     /** A fresh throwaway credential. No legacy value is ever referenced. */
@@ -214,26 +237,26 @@ class UserManagementServiceTest {
         return "T" + UUID.randomUUID().toString().substring(0, 7);
     }
 
-    private static NavigationContext reEntered() {
-        return NavigationContext.empty().withReEntry();
+    private static ScreenNavigationState reEntered() {
+        return ScreenNavigationState.empty().withReEntry();
     }
 
-    private static NavigationContext firstEntry() {
-        return NavigationContext.empty().withFirstEntry();
+    private static ScreenNavigationState firstEntry() {
+        return ScreenNavigationState.empty().withFirstEntry();
     }
 
-    private static UserRequest recordRequest(final String userId,
+    private static UserCommand recordRequest(final String userId,
                                              final String firstName,
                                              final String lastName,
                                              final String credential,
                                              final String userType,
                                              final KeyAction keyAction,
-                                             final NavigationContext context) {
-        return new UserRequest(userId, null, firstName, lastName, credential, userType, List.of(),
+                                             final ScreenNavigationState context) {
+        return new UserCommand(userId, null, firstName, lastName, credential, userType, List.of(),
                 null, null, null, keyAction, context);
     }
 
-    private static UserRequest recordRequest(final String userId,
+    private static UserCommand recordRequest(final String userId,
                                              final String firstName,
                                              final String lastName,
                                              final String credential,
@@ -242,13 +265,34 @@ class UserManagementServiceTest {
         return recordRequest(userId, firstName, lastName, credential, userType, keyAction, reEntered());
     }
 
-    private static UserRequest listRequest(final KeyAction keyAction,
+    private static UserCommand listRequest(final KeyAction keyAction,
                                            final String searchUserId,
                                            final String firstOnPage,
                                            final String lastOnPage,
                                            final List<String> rowSelections) {
-        return new UserRequest(null, searchUserId, null, null, null, null, rowSelections, null,
-                firstOnPage, lastOnPage, keyAction, reEntered());
+        return listRequest(keyAction, searchUserId, firstOnPage, lastOnPage, rowSelections, null);
+    }
+
+    private static UserCommand listRequest(final KeyAction keyAction,
+                                           final String searchUserId,
+                                           final String firstOnPage,
+                                           final String lastOnPage,
+                                           final List<String> rowSelections,
+                                           final String rowSnapshotToken) {
+        return new UserCommand(null, searchUserId, null, null, null, null, rowSelections, null,
+                firstOnPage, lastOnPage, rowSnapshotToken, keyAction, reEntered());
+    }
+
+    private UserOutcome submitSelection(final FakeRepository repository,
+                                        final String searchUserId,
+                                        final List<String> selections) {
+        final UserManagementService service = serviceFor(repository);
+        final UserOutcome displayed = service.listUsers(
+                listRequest(KeyAction.ENTER, searchUserId, null, null, List.of()));
+        final BrowseWindow page = displayed.pageMetadata();
+        return service.listUsers(listRequest(KeyAction.ENTER, null,
+                page.previousCursorKey(), page.nextCursorKey(), selections,
+                displayed.rowSnapshotToken()));
     }
 
     private static UserSecurity seed(final FakeRepository repository,
@@ -294,8 +338,27 @@ class UserManagementServiceTest {
         return true;
     }
 
-    private static List<String> userIdsOf(final UserResponse response) {
-        return response.rows().stream().map(UserResponse.UserRow::userId).toList();
+    private void assertBoundedFailureDiagnostics(
+            final int expectedCount, final String... operationFragments) {
+        final List<ILoggingEvent> failures = logCapture.list.stream()
+                .filter(event -> event.getFormattedMessage().startsWith("User "))
+                .filter(event -> event.getFormattedMessage().contains(" failed:"))
+                .toList();
+        assertThat(failures).hasSize(expectedCount).allSatisfy(event -> {
+            assertThat(event.getFormattedMessage())
+                    .contains("failureChain=IllegalStateException")
+                    .doesNotContain("store unavailable", "row locked");
+            assertThat(event.getThrowableProxy()).isNull();
+        });
+        for (final String operationFragment : operationFragments) {
+            assertThat(failures)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .anySatisfy(message -> assertThat(message).contains(operationFragment));
+        }
+    }
+
+    private static List<String> userIdsOf(final UserOutcome response) {
+        return response.rows().stream().map(UserOutcome.UserRow::userId).toList();
     }
 
     /** Positional selection markers: ten blank positions with one marked. */
@@ -305,7 +368,18 @@ class UserManagementServiceTest {
         return selections;
     }
 
-    /** An in-memory stand-in for the repository's six declared methods. */
+    /**
+     * An in-memory stand-in for the repository.
+     *
+     * <p>The repository declares no method of its own, so everything below is one of
+     * {@code JpaRepository}'s. Exactly the five the service uses are implemented - the keyed read, the
+     * paged scan, the single write, the single delete and the existence probe - and every other
+     * inherited operation <strong>refuses</strong> rather than answering. That refusal is the
+     * least-privilege rule expressed where it can actually be enforced: if a future change reaches for
+     * an unbounded {@code findAll()}, a bulk delete or a query by example, the test that exercises the
+     * new path fails immediately and names the operation, which an interface that simply did not
+     * declare the method could never do for a caller of the inherited one.
+     */
     private static final class FakeRepository implements UserSecurityRepository {
 
         private final TreeMap<String, UserSecurity> rows = new TreeMap<>();
@@ -317,8 +391,8 @@ class UserManagementServiceTest {
         private boolean failOnDelete;
 
         /**
-         * The ordinal of the projected read that should fail, counting from one. A browse positions
-         * itself and then reads rows through the same projection, so this makes the two failure arms
+         * The ordinal of the paged read that should fail, counting from one. A browse positions itself
+         * and then reads rows through the same paged call, so this makes the two failure arms
          * separately reachable: {@code 1} fails the positioning read and {@code 2} lets the browse
          * position itself and then fails the first row read.
          */
@@ -334,78 +408,29 @@ class UserManagementServiceTest {
             return Optional.ofNullable(rows.get(secUsrId));
         }
 
+        /**
+         * The paged primary-key scan, which is the browse's only read path.
+         *
+         * <p>The map is sorted on the identifier, so iteration order is already the ascending key
+         * order the browse positions against; the requested window is sliced out of it. Entities are
+         * returned rather than a projection, because the repository declares no projection: the rule
+         * that a credential is loaded but never rendered is kept by the service, and the suite asserts
+         * it by scanning the response and the captured log rather than by the absence of a column.
+         */
         @Override
-        public Page<AdminEntry> findAllProjectedBy(final Pageable pageable) {
+        public Page<UserSecurity> findAll(final Pageable pageable) {
             projectionCalls++;
             if (projectionCalls >= failProjectionFromCall) {
                 throw new IllegalStateException("store unavailable");
             }
-            final List<AdminEntry> all = new ArrayList<>(rows.size());
-            for (final UserSecurity identity : rows.values()) {
-                all.add(new FakeEntry(identity));
-            }
+            final List<UserSecurity> all = List.copyOf(rows.values());
             final int from = (int) Math.min(pageable.getOffset(), all.size());
             final int to = Math.min(from + pageable.getPageSize(), all.size());
             return new PageImpl<>(List.copyOf(all.subList(from, to)), pageable, all.size());
         }
 
-        /**
-         * The forward half of the keyset browse: the rows after the cursor, ascending, at most
-         * {@code limit} of them.
-         *
-         * <p>The comparison is strict, so the cursor row - the last one already displayed - is not
-         * listed twice, and the rows are read through the same closed projection the paged form
-         * returns, so no credential is selected on this path either. The call is counted as a
-         * projected read for the same reason: a browse positions itself and then reads its rows
-         * through this projection, so the suite's read-failure injection reaches it.
-         */
         @Override
-        public List<AdminEntry> findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(final String secUsrId,
-                final Limit limit) {
-            return projectedSlice(rows.tailMap(secUsrId, false).values(), limit);
-        }
-
-        /**
-         * The backward half of the keyset browse: the rows before the cursor, <em>descending</em>, at
-         * most {@code limit} of them.
-         *
-         * <p>Descending is the read order and not the presentation order - the legacy backward path
-         * fills its bottom slot first and works upward - so these rows arrive newest-first and the
-         * calling service reverses them before building the response. The comparison is strict for the
-         * same reason as the forward half.
-         */
-        @Override
-        public List<AdminEntry> findBySecUsrIdLessThanOrderBySecUsrIdDesc(final String secUsrId,
-                final Limit limit) {
-            return projectedSlice(rows.headMap(secUsrId, false).descendingMap().values(), limit);
-        }
-
-        /**
-         * Projects an already-ordered run of rows, stopping at the requested bound.
-         *
-         * @param ordered the rows in the order the caller's method declares
-         * @param limit   the maximum number of rows to read
-         * @return the projections, at most {@code limit} of them, never {@code null}
-         */
-        private List<AdminEntry> projectedSlice(final Collection<UserSecurity> ordered,
-                final Limit limit) {
-            projectionCalls++;
-            if (projectionCalls >= failProjectionFromCall) {
-                throw new IllegalStateException("store unavailable");
-            }
-            final int bound = limit.isLimited() ? limit.max() : Integer.MAX_VALUE;
-            final List<AdminEntry> page = new ArrayList<>();
-            for (final UserSecurity identity : ordered) {
-                if (page.size() == bound) {
-                    break;
-                }
-                page.add(new FakeEntry(identity));
-            }
-            return List.copyOf(page);
-        }
-
-        @Override
-        public UserSecurity save(final UserSecurity identity) {
+        public <S extends UserSecurity> S save(final S identity) {
             if (failOnSave) {
                 throw new IllegalStateException("store unavailable");
             }
@@ -420,29 +445,159 @@ class UserManagementServiceTest {
             }
             rows.remove(secUsrId);
         }
-    }
 
-    /** The closed projection, over an in-memory row. Carries no credential, as the contract requires. */
-    private record FakeEntry(UserSecurity identity) implements UserSecurityRepository.AdminEntry {
+        // ------------------------------------------------------------------------------------------
+        // Every other inherited operation refuses. Nothing in the module calls one, and a refusal is
+        // what turns "nothing calls it" from a claim into a test failure the moment something does.
+        // ------------------------------------------------------------------------------------------
 
         @Override
-        public String getSecUsrId() {
-            return identity.getSecUsrId();
+        public boolean existsById(final String secUsrId) {
+            if (failOnFind) {
+                throw new IllegalStateException("store unavailable");
+            }
+            return rows.containsKey(secUsrId);
         }
 
         @Override
-        public String getSecUsrFname() {
-            return identity.getSecUsrFname();
+        public List<UserSecurity> findAll() {
+            throw refusal("findAll() would read every credential in the table");
         }
 
         @Override
-        public String getSecUsrLname() {
-            return identity.getSecUsrLname();
+        public List<UserSecurity> findAll(final Sort sort) {
+            throw refusal("findAll(Sort) would read every credential in the table");
         }
 
         @Override
-        public String getSecUsrType() {
-            return identity.getSecUsrType();
+        public List<UserSecurity> findAllById(final Iterable<String> ids) {
+            throw refusal("findAllById is not one of the five operations the service uses");
+        }
+
+        @Override
+        public long count() {
+            throw refusal("count is not one of the five operations the service uses");
+        }
+
+        @Override
+        public void delete(final UserSecurity identity) {
+            throw refusal("the legacy delete removes one row by key, so deleteById is the only path");
+        }
+
+        @Override
+        public void deleteAll() {
+            throw refusal("deleteAll would remove every sign-on identity in one statement");
+        }
+
+        @Override
+        public void deleteAll(final Iterable<? extends UserSecurity> identities) {
+            throw refusal("bulk delete has no legacy counterpart");
+        }
+
+        @Override
+        public void deleteAllById(final Iterable<? extends String> ids) {
+            throw refusal("bulk delete has no legacy counterpart");
+        }
+
+        @Override
+        public void deleteAllInBatch() {
+            throw refusal("deleteAllInBatch would remove every identity and bypass the context");
+        }
+
+        @Override
+        public void deleteAllInBatch(final Iterable<UserSecurity> identities) {
+            throw refusal("bulk delete has no legacy counterpart");
+        }
+
+        @Override
+        public void deleteAllByIdInBatch(final Iterable<String> ids) {
+            throw refusal("bulk delete has no legacy counterpart");
+        }
+
+        @Override
+        public <S extends UserSecurity> List<S> saveAll(final Iterable<S> identities) {
+            throw refusal("the legacy tier rewrote one record at a time");
+        }
+
+        @Override
+        public <S extends UserSecurity> List<S> saveAllAndFlush(final Iterable<S> identities) {
+            throw refusal("the legacy tier rewrote one record at a time");
+        }
+
+        @Override
+        public <S extends UserSecurity> S saveAndFlush(final S identity) {
+            throw refusal("flush ordering is the transaction's concern, not this service's");
+        }
+
+        @Override
+        public void flush() {
+            throw refusal("flush ordering is the transaction's concern, not this service's");
+        }
+
+        @Override
+        @Deprecated
+        public UserSecurity getById(final String secUsrId) {
+            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
+        }
+
+        @Override
+        @Deprecated
+        public UserSecurity getOne(final String secUsrId) {
+            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
+        }
+
+        @Override
+        public UserSecurity getReferenceById(final String secUsrId) {
+            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
+        }
+
+        @Override
+        public <S extends UserSecurity> Optional<S> findOne(final Example<S> example) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity> List<S> findAll(final Example<S> example) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity> List<S> findAll(final Example<S> example, final Sort sort) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity> Page<S> findAll(final Example<S> example,
+                final Pageable pageable) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity> long count(final Example<S> example) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity> boolean exists(final Example<S> example) {
+            throw refusal("query by example would query over the credential attribute");
+        }
+
+        @Override
+        public <S extends UserSecurity, R> R findBy(final Example<S> example,
+                final Function<FetchableFluentQuery<S>, R> queryFunction) {
+            throw refusal("the fluent query surface would query over the credential attribute");
+        }
+
+        /**
+         * Builds the refusal an unused inherited operation raises.
+         *
+         * @param because why the module does not use the operation
+         * @return the exception to throw, never {@code null}
+         */
+        private static UnsupportedOperationException refusal(final String because) {
+            return new UnsupportedOperationException("the user-management service uses five"
+                    + " repository operations - findById, findAll(Pageable), save, deleteById and"
+                    + " existsById - and this is not one of them: " + because);
         }
     }
 
@@ -458,7 +613,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             final String submitted = throwawayCredential();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("NEWUSR01", "MARY", "JONES", submitted, "U",
                             KeyAction.ENTER));
 
@@ -479,7 +634,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             final String submitted = throwawayCredential();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("SECRETU1", "ANNA", "BLAKE", submitted, "A",
                             KeyAction.ENTER));
 
@@ -496,7 +651,7 @@ class UserManagementServiceTest {
         void buildsTheSuccessTextFromTheDelimitedIdentifier() {
             final FakeRepository repository = new FakeRepository();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("SHORT   ", "LEE", "WU", throwawayCredential(), "U",
                             KeyAction.ENTER));
 
@@ -508,7 +663,7 @@ class UserManagementServiceTest {
         void blanksTheFieldsOnSuccess() {
             final FakeRepository repository = new FakeRepository();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("BLANKED1", "OTTO", "VANCE", throwawayCredential(), "U",
                             KeyAction.ENTER));
 
@@ -529,7 +684,7 @@ class UserManagementServiceTest {
         void acceptsAnEmbeddedSpaceInAName() {
             final FakeRepository repository = new FakeRepository();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("SPACEUSR", "MARY ANN", "O BRIEN", throwawayCredential(),
                             "U", KeyAction.ENTER));
 
@@ -542,7 +697,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("the first empty item owns the summary and the cursor, while every empty item is flagged")
         void reportsTheFirstErrorAndFlagsThemAll() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .addUser(recordRequest("", "", "", "", "", KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_FIRST_NAME_EMPTY);
@@ -550,8 +705,8 @@ class UserManagementServiceTest {
             assertThat(response.generalError()).isTrue();
             assertThat(response.actionSucceeded()).isFalse();
             assertThat(response.fieldErrors()).hasSize(5)
-                    .allMatch(error -> error.state() == ErrorResponse.FieldState.MISSING);
-            assertThat(response.fieldErrors().stream().map(ErrorResponse.FieldError::fieldName))
+                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
+            assertThat(response.fieldErrors().stream().map(ValidationException.FieldError::field))
                     .containsExactly("firstName", "lastName", "userId", "password", "userType");
         }
 
@@ -577,7 +732,7 @@ class UserManagementServiceTest {
         @ValueSource(strings = {"", " ", "   "})
         @DisplayName("an absent, empty or all-space item is blank in the legacy sense")
         void treatsSpacesAsBlank(final String candidate) {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .addUser(recordRequest("B1", candidate, "FAMILY", throwawayCredential(), "U",
                             KeyAction.ENTER));
 
@@ -587,7 +742,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a first presentation validates nothing and decorates nothing")
         void appliesTheReEntryGate() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .addUser(recordRequest(null, null, null, null, null, KeyAction.ENTER,
                             firstEntry()));
 
@@ -605,7 +760,7 @@ class UserManagementServiceTest {
             final UserSecurity original =
                     seed(repository, "DUPUSR01", "FIRST", "OWNER", "U", FILLER_DIGEST);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("DUPUSR01", "OTHER", "PERSON", throwawayCredential(), "A",
                             KeyAction.ENTER));
 
@@ -615,7 +770,7 @@ class UserManagementServiceTest {
             assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_ADD_USER_ID);
             assertThat(response.fieldErrors()).singleElement()
                     .satisfies(error -> assertThat(error.state())
-                            .isEqualTo(ErrorResponse.FieldState.INVALID));
+                            .isEqualTo(ValidationException.FieldState.INVALID));
             assertThat(repository.rows.get("DUPUSR01").getSecUsrFname()).isEqualTo("FIRST");
             assertThat(repository.rows.get("DUPUSR01").credentialDigest())
                     .isEqualTo(original.credentialDigest());
@@ -627,26 +782,27 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             repository.failOnSave = true;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("BOOMUSR1", "GIVEN", "FAMILY", throwawayCredential(), "U",
                             KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_ADD_UNABLE_TO_ADD_USER);
             assertThat(response.generalError()).isTrue();
             assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_FIRST_NAME);
+            assertBoundedFailureDiagnostics(1, "User add write failed");
         }
 
         @Test
         @DisplayName("the fourth key clears the screen and the third routes to the administrative menu")
         void handlesTheAddScreenAttentionKeys() {
-            final UserResponse cleared = serviceFor(new FakeRepository())
+            final UserOutcome cleared = serviceFor(new FakeRepository())
                     .addUser(recordRequest("Z1", "GIVEN", "FAMILY", throwawayCredential(), "U",
                             KeyAction.PFK04));
             assertThat(cleared.message()).isNull();
             assertThat(cleared.userId()).isNull();
             assertThat(cleared.focusScreenFieldId()).isEqualTo(FIELD_FIRST_NAME);
 
-            final UserResponse back = serviceFor(new FakeRepository())
+            final UserOutcome back = serviceFor(new FakeRepository())
                     .addUser(recordRequest("Z2", "GIVEN", "FAMILY", null, "U", KeyAction.PFK03));
             assertThat(back.nextRoute()).isEqualTo(ROUTE_ADMIN_MENU);
         }
@@ -663,7 +819,7 @@ class UserManagementServiceTest {
             final String digestBefore = ENCODER.encode(throwawayCredential());
             seed(repository, "UPDUSR01", "JOHN", "SMITH", "U", digestBefore);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("UPDUSR01", "JOHNNY", "SMITH", null, "U",
                             KeyAction.PFK05));
 
@@ -683,7 +839,7 @@ class UserManagementServiceTest {
             final String digestBefore = ENCODER.encode(known);
             seed(repository, "UPDUSR02", "ANNE", "LEE", "U", digestBefore);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("UPDUSR02", "ANNE", "LEE", known, "U",
                             KeyAction.PFK05));
 
@@ -704,7 +860,7 @@ class UserManagementServiceTest {
             seed(repository, "UPDUSR03", "BOB", "KING", "U", digestBefore);
             final String replacement = throwawayCredential();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("UPDUSR03", "BOB", "KING", replacement, "U",
                             KeyAction.PFK05));
 
@@ -724,7 +880,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "UPDUSR04", "CARL", "WEST", "U", FILLER_DIGEST);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("UPDUSR04", "CARL", "WEST", "", "U", KeyAction.PFK05));
 
             assertThat(response.message()).isEqualTo(MSG_CREDENTIAL_EMPTY);
@@ -740,7 +896,7 @@ class UserManagementServiceTest {
             final String digest = ENCODER.encode(throwawayCredential());
             seed(repository, "LOADUSR1", "DANA", "REED", "A", digest);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("LOADUSR1", null, null, null, null, KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_UPDATE_PRESS_PF5);
@@ -760,7 +916,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("an absent identity is the legacy not-found path rather than a raised failure")
         void reportsAnAbsentIdentity() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .updateUser(recordRequest("NOSUCHID", "GIVEN", "FAMILY", null, "U",
                             KeyAction.PFK05));
 
@@ -770,7 +926,7 @@ class UserManagementServiceTest {
             assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_LIST_USER_ID);
             assertThat(response.fieldErrors()).singleElement()
                     .satisfies(error -> assertThat(error.state())
-                            .isEqualTo(ErrorResponse.FieldState.INVALID));
+                            .isEqualTo(ValidationException.FieldState.INVALID));
         }
 
         @Test
@@ -798,7 +954,7 @@ class UserManagementServiceTest {
         void distinguishesTheTwoReturningKeys() {
             final FakeRepository saving = new FakeRepository();
             seed(saving, "PF3USR01", "EVE", "HALL", "U", FILLER_DIGEST);
-            final UserResponse saved = serviceFor(saving)
+            final UserOutcome saved = serviceFor(saving)
                     .updateUser(recordRequest("PF3USR01", "EVELYN", "HALL", null, "U",
                             KeyAction.PFK03));
             assertThat(saving.rows.get("PF3USR01").getSecUsrFname()).isEqualTo("EVELYN");
@@ -806,7 +962,7 @@ class UserManagementServiceTest {
 
             final FakeRepository abandoning = new FakeRepository();
             seed(abandoning, "PF12USR1", "FRED", "NASH", "U", FILLER_DIGEST);
-            final UserResponse abandoned = serviceFor(abandoning)
+            final UserOutcome abandoned = serviceFor(abandoning)
                     .updateUser(recordRequest("PF12USR1", "FREDERICK", "NASH", null, "U",
                             KeyAction.PFK12));
             assertThat(abandoning.rows.get("PF12USR1").getSecUsrFname()).isEqualTo("FRED");
@@ -816,7 +972,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("the fourth key clears the screen and places the cursor on the identifier")
         void clearsTheUpdateScreen() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .updateUser(recordRequest("Y1", "GIVEN", "FAMILY", null, "U", KeyAction.PFK04));
 
             assertThat(response.message()).isNull();
@@ -827,7 +983,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("an empty identifier is refused before any read is attempted")
         void refusesAnEmptyIdentifier() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .updateUser(recordRequest("", "GIVEN", "FAMILY", null, "U", KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_EMPTY);
@@ -840,7 +996,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "HANDOVR1", "LUKE", "OTIS", "U", FILLER_DIGEST);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("HANDOVR1", null, null, null, null, KeyAction.ENTER,
                             firstEntry()));
 
@@ -863,6 +1019,8 @@ class UserManagementServiceTest {
             assertThat(serviceFor(readFails).updateUser(recordRequest("READFAIL", "GIVEN", "FAMILY",
                     null, "U", KeyAction.PFK05)).message())
                     .isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertBoundedFailureDiagnostics(
+                    2, "User update save failed", "User update read failed");
         }
     }
 
@@ -877,7 +1035,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "ODDTYPE1", "GINA", "PARK", rawCode, FILLER_DIGEST);
 
-            final UserResponse loaded = serviceFor(repository)
+            final UserOutcome loaded = serviceFor(repository)
                     .updateUser(recordRequest("ODDTYPE1", null, null, null, null, KeyAction.ENTER));
 
             assertThat(loaded.userType()).isEqualTo(rawCode);
@@ -892,7 +1050,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "ODDTYPE2", "GINA", "PARK", "U", FILLER_DIGEST);
 
-            final UserResponse saved = serviceFor(repository)
+            final UserOutcome saved = serviceFor(repository)
                     .updateUser(recordRequest("ODDTYPE2", "GINA", "PARK", null, rawCode,
                             KeyAction.PFK05));
 
@@ -905,7 +1063,7 @@ class UserManagementServiceTest {
         void acceptsAnUnrecognisedCodeOnAdd() {
             final FakeRepository repository = new FakeRepository();
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .addUser(recordRequest("ODDTYPE3", "GIVEN", "FAMILY", throwawayCredential(), "X",
                             KeyAction.ENTER));
 
@@ -925,7 +1083,7 @@ class UserManagementServiceTest {
             final String digest = ENCODER.encode(throwawayCredential());
             seed(repository, "DELUSR01", "IVAN", "ROSS", "A", digest);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("DELUSR01", null, null, null, null, KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_DELETE_PRESS_PF5);
@@ -942,7 +1100,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "DELUSR02", "IVAN", "ROSS", "A", FILLER_DIGEST);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("DELUSR02", "IVAN", "ROSS", null, "A",
                             KeyAction.PFK03));
 
@@ -957,7 +1115,7 @@ class UserManagementServiceTest {
             final String digest = ENCODER.encode(throwawayCredential());
             seed(repository, "DELUSR03", "IVAN", "ROSS", "A", digest);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("DELUSR03", "IVAN", "ROSS", null, "A",
                             KeyAction.PFK05));
 
@@ -985,19 +1143,20 @@ class UserManagementServiceTest {
             seed(repository, "DELFAIL1", "JUNE", "KERR", "U", FILLER_DIGEST);
             repository.failOnDelete = true;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("DELFAIL1", null, null, null, null, KeyAction.PFK05));
 
             assertThat(response.message())
                     .as("app/cbl/COUSR03C.cbl L332 names the update operation in the delete failure arm")
                     .isEqualTo(MSG_UPDATE_UNABLE_TO_UPDATE_USER);
             assertThat(response.generalError()).isTrue();
+            assertBoundedFailureDiagnostics(1, "User delete removal failed");
         }
 
         @Test
         @DisplayName("the fourth key clears the screen")
         void clearsTheDeleteScreen() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .deleteUser(recordRequest("X1", "GIVEN", "FAMILY", null, "U", KeyAction.PFK04));
 
             assertThat(response.message()).isNull();
@@ -1008,7 +1167,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("the twelfth key returns to the administrative menu")
         void returnsOnTheTwelfthKey() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .deleteUser(recordRequest("X2", "GIVEN", "FAMILY", null, "U", KeyAction.PFK12));
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_ADMIN_MENU);
@@ -1020,7 +1179,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "DELHAND1", "NORA", "PEEL", "U", FILLER_DIGEST);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("DELHAND1", null, null, null, null, KeyAction.ENTER,
                             firstEntry()));
 
@@ -1036,6 +1195,7 @@ class UserManagementServiceTest {
 
             assertThat(serviceFor(repository).deleteUser(recordRequest("READFAIL", null, null, null,
                     null, KeyAction.ENTER)).message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertBoundedFailureDiagnostics(1, "User delete read failed");
         }
 
         @Test
@@ -1065,7 +1225,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a full page carries exactly ten rows, ascending, with the page number zero-filled")
         void fillsAFullPage() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.rows()).hasSize(SCREEN_ROWS);
@@ -1074,7 +1234,7 @@ class UserManagementServiceTest {
                     "USER0010");
             assertThat(response.pageMetadata().pageSize()).isEqualTo(SCREEN_ROWS);
             assertThat(response.pageMetadata().direction())
-                    .isEqualTo(PageMetadata.PagingDirection.FORWARD);
+                    .isEqualTo(BrowseWindow.PagingDirection.FORWARD);
             assertThat(response.pageMetadata().displayedPageNumber()).isEqualTo("00000001");
             assertThat(response.pageMetadata().hasMorePages()).isTrue();
             assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
@@ -1087,7 +1247,7 @@ class UserManagementServiceTest {
         void walksForward() {
             final FakeRepository repository = repositoryOf(25);
 
-            final UserResponse second = serviceFor(repository)
+            final UserOutcome second = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, "USER0001", "USER0010",
                             List.of()));
             assertThat(userIdsOf(second)).containsExactly("USER0011", "USER0012", "USER0013",
@@ -1096,7 +1256,7 @@ class UserManagementServiceTest {
             assertThat(second.pageMetadata().displayedPageNumber()).isEqualTo("00000002");
             assertThat(second.pageMetadata().hasPreviousPages()).isTrue();
 
-            final UserResponse third = serviceFor(repository)
+            final UserOutcome third = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, "USER0011", "USER0020",
                             List.of()));
             assertThat(userIdsOf(third)).containsExactly("USER0021", "USER0022", "USER0023",
@@ -1110,7 +1270,7 @@ class UserManagementServiceTest {
         void presentsABackwardPageAscending() {
             final FakeRepository repository = repositoryOf(25);
 
-            final UserResponse fromSecond = serviceFor(repository)
+            final UserOutcome fromSecond = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", "USER0020",
                             List.of()));
 
@@ -1120,9 +1280,9 @@ class UserManagementServiceTest {
                     .containsExactly("USER0001", "USER0002", "USER0003", "USER0004", "USER0005",
                             "USER0006", "USER0007", "USER0008", "USER0009", "USER0010");
             assertThat(fromSecond.pageMetadata().direction())
-                    .isEqualTo(PageMetadata.PagingDirection.BACKWARD);
+                    .isEqualTo(BrowseWindow.PagingDirection.BACKWARD);
 
-            final UserResponse fromThird = serviceFor(repository)
+            final UserOutcome fromThird = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK07, null, "USER0021", "USER0025",
                             List.of()));
             assertThat(userIdsOf(fromThird)).containsExactly("USER0011", "USER0012", "USER0013",
@@ -1135,7 +1295,7 @@ class UserManagementServiceTest {
         void presentsAShortBackwardPageAscending() {
             final FakeRepository repository = repositoryOf(13);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", "USER0013",
                             List.of()));
 
@@ -1171,7 +1331,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a key above every row positions nowhere and reports the at-the-top text")
         void reportsAKeyPastTheEnd() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, "ZZZZZZZZ", null, null, List.of()));
 
             assertThat(response.rows()).isEmpty();
@@ -1181,7 +1341,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("an empty table yields no rows and the at-the-top text")
         void handlesAnEmptyTable() {
-            final UserResponse response = serviceFor(new FakeRepository())
+            final UserOutcome response = serviceFor(new FakeRepository())
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.rows()).isEmpty();
@@ -1191,7 +1351,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a partial single page reports no successor and carries no last-row cursor")
         void handlesAPartialFirstPage() {
-            final UserResponse response = serviceFor(repositoryOf(4))
+            final UserOutcome response = serviceFor(repositoryOf(4))
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.rows()).hasSize(4);
@@ -1205,7 +1365,7 @@ class UserManagementServiceTest {
         void listRowsCarryNoCredential() {
             final FakeRepository repository = repositoryOf(25);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.rows()).allMatch(row -> row.selector() == null);
@@ -1222,7 +1382,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("the update marker dispatches to the update screen with the marked row's identifier")
         void dispatchesTheUpdateMarker() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             selectionAt(3, "U")));
 
@@ -1233,7 +1393,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a lower-case delete marker dispatches to the delete screen")
         void dispatchesTheLowerCaseDeleteMarker() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0011", "USER0020",
                             selectionAt(SCREEN_ROWS, "d")));
 
@@ -1245,8 +1405,7 @@ class UserManagementServiceTest {
         @ValueSource(strings = {"U", "u"})
         @DisplayName("both cases of the update marker are accepted")
         void acceptsBothCasesOfTheUpdateMarker(final String marker) {
-            assertThat(serviceFor(repositoryOf(25)).listUsers(listRequest(KeyAction.ENTER, null,
-                    "USER0001", "USER0010", selectionAt(1, marker))).nextRoute())
+            assertThat(submitSelection(repositoryOf(25), null, selectionAt(1, marker)).nextRoute())
                     .isEqualTo(ROUTE_USER_UPDATE);
         }
 
@@ -1254,8 +1413,7 @@ class UserManagementServiceTest {
         @ValueSource(strings = {"D", "d"})
         @DisplayName("both cases of the delete marker are accepted")
         void acceptsBothCasesOfTheDeleteMarker(final String marker) {
-            assertThat(serviceFor(repositoryOf(25)).listUsers(listRequest(KeyAction.ENTER, null,
-                    "USER0001", "USER0010", selectionAt(1, marker))).nextRoute())
+            assertThat(submitSelection(repositoryOf(25), null, selectionAt(1, marker)).nextRoute())
                     .isEqualTo(ROUTE_USER_DELETE);
         }
 
@@ -1266,7 +1424,7 @@ class UserManagementServiceTest {
             selections.set(1, "U");
             selections.set(5, "D");
 
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             selections));
 
@@ -1280,7 +1438,7 @@ class UserManagementServiceTest {
             final List<String> selections = new ArrayList<>(Collections.nCopies(SCREEN_ROWS, ""));
             selections.set(6, "U");
 
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             selections));
 
@@ -1290,7 +1448,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("an unrecognised marker reports the invalid-selection text and rebuilds the page")
         void rejectsAnUnrecognisedMarker() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             selectionAt(1, "X")));
 
@@ -1330,7 +1488,7 @@ class UserManagementServiceTest {
             final List<String> selections =
                     new ArrayList<>(Collections.nCopies(SCREEN_ROWS, " "));
 
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             selections));
 
@@ -1341,7 +1499,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("no selection at all simply rebuilds the page")
         void rebuildsThePageWithNoSelection() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
                             List.of()));
 
@@ -1359,16 +1517,16 @@ class UserManagementServiceTest {
         void emitsTheFixedWidthUnmappedKeyText() {
             final FakeRepository repository = new FakeRepository();
 
-            final UserResponse list = serviceFor(repository)
+            final UserOutcome list = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK09, null, null, null, List.of()));
-            final UserResponse add = serviceFor(repository)
+            final UserOutcome add = serviceFor(repository)
                     .addUser(recordRequest("A", "B", "C", null, "U", KeyAction.PFK11));
-            final UserResponse update = serviceFor(repository)
+            final UserOutcome update = serviceFor(repository)
                     .updateUser(recordRequest("A", "B", "C", null, "U", KeyAction.CLEAR));
-            final UserResponse delete = serviceFor(repository)
+            final UserOutcome delete = serviceFor(repository)
                     .deleteUser(recordRequest("A", "B", "C", null, "U", KeyAction.PA1));
 
-            for (final UserResponse response : List.of(list, add, update, delete)) {
+            for (final UserOutcome response : List.of(list, add, update, delete)) {
                 assertThat(response.message().getBytes(StandardCharsets.UTF_8))
                         .hasSize(COMMON_MESSAGE_WIDTH);
                 assertThat(response.message()).endsWith(" ");
@@ -1384,8 +1542,8 @@ class UserManagementServiceTest {
         @DisplayName("a turn carrying no prior navigation state routes to sign-on on all four operations")
         void routesToSignOnWithoutPriorState() {
             final FakeRepository repository = new FakeRepository();
-            final UserRequest bare = new UserRequest(null, null, null, null, null, null, List.of(),
-                    null, null, null, KeyAction.ENTER, NavigationContext.empty());
+            final UserCommand bare = new UserCommand(null, null, null, null, null, null, List.of(),
+                    null, null, null, KeyAction.ENTER, ScreenNavigationState.empty());
 
             assertThat(serviceFor(repository).listUsers(bare).nextRoute()).isEqualTo(ROUTE_SIGN_ON);
             assertThat(serviceFor(repository).addUser(bare).nextRoute()).isEqualTo(ROUTE_SIGN_ON);
@@ -1406,7 +1564,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = new FakeRepository();
             seed(repository, "HDRUSR01", "KATE", "LYNN", "U", FILLER_DIGEST);
 
-            final UserResponse update = serviceFor(repository)
+            final UserOutcome update = serviceFor(repository)
                     .updateUser(recordRequest("HDRUSR01", null, null, null, null, KeyAction.ENTER));
             assertThat(update.currentDate()).isEqualTo("03/07/24");
             assertThat(update.currentTime()).isEqualTo("14:25:36");
@@ -1415,18 +1573,18 @@ class UserManagementServiceTest {
             assertThat(update.title01()).hasSize(40);
             assertThat(update.title02()).hasSize(40);
 
-            final UserResponse list = serviceFor(repository)
+            final UserOutcome list = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
             assertThat(list.transactionName()).isEqualTo("CU00");
             assertThat(list.programName()).isEqualTo("COUSR00C");
 
-            final UserResponse add = serviceFor(repository)
+            final UserOutcome add = serviceFor(repository)
                     .addUser(recordRequest("HDRUSR02", "GIVEN", "FAMILY", throwawayCredential(), "U",
                             KeyAction.ENTER));
             assertThat(add.transactionName()).isEqualTo("CU01");
             assertThat(add.programName()).isEqualTo("COUSR01C");
 
-            final UserResponse delete = serviceFor(repository)
+            final UserOutcome delete = serviceFor(repository)
                     .deleteUser(recordRequest("HDRUSR01", null, null, null, null, KeyAction.ENTER));
             assertThat(delete.transactionName()).isEqualTo("CU03");
             assertThat(delete.programName()).isEqualTo("COUSR03C");
@@ -1447,24 +1605,40 @@ class UserManagementServiceTest {
         @DisplayName("every collaborator is mandatory, so no partially wired instance can exist")
         void requiresEveryCollaborator() {
             final FakeRepository repository = new FakeRepository();
+            final RecordWriter recordWriter = recordWriterFor(repository);
 
             assertThatNullPointerException().isThrownBy(() -> new UserManagementService(null,
-                    messageCatalogService, navigationService, ENCODER, FIXED_CLOCK));
+                    messageCatalogService, navigationService, PAGE_TOKEN_SERVICE,
+                    new OnlineTransactionBoundary(), recordWriter, ENCODER,
+                    FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
-                    null, navigationService, ENCODER, FIXED_CLOCK));
+                    null, navigationService, PAGE_TOKEN_SERVICE, new OnlineTransactionBoundary(),
+                    recordWriter, ENCODER, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
-                    messageCatalogService, null, ENCODER, FIXED_CLOCK));
+                    messageCatalogService, null, PAGE_TOKEN_SERVICE,
+                    new OnlineTransactionBoundary(), recordWriter, ENCODER, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
-                    messageCatalogService, navigationService, null, FIXED_CLOCK));
+                    messageCatalogService, navigationService, null,
+                    new OnlineTransactionBoundary(), recordWriter, ENCODER, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
-                    messageCatalogService, navigationService, ENCODER, null));
+                    messageCatalogService, navigationService, PAGE_TOKEN_SERVICE, null,
+                    recordWriter, ENCODER, FIXED_CLOCK));
+            assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
+                    messageCatalogService, navigationService, PAGE_TOKEN_SERVICE,
+                    new OnlineTransactionBoundary(), null, ENCODER, FIXED_CLOCK));
+            assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
+                    messageCatalogService, navigationService, PAGE_TOKEN_SERVICE,
+                    new OnlineTransactionBoundary(), recordWriter, null, FIXED_CLOCK));
+            assertThatNullPointerException().isThrownBy(() -> new UserManagementService(repository,
+                    messageCatalogService, navigationService, PAGE_TOKEN_SERVICE,
+                    new OnlineTransactionBoundary(), recordWriter, ENCODER, null));
         }
 
         @Test
         @DisplayName("a first presentation of the list screen still builds its first page")
         void buildsTheFirstPageOnAFirstEntry() {
-            final UserResponse response = serviceFor(repositoryOf(12))
-                    .listUsers(new UserRequest(null, null, null, null, null, null, List.of(), null,
+            final UserOutcome response = serviceFor(repositoryOf(12))
+                    .listUsers(new UserCommand(null, null, null, null, null, null, List.of(), null,
                             null, null, KeyAction.ENTER, firstEntry()));
 
             assertThat(response.rows()).hasSize(SCREEN_ROWS);
@@ -1485,7 +1659,7 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("a blank bottom anchor on the forward key is past the end, so the page stands")
         void treatsABlankBottomAnchorAsPastTheEnd() {
-            final UserResponse response = serviceFor(repositoryOf(25))
+            final UserOutcome response = serviceFor(repositoryOf(25))
                     .listUsers(listRequest(KeyAction.PFK08, null, null, "  ", List.of()));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_ALREADY_AT_BOTTOM);
@@ -1499,12 +1673,13 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 1;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.generalError()).isTrue();
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
             assertThat(response.rows()).isEmpty();
+            assertBoundedFailureDiagnostics(1, "User list positioning failed");
         }
 
         @Test
@@ -1513,38 +1688,40 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 2;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
 
             assertThat(response.generalError()).isTrue();
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertBoundedFailureDiagnostics(1, "User list read failed");
         }
 
         @Test
         @DisplayName("a selection whose page anchor no longer exists rebuilds instead of dispatching")
         void ignoresASelectionWhoseAnchorHasGone() {
-            final UserResponse response = serviceFor(repositoryOf(12))
+            final UserOutcome response = serviceFor(repositoryOf(12))
                     .listUsers(listRequest(KeyAction.ENTER, null, "ZZZZZZZZ", null,
                             selectionAt(1, "U")));
 
-            assertThat(response.nextRoute()).isNotEqualTo(ROUTE_USER_UPDATE);
-            assertThat(response.nextRoute()).isNotEqualTo(ROUTE_USER_DELETE);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertThat(response.nextRoute()).isNull();
         }
 
         @Test
         @DisplayName("the save key reports every empty item, with the first as the summary")
         void reportsEveryEmptyItemOnTheSaveKey() {
-            final UserResponse response = serviceFor(repositoryOf(3))
+            final UserOutcome response = serviceFor(repositoryOf(3))
                     .updateUser(recordRequest("  ", "  ", "  ", null, "  ", KeyAction.PFK05));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_EMPTY);
             assertThat(response.generalError()).isTrue();
             assertThat(response.fieldErrors())
-                    .extracting(ErrorResponse.FieldError::message)
+                    .extracting(ValidationException.FieldError::message)
                     .containsExactly(MSG_USER_ID_EMPTY, MSG_FIRST_NAME_EMPTY, MSG_LAST_NAME_EMPTY,
                             MSG_USER_TYPE_EMPTY);
             assertThat(response.fieldErrors())
-                    .allMatch(error -> error.state() == ErrorResponse.FieldState.MISSING);
+                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
         }
 
         @Test
@@ -1552,7 +1729,7 @@ class UserManagementServiceTest {
         void reportsAnEmptyIdentifierOnTheDeleteScreen() {
             final FakeRepository repository = repositoryOf(3);
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .deleteUser(recordRequest("   ", null, null, null, null, KeyAction.ENTER));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_EMPTY);
@@ -1561,13 +1738,56 @@ class UserManagementServiceTest {
         }
 
         @Test
-        @DisplayName("a selection made with no echoed page anchor is resolved from the first row")
+        @DisplayName("the page token resolves a selection even when cursor echoes are absent")
         void resolvesASelectionWithNoEchoedAnchor() {
-            final UserResponse response = serviceFor(repositoryOf(12))
+            final UserOutcome response = serviceFor(repositoryOf(12))
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, selectionAt(2, "U")));
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_UPDATE);
             assertThat(response.userId()).isEqualTo("USER0002");
+        }
+
+        @Test
+        @DisplayName("an intervening insertion cannot move another user into the selected row")
+        void resolvesTheSelectedIdentityFromTheFrozenSnapshot() {
+            final FakeRepository repository = repositoryOf(12);
+            final UserManagementService service = serviceFor(repository);
+            final UserOutcome displayed = service.listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+            seed(repository, "AAAA0001", "NEW", "EARLIER", "U", FILLER_DIGEST);
+
+            final UserOutcome response = service.listUsers(listRequest(KeyAction.ENTER, null,
+                    displayed.pageMetadata().previousCursorKey(),
+                    displayed.pageMetadata().nextCursorKey(), selectionAt(2, "U"),
+                    displayed.rowSnapshotToken()));
+
+            assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_UPDATE);
+            assertThat(response.userId())
+                    .as("row two must remain the identifier displayed before the insertion")
+                    .isEqualTo("USER0002")
+                    .isNotEqualTo("USER0001");
+        }
+
+        @Test
+        @DisplayName("a tampered page token is refused without dispatching")
+        void refusesATamperedPageToken() {
+            final FakeRepository repository = repositoryOf(12);
+            final UserManagementService service = serviceFor(repository);
+            final UserOutcome displayed = service.listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+            final String token = displayed.rowSnapshotToken();
+            final int changedIndex = token.length() / 2;
+            final char replacement = token.charAt(changedIndex) == 'A' ? 'B' : 'A';
+            final String tampered = token.substring(0, changedIndex) + replacement
+                    + token.substring(changedIndex + 1);
+
+            final UserOutcome response = service.listUsers(listRequest(KeyAction.ENTER, null,
+                    displayed.pageMetadata().previousCursorKey(),
+                    displayed.pageMetadata().nextCursorKey(), selectionAt(1, "D"), tampered));
+
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertThat(response.nextRoute()).isNull();
         }
 
         @Test
@@ -1576,12 +1796,13 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 1;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", null, List.of()));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
             assertThat(response.generalError()).isTrue();
             assertThat(response.rows()).isEmpty();
+            assertBoundedFailureDiagnostics(1, "User list anchor probe failed");
         }
 
         @Test
@@ -1590,11 +1811,12 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 1;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, null, "USER0010", List.of()));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
             assertThat(response.generalError()).isTrue();
+            assertBoundedFailureDiagnostics(1, "User list anchor probe failed");
         }
 
         @Test
@@ -1603,7 +1825,7 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 1;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", null,
                             selectionAt(3, "U")));
 
@@ -1618,30 +1840,31 @@ class UserManagementServiceTest {
             final FakeRepository repository = repositoryOf(25);
             repository.failProjectionFromCall = 2;
 
-            final UserResponse response = serviceFor(repository)
+            final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, null, "USER0010", List.of()));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
             assertThat(response.generalError()).isTrue();
+            assertBoundedFailureDiagnostics(1, "User list row probe failed");
         }
 
         @Test
         @DisplayName("a handed-over selection whose row has since gone reports it as not found")
         void reportsAHandedOverSelectionThatHasGone() {
-            final UserResponse response = serviceFor(new FakeRepository()).updateUser(
+            final UserOutcome response = serviceFor(new FakeRepository()).updateUser(
                     recordRequest("GONE0001", null, null, null, null, KeyAction.ENTER, firstEntry()));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);
             assertThat(response.generalError()).isTrue();
             assertThat(response.fieldErrors())
-                    .extracting(ErrorResponse.FieldError::message)
+                    .extracting(ValidationException.FieldError::message)
                     .containsExactly(MSG_USER_ID_NOT_FOUND);
         }
 
         @Test
         @DisplayName("the same handover on the delete screen reports it the same way")
         void reportsAHandedOverDeleteSelectionThatHasGone() {
-            final UserResponse response = serviceFor(new FakeRepository()).deleteUser(
+            final UserOutcome response = serviceFor(new FakeRepository()).deleteUser(
                     recordRequest("GONE0002", null, null, null, null, KeyAction.ENTER, firstEntry()));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);

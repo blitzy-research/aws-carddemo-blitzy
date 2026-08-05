@@ -18,6 +18,7 @@ package com.carddemo.batch.step;
 
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
+import com.carddemo.util.BatchCancellation;
 import com.carddemo.util.FailureDiagnostics;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -27,9 +28,13 @@ import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.JobInterruptedException;
 import org.springframework.batch.core.StepContribution;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
@@ -135,6 +140,8 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
     private static final String OUTCOME_COMPLETED = "COMPLETED";
 
     private static final String OUTCOME_ABENDED = "ABENDED";
+
+    private static final String OUTCOME_STOPPED = "STOPPED";
 
     private static final String RAW_STATUS_ABSENT = "(none)";
 
@@ -285,16 +292,45 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      * @return the summary of a completed run
      */
     public final ExecutionSummary run() {
+        return run(Thread.currentThread()::isInterrupted);
+    }
+
+    /**
+     * Runs the lifecycle while observing the framework's cooperative stop state between records.
+     *
+     * @param stepExecution running step whose stop state is observed
+     * @return the summary of a completed run
+     * @throws JobInterruptedException when the step or its worker thread requests a stop
+     */
+    public final ExecutionSummary run(final StepExecution stepExecution)
+            throws JobInterruptedException {
+        try {
+            return run(BatchCancellation.requestedBy(stepExecution));
+        } catch (final CancellationException stopped) {
+            throw BatchCancellation.interrupted(stopped);
+        }
+    }
+
+    /**
+     * Runs the lifecycle with a caller-supplied live stop probe.
+     *
+     * @param stopRequested probe checked before open and between records
+     * @return the summary of a completed run
+     * @throws CancellationException when the probe requests a stop
+     */
+    public final ExecutionSummary run(final BooleanSupplier stopRequested) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         final String startedAt = currentBatchTimestamp();
         LOGGER.info("START OF EXECUTION OF PROGRAM {} - {}", this.programName, startedAt);
 
         long recordsRead = 0L;
         try {
+            BatchCancellation.checkpoint(stopRequested);
             openResources();
 
             boolean endOfFile = false;
             while (!endOfFile) {
+                BatchCancellation.checkpoint(stopRequested);
                 final Optional<R> nextRecord = Objects.requireNonNull(readNextRecord(),
                         "readNextRecord must report an Optional, never null");
                 if (nextRecord.isPresent()) {
@@ -306,6 +342,12 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
             }
 
             closeResources();
+        } catch (final CancellationException stopped) {
+            releaseAfterFailure(stopped);
+            recordExecutionTime(sample, OUTCOME_STOPPED);
+            LOGGER.info("EXECUTION OF PROGRAM {} STOPPED AFTER {} RECORD(S) READ",
+                    this.programName, recordsRead);
+            throw stopped;
         } catch (RuntimeException primary) {
             releaseAfterFailure(primary);
             recordExecutionTime(sample, OUTCOME_ABENDED);
@@ -331,8 +373,13 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
      */
     @Override
     public final RepeatStatus execute(final StepContribution contribution,
-            final ChunkContext chunkContext) {
-        run();
+            final ChunkContext chunkContext) throws JobInterruptedException {
+        if (chunkContext == null) {
+            run();
+            return RepeatStatus.FINISHED;
+        }
+        final StepExecution stepExecution = chunkContext.getStepContext().getStepExecution();
+        run(stepExecution);
         return RepeatStatus.FINISHED;
     }
 
@@ -567,8 +614,9 @@ public abstract class AbstractCobolStep<R> implements Tasklet {
             releaseResources();
         } catch (RuntimeException secondary) {
             primary.addSuppressed(secondary);
-            LOGGER.warn("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM {}; RETAINED AS SUPPRESSED",
-                    this.programName, secondary);
+            LOGGER.warn("SECONDARY FAILURE RELEASING HANDLES OF PROGRAM {}; RETAINED AS SUPPRESSED;"
+                    + " failureChain={}", this.programName,
+                    FailureDiagnostics.failureChainOf(secondary));
         }
     }
 

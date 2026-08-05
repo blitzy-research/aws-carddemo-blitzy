@@ -17,19 +17,20 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.step.AbstractCobolStep;
-import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.FileMaintenanceService;
+import com.carddemo.util.BatchCancellation;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Clock;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.function.LongSupplier;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+import java.util.function.ToLongFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -91,14 +92,15 @@ import org.springframework.transaction.PlatformTransactionManager;
  * and the transaction-category-balance record are <em>both</em> 50 bytes, and they are otherwise
  * unrelated files with different keys, different owners and different lifecycles.
  *
- * <p>{@link ProbeMode#CROSS_REFERENCE} therefore binds to {@link CardCrossReference} through
- * {@link CardCrossReferenceRepository}, keyed on the 16-character cross-reference card number, at 50
- * bytes. <strong>It must never bind to the transaction category balance.</strong> The consequence for
- * this configuration is concrete: {@link FileMaintenanceService} exposes entry points for the account,
- * card and customer readers and a fourth entry point that carries the misattribution in its own name,
- * so this job drives the first three through the service and drives the cross-reference through
- * {@link AbstractCobolStep} over the cross-reference repository instead. Nothing outside this package
- * is corrected from here; the finding is raised for {@code docs/decision-log.md}.
+ * <p>{@link ProbeMode#CROSS_REFERENCE} therefore binds to the card cross-reference cluster, keyed on the
+ * 16-character cross-reference card number, at 50 bytes. <strong>It must never bind to the transaction
+ * category balance.</strong> The misattribution has since been corrected at its source:
+ * {@link FileMaintenanceService} now translates {@code CBACT03C} as the cross-reference reader it is, so
+ * all four modes of this job delegate to that service and this configuration carries no reader of its own.
+ * An earlier revision did carry one - a second translation of the same five paragraphs, written on the
+ * batch tier's step template purely to avoid the misattributed entry point - and it is gone, because a
+ * paragraph of a member must have exactly one Java owner or the traceability matrix has two answers for
+ * one row. The correction is recorded in {@code docs/decision-log.md}.
  *
  * <h2>Sequential access on an indexed file is ascending primary-key order</h2>
  *
@@ -195,8 +197,13 @@ public final class FileProbeJobConfig {
      * <p>Stable and configuration-time. It is never assembled from a job parameter, because the
      * framework resolves a job instance by name and a name that varied with a parameter would make
      * every launch a different job.
+     *
+     * <p>The value is read from {@code service/BatchJobCatalog}, which is the module's single
+     * declaration of the nine stable job names. Both tiers that need a name - this configuration
+     * and the operational control surface above it - resolve it from there, so the name exists as
+     * one literal and the two cannot drift apart across a boundary the layering keeps closed.
      */
-    public static final String FILE_PROBE_JOB_NAME = "fileProbeJob";
+    public static final String FILE_PROBE_JOB_NAME = BatchJobCatalog.FILE_PROBE_JOB_NAME;
 
     /** The one step name, and the bean name it is published under. */
     public static final String FILE_PROBE_STEP_NAME = "fileProbeStep";
@@ -248,6 +255,9 @@ public final class FileProbeJobConfig {
     /** Outcome tag value of a probe that ended on the abend path. */
     private static final String OUTCOME_ABENDED = "ABENDED";
 
+    /** Outcome tag value of a probe that observed a cooperative stop. */
+    private static final String OUTCOME_STOPPED = "STOPPED";
+
     /** Message emitted as a probe begins, naming everything the mode binds. */
     private static final String PROBE_STARTING =
             "FILE PROBE STARTING - mode={} program={} resource={} recordLength={}";
@@ -263,9 +273,6 @@ public final class FileProbeJobConfig {
     /** Message reporting the raw status that ended a delegated reader's loop. */
     private static final String PROBE_TERMINAL_STATUS =
             "FILE PROBE TERMINAL STATUS - mode={} resource={} fileStatus={} atEndOfFile={}";
-
-    /** Template of one record image, matching the convention the service readers already use. */
-    private static final String RECORD_IMAGE = "record={}";
 
     /**
      * The four files the collapsed job can probe, each carrying everything the collapse needs to know
@@ -500,11 +507,8 @@ public final class FileProbeJobConfig {
     /** The shared parameter incrementer that lets an identical launch be resubmitted. */
     private final JobParametersIncrementer jobRunIncrementer;
 
-    /** The translation of all four reader programs, driving three of the four modes. */
+    /** The translation of all four reader programs, driving every one of the four modes. */
     private final FileMaintenanceService fileMaintenanceService;
-
-    /** The cross-reference cluster's migrated home, driving the fourth mode. */
-    private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
     /** The registry the probe timer and record counter are recorded on; never a new registry. */
     private final MeterRegistry meterRegistry;
@@ -526,7 +530,6 @@ public final class FileProbeJobConfig {
      * @param jobBoundaryListener          the shared job-boundary diagnostic
      * @param jobRunIncrementer            the shared parameter incrementer
      * @param fileMaintenanceService       the translation of the four reader programs
-     * @param cardCrossReferenceRepository the cross-reference cluster's migrated home
      * @param meterRegistry                the registry the probe meters are recorded on
      * @param clock                        the module's single time source
      * @throws NullPointerException if any collaborator is {@code null}, which is a wiring error
@@ -537,7 +540,6 @@ public final class FileProbeJobConfig {
             @Qualifier("batchJobBoundaryListener") final JobExecutionListener jobBoundaryListener,
             @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer jobRunIncrementer,
             final FileMaintenanceService fileMaintenanceService,
-            final CardCrossReferenceRepository cardCrossReferenceRepository,
             final MeterRegistry meterRegistry,
             final Clock clock) {
         this.jobRepository = Objects.requireNonNull(jobRepository, "jobRepository");
@@ -548,8 +550,6 @@ public final class FileProbeJobConfig {
         this.jobRunIncrementer = Objects.requireNonNull(jobRunIncrementer, "jobRunIncrementer");
         this.fileMaintenanceService =
                 Objects.requireNonNull(fileMaintenanceService, "fileMaintenanceService");
-        this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
-                "cardCrossReferenceRepository");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -642,24 +642,25 @@ public final class FileProbeJobConfig {
      * without binding it is a compilation failure rather than a run-time surprise, and no arm falls
      * through into another.
      *
-     * <p>Three arms delegate to {@link FileMaintenanceService}, which is the translation of all four
-     * reader programs and owns the read loop, the record emissions and the status normalisation for
-     * them. The fourth cannot: that service's entry point for {@code CBACT03C} carries the
-     * transaction-category-balance misattribution in its own name, and this mode must bind to the card
-     * cross-reference. It is therefore driven through {@link AbstractCobolStep}, the template that owns
-     * the same open, read-loop, status-check, close and abend skeleton, so the loop is still not
-     * reimplemented here and the status model is still not duplicated.
+     * <p>All four arms delegate to {@link FileMaintenanceService}, which is the translation of all four
+     * reader programs and owns the read loop, the record emissions and the status normalisation for every
+     * one of them. The symmetry is the point: nothing about a read loop, a record emission or a status
+     * normalisation is written in this file, so this configuration cannot drift from the members while the
+     * service still matches them.
      *
      * @param  mode the mode a launch selected
      * @return a supplier that performs the pass and reports how many records it read
      */
-    private LongSupplier probeFor(final ProbeMode mode) {
+    private ToLongFunction<BooleanSupplier> probeFor(final ProbeMode mode) {
         return switch (mode) {
-            case ACCOUNT -> () -> recordsRead(mode, this.fileMaintenanceService.readAccountFile());
-            case CARD -> () -> recordsRead(mode, this.fileMaintenanceService.readCardFile());
-            case CUSTOMER -> () -> recordsRead(mode, this.fileMaintenanceService.readCustomerFile());
-            case CROSS_REFERENCE -> () -> new CrossReferenceProbe(this.cardCrossReferenceRepository,
-                    this.meterRegistry, this.clock).run().recordsRead();
+            case ACCOUNT -> stop -> recordsRead(
+                    mode, this.fileMaintenanceService.readAccountFile(stop));
+            case CARD -> stop -> recordsRead(
+                    mode, this.fileMaintenanceService.readCardFile(stop));
+            case CUSTOMER -> stop -> recordsRead(
+                    mode, this.fileMaintenanceService.readCustomerFile(stop));
+            case CROSS_REFERENCE -> stop -> recordsRead(
+                    mode, this.fileMaintenanceService.readCardCrossReferenceFile(stop));
         };
     }
 
@@ -705,7 +706,7 @@ public final class FileProbeJobConfig {
         private final ProbeMode mode;
 
         /** The bound reader: performs the pass and reports how many records it delivered. */
-        private final LongSupplier probe;
+        private final ToLongFunction<BooleanSupplier> probe;
 
         /** The registry the two probe meters are recorded on. */
         private final MeterRegistry meterRegistry;
@@ -716,7 +717,7 @@ public final class FileProbeJobConfig {
          * @param meterRegistry the registry the probe meters are recorded on
          * @throws NullPointerException if any argument is {@code null}
          */
-        FileProbeTasklet(final ProbeMode mode, final LongSupplier probe,
+        FileProbeTasklet(final ProbeMode mode, final ToLongFunction<BooleanSupplier> probe,
                 final MeterRegistry meterRegistry) {
             this.mode = Objects.requireNonNull(mode, "mode");
             this.probe = Objects.requireNonNull(probe, "probe");
@@ -733,14 +734,20 @@ public final class FileProbeJobConfig {
          */
         @Override
         public RepeatStatus execute(final StepContribution contribution,
-                final ChunkContext chunkContext) {
+                final ChunkContext chunkContext) throws Exception {
             final Timer.Sample sample = Timer.start(this.meterRegistry);
             LOG.info(PROBE_STARTING, this.mode.parameterValue(), this.mode.legacyProgramName(),
                     this.mode.logicalResourceName(), this.mode.recordLength());
 
             final long recordsRead;
             try {
-                recordsRead = this.probe.getAsLong();
+                final BooleanSupplier stopRequested = chunkContext == null
+                        ? Thread.currentThread()::isInterrupted
+                        : BatchCancellation.requestedBy(chunkContext);
+                recordsRead = this.probe.applyAsLong(stopRequested);
+            } catch (final CancellationException stopped) {
+                recordProbeDuration(sample, OUTCOME_STOPPED);
+                throw BatchCancellation.interrupted(stopped);
             } catch (RuntimeException abended) {
                 recordProbeDuration(sample, OUTCOME_ABENDED);
                 LOG.error(PROBE_ABENDED, this.mode.logicalResourceName(),
@@ -781,149 +788,6 @@ public final class FileProbeJobConfig {
                     .tag(TAG_PROGRAM, this.mode.legacyProgramName())
                     .tag(TAG_RESOURCE, this.mode.logicalResourceName())
                     .register(this.meterRegistry);
-        }
-    }
-
-    /**
-     * The cross-reference pass, expressed on the batch tier's template because the service layer has no
-     * entry point that binds the card cross-reference.
-     *
-     * <p>It exists for one reason and the reason is a correction. The service that translates the other
-     * three reader programs attributes {@code CBACT03C} to the transaction-category-balance file, which
-     * measurement of that member disproves; binding this mode to the category balance would compile,
-     * would pass a test written under the same misunderstanding, and would report a healthy file while
-     * never opening the one the launch named. So the mode is bound here, to
-     * {@link CardCrossReference} through {@link CardCrossReferenceRepository}, on the 16-character
-     * cross-reference card number, at 50 bytes.
-     *
-     * <p>Nothing about the read loop or the status model is reimplemented. {@link AbstractCobolStep}
-     * supplies the open, read-loop, status-check, close and abend skeleton that all ten batch programs
-     * repeat, the two-level status model in which end of file is a distinct outcome and never an error,
-     * the ordered failure path that emits the raw two-byte status before the abend announcement, and the
-     * 26-character batch timestamp form. This class supplies only what {@code CBACT03C} itself supplies:
-     * which file to open, how to advance it, and what to emit for a record.
-     *
-     * <p>The pass is ordered. The scan is issued with {@link ProbeMode#keyOrder()}, an ascending order
-     * on the primary key, because sequential access over an indexed file returns records in that order
-     * and every record reaches the diagnostic channel.
-     *
-     * <p>The record is emitted <strong>twice</strong> per successful read, once from the read paragraph's
-     * own emission at line 96 of the member and once from the mainline's at line 78. The duplication is
-     * in the source and is reproduced rather than tidied away, which is also how the service reproduces
-     * the identical duplication in the account reader.
-     *
-     * <p>The cursor is per-execution mutable state, which is why an instance is built for one pass and
-     * discarded: it is never held by the configuration and never shared between executions.
-     */
-    private static final class CrossReferenceProbe extends AbstractCobolStep<CardCrossReference> {
-
-        /** The one mode this probe serves, fixed at compile time. */
-        private static final ProbeMode MODE = ProbeMode.CROSS_REFERENCE;
-
-        /** The cross-reference cluster's migrated home. */
-        private final CardCrossReferenceRepository cardCrossReferenceRepository;
-
-        /** The open cursor over the ordered scan; {@code null} before the open and after the close. */
-        private Iterator<CardCrossReference> cursor;
-
-        /**
-         * @param cardCrossReferenceRepository the cross-reference cluster's migrated home
-         * @param meterRegistry                the registry the template's own step timer is recorded on
-         * @param clock                        the time source the batch timestamps are read from
-         * @throws NullPointerException if any argument is {@code null}
-         */
-        CrossReferenceProbe(final CardCrossReferenceRepository cardCrossReferenceRepository,
-                final MeterRegistry meterRegistry, final Clock clock) {
-            super(MODE.legacyProgramName(), meterRegistry, clock);
-            this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
-                    "cardCrossReferenceRepository");
-        }
-
-        /** Opens the file: the ordered scan, guarded and status-checked by the template. */
-        @Override
-        protected void openResources() {
-            openResource(MODE.logicalResourceName(), this::openCursor);
-        }
-
-        /**
-         * Establishes the cursor in ascending primary-key order.
-         *
-         * @return the raw status of a successful open
-         */
-        private String openCursor() {
-            final List<CardCrossReference> ordered =
-                    this.cardCrossReferenceRepository.findAll(MODE.keyOrder());
-            this.cursor = ordered.iterator();
-            return FileStatus.SUCCESS.getCode();
-        }
-
-        /**
-         * Reads the next record, or reports end of file, exactly as the member's read paragraph does.
-         *
-         * @return the record read, or an empty result at end of file
-         */
-        @Override
-        protected Optional<CardCrossReference> readNextRecord() {
-            return readRecord(MODE.logicalResourceName(), this::nextCrossReference);
-        }
-
-        /**
-         * Advances the cursor and emits the read paragraph's own record image on success.
-         *
-         * <p>Reading before the open is a failure of this step and not an end of file, so the guard
-         * raises rather than reporting the end-of-file code: the template turns that into the ordered
-         * diagnostic and the abend, and reporting end of file instead would let a broken pass look like
-         * an empty file.
-         *
-         * @return the raw status together with the record, or the end-of-file result
-         */
-        private IoResult<CardCrossReference> nextCrossReference() {
-            final Iterator<CardCrossReference> open = this.cursor;
-            if (open == null) {
-                throw new IllegalStateException("A read of " + MODE.logicalResourceName()
-                        + " was attempted before it was opened");
-            }
-            if (!open.hasNext()) {
-                return IoResult.endOfFile();
-            }
-            final CardCrossReference next = open.next();
-            LOG.debug(RECORD_IMAGE, next);
-            return IoResult.of(FileStatus.SUCCESS.getCode(), next);
-        }
-
-        /**
-         * Emits the mainline's record image, the second of the member's two emissions per record.
-         *
-         * @param crossReference the record just read
-         */
-        @Override
-        protected void processRecord(final CardCrossReference crossReference) {
-            LOG.debug(RECORD_IMAGE, crossReference);
-        }
-
-        /** Closes the file, guarded and status-checked by the template. */
-        @Override
-        protected void closeResources() {
-            closeResource(MODE.logicalResourceName(), this::closeCursor);
-        }
-
-        /**
-         * Gives up the cursor.
-         *
-         * @return the raw status of a successful close
-         */
-        private String closeCursor() {
-            this.cursor = null;
-            return FileStatus.SUCCESS.getCode();
-        }
-
-        /**
-         * Gives up the cursor after a failure, without emitting a legacy diagnostic and without
-         * becoming a second close: an abend never reached the member's close paragraph.
-         */
-        @Override
-        protected void releaseResources() {
-            this.cursor = null;
         }
     }
 }

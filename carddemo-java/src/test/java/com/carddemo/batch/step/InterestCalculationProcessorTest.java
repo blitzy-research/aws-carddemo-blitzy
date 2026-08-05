@@ -30,6 +30,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.domain.Account;
@@ -66,8 +67,9 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  *
  * <p>A pure unit test: no Spring context, no connection, no container. The interest service is a mock,
  * because every behaviour it owns has its own suite; what is asserted here is the read loop the stage
- * owns - the control break, the mandatory final flush, the suffix threading, the fee invocation under
- * the legacy's own gate, and the fixed-width output contract the stage guards before handing a group on.
+ * owns - the control break, the mandatory final flush, the suffix threading, preservation of the
+ * service's rate-gate decision, and the fixed-width output contract the stage guards before handing a
+ * group on.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
@@ -284,7 +286,7 @@ final class InterestCalculationProcessorTest {
 
             assertThat(processor.process(row(ACCOUNT_A, "0005"))).isNull();
 
-            verifyNoInteractions(service);
+            verifyNoMoreInteractions(service);
         }
 
         @Test
@@ -295,7 +297,7 @@ final class InterestCalculationProcessorTest {
             assertThat(processor.process(row(ACCOUNT_A, "0005"))).isNull();
             assertThat(processor.process(row(ACCOUNT_A, "0006"))).isNull();
 
-            verifyNoInteractions(service);
+            verifyNoMoreInteractions(service);
         }
 
         @Test
@@ -362,7 +364,6 @@ final class InterestCalculationProcessorTest {
 
             processor.afterStep(stepExecution);
 
-            verifyNoInteractions(service);
             assertThat(processor.finalAccruedGroup()).isEmpty();
         }
 
@@ -373,7 +374,7 @@ final class InterestCalculationProcessorTest {
 
             processor.afterStep(stepExecution);
 
-            verifyNoInteractions(service);
+            verifyNoMoreInteractions(service);
             assertThat(processor.finalAccruedGroup()).isEmpty();
         }
 
@@ -839,26 +840,25 @@ final class InterestCalculationProcessorTest {
     }
 
     // ----------------------------------------------------------------------------------------
-    // The rate gate and the fee paragraph
+    // The rate gate and the service-owned fee-paragraph decision
     // ----------------------------------------------------------------------------------------
 
     @Nested
-    @DisplayName("The non-zero rate gate and the fee paragraph")
+    @DisplayName("The service-owned non-zero rate gate and fee-paragraph decision")
     final class TheRateGateAndTheFeeParagraph {
 
         @Test
         @DisplayName("a zero rate emits NO transaction and invokes NO fee, because the gate "
                 + "encloses both the computation and the fee call")
         void aZeroRateEmitsNoTransactionAndInvokesNoFee() {
-            final FeeCountingProcessor counting = new FeeCountingProcessor(service, meterRegistry);
             stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(gatedRow(ACCOUNT_A, CATEGORY_CD)),
                     new BigDecimal("0.00"), 0L, postedAccount(ACCOUNT_A)));
-            counting.beforeStep(stepExecution);
-            counting.process(row(ACCOUNT_A, CATEGORY_CD));
-            counting.afterStep(stepExecution);
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, CATEGORY_CD));
+            processor.afterStep(stepExecution);
 
             final InterestCalculationProcessor.AccruedAccountGroup closed =
-                    counting.finalAccruedGroup().orElseThrow();
+                    processor.finalAccruedGroup().orElseThrow();
             assertThat(closed.transactionCount()).isZero();
             assertThat(closed.rateGateSkipped()).isTrue();
             assertThat(closed.lastTranIdSuffix()).isZero();
@@ -867,14 +867,12 @@ final class InterestCalculationProcessorTest {
             assertThat(accrued.feeParagraphInvoked()).isFalse();
             assertThat(accrued.tranIdSuffix())
                     .isEqualTo(InterestCalculationProcessor.NO_TRAN_ID_SUFFIX);
-            assertThat(counting.feeInvocations()).isZero();
         }
 
         @Test
-        @DisplayName("the fee paragraph is invoked exactly once per row INSIDE the gate, and not "
-                + "once per group and not once per run")
-        void theFeeParagraphIsInvokedOncePerRowInsideTheGate() {
-            final FeeCountingProcessor counting = new FeeCountingProcessor(service, meterRegistry);
+        @DisplayName("the processor preserves the service's per-row fee decision without invoking a "
+                + "second paragraph owner")
+        void theServiceFeeDecisionIsPreservedPerRow() {
             final List<InterestCalculationService.CategoryInterest> rows =
                     List.of(accruedRow(ACCOUNT_A, "0005", MULTIPLY_THEN_DIVIDE,
                                     interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE)),
@@ -883,33 +881,17 @@ final class InterestCalculationProcessorTest {
                                     interestTransaction(ACCOUNT_A, 2L, MULTIPLY_THEN_DIVIDE)));
             stubGroup(ACCOUNT_A, group(ACCOUNT_A, rows, new BigDecimal("8.74"), 2L,
                     postedAccount(ACCOUNT_A)));
-            counting.beforeStep(stepExecution);
-            counting.process(row(ACCOUNT_A, "0005"));
-            counting.process(row(ACCOUNT_A, "0006"));
-            counting.process(row(ACCOUNT_A, "0007"));
-            counting.afterStep(stepExecution);
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+            processor.process(row(ACCOUNT_A, "0006"));
+            processor.process(row(ACCOUNT_A, "0007"));
+            processor.afterStep(stepExecution);
 
-            assertThat(counting.feeInvocations()).isEqualTo(2);
-            assertThat(counting.finalAccruedGroup().orElseThrow().rows())
+            assertThat(processor.finalAccruedGroup().orElseThrow().rows())
                     .extracting(InterestCalculationProcessor.AccruedCategoryRow
                             ::feeParagraphInvoked)
                     .containsExactly(true, false, true);
-        }
-
-        @Test
-        @DisplayName("the fee paragraph itself is a no-op: invoking it changes nothing observable, "
-                + "because the source paragraph is genuinely invoked and genuinely empty")
-        void theFeeParagraphIsANoOp() {
-            final FeeExposingProcessor exposed = new FeeExposingProcessor(service, meterRegistry);
-            final int metersBefore = meterRegistry.getMeters().size();
-
-            assertThatCode(exposed::invokeComputeFees).doesNotThrowAnyException();
-            assertThatCode(exposed::invokeComputeFees).doesNotThrowAnyException();
-
-            verifyNoInteractions(service);
-            assertThat(meterRegistry.getMeters()).hasSize(metersBefore);
-            assertThat(exposed.finalAccruedGroup()).isEmpty();
-            assertThat(exposed.parameterDate()).isEmpty();
+            verify(service).calculateGroupInterest(anyString(), anyString(), anyList(), anyLong());
         }
 
         @Test
@@ -1568,35 +1550,4 @@ final class InterestCalculationProcessorTest {
     // Test doubles
     // ----------------------------------------------------------------------------------------
 
-    /** Counts fee-paragraph invocations without giving the paragraph a side effect of its own. */
-    private static final class FeeCountingProcessor extends InterestCalculationProcessor {
-
-        private int feeInvocations;
-
-        FeeCountingProcessor(final InterestCalculationService service, final MeterRegistry registry) {
-            super(service, registry, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
-        }
-
-        @Override
-        protected void computeFees() {
-            this.feeInvocations++;
-        }
-
-        int feeInvocations() {
-            return this.feeInvocations;
-        }
-    }
-
-    /** Exposes the real fee no-op so its absence of any effect can be asserted directly. */
-    private static final class FeeExposingProcessor extends InterestCalculationProcessor {
-
-        FeeExposingProcessor(final InterestCalculationService service,
-                final MeterRegistry registry) {
-            super(service, registry, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
-        }
-
-        void invokeComputeFees() {
-            computeFees();
-        }
-    }
 }

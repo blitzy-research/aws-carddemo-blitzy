@@ -19,6 +19,9 @@ package com.carddemo.config;
 import io.awspring.cloud.autoconfigure.s3.S3ClientCustomizer;
 import io.awspring.cloud.autoconfigure.sns.SnsClientCustomizer;
 import io.awspring.cloud.autoconfigure.sqs.SqsAsyncClientCustomizer;
+import io.awspring.cloud.sns.core.CachingTopicArnResolver;
+import io.awspring.cloud.sns.core.TopicArnResolver;
+import io.awspring.cloud.sns.core.TopicsListingTopicArnResolver;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +31,7 @@ import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.retries.DefaultRetryStrategy;
+import software.amazon.awssdk.services.sns.SnsClient;
 
 /**
  * Configures the object-store, queue and notification clients that stand in for the legacy estate's
@@ -131,12 +135,11 @@ import software.amazon.awssdk.retries.DefaultRetryStrategy;
  * Customizing instead of replacing keeps one source of truth and changes only what this module has a
  * position on.
  *
- * <p><strong>It creates no resource.</strong> No bucket, queue or topic is created at start-up, which
- * is what {@code OPENTIME(INITIAL)} means: the queue existed before the first write and the writing
- * program never made it. Provisioning is outside this application, and the shared baseline
- * correspondingly sets the queue-not-found strategy to refuse an unresolvable queue rather than create
- * one - because a queue created on demand would let a submission report success while its cards sat in
- * a queue nothing consumes.
+ * <p><strong>It creates no resource.</strong> No bucket, queue or topic is created at start-up or on
+ * first publication. Provisioning is outside this application. The shared baseline correspondingly
+ * sets the queue-not-found strategy to refuse an unresolvable queue rather than create one, and
+ * {@link #preProvisionedTopicArnResolver(SnsClient)} replaces the notification template's
+ * create-on-resolution default with a listing resolver that can resolve only an existing topic.
  *
  * <p><strong>It registers no queue template.</strong> The auto-configured one already carries the
  * message conversion and observation wiring the integration installs, and the publisher supplies the
@@ -316,6 +319,26 @@ public class AwsConfig {
     @Bean
     public SnsClientCustomizer jobNotificationSnsClientCustomizer() {
         return builder -> aimClient(builder, NOTIFICATION_CLIENT);
+    }
+
+    /**
+     * Resolves only pre-provisioned notification topics.
+     *
+     * <p>The notification template's library default resolves a topic name through an idempotent create
+     * call. That is convenient and violates this module's infrastructure boundary: a misspelled name
+     * would create dead infrastructure and let publication appear successful. Listing the topics and
+     * refusing an absent name preserves the contract that LocalStack bootstrap or deployment
+     * infrastructure owns topic creation. The cache avoids repeating the list operation after one
+     * topic has been resolved and creates no application-owned resource.
+     *
+     * @param snsClient auto-configured notification client
+     * @return resolver that finds existing topics and never creates one
+     */
+    @Bean
+    public TopicArnResolver preProvisionedTopicArnResolver(final SnsClient snsClient) {
+        return new CachingTopicArnResolver(
+                new TopicsListingTopicArnResolver(
+                        Objects.requireNonNull(snsClient, "snsClient must not be null")));
     }
 
     /**

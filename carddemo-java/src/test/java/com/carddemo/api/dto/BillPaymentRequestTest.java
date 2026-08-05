@@ -824,17 +824,27 @@ class BillPaymentRequestTest {
     class ImmutabilityAndRendering {
 
         @Test
-        @DisplayName("returns the same value from every accessor on every call")
+        @DisplayName("returns the value it was built from on every call, and hands the nested state back "
+                + "by identity")
         void returnsTheSameValueOnEveryCall() {
-            BillPaymentRequest request = populated();
+            // Every expectation is the value the constructor was handed, restated here rather than read
+            // back from the instance: an accessor compared with itself cannot detect a stable but wrong
+            // value. The identity claim about the nested state is kept, but it is now anchored to a
+            // reference captured before the repeated reads rather than to a second call of the same
+            // accessor.
+            NavigationContext nested = navigation();
+            BillPaymentRequest request =
+                    new BillPaymentRequest(ACCOUNT_ID, CONFIRM, KeyAction.ENTER, nested);
 
-            assertThat(request.accountId()).isEqualTo(request.accountId());
-            assertThat(request.confirm()).isEqualTo(request.confirm());
-            assertThat(request.keyAction()).isSameAs(request.keyAction());
-            assertThat(request.navigationContext())
-                    .as("the nested state is handed back by identity, so no defensive copy hides a "
-                            + "mutation and none is needed: the nested type is deeply immutable")
-                    .isSameAs(request.navigationContext());
+            for (int read = 0; read < 2; read++) {
+                assertThat(request.accountId()).isEqualTo(ACCOUNT_ID);
+                assertThat(request.confirm()).isEqualTo(CONFIRM);
+                assertThat(request.keyAction()).isSameAs(KeyAction.ENTER);
+                assertThat(request.navigationContext())
+                        .as("the nested state is handed back by identity, so no defensive copy hides a "
+                                + "mutation and none is needed: the nested type is deeply immutable")
+                        .isSameAs(nested);
+            }
         }
 
         @Test

@@ -17,7 +17,13 @@
 package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import io.awspring.cloud.s3.S3Operations;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,6 +52,7 @@ import org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration;
@@ -53,11 +60,13 @@ import org.springframework.boot.actuate.autoconfigure.observation.ObservationAut
 import org.springframework.boot.actuate.autoconfigure.observation.batch.BatchObservationAutoConfiguration;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.config.JpaAuditConfig;
 import com.carddemo.domain.TransactionCategoryBalance;
@@ -138,11 +147,26 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     @EnableJpaRepositories(basePackageClasses = TransactionCategoryBalanceRepository.class)
     @EntityScan(basePackageClasses = TransactionCategoryBalance.class)
     @Import({BatchConfig.class, JpaAuditConfig.class, CategoryBalanceReportJobConfig.class,
-            FixedWidthFlatFileReaderFactory.class, FileMaintenanceService.class, AbendService.class})
+            FixedWidthFlatFileReaderFactory.class, StagedGenerationStore.class,
+            FileMaintenanceService.class, AbendService.class})
     static class JobUnderTest {
 
         /** Creates the configuration. */
         JobUnderTest() {
+        }
+
+        /**
+         * Keeps this PostgreSQL-focused integration test deterministic at the object-store boundary.
+         * The real staging store and job listener remain active; {@code BatchAwsIntegrationIT} covers
+         * the same upload operations against LocalStack.
+         *
+         * @return an object store that accepts uploads and reports no older retained generations
+         */
+        @Bean
+        S3Operations objectStore() {
+            final S3Operations objectStore = mock(S3Operations.class);
+            when(objectStore.listObjects(anyString(), anyString())).thenReturn(List.of());
+            return objectStore;
         }
     }
 
@@ -198,6 +222,7 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
 
             final JobOperator operator = context.getBean(JobOperator.class);
             final JobExplorer explorer = context.getBean(JobExplorer.class);
+            final BatchStagingArea stagingArea = context.getBean(BatchStagingArea.class);
 
             assertThat(report())
                     .as("the first run must clear an output that does not exist yet")
@@ -223,7 +248,9 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                     .hasSize(2);
             for (final Path generation : generations()) {
                 verifyUnload(generation);
+                verify(stagingArea).publish(generation);
             }
+            verify(stagingArea, times(2)).publish(report());
 
             assertThat(explorer.findRunningJobExecutions(CategoryBalanceReportJobConfig.JOB_NAME))
                     .as("nothing may be left running")
@@ -244,6 +271,7 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .withConfiguration(AutoConfigurations.of(
                         DataSourceAutoConfiguration.class,
                         DataSourceTransactionManagerAutoConfiguration.class,
+                        JdbcTemplateAutoConfiguration.class,
                         HibernateJpaAutoConfiguration.class,
                         BatchAutoConfiguration.class,
                         ObservationAutoConfiguration.class,
@@ -252,6 +280,7 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         CompositeMeterRegistryAutoConfiguration.class,
                         SimpleMetricsExportAutoConfiguration.class))
                 .withUserConfiguration(JobUnderTest.class)
+                .withBean(BatchStagingArea.class, () -> mock(BatchStagingArea.class))
                 .withPropertyValues(
                         "spring.datasource.url=" + jdbcUrl(),
                         "spring.datasource.username=" + databaseUser(),
@@ -260,6 +289,7 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         "spring.jpa.open-in-view=false",
                         "spring.batch.job.enabled=false",
                         "spring.batch.jdbc.initialize-schema=always",
+                        "carddemo.aws.s3.batch-staging-bucket=category-balance-it",
                         "carddemo.batch.category-balance-report.staging-directory="
                                 + this.stagingDirectory.toAbsolutePath());
     }

@@ -21,11 +21,11 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.carddemo.api.GlobalExceptionHandler;
+import com.carddemo.api.ScreenStateAdapter;
 import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.FieldErrorDecorator.FlagState;
-import com.carddemo.api.dto.FieldErrorDecorator.MarkedField;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.FieldErrorMarks.FlagState;
+import com.carddemo.service.FieldErrorMarks.MarkedField;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -43,9 +43,11 @@ import org.springframework.http.ResponseEntity;
  * <p>Three per-field representations exist in the module and they must stay in step: the neutral
  * {@link MarkedField} a decoration accumulates, the {@code ValidationException.FieldError} a failure
  * carries up out of the service layer, and the {@code ErrorResponse.FieldError} a client receives.
- * Each boundary has exactly one converter - this class inbound, {@link GlobalExceptionHandler}
- * outbound - so the risk is not that a converter is missing but that the two drift apart and a
- * client is told to supply a value it already supplied.
+ * The runtime failure path has exactly two converters - this class inbound and
+ * {@link GlobalExceptionHandler} outbound - while {@link ScreenStateAdapter} owns the API boundary's
+ * direct marks-to-wire projection for responses that carry marks without throwing. The risk is not
+ * that a converter is missing but that those paths drift apart and a client is told to supply a
+ * value it already supplied.
  *
  * <p>The nested class at the end therefore drives the whole path in one test rather than asserting
  * each hop separately: a decoration is marked, translated, thrown at the handler, and the resulting
@@ -99,7 +101,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("the summary the caller supplies becomes the failure's message, unchanged")
         void theSummaryBecomesTheFailureMessage() {
             final ValidationException failure =
-                    translator.toValidationException(FieldErrorDecorator.none(), SUMMARY);
+                    translator.toValidationException(FieldErrorMarks.none(), SUMMARY);
 
             assertThat(failure.getMessage()).isEqualTo(SUMMARY);
         }
@@ -111,7 +113,7 @@ final class FieldErrorTranslationServiceTest {
             final String padded = "Account status must be supplied.                ";
 
             final ValidationException failure =
-                    translator.toValidationException(FieldErrorDecorator.none(), padded);
+                    translator.toValidationException(FieldErrorMarks.none(), padded);
 
             assertThat(failure.getMessage()).isEqualTo(padded);
         }
@@ -121,7 +123,7 @@ final class FieldErrorTranslationServiceTest {
                 + "first-submission shape the legacy macro's re-enter gate produced")
         void anEmptyDecorationProducesNoPerFieldDetail() {
             final ValidationException failure =
-                    translator.toValidationException(FieldErrorDecorator.none(), SUMMARY);
+                    translator.toValidationException(FieldErrorMarks.none(), SUMMARY);
 
             assertThat(failure.fieldErrors()).isEmpty();
             assertThat(failure.hasFieldErrors()).isFalse();
@@ -131,7 +133,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("one marked field becomes exactly one carrier entry, keeping its field name and "
                 + "its screen label")
         void oneMarkedFieldBecomesOneCarrierEntry() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK);
 
             final ValidationException failure = translator.toValidationException(decoration, SUMMARY);
@@ -146,7 +148,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("a blank flag becomes MISSING and a not-OK flag becomes INVALID, so an operator "
                 + "is told to supply a value in the one case and to correct one in the other")
         void theTwoFlagStatesBecomeTheTwoCarrierStates() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.NOT_OK);
 
@@ -162,7 +164,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("no per-field message is invented, because the macro emitted none and the "
                 + "explanatory text lived in the single summary line")
         void noPerFieldMessageIsInvented() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK);
 
             assertThat(translator.toValidationException(decoration, SUMMARY).fieldErrors())
@@ -175,7 +177,7 @@ final class FieldErrorTranslationServiceTest {
                 + "here would put text this class does not own in front of an operator")
         void anAbsentSummaryIsCarriedRatherThanReplaced() {
             final ValidationException failure =
-                    translator.toValidationException(FieldErrorDecorator.none(), null);
+                    translator.toValidationException(FieldErrorMarks.none(), null);
 
             assertThat(failure.getMessage()).isNull();
         }
@@ -201,7 +203,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("entries arrive in the sequence they were marked, even when that sequence is the "
                 + "irregular one the 39 legacy expansions run in")
         void entriesArriveInMarkingSequence() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ADDRESS_LINE_1, SCREEN_ADDRESS_LINE_1, FlagState.BLANK)
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.NOT_OK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.BLANK);
@@ -215,7 +217,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("the same field marked twice yields two entries, because suppressing one would "
                 + "be a decision this class has no standing to make")
         void theSameFieldMarkedTwiceYieldsTwoEntries() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK)
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.NOT_OK);
 
@@ -229,7 +231,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("all 39 expansion sites can be carried at once, in order, because the legacy "
                 + "program could decorate every one of them on a single re-submission")
         void all39ExpansionSitesCanBeCarriedAtOnce() {
-            FieldErrorDecorator decoration = FieldErrorDecorator.none();
+            FieldErrorMarks decoration = FieldErrorMarks.none();
             final List<String> expected = new ArrayList<>(MACRO_EXPANSION_SITES);
             for (int site = 1; site <= MACRO_EXPANSION_SITES; site++) {
                 final String field = "field" + site;
@@ -247,7 +249,7 @@ final class FieldErrorTranslationServiceTest {
         @Test
         @DisplayName("a screen label is carried untrimmed, because the legacy labels are fixed-width")
         void aScreenLabelIsCarriedUntrimmed() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, "ACSTTUS ", FlagState.BLANK);
 
             assertThat(translator.toFieldErrors(decoration))
@@ -261,11 +263,30 @@ final class FieldErrorTranslationServiceTest {
     class TheTranslatedListIsImmutable {
 
         @Test
+        @DisplayName("the service-owned response carrier normalizes and exposes its immutable errors")
+        void theServiceOwnedResponseCarrierNormalizesAndExposesItsErrors() {
+            final ErrorResponse.FieldError fieldError = new ErrorResponse.FieldError(
+                    PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, ErrorResponse.FieldState.MISSING);
+            final List<ErrorResponse.FieldError> mutable = new ArrayList<>();
+            mutable.add(fieldError);
+
+            final ErrorResponse response =
+                    new ErrorResponse(SUMMARY, mutable, SCREEN_ACCT_STATUS);
+            mutable.clear();
+
+            assertThat(response.hasFieldErrors()).isTrue();
+            assertThat(response.fieldErrors()).containsExactly(fieldError).isUnmodifiable();
+            assertThat(response.focusScreenFieldId()).isEqualTo(SCREEN_ACCT_STATUS);
+            assertThat(new ErrorResponse(SUMMARY).hasFieldErrors()).isFalse();
+            assertThat(new ErrorResponse(SUMMARY, null).fieldErrors()).isEmpty();
+        }
+
+        @Test
         @DisplayName("the returned list cannot be modified, so no holder can inject an error the "
                 + "validation cascade never raised")
         void theReturnedListCannotBeModified() {
             final List<ValidationException.FieldError> entries =
-                    translator.toFieldErrors(FieldErrorDecorator.none()
+                    translator.toFieldErrors(FieldErrorMarks.none()
                             .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK));
 
             assertThat(entries).isUnmodifiable();
@@ -274,7 +295,7 @@ final class FieldErrorTranslationServiceTest {
         @Test
         @DisplayName("a fresh list is built on each call, so two callers cannot observe one another")
         void aFreshListIsBuiltOnEachCall() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK);
 
             assertThat(translator.toFieldErrors(decoration))
@@ -286,10 +307,10 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("a decoration built directly from marked fields translates identically to one "
                 + "grown by marking, so neither construction path is privileged")
         void aDirectlyBuiltDecorationTranslatesIdentically() {
-            final FieldErrorDecorator grown = FieldErrorDecorator.none()
+            final FieldErrorMarks grown = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.NOT_OK);
-            final FieldErrorDecorator built = new FieldErrorDecorator(List.of(
+            final FieldErrorMarks built = new FieldErrorMarks(List.of(
                     new MarkedField(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK),
                     new MarkedField(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.NOT_OK)));
 
@@ -301,7 +322,7 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("the two entry points agree, so a caller that combines detail before throwing "
                 + "cannot end up with a different failure from one that does not")
         void theTwoEntryPointsAgree() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.NOT_OK);
 
@@ -317,23 +338,28 @@ final class FieldErrorTranslationServiceTest {
         /** The boundary advice, instantiated directly because it holds no injected collaborator. */
         private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
+        /** The API boundary's independent projection, used as the client-shape oracle. */
+        private final ScreenStateAdapter screenStateAdapter = new ScreenStateAdapter();
+
         @Test
         @DisplayName("a decoration marked by a service reaches a client as the same entries in the "
                 + "same sequence with the same states, which is the whole point of the seam")
         void aDecorationReachesAClientUnchanged() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ADDRESS_LINE_1, SCREEN_ADDRESS_LINE_1, FlagState.BLANK)
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.NOT_OK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.BLANK);
 
-            final ResponseEntity<ErrorResponse> response = handler.handleValidation(
+            final ResponseEntity<com.carddemo.api.dto.ErrorResponse> response =
+                    handler.handleValidation(
                     translator.toValidationException(decoration, SUMMARY));
 
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(response.getBody()).isNotNull();
             assertThat(response.getBody().fieldErrors())
-                    .as("the inbound and outbound converters cannot be changed independently")
-                    .isEqualTo(decoration.fieldErrors());
+                    .as("the failure path and the direct API projection cannot be changed "
+                            + "independently")
+                    .isEqualTo(screenStateAdapter.toFieldErrors(decoration));
             assertThat(response.getBody().message()).isEqualTo(SUMMARY);
         }
 
@@ -341,28 +367,29 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("both legacy states survive the round trip as distinct published states, so a "
                 + "field left blank and a field filled in wrongly stay different remedies")
         void bothLegacyStatesSurviveTheRoundTrip() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.BLANK)
                     .mark(PROP_CREDIT_LIMIT, SCREEN_CREDIT_LIMIT, FlagState.NOT_OK);
 
-            final ErrorResponse body = handler.handleValidation(
+            final com.carddemo.api.dto.ErrorResponse body = handler.handleValidation(
                     translator.toValidationException(decoration, SUMMARY)).getBody();
 
             assertThat(body).isNotNull();
-            assertThat(body.fieldErrors()).extracting(ErrorResponse.FieldError::state)
-                    .containsExactly(ErrorResponse.FieldState.MISSING,
-                            ErrorResponse.FieldState.INVALID);
+            assertThat(body.fieldErrors())
+                    .extracting(com.carddemo.api.dto.ErrorResponse.FieldError::state)
+                    .containsExactly(com.carddemo.api.dto.ErrorResponse.FieldState.MISSING,
+                            com.carddemo.api.dto.ErrorResponse.FieldState.INVALID);
         }
 
         @Test
         @DisplayName("the screen label of the first marked field becomes the focus hint, reproducing "
                 + "the legacy cursor landing on the first field its cascade rejected")
         void theFirstMarkedFieldBecomesTheFocusHint() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark(PROP_ADDRESS_LINE_1, SCREEN_ADDRESS_LINE_1, FlagState.BLANK)
                     .mark(PROP_ACCT_STATUS, SCREEN_ACCT_STATUS, FlagState.NOT_OK);
 
-            final ErrorResponse body = handler.handleValidation(
+            final com.carddemo.api.dto.ErrorResponse body = handler.handleValidation(
                     translator.toValidationException(decoration, SUMMARY)).getBody();
 
             assertThat(body).isNotNull();
@@ -374,7 +401,7 @@ final class FieldErrorTranslationServiceTest {
                 + "hint, so a caller that has marked nothing does not imply a field is at fault")
         void aFailureCarryingNoDecorationAnswersWithTheSummaryAlone() {
             final ErrorResponse body = handler.handleValidation(
-                    translator.toValidationException(FieldErrorDecorator.none(), SUMMARY))
+                    translator.toValidationException(FieldErrorMarks.none(), SUMMARY))
                     .getBody();
 
             assertThat(body).isNotNull();
@@ -387,29 +414,29 @@ final class FieldErrorTranslationServiceTest {
         @DisplayName("all 39 expansion sites survive the round trip in order, so the largest "
                 + "decoration the legacy program could produce is not truncated or re-grouped")
         void all39ExpansionSitesSurviveTheRoundTrip() {
-            FieldErrorDecorator decoration = FieldErrorDecorator.none();
+            FieldErrorMarks decoration = FieldErrorMarks.none();
             for (int site = 1; site <= MACRO_EXPANSION_SITES; site++) {
                 decoration = decoration.mark("field" + site, "SCRN" + site,
                         site % 2 == 0 ? FlagState.NOT_OK : FlagState.BLANK);
             }
 
-            final ErrorResponse body = handler.handleValidation(
+            final com.carddemo.api.dto.ErrorResponse body = handler.handleValidation(
                     translator.toValidationException(decoration, SUMMARY)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.fieldErrors())
                     .hasSize(MACRO_EXPANSION_SITES)
-                    .isEqualTo(decoration.fieldErrors());
+                    .isEqualTo(screenStateAdapter.toFieldErrors(decoration));
         }
 
         @Test
         @DisplayName("the response body carries no submitted value and no internal name, so a "
                 + "failure on a credential field cannot echo what was typed")
         void theResponseBodyCarriesNoSubmittedValue() {
-            final FieldErrorDecorator decoration = FieldErrorDecorator.none()
+            final FieldErrorMarks decoration = FieldErrorMarks.none()
                     .mark("password", "PASSWD", FlagState.NOT_OK);
 
-            final ErrorResponse body = handler.handleValidation(
+            final com.carddemo.api.dto.ErrorResponse body = handler.handleValidation(
                     translator.toValidationException(decoration, SUMMARY)).getBody();
 
             assertThat(body).isNotNull();
@@ -426,7 +453,8 @@ final class FieldErrorTranslationServiceTest {
                     List.of(new ValidationException.FieldError(PROP_ACCT_STATUS, null,
                             ValidationException.FieldState.INVALID, null)));
 
-            final ErrorResponse body = handler.handleValidation(failure).getBody();
+            final com.carddemo.api.dto.ErrorResponse body =
+                    handler.handleValidation(failure).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.fieldErrors()).hasSize(1);
@@ -442,7 +470,7 @@ final class FieldErrorTranslationServiceTest {
             withNull.add(null);
 
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new FieldErrorDecorator(withNull));
+                    .isThrownBy(() -> new FieldErrorMarks(withNull));
         }
     }
 }

@@ -28,6 +28,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.step.InterestCalculationProcessor;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.TransactionCategoryBalance;
@@ -108,6 +109,9 @@ class InterestCalculationJobConfigTest {
     /** A real registry, so the timers the step records are observable rather than swallowed. */
     private MeterRegistry meterRegistry;
 
+    /** The shared object-store staging boundary, mocked so publication remains observable. */
+    private BatchStagingArea stagingArea;
+
     /** The staging area the generation resolves within. */
     @TempDir
     private Path stagingDirectory;
@@ -117,9 +121,29 @@ class InterestCalculationJobConfigTest {
 
     @BeforeEach
     void buildConfigurationOverMockedCollaborators() {
-        this.categoryBalances = mock(TransactionCategoryBalanceRepository.class);
+        this.categoryBalances = mock(TransactionCategoryBalanceRepository.class, invocation -> {
+            if (invocation.getMethod().getName().equals("findAfterKey")) {
+                final String cursor = (String) invocation.getArgument(0)
+                        + invocation.getArgument(1) + invocation.getArgument(2);
+                final org.springframework.data.domain.Pageable page = invocation.getArgument(3);
+                return this.categoryBalances.findAll(Sort.by(
+                                Sort.Order.asc("trancatAcctId"),
+                                Sort.Order.asc("trancatTypeCd"),
+                                Sort.Order.asc("trancatCd")))
+                        .stream()
+                        .filter(row -> (row.getTrancatAcctId() + row.getTrancatTypeCd()
+                                + row.getTrancatCd()).compareTo(cursor) > 0)
+                        .sorted(java.util.Comparator.comparing(row ->
+                                row.getTrancatAcctId() + row.getTrancatTypeCd()
+                                        + row.getTrancatCd()))
+                        .limit(page.getPageSize())
+                        .toList();
+            }
+            return org.mockito.Answers.RETURNS_DEFAULTS.answer(invocation);
+        });
         this.interestCalculationService = mock(InterestCalculationService.class);
         this.meterRegistry = new SimpleMeterRegistry();
+        this.stagingArea = mock(BatchStagingArea.class);
         this.config = configWith(this.stagingDirectory.toString(), "AWS.M2.CARDDEMO.SYSTRAN");
     }
 
@@ -145,8 +169,9 @@ class InterestCalculationJobConfigTest {
     private Job job() {
         final JobParametersIncrementer incrementer = new RunIdIncrementer();
         final JobExecutionListener boundaryListener = mock(JobExecutionListener.class);
-        return this.config.interestCalculationJob(this.config.interestAccrualStep(), incrementer,
-                boundaryListener);
+        return this.config.interestCalculationJob(
+                this.config.interestAccrualStep(this.stagingArea),
+                incrementer, boundaryListener);
     }
 
     /** A step execution whose job execution identifier names one generation. */
@@ -178,7 +203,7 @@ class InterestCalculationJobConfigTest {
             assertThat(InterestCalculationJobConfig.JOB_NAME).isEqualTo("interestCalculationJob");
             assertThat(InterestCalculationJobConfig.STEP_NAME).isEqualTo("interestAccrualStep");
             assertThat(job().getName()).isEqualTo(InterestCalculationJobConfig.JOB_NAME);
-            assertThat(config.interestAccrualStep().getName())
+            assertThat(config.interestAccrualStep(stagingArea).getName())
                     .isEqualTo(InterestCalculationJobConfig.STEP_NAME);
         }
 
@@ -290,10 +315,10 @@ class InterestCalculationJobConfigTest {
     class TheGeneration {
 
         @Test
-        @DisplayName("it is named in the legacy absolute-generation form")
+        @DisplayName("it keeps the absolute-generation vocabulary at a ten-digit minimum width")
         void itIsNamedInTheLegacyForm() {
             assertThat(config.transactGeneration(7L).getFileName().toString())
-                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN.G0007V00");
+                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN.G0000000007V00");
         }
 
         @Test
@@ -304,13 +329,13 @@ class InterestCalculationJobConfigTest {
         }
 
         @Test
-        @DisplayName("its number wraps rather than widening, so a name keeps the shape an operator "
-                + "recognises")
-        void itsNumberWraps() {
+        @DisplayName("its number never wraps onto an earlier execution")
+        void itsNumberDoesNotWrap() {
             assertThat(config.transactGeneration(10_000L).getFileName().toString())
-                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN.G0000V00");
+                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN.G0000010000V00");
             assertThat(config.transactGeneration(10_007L).getFileName().toString())
-                    .isEqualTo(config.transactGeneration(7L).getFileName().toString());
+                    .isEqualTo("AWS.M2.CARDDEMO.SYSTRAN.G0000010007V00")
+                    .isNotEqualTo(config.transactGeneration(7L).getFileName().toString());
         }
 
         @Test
@@ -464,9 +489,11 @@ class InterestCalculationJobConfigTest {
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> config.runAccrualPass(stepExecution(17L, RUN_DATE)));
 
-            final Path generation = config.transactGeneration(17L);
+            final Path generation =
+                    StagedGenerationStore.workingPath(config.transactGeneration(17L));
             assertThat(generation)
-                    .as("the handle was opened, so the generation exists and was released")
+                    .as("the handle was opened and released, but a failed pass remains a working file"
+                            + " and is never registered as a completed generation")
                     .exists();
             assertThat(Files.readAllBytes(generation))
                     .as("nothing had been written when the group failed")
@@ -474,12 +501,12 @@ class InterestCalculationJobConfigTest {
         }
 
         @Test
-        @DisplayName("the step is a single indivisible invocation, timed on the shared batch step "
-                + "timer")
+        @DisplayName("the step is one sequential invocation without an encompassing business "
+                + "transaction, timed on the shared batch step timer")
         void theStepIsASingleInvocation() throws Exception {
             when(categoryBalances.findAll(any(Sort.class))).thenReturn(List.of());
 
-            final Step step = config.interestAccrualStep();
+            final Step step = config.interestAccrualStep(stagingArea);
             final StepExecution execution = stepExecution(15L, RUN_DATE);
             step.execute(execution);
 
@@ -489,12 +516,23 @@ class InterestCalculationJobConfigTest {
                     .timers())
                     .as("the pass is measured, and no threshold is stated for it anywhere")
                     .isNotEmpty();
+            verify(stagingArea).publish(config.transactGeneration(15L));
         }
     }
 
     @Nested
     @DisplayName("The postures that are textual by nature")
     class ThePosturesThatAreTextual {
+
+        @Test
+        @DisplayName("the tasklet suppresses an encompassing transaction so closed account groups "
+                + "own their commits")
+        void itSuppressesTheEncompassingTaskletTransaction() throws IOException {
+            assertThat(Files.readString(SOURCE, StandardCharsets.UTF_8))
+                    .contains("PROPAGATION_NOT_SUPPORTED")
+                    .contains(".transactionAttribute(NO_ENCOMPASSING_TRANSACTION)")
+                    .doesNotContain("ResourcelessTransactionManager");
+        }
 
         @Test
         @DisplayName("nothing in it fires when the context starts")

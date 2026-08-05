@@ -57,8 +57,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * had no production call site of any kind, and the second claim was recorded as an emptiness with a
  * note asking a later change to name the caller rather than delete the expectation. That service has
  * since arrived, so the claim is now the stronger one: the composers are reached from exactly one
- * class, and the raw fitter is still reached from none. A second record-composing caller appearing
- * anywhere in the production tree fails the build, which is what the standing guard was for.</p>
+ * class, and the raw fitter is still reached from none. The service-owned
+ * {@code StatementLineSummary} carrier is also required to be present in the scanned tree: it carries
+ * statement data but owns no formatting, so it must not become a second composing path. A second
+ * record-composing caller appearing anywhere in the production tree fails the build, which is what
+ * the standing guard was for.</p>
  *
  * <p>A census can fail in a way a behavioural test cannot: it can pass because it looked at
  * nothing. Every assertion of absence below is therefore paired with an assertion of presence
@@ -94,6 +97,15 @@ class StatementHtmlWorkLineExposureTest {
      * transaction cells of {@code [app/cbl/CBSTM03A.CBL:L529, L560-L592, L613-L633, L686-L716]}.
      */
     private static final String STATEMENT_SERVICE_FILE_NAME = "StatementGenerationService.java";
+
+    /**
+     * The data-only service carrier produced by the statement service.
+     *
+     * <p>Its presence is asserted so the census cannot accidentally omit the new service-owned
+     * statement shape while still finding the older template and generator files. The exact-caller
+     * assertion below then proves that carrying a line did not make this type another formatter.
+     */
+    private static final String STATEMENT_SUMMARY_FILE_NAME = "StatementLineSummary.java";
 
     /** The bare method name whose call sites are being counted. */
     private static final String FITTER_NAME = "workLine";
@@ -256,6 +268,12 @@ class StatementHtmlWorkLineExposureTest {
                 .as("the walk must reach the class that publishes the fitter")
                 .anySatisfy(source -> assertThat(source.path().getFileName().toString())
                         .isEqualTo(TEMPLATE_CLASS_FILE_NAME));
+
+        assertThat(sources)
+                .as("the walk must reach the service-owned statement carrier, or the exact-caller "
+                        + "claim could omit the new data path and pass vacuously")
+                .anySatisfy(source -> assertThat(source.path().getFileName().toString())
+                        .isEqualTo(STATEMENT_SUMMARY_FILE_NAME));
 
         assertThat(documentationReferences(sources))
                 .as("the fitter is referred to by name in the production javadoc, and finding none"

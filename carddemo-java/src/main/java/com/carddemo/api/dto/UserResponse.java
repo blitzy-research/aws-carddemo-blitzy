@@ -46,6 +46,7 @@ import java.util.List;
 public record UserResponse(
         List<UserRow> rows,
         PageMetadata pageMetadata,
+        String rowSnapshotToken,
         @Size(max = UserResponse.USER_ID_LENGTH) String userId,
         @Size(max = UserResponse.FIRST_NAME_LENGTH) String firstName,
         @Size(max = UserResponse.LAST_NAME_LENGTH) String lastName,
@@ -222,6 +223,35 @@ public record UserResponse(
         }
     }
 
+    /**
+     * Compatibility constructor for non-list responses and callers that do not yet carry a page
+     * snapshot. The list service uses the canonical constructor and always supplies the token that
+     * protects the rows it returns.
+     */
+    public UserResponse(final List<UserRow> rows,
+                        final PageMetadata pageMetadata,
+                        final String userId,
+                        final String firstName,
+                        final String lastName,
+                        final String userType,
+                        final String transactionName,
+                        final String title01,
+                        final String currentDate,
+                        final String programName,
+                        final String title02,
+                        final String currentTime,
+                        final String message,
+                        final List<ErrorResponse.FieldError> fieldErrors,
+                        final boolean generalError,
+                        final boolean actionSucceeded,
+                        final String focusScreenFieldId,
+                        final String nextRoute,
+                        final NavigationContext navigationContext) {
+        this(rows, pageMetadata, null, userId, firstName, lastName, userType, transactionName,
+                title01, currentDate, programName, title02, currentTime, message, fieldErrors,
+                generalError, actionSucceeded, focusScreenFieldId, nextRoute, navigationContext);
+    }
+
     public boolean hasRows() {
         return !rows.isEmpty();
     }
@@ -254,6 +284,7 @@ public record UserResponse(
                 + "rowCount=" + rows.size()
                 + ", rows=" + REDACTION_PLACEHOLDER
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", rowSnapshotToken=" + REDACTION_PLACEHOLDER
                 + ", userId=" + REDACTION_PLACEHOLDER
                 + ", firstName=" + REDACTION_PLACEHOLDER
                 + ", lastName=" + REDACTION_PLACEHOLDER

@@ -17,11 +17,17 @@
 package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.DateValidationService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.util.TransactionRecordMapper;
 import java.io.IOException;
@@ -33,7 +39,6 @@ import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -44,13 +49,18 @@ import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.actuate.autoconfigure.tracing.prometheus.PrometheusExemplarsAutoConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Integration specification for {@link CombineTransactionsJobConfig}, run against a real
@@ -109,10 +119,29 @@ import org.springframework.test.context.ActiveProfiles;
 @SpringBootTest(classes = CombineTransactionsJobIT.JobContext.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {"spring.flyway.enabled=false", "spring.main.banner-mode=off",
-                "spring.jpa.hibernate.ddl-auto=none"})
+                "spring.jpa.hibernate.ddl-auto=none",
+                "management.endpoint.health.validate-group-membership=false",
+                "management.tracing.enabled=false",
+                // The staged-input allow-list resolves a relative name against this directory and
+                // accepts nothing else, so the directory the fixtures are written into has to BE the
+                // configured one. It is fixed rather than temporary because the property is bound when
+                // the context starts, which is before any temporary directory exists.
+                CombineTransactionsJobConfig.STAGING_DIRECTORY_PROPERTY
+                        + "=${java.io.tmpdir}/" + CombineTransactionsJobIT.STAGING_SUBDIRECTORY})
 @ActiveProfiles("test")
 @DisplayName("CombineTransactionsJobIT - registered by name, inert at start-up, and loads on demand")
 class CombineTransactionsJobIT extends AbstractPostgresIT {
+
+    /**
+     * The directory the staged-input allow-list resolves a relative location against.
+     *
+     * <p>Bound into the context above beneath the platform's temporary location and created by this test,
+     * so a fixture written here is nameable and nothing outside it is. It is namespaced to this
+     * specification so a parallel one cannot collide with it, and both fixtures are removed after the test
+     * whatever its outcome. A temporary directory could not serve: the property is bound when the context
+     * starts, which is before one exists, and an annotation value has to be a compile-time constant.
+     */
+    static final String STAGING_SUBDIRECTORY = "carddemo-combine-transactions-it";
 
     /**
      * A card the reference seed already carries.
@@ -121,6 +150,12 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      * invented a card number would fail on the foreign key rather than on anything this test asserts.
      */
     private static final String SEEDED_CARD = "0500024453765740";
+
+    /** File name of the first concatenated fixture, staged beneath the configured staging directory. */
+    private static final String BACKUP_DATASET = "transaction-backup.txt";
+
+    /** File name of the second concatenated fixture. */
+    private static final String SYNTHESIZED_DATASET = "synthesized-transactions.txt";
 
     /** Identifier of the record this test expects to sort first. */
     private static final String FIRST_ID = "9890000000000001";
@@ -143,6 +178,14 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      */
     private static final List<String> RESERVED_IDS = List.of(FIRST_ID, SECOND_ID, THIRD_ID);
 
+    /**
+     * This run's staging directory, created on first use while the context is being built.
+     *
+     * <p>Static because the two locations are bound as configuration before any instance of this class
+     * exists, which is the whole point of the arrangement being tested.
+     */
+    private static Path stagingDirectory;
+
     /** The registry the framework populates, and the surface a caller launches this job through. */
     @Autowired
     private JobRegistry jobRegistry;
@@ -162,6 +205,10 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     /** The job under test, injected by the name the configuration publishes. */
     @Autowired
     private Job combineTransactionsJob;
+
+    /** The shared staging boundary, mocked so the completed combined generation is observable. */
+    @Autowired
+    private BatchStagingArea stagingArea;
 
     /**
      * Builds a record whose every field already sits at its contractual width.
@@ -188,31 +235,97 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      * <p>Each image's width is asserted in <strong>encoded bytes</strong> before it is written, never as
      * a character count, because a character count is not a width.
      *
-     * @param  directory the temporary directory to write into
+     * @param  directory the configured staging directory to write into, which the allow-list resolves
+     *                   a relative name against
      * @param  name      the dataset's file name
      * @param  records   the records to render, in file order
-     * @return the location a job parameter carries
+     * @return the location the deployment property carries
      * @throws IOException if the dataset cannot be written
      */
     private static String dataset(final Path directory, final String name,
             final List<Transaction> records) throws IOException {
+        Files.createDirectories(directory);
         final StringBuilder images = new StringBuilder();
         for (final Transaction record : records) {
             final byte[] image = TransactionRecordMapper.toRecordBytes(record);
             assertThat(image).as("every record of a legacy generation is a fixed encoded width")
                     .hasSize(TransactionRecordMapper.RECORD_LENGTH);
-            images.append(new String(image, StandardCharsets.US_ASCII)).append('\n');
+            images.append(new String(image, StandardCharsets.US_ASCII));
         }
-        final Path dataset = directory.resolve(name);
-        Files.writeString(dataset, images.toString(), StandardCharsets.US_ASCII);
-        return dataset.toUri().toString();
+        Files.writeString(directory.resolve(name), images.toString(), StandardCharsets.US_ASCII);
+        return name;
+    }
+
+    /**
+     * Publishes the two staged input locations as configuration, which is where this job binds them.
+     *
+     * <p><strong>Not job parameters, deliberately.</strong> The legacy member declares both inputs inside
+     * itself and the submission named neither, so the migrated job resolves them from the deployment's own
+     * configuration and a launch carries no location at all. This method therefore stands in for the
+     * environment that provisions the storage: it writes the two generations and names them on the two
+     * properties the configuration binds. Registering them any other way - as job parameters on the launch
+     * below - would test a seam the production configuration does not have.
+     *
+     * <p>The datasets are written here rather than in a per-test temporary directory because these values
+     * are bound while the context is built, which happens before any test method runs. The directory is
+     * created under the platform's temporary storage and is left for the platform to reclaim; nothing in it
+     * outlives the run.
+     *
+     * <p>This publishes keys the shared base class does not, so it competes with nothing: the data-source
+     * contract stays that class's alone.
+     *
+     * @param  registry the registry the framework supplies before the context is refreshed
+     */
+    @DynamicPropertySource
+    static void registerStagedInputs(final DynamicPropertyRegistry registry) {
+        registry.add(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY,
+                () -> stagedDataset("transaction-backup.txt",
+                        List.of(record(THIRD_ID), record(FIRST_ID))));
+        registry.add(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY,
+                () -> stagedDataset("synthesized-transactions.txt", List.of(record(SECOND_ID))));
+    }
+
+    /**
+     * Writes one staged dataset into this run's own directory and answers its location.
+     *
+     * <p>Wraps the checked failure a property supplier may not throw, and reports it as a state failure so
+     * a run whose fixtures could not be written fails while the context is being built rather than
+     * mid-step.
+     *
+     * @param  name    the dataset's file name
+     * @param  records the records to render, in file order
+     * @return the location the configuration property carries
+     */
+    private static String stagedDataset(final String name, final List<Transaction> records) {
+        try {
+            return dataset(stagingDirectory(), name, records);
+        } catch (final IOException cannotStage) {
+            throw new IllegalStateException("the staged input " + name + " could not be written",
+                    cannotStage);
+        }
+    }
+
+    /**
+     * Answers this run's staging directory, creating it on first use.
+     *
+     * <p>Synchronised because the framework may resolve the two suppliers above from different threads, and
+     * two directories would leave the second input beside a first that is no longer read.
+     *
+     * @return the directory both staged datasets are written into
+     * @throws IOException if the directory cannot be created
+     */
+    private static synchronized Path stagingDirectory() throws IOException {
+        if (stagingDirectory == null) {
+            stagingDirectory = Path.of(System.getProperty("java.io.tmpdir"), STAGING_SUBDIRECTORY);
+            Files.createDirectories(stagingDirectory);
+        }
+        return stagingDirectory;
     }
 
     @Test
     @DisplayName("the job is registered by name, holds exactly two ungated steps, fires nothing at "
             + "start-up, and loads the combined stream into the master when launched")
-    void theJobIsRegisteredInertAtStartUpAndLoadsOnDemand(@TempDir final Path directory)
-            throws Exception {
+    void theJobIsRegisteredInertAtStartUpAndLoadsOnDemand() throws Exception {
         assertThat(jobRegistry.getJobNames())
                 .as("the job is launched by name, so it must be registered under that name")
                 .contains(CombineTransactionsJobConfig.JOB_NAME);
@@ -230,17 +343,12 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                 CombineTransactionsJobConfig.ORDER_STEP_NAME,
                 CombineTransactionsJobConfig.LOAD_STEP_NAME);
 
-        final String backup = dataset(directory, "transaction-backup.txt",
-                List.of(record(THIRD_ID), record(FIRST_ID)));
-        final String synthesized = dataset(directory, "synthesized-transactions.txt",
-                List.of(record(SECOND_ID)));
-
+        // No location is supplied here, and that absence is the specification: both inputs were bound
+        // from configuration before this context was built, exactly as the legacy member declared them
+        // inside itself. A launch that could name an input would be a launch that could name any
+        // readable thing.
         final JobExecution execution = jobLauncher.run(combineTransactionsJob,
-                new JobParametersBuilder()
-                        .addString(CombineTransactionsJobConfig.BACKUP_INPUT_LOCATION, backup)
-                        .addString(CombineTransactionsJobConfig.SYNTHESIZED_INPUT_LOCATION,
-                                synthesized)
-                        .toJobParameters());
+                new JobParametersBuilder().toJobParameters());
 
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         assertThat(execution.getStepExecutions()).extracting(StepExecution::getStepName)
@@ -265,6 +373,9 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                     .as("%s was loaded through the repository, not through a utility", reserved)
                     .isPresent();
         }
+        verify(stagingArea).publish(
+                eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + execution.getId()),
+                any(byte[].class));
     }
 
     /**
@@ -280,6 +391,21 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     }
 
     /**
+     * Removes the two staged fixtures, so the configured staging directory is left as it was found.
+     *
+     * <p>The directory itself is left in place: it is named after this specification and creating it is
+     * idempotent, while removing it would race a parallel run of the same class.
+     *
+     * @throws IOException if a fixture cannot be removed
+     */
+    @AfterEach
+    void removeTheStagedFixtures() throws IOException {
+        final Path directory = stagingDirectory();
+        Files.deleteIfExists(directory.resolve(BACKUP_DATASET));
+        Files.deleteIfExists(directory.resolve(SYNTHESIZED_DATASET));
+    }
+
+    /**
      * The narrowest context this job needs: batch orchestration, persistence and the two collaborators
      * the configuration is built against.
      *
@@ -288,11 +414,24 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      * would switch off the very infrastructure this context depends on.
      */
     @Configuration(proxyBeanMethods = false)
-    @EnableAutoConfiguration
+    @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({CombineTransactionsJobConfig.class, BatchConfig.class,
-            FixedWidthFlatFileReaderFactory.class})
+            FixedWidthFlatFileReaderFactory.class, JobParameterValidators.class,
+            DateValidationService.class})
+    @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = TransactionRepository.class)
     @EntityScan(basePackageClasses = Transaction.class)
     static class JobContext {
+
+        /**
+         * Publishes the shared staging boundary without adding an object-store dependency to this
+         * PostgreSQL-focused slice.
+         *
+         * @return observable staging collaborator
+         */
+        @Bean
+        BatchStagingArea batchStagingArea() {
+            return mock(BatchStagingArea.class);
+        }
     }
 }

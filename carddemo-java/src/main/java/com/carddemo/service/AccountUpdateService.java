@@ -22,6 +22,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,27 +34,19 @@ import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.NoTransactionException;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
-import com.carddemo.api.dto.AccountUpdateRequest;
-import com.carddemo.api.dto.AccountUpdateResponse;
-import com.carddemo.api.dto.ErrorResponse;
-import com.carddemo.api.dto.FieldErrorDecorator;
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.OptimisticLockConflictException;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.util.CobolStringUtils;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.PfKeyTranslator;
 import com.carddemo.util.ZonedDecimalCodec;
 
@@ -172,10 +165,11 @@ import com.carddemo.util.ZonedDecimalCodec;
  * card-database message constants at lines 514, 516 and 526 are declared-but-unexercised in this member
  * for the same reason.
  *
- * <p><strong>The cross-reference finder returns an {@code Optional}, not a {@code List}.</strong>
- * {@code CardCrossReferenceRepository} declares
- * {@code findFirstByXrefAcctIdOrderByXrefCardNumAsc}, which already carries the take-the-first-element
- * semantics the brief asks for; an empty result is the legacy not-found condition.
+ * <p><strong>The cross-reference finder returns a {@code List}, and the take-the-first-element rule is
+ * applied here.</strong> {@code CardCrossReferenceRepository} declares {@code findByXrefAcctId}, which
+ * returns every row of a non-unique access path; this service selects the lowest card number, which is
+ * the record a keyed read of that path would have returned, because the card number is the cluster's
+ * base key. An empty result is the legacy not-found condition.
  *
  * <h2>Rules</h2>
  *
@@ -195,26 +189,15 @@ import com.carddemo.util.ZonedDecimalCodec;
  * {@code OptimisticLockConflictException}, which is recoverable and never routed to
  * {@code AbendService}.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The screen turn itself is deliberately non-transactional. Only the two-record rewrite runs
+ * inside {@link OnlineTransactionBoundary}; a failed repository unit therefore completes its
+ * rollback before this service translates the failure into the source screen outcome.
  *
- * @see AccountUpdateRequest
- * @see AccountUpdateResponse
+ * @see AccountUpdateCommand
+ * @see AccountUpdateOutcome
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class AccountUpdateService {
+public final class AccountUpdateService {
 
     private static final Logger LOG = LoggerFactory.getLogger(AccountUpdateService.class);
 
@@ -253,12 +236,6 @@ public class AccountUpdateService {
 
     /** {@code LIT-CARDXREFNAME-ACCT-PATH}, line 582: the alternate-index path actually read. */
     static final String RESOURCE_CARD_XREF_PATH = "CXACAIX";
-
-    /** Entity name the account arm of the write range reports in a conflict. */
-    private static final String ENTITY_ACCOUNT = "Account";
-
-    /** Entity name the customer arm reports, which selects the customer-specific lock text. */
-    private static final String ENTITY_CUSTOMER = "Customer";
 
     /** {@code ABEND-CODE} written by the dispatch selection's otherwise branch, line 2635. */
     private static final String ABEND_CODE_UNEXPECTED_DATA = "0001";
@@ -321,7 +298,7 @@ public class AccountUpdateService {
      * the edit paragraphs compose inline rather than through a condition name.
      *
      * The eleven texts of the block at lines 495 to 528 that the response contract already
-     * declares are reused from AccountUpdateResponse, and the four locking and conflict texts at
+     * declares are reused from AccountUpdateOutcome, and the four locking and conflict texts at
      * lines 518, 520, 522 and 524 are reused from OptimisticLockConflictException. Nothing in that
      * block is re-declared here.
      * ------------------------------------------------------------------------------------------ */
@@ -755,6 +732,12 @@ public class AccountUpdateService {
         }
     }
 
+    /** Which of the two ordered rewrites is active when the transactional boundary fails. */
+    private enum RewriteStage {
+        ACCOUNT,
+        CUSTOMER
+    }
+
     /**
      * Everything the legacy holds in {@code WS-MISC-STORAGE} and {@code WS-THIS-PROGCOMMAREA} for the
      * duration of one turn, created fresh inside the entry point and passed explicitly to every
@@ -770,7 +753,7 @@ public class AccountUpdateService {
         private final Map<ScreenField, FieldFlag> flags = new EnumMap<>(ScreenField.class);
 
         /** The accumulating decoration, rebuilt on each mark because the decorator is immutable. */
-        private FieldErrorDecorator decoration = FieldErrorDecorator.none();
+        private FieldErrorMarks decoration = FieldErrorMarks.none();
 
         /** Per-field messages, keyed by field, so a caller can attribute the summary text. */
         private final Map<ScreenField, String> fieldMessages = new EnumMap<>(ScreenField.class);
@@ -826,14 +809,8 @@ public class AccountUpdateService {
         /** The token that replaces the old-image copy the commarea extension used to carry. */
         private String concurrencyToken = "";
 
-        /**
-         * Records that the account arm of the write range failed. Kept separate from the customer arm
-         * so the asymmetry at lines 4076 to 4103 stays observable: this arm forces no rollback.
-         */
-        private boolean accountWriteFailed;
-
-        /** Records that the customer arm forced the estate's only rollback, at lines 4099 to 4101. */
-        private boolean rollbackForced;
+        /** The ordered rewrite currently executing inside the independent transaction. */
+        private RewriteStage rewriteStage = RewriteStage.ACCOUNT;
 
         /**
          * The ordered BMS identifiers the attribute paragraphs leave unprotected. The 3270 attribute
@@ -857,7 +834,7 @@ public class AccountUpdateService {
                 this.flags.put(field, FieldFlag.ISVALID);
             }
             this.fieldMessages.clear();
-            this.decoration = FieldErrorDecorator.none();
+            this.decoration = FieldErrorMarks.none();
         }
 
         private FieldFlag flag(final ScreenField field) {
@@ -922,6 +899,7 @@ public class AccountUpdateService {
     private final AbendService abendService;
     private final AccountConcurrencyTokenService concurrencyTokenService;
     private final SensitiveFieldEncryptionService fieldEncryption;
+    private final OnlineTransactionBoundary transactionBoundary;
     private final Clock clock;
 
     /**
@@ -949,6 +927,7 @@ public class AccountUpdateService {
      * @param abendService                 the abend routine
      * @param concurrencyTokenService      the change-before-update check
      * @param fieldEncryption              the protected-value producer and reader
+     * @param transactionBoundary          the independent account-plus-customer rewrite unit
      * @param clock                        the current-date source
      */
     public AccountUpdateService(final AccountRepository accountRepository,
@@ -961,6 +940,7 @@ public class AccountUpdateService {
             final AbendService abendService,
             final AccountConcurrencyTokenService concurrencyTokenService,
             final SensitiveFieldEncryptionService fieldEncryption,
+            final OnlineTransactionBoundary transactionBoundary,
             final Clock clock) {
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must not be null");
@@ -981,6 +961,8 @@ public class AccountUpdateService {
                 "concurrencyTokenService must not be null");
         this.fieldEncryption =
                 Objects.requireNonNull(fieldEncryption, "fieldEncryption must not be null");
+        this.transactionBoundary = Objects.requireNonNull(transactionBoundary,
+                "transactionBoundary must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -1143,8 +1125,7 @@ public class AccountUpdateService {
      * @return the screen this turn produces, never {@code null}
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional
-    public AccountUpdateResponse handle(final AccountUpdateRequest request) {
+    public AccountUpdateOutcome handle(final AccountUpdateCommand request) {
         return handle(request, null);
     }
 
@@ -1156,8 +1137,8 @@ public class AccountUpdateService {
      * reproduced by {@code abendRoutine}, which the dispatch selection reaches on its otherwise branch
      * exactly as the legacy does.
      *
-     * <p>The whole turn is one transaction so that the write range at lines 3888 to 4107 can honour the
-     * synchronisation point at line 953 and the rollback at line 4100.
+     * <p>The turn is non-transactional until the write range. That range enters a separate proxied
+     * transaction, so both rewrites commit together and any failure is translated only after rollback.
      *
      * @param  request                   the screen input for this turn; must not be {@code null}
      * @param  rawAttentionKeyIdentifier the raw attention identifier as transmitted, or {@code null} to
@@ -1165,8 +1146,7 @@ public class AccountUpdateService {
      * @return the screen this turn produces, never {@code null}
      * @throws NullPointerException if {@code request} is {@code null}
      */
-    @Transactional
-    public AccountUpdateResponse handle(final AccountUpdateRequest request,
+    public AccountUpdateOutcome handle(final AccountUpdateCommand request,
             final String rawAttentionKeyIdentifier) {
         Objects.requireNonNull(request, "request must not be null");
         LOG.debug("transaction={} program={} written={} compiled={}: turn starting",
@@ -1180,9 +1160,9 @@ public class AccountUpdateService {
         final MapOutput output = new MapOutput();
 
         // Lines 880 to 893: a fresh entry re-initialises the carried areas, anything else adopts them.
-        NavigationContext context = incomingContext(request);
+        ScreenNavigationState context = incomingContext(request);
         if (freshEntry(context)) {
-            context = NavigationContext.empty().withFirstEntry();
+            context = ScreenNavigationState.empty().withFirstEntry();
             state.action = ChangeAction.DETAILS_NOT_FETCHED;
         } else {
             state.action = resolveIncomingChangeAction(request);
@@ -1190,7 +1170,7 @@ public class AccountUpdateService {
         state.concurrencyToken = orEmpty(request.concurrencyToken());
         state.accountId = orEmpty(request.accountId());
         state.customerId = orEmpty(request.customerId());
-        final ScreenWorkArea workArea = screenWorkArea(state, request);
+        final ScreenInputState workArea = screenWorkArea(state, request);
 
         // PERFORM YYYY-STORE-PFKEY THRU ...-EXIT at lines 898 to 899, then the validity test at
         // lines 905 to 916 which forces ENTER whenever the pressed key is not usable here.
@@ -1198,7 +1178,7 @@ public class AccountUpdateService {
         final KeyAction keyAction = screenKeyIsValid(state, pressedKey);
 
         // EVALUATE TRUE at line 921. Clause order is contractual and is preserved exactly.
-        final AccountUpdateResponse response;
+        final AccountUpdateOutcome response;
         if (keyAction == KeyAction.PFK03) {
             response = exitToCaller(state, context, output);
         } else if ((state.action == ChangeAction.DETAILS_NOT_FETCHED && context.firstEntry())
@@ -1237,8 +1217,8 @@ public class AccountUpdateService {
      * commarea is carried by the response instead: the navigation context, the concurrency token that
      * replaces the old-image copy, and the resolved route.
      */
-    private AccountUpdateResponse commonReturn(final EditState state, final MapOutput output,
-            final NavigationContext context, final String route) {
+    private AccountUpdateOutcome commonReturn(final EditState state, final MapOutput output,
+            final ScreenNavigationState context, final String route) {
         return sendScreen(state, output, context, route);
     }
 
@@ -1255,7 +1235,7 @@ public class AccountUpdateService {
      * <p>Receives the map, edits it, and then republishes the accumulated message and this program's own
      * name, mapset and map as the next screen - the moves at lines 1030 to 1033.
      */
-    private void processInputs(final EditState state, final AccountUpdateRequest request,
+    private void processInputs(final EditState state, final AccountUpdateCommand request,
             final KeyAction keyAction) {
         receiveMap(state, request);
         editMapInputs(state, request, keyAction);
@@ -1282,7 +1262,7 @@ public class AccountUpdateService {
      * <p>The early exit at lines 1060 to 1062 matters: when no details have been fetched yet, only the
      * account key is taken from the screen and every other field is left cleared.
      */
-    private void receiveMap(final EditState state, final AccountUpdateRequest request) {
+    private void receiveMap(final EditState state, final AccountUpdateCommand request) {
         state.accountId = screenValue(request.accountId());
         if (state.action == ChangeAction.DETAILS_NOT_FETCHED) {
             receiveMapExit();
@@ -1319,7 +1299,7 @@ public class AccountUpdateService {
      * request contract already constrains, so the inspected prefix and the whole value coincide and no
      * slicing is needed.
      */
-    private void editMapInputs(final EditState state, final AccountUpdateRequest request,
+    private void editMapInputs(final EditState state, final AccountUpdateCommand request,
             final KeyAction keyAction) {
         state.inputError = false;
 
@@ -1471,7 +1451,7 @@ public class AccountUpdateService {
      * score are compared as they stand. Folding uses the ASCII table the estate's own inspect literals
      * declare, never a locale-sensitive conversion.
      */
-    private void compareOldNew(final EditState state, final AccountUpdateRequest request) {
+    private void compareOldNew(final EditState state, final AccountUpdateCommand request) {
         state.changeHasOccurred = false;
 
         final Account account = state.account;
@@ -1549,7 +1529,7 @@ public class AccountUpdateService {
      * declares for this outcome - a source discrepancy carried as a finding, with the live path
      * reproducing what the code actually strings together.
      */
-    private void editAccount(final EditState state, final AccountUpdateRequest request) {
+    private void editAccount(final EditState state, final AccountUpdateCommand request) {
         state.accountFilter = FieldFlag.NOT_OK;
         final String keyed = screenValue(request.accountId());
 
@@ -1964,22 +1944,22 @@ public class AccountUpdateService {
     private void editAreaCode(final EditState state, final ScreenField field, final String areaCode) {
         if (isSpaces(areaCode) || isLowValues(areaCode)) {
             state.fail(field, FieldFlag.BLANK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_AREA_CODE_REQUIRED));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_AREA_CODE_REQUIRED));
             return;
         }
         if (!isAllDigits(areaCode) || areaCode.length() != PHONE_AREA_AND_PREFIX_WIDTH) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_AREA_CODE_NOT_3_DIGITS));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_AREA_CODE_NOT_3_DIGITS));
             return;
         }
         if (isZeroDigits(areaCode)) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_AREA_CODE_ZERO));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_AREA_CODE_ZERO));
             return;
         }
         if (!this.validationLookupService.isValidGeneralPurposeAreaCode(areaCode.trim())) {
             state.fail(field, FieldFlag.NOT_OK, composeMessage(state,
-                    AccountUpdateResponse.SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE));
+                    AccountUpdateOutcome.SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE));
             return;
         }
         state.setFlag(field, FieldFlag.ISVALID);
@@ -1993,17 +1973,17 @@ public class AccountUpdateService {
             final String prefix) {
         if (isSpaces(prefix) || isLowValues(prefix)) {
             state.fail(field, FieldFlag.BLANK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_PREFIX_REQUIRED));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_PREFIX_REQUIRED));
             return;
         }
         if (!isAllDigits(prefix) || prefix.length() != PHONE_AREA_AND_PREFIX_WIDTH) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_PREFIX_NOT_3_DIGITS));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_PREFIX_NOT_3_DIGITS));
             return;
         }
         if (isZeroDigits(prefix)) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_PREFIX_ZERO));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_PREFIX_ZERO));
             return;
         }
         state.setFlag(field, FieldFlag.ISVALID);
@@ -2017,17 +1997,17 @@ public class AccountUpdateService {
             final String lineNumber) {
         if (isSpaces(lineNumber) || isLowValues(lineNumber)) {
             state.fail(field, FieldFlag.BLANK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_LINE_NUMBER_REQUIRED));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_LINE_NUMBER_REQUIRED));
             return;
         }
         if (!isAllDigits(lineNumber) || lineNumber.length() != PHONE_LINE_NUMBER_WIDTH) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_LINE_NUMBER_NOT_4_DIGITS));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_LINE_NUMBER_NOT_4_DIGITS));
             return;
         }
         if (isZeroDigits(lineNumber)) {
             state.fail(field, FieldFlag.NOT_OK,
-                    composeMessage(state, AccountUpdateResponse.SUFFIX_LINE_NUMBER_ZERO));
+                    composeMessage(state, AccountUpdateOutcome.SUFFIX_LINE_NUMBER_ZERO));
             return;
         }
         state.setFlag(field, FieldFlag.ISVALID);
@@ -2064,7 +2044,7 @@ public class AccountUpdateService {
      * <p>The parts are never logged and never concatenated into a diagnostic: this is a regulated
      * identifier, and the response record redacts it from its own rendering for the same reason.
      */
-    private void editUsSsn(final EditState state, final AccountUpdateRequest request) {
+    private void editUsSsn(final EditState state, final AccountUpdateCommand request) {
         editNumericRequired(state, ScreenField.EDIT_US_SSN_PART1, request.ssnPart1());
         if (state.flag(ScreenField.EDIT_US_SSN_PART1).isValid()
                 && isExcludedSsnFirstPart(request.ssnPart1())) {
@@ -2102,7 +2082,7 @@ public class AccountUpdateService {
             return;
         }
         state.fail(ScreenField.STATE, FieldFlag.NOT_OK,
-                composeMessage(state, AccountUpdateResponse.SUFFIX_STATE_NOT_VALID));
+                composeMessage(state, AccountUpdateOutcome.SUFFIX_STATE_NOT_VALID));
         editUsStateCodeExit();
     }
 
@@ -2135,7 +2115,7 @@ public class AccountUpdateService {
             return;
         }
         state.fail(ScreenField.FICO_SCORE, FieldFlag.NOT_OK,
-                composeMessage(state, AccountUpdateResponse.SUFFIX_FICO_OUT_OF_RANGE));
+                composeMessage(state, AccountUpdateOutcome.SUFFIX_FICO_OUT_OF_RANGE));
         editFicoScoreExit();
     }
 
@@ -2166,7 +2146,7 @@ public class AccountUpdateService {
             editUsStateZipCodeExit();
             return;
         }
-        final String message = AccountUpdateResponse.MSG_INVALID_ZIP_FOR_STATE;
+        final String message = AccountUpdateOutcome.MSG_INVALID_ZIP_FOR_STATE;
         state.fail(ScreenField.STATE, FieldFlag.NOT_OK, message);
         state.fail(ScreenField.ZIPCODE, FieldFlag.NOT_OK, message);
         editUsStateZipCodeExit();
@@ -2201,10 +2181,10 @@ public class AccountUpdateService {
      *
      * @return the navigation context as this turn leaves it
      */
-    private NavigationContext decideAction(final EditState state,
-            final AccountUpdateRequest request, final KeyAction keyAction,
-            final NavigationContext context) {
-        NavigationContext result = context;
+    private ScreenNavigationState decideAction(final EditState state,
+            final AccountUpdateCommand request, final KeyAction keyAction,
+            final ScreenNavigationState context) {
+        ScreenNavigationState result = context;
 
         if (state.action == ChangeAction.DETAILS_NOT_FETCHED || keyAction == KeyAction.PFK12) {
             // Lines 2568 to 2580: fetch and present, or abandon the changes and present again.
@@ -2245,7 +2225,7 @@ public class AccountUpdateService {
             // Lines 2625 to 2632: acknowledge, and clear the carried keys when nobody called us.
             state.action = ChangeAction.SHOW_DETAILS;
             if (isUnsuppliedScreenValue(context.fromTransactionId())) {
-                result = new NavigationContext(context.fromTransactionId(), context.fromProgram(),
+                result = new ScreenNavigationState(context.fromTransactionId(), context.fromProgram(),
                         context.toTransactionId(), context.toProgram(), context.userId(),
                         context.userType(), context.programContext(), context.customerId(),
                         context.customerFirstName(), context.customerMiddleName(),
@@ -2274,8 +2254,8 @@ public class AccountUpdateService {
      * attributes, then the send. The order matters: the attribute paragraphs run after the value
      * paragraphs, so decoration is applied to a screen that already carries its values.
      */
-    private void sendMap(final EditState state, final AccountUpdateRequest request,
-            final MapOutput output, final NavigationContext context) {
+    private void sendMap(final EditState state, final AccountUpdateCommand request,
+            final MapOutput output, final ScreenNavigationState context) {
         screenInit(output);
         setupScreenVars(state, request, output, context);
         setupInfoMessage(state, output);
@@ -2328,8 +2308,8 @@ public class AccountUpdateService {
      * selected by the four-clause selection at lines 2710 to 2724 whose otherwise branch repeats the
      * original-values choice.
      */
-    private void setupScreenVars(final EditState state, final AccountUpdateRequest request,
-            final MapOutput output, final NavigationContext context) {
+    private void setupScreenVars(final EditState state, final AccountUpdateCommand request,
+            final MapOutput output, final ScreenNavigationState context) {
         if (context.firstEntry()) {
             setupScreenVarsExit();
             return;
@@ -2472,7 +2452,7 @@ public class AccountUpdateService {
      * response contract admits only a correctly scaled amount and the operator's own text is what the
      * field-error list attributes.
      */
-    private void showUpdatedValues(final AccountUpdateRequest request, final MapOutput output) {
+    private void showUpdatedValues(final AccountUpdateCommand request, final MapOutput output) {
         output.accountId = screenValue(request.accountId());
         output.accountStatus = screenValue(request.accountStatus());
         output.openYear = screenValue(request.openYear());
@@ -2581,7 +2561,7 @@ public class AccountUpdateService {
      * @return the ordered BMS identifiers left unprotected, for the cursor derivation
      */
     private List<String> setupScreenAttributes(final EditState state,
-            final NavigationContext context) {
+            final ScreenNavigationState context) {
         final List<String> unprotected = protectAllAttributes();
         if (state.action == ChangeAction.DETAILS_NOT_FETCHED) {
             // Line 2996: only the account key is editable while no detail has been fetched.
@@ -2647,7 +2627,7 @@ public class AccountUpdateService {
      *
      * <p>The decorator is immutable, so each mark yields a new instance that is stored back.
      */
-    private void markField(final EditState state, final NavigationContext context,
+    private void markField(final EditState state, final ScreenNavigationState context,
             final ScreenField field) {
         if (!context.reEntry()) {
             return;
@@ -2656,9 +2636,9 @@ public class AccountUpdateService {
         if (!flag.requiresDecoration()) {
             return;
         }
-        final FieldErrorDecorator.FlagState flagState = flag.writesMissingMarker()
-                ? FieldErrorDecorator.FlagState.BLANK
-                : FieldErrorDecorator.FlagState.NOT_OK;
+        final FieldErrorMarks.FlagState flagState = flag.writesMissingMarker()
+                ? FieldErrorMarks.FlagState.BLANK
+                : FieldErrorMarks.FlagState.NOT_OK;
         state.decoration =
                 state.decoration.mark(field.getFieldName(), field.getBmsFieldId(), flagState);
     }
@@ -2805,16 +2785,16 @@ public class AccountUpdateService {
      * the focus field - the first field in error when there is one, and otherwise the first field the
      * attribute paragraphs left unprotected.
      */
-    private AccountUpdateResponse sendScreen(final EditState state, final MapOutput output,
-            final NavigationContext context, final String route) {
-        final List<ErrorResponse.FieldError> fieldErrors = state.decoration.fieldErrors();
-        final NavigationContext outgoing = new NavigationContext(LEGACY_TRANSACTION_ID,
+    private AccountUpdateOutcome sendScreen(final EditState state, final MapOutput output,
+            final ScreenNavigationState context, final String route) {
+        final List<ValidationException.FieldError> fieldErrors = state.decoration.fieldErrors();
+        final ScreenNavigationState outgoing = new ScreenNavigationState(LEGACY_TRANSACTION_ID,
                 LEGACY_PROGRAM_ID, context.toTransactionId(), context.toProgram(), context.userId(),
                 context.userType(), context.programContext(), emptyToNull(state.customerId),
                 context.customerFirstName(), context.customerMiddleName(),
                 context.customerLastName(), emptyToNull(state.accountId), output.accountStatus,
                 emptyToNull(state.cardNumber), LEGACY_MAP, LEGACY_MAPSET);
-        final AccountUpdateResponse response = new AccountUpdateResponse(output.transactionName,
+        final AccountUpdateOutcome response = new AccountUpdateOutcome(output.transactionName,
                 output.title01, output.currentDate, output.programName, output.title02,
                 output.currentTime, output.accountId, output.accountStatus, output.openYear,
                 output.openMonth, output.openDay, output.creditLimit, output.expiryYear,
@@ -2902,8 +2882,8 @@ public class AccountUpdateService {
      * recorded as a divergence.
      */
     private void getCardXrefByAccount(final EditState state) {
-        final Optional<CardCrossReference> located = this.cardCrossReferenceRepository
-                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.accountId);
+        final Optional<CardCrossReference> located = firstXrefByBaseKey(
+                this.cardCrossReferenceRepository.findByXrefAcctId(state.accountId));
         if (located.isEmpty()) {
             state.markInputError();
             state.accountFilter = FieldFlag.NOT_OK;
@@ -3039,20 +3019,18 @@ public class AccountUpdateService {
      * 4144 and 4190. Every one of them becomes the same labelled break, so the structure is a loop rather
      * than recursion and no transfer is modelled as a special case.
      *
-     * <p><strong>The rollback asymmetry, lines 4076 to 4103, reproduced.</strong> The account arm sets the
-     * update-failed state and leaves, forcing no rollback - and it needs none, because nothing has been
-     * written yet. The customer arm sets the same state and then issues the estate's only synchronisation
-     * rollback, because by then the account has already been written and must be backed out. So the
-     * account arm returns its outcome through the message slot, which keeps the second clause of the
-     * dispatch selection reachable, while the customer arm forces the rollback and raises the recoverable
-     * conflict. Neither arm abends: an optimistic-lock conflict is recoverable by definition and is never
-     * routed to the abend service.
+     * <p><strong>The rollback asymmetry, lines 4076 to 4103, remains observable.</strong> Both rewrites
+     * execute in one independent transaction. An account-arm failure exits before a customer write has
+     * occurred, while a customer-arm failure rolls back the account rewrite that already succeeded.
+     * Both failures return through the same legacy update-failed message and outcome selection, and
+     * neither can escape later as a rollback-only exception because mapping happens after the boundary
+     * has completed its rollback. Neither arm abends.
      *
      * <p>Concurrency control is declarative on the entity - a version column that the provider checks on
      * flush - so no lock mode, no lock hint and no pessimistic read appears anywhere. Where the provider
      * reports a conflict, this method translates it.
      */
-    private void writeProcessing(final EditState state, final AccountUpdateRequest request) {
+    private void writeProcessing(final EditState state, final AccountUpdateCommand request) {
         writeRange:
         while (true) {
             // Lines 3892 to 3915: hold the account. An absent row is the failure to hold it.
@@ -3075,6 +3053,7 @@ public class AccountUpdateService {
                 break writeRange;
             }
             final Customer customer = heldCustomer.get();
+            final Customer customerBefore = copyCustomer(customer);
 
             // Lines 3947 to 3952, and the two backward transfers from the change check.
             if (checkChangeInRecord(state, account, customer)) {
@@ -3085,32 +3064,43 @@ public class AccountUpdateService {
             applyAccountChanges(request, account);
             applyCustomerChanges(request, customer);
 
-            // Lines 4065 to 4081: the account rewrite and its no-rollback failure arm.
+            // Lines 4065 to 4103: both rewrites share one durable transaction. The stage marker keeps
+            // the source's account-versus-customer failure arms distinguishable after rollback.
             try {
-                this.accountRepository.saveAndFlush(account);
-            } catch (final DataAccessException accountWriteFailed) {
-                state.accountWriteFailed = true;
+                this.transactionBoundary.execute(() -> {
+                    state.rewriteStage = RewriteStage.ACCOUNT;
+                    this.accountRepository.saveAndFlush(account);
+                    state.rewriteStage = RewriteStage.CUSTOMER;
+                    if (this.customerRepository.compareAndSet(customerBefore, customer) != 1) {
+                        throw new CustomerRecordChangedException();
+                    }
+                    return Boolean.TRUE;
+                });
+            } catch (final CustomerRecordChangedException changed) {
                 state.markInputError();
-                state.claimMessage(OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED);
-                LOG.warn("transaction={} resource={}: the account rewrite did not complete; the "
-                        + "legacy forces no rollback on this arm because nothing has been written",
-                        LEGACY_TRANSACTION_ID, RESOURCE_ACCOUNT_MASTER, accountWriteFailed);
+                state.claimMessage(
+                        OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+                LOG.info("transaction={} resource={}: the held customer image no longer matched;"
+                                + " the account rewrite was rolled back",
+                        LEGACY_TRANSACTION_ID, RESOURCE_CUSTOMER_MASTER);
                 break writeRange;
-            }
-
-            // Lines 4085 to 4103: the customer rewrite, whose failure arm rolls back and raises.
-            try {
-                this.customerRepository.saveAndFlush(customer);
-            } catch (final DataAccessException customerWriteFailed) {
+            } catch (final RuntimeException writeFailed) {
                 state.markInputError();
                 state.claimMessage(OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED);
-                forceRollback(state);
-                LOG.warn("transaction={} resource={}: the customer rewrite did not complete; the "
-                        + "account rewrite that already succeeded is being backed out",
-                        LEGACY_TRANSACTION_ID, RESOURCE_CUSTOMER_MASTER, customerWriteFailed);
-                throw new OptimisticLockConflictException(
-                        OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK,
-                        ENTITY_CUSTOMER, state.customerId, customerWriteFailed);
+                if (state.rewriteStage == RewriteStage.ACCOUNT) {
+                    LOG.warn("transaction={} resource={}: the account rewrite failed before the "
+                                    + "customer rewrite; the empty unit of work was rolled back;"
+                                    + " failureChain={}",
+                            LEGACY_TRANSACTION_ID, RESOURCE_ACCOUNT_MASTER,
+                            FailureDiagnostics.failureChainOf(writeFailed));
+                } else {
+                    LOG.warn("transaction={} resource={}: the customer rewrite failed; the account "
+                                    + "rewrite completed earlier in the unit and was rolled back;"
+                                    + " failureChain={}",
+                            LEGACY_TRANSACTION_ID, RESOURCE_CUSTOMER_MASTER,
+                            FailureDiagnostics.failureChainOf(writeFailed));
+                }
+                break writeRange;
             }
 
             state.account = account;
@@ -3118,6 +3108,14 @@ public class AccountUpdateService {
             break writeRange;
         }
         writeProcessingExit();
+    }
+
+    private static Customer copyCustomer(final Customer source) {
+        return new Customer(source);
+    }
+
+    private static final class CustomerRecordChangedException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
     }
 
     /**
@@ -3214,8 +3212,8 @@ public class AccountUpdateService {
      *
      * @param raw the raw attention identifier, or {@code null} to take the typed action as given
      */
-    private KeyAction storePfKey(final EditState state, final AccountUpdateRequest request,
-            final String raw, final ScreenWorkArea workArea) {
+    private KeyAction storePfKey(final EditState state, final AccountUpdateCommand request,
+            final String raw, final ScreenInputState workArea) {
         if (raw == null) {
             return workArea.attentionKey().orElseGet(
                     () -> request.keyAction() == null ? KeyAction.ENTER : request.keyAction());
@@ -3263,14 +3261,14 @@ public class AccountUpdateService {
      * transaction, needing no statement of its own. The destination is resolved by the navigation service,
      * which falls back to the user menu exactly as lines 930 to 942 do when nothing called us.
      */
-    private AccountUpdateResponse exitToCaller(final EditState state,
-            final NavigationContext context, final MapOutput output) {
+    private AccountUpdateOutcome exitToCaller(final EditState state,
+            final ScreenNavigationState context, final MapOutput output) {
         final NavigationService.Route destination = this.navigationService
                 .resolveBackNavigation(carriedState(context), NavigationService.Route.USER_MENU);
-        final NavigationContext outgoing = new NavigationContext(LEGACY_TRANSACTION_ID,
+        final ScreenNavigationState outgoing = new ScreenNavigationState(LEGACY_TRANSACTION_ID,
                 LEGACY_PROGRAM_ID, destination.getLegacyTransactionId(),
                 destination.getLegacyProgramName(), context.userId(), context.userType(),
-                NavigationContext.ProgramContext.ENTER, context.customerId(),
+                ScreenNavigationState.ProgramContext.ENTER, context.customerId(),
                 context.customerFirstName(), context.customerMiddleName(),
                 context.customerLastName(), context.accountId(), context.accountStatus(),
                 context.cardNumber(), LEGACY_MAP, LEGACY_MAPSET);
@@ -3308,7 +3306,7 @@ public class AccountUpdateService {
      * back valid, and compared against the injected clock's current date so the outcome is deterministic
      * under test.
      */
-    private void editDateOfBirth(final EditState state, final AccountUpdateRequest request) {
+    private void editDateOfBirth(final EditState state, final AccountUpdateCommand request) {
         state.label = ScreenField.DT_OF_BIRTH_YEAR.getLegacyLabel();
         final String candidate = dateCandidate(request.dateOfBirthYear(),
                 request.dateOfBirthMonth(), request.dateOfBirthDay());
@@ -3396,7 +3394,7 @@ public class AccountUpdateService {
      * <p>No amount is scaled here. Every monetary lexeme goes through the codec, which is the only holder
      * of a rounding policy in the module and truncates toward zero.
      */
-    private static void applyAccountChanges(final AccountUpdateRequest request,
+    private static void applyAccountChanges(final AccountUpdateCommand request,
             final Account account) {
         account.setAcctActiveStatus(screenValue(request.accountStatus()));
         account.setAcctCurrBal(lexemeAsMonetary(request.currentBalance()));
@@ -3422,7 +3420,7 @@ public class AccountUpdateService {
      * cleartext for either of them - which is the mechanism that stops an unprotected value ever reaching
      * the persistence boundary.
      */
-    private void applyCustomerChanges(final AccountUpdateRequest request, final Customer customer) {
+    private void applyCustomerChanges(final AccountUpdateCommand request, final Customer customer) {
         customer.setFirstName(screenValue(request.firstName()));
         customer.setMiddleName(screenValue(request.middleName()));
         customer.setLastName(screenValue(request.lastName()));
@@ -3450,32 +3448,15 @@ public class AccountUpdateService {
     }
 
     /**
-     * The estate's only {@code EXEC CICS SYNCPOINT ROLLBACK}, lines 4099 to 4101, reproduced as an
-     * explicit act on the customer arm alone.
-     *
-     * <p>Guarded because a caller may exercise the arm outside a transaction - a unit test does exactly
-     * that - and the absence of one is not a fault in this method.
-     */
-    private static void forceRollback(final EditState state) {
-        state.rollbackForced = true;
-        try {
-            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
-        } catch (final NoTransactionException notTransactional) {
-            LOG.warn("transaction={}: no unit of work is active, so the customer arm's rollback is "
-                    + "recorded without being issued", LEGACY_TRANSACTION_ID, notTransactional);
-        }
-    }
-
-    /**
      * The cursor the send positions, at line 3597, expressed as a field identifier.
      *
      * <p>The first field in error when there is one, so an operator's attention lands where the decoration
      * is; otherwise the first field the attribute paragraphs left unprotected.
      */
     private static String focusFieldId(final EditState state,
-            final List<ErrorResponse.FieldError> fieldErrors) {
+            final List<ValidationException.FieldError> fieldErrors) {
         if (!fieldErrors.isEmpty()) {
-            return fieldErrors.get(0).screenFieldId();
+            return fieldErrors.get(0).bmsFieldId();
         }
         return state.unprotectedFieldIds.isEmpty() ? null : state.unprotectedFieldIds.get(0);
     }
@@ -3655,7 +3636,7 @@ public class AccountUpdateService {
      */
     private static boolean fitsRecordAmount(final BigDecimal amount) {
         return amount != null
-                && amount.precision() - amount.scale() <= AccountUpdateResponse.MONEY_INTEGER_DIGITS;
+                && amount.precision() - amount.scale() <= AccountUpdateOutcome.MONEY_INTEGER_DIGITS;
     }
 
     /** The eight-character candidate the date cascade takes, assembled from its three keyed parts. */
@@ -3774,7 +3755,8 @@ public class AccountUpdateService {
             return this.fieldEncryption.revealNullable(fieldName, stored);
         } catch (final IllegalArgumentException | IllegalStateException unreadable) {
             LOG.warn("transaction={} field={}: the protected value could not be opened and is "
-                    + "treated as absent", LEGACY_TRANSACTION_ID, fieldName, unreadable);
+                    + "treated as absent; failureChain={}", LEGACY_TRANSACTION_ID, fieldName,
+                    FailureDiagnostics.failureChainOf(unreadable));
             return null;
         }
     }
@@ -3840,9 +3822,9 @@ public class AccountUpdateService {
     }
 
     /** The navigation context as it arrived, with absence made explicit rather than left null. */
-    private static NavigationContext incomingContext(final AccountUpdateRequest request) {
+    private static ScreenNavigationState incomingContext(final AccountUpdateCommand request) {
         return request.navigationContext() == null
-                ? NavigationContext.empty()
+                ? ScreenNavigationState.empty()
                 : request.navigationContext();
     }
 
@@ -3852,7 +3834,7 @@ public class AccountUpdateService {
      * <p>Either nothing was carried at all, which is the zero-length commarea the legacy tests for, or the
      * caller was the user menu and this is not a re-entry.
      */
-    private boolean freshEntry(final NavigationContext context) {
+    private boolean freshEntry(final ScreenNavigationState context) {
         return isNavigationStateAbsent(context)
                 || (isMenuProgram(context.fromProgram()) && !context.reEntry());
     }
@@ -3872,7 +3854,7 @@ public class AccountUpdateService {
      * confirmation screen, because that is the only screen on which the attribute paragraphs free the save
      * legend, at lines 3578 to 3581. Anything else is a turn on the detail screen.
      */
-    private static ChangeAction resolveIncomingChangeAction(final AccountUpdateRequest request) {
+    private static ChangeAction resolveIncomingChangeAction(final AccountUpdateCommand request) {
         if (isUnsuppliedScreenValue(request.concurrencyToken())) {
             return ChangeAction.DETAILS_NOT_FETCHED;
         }
@@ -3894,9 +3876,9 @@ public class AccountUpdateService {
      * <p>Its numeric views are what the zero tests at lines 2703 and 2712 read, so the work area is built
      * rather than bypassed.
      */
-    private static ScreenWorkArea screenWorkArea(final EditState state,
-            final AccountUpdateRequest request) {
-        return new ScreenWorkArea(request.keyAction(), LEGACY_PROGRAM_ID, LEGACY_MAPSET, LEGACY_MAP,
+    private static ScreenInputState screenWorkArea(final EditState state,
+            final AccountUpdateCommand request) {
+        return new ScreenInputState(request.keyAction(), LEGACY_PROGRAM_ID, LEGACY_MAPSET, LEGACY_MAP,
                 emptyToNull(state.returnMessage), emptyToNull(state.returnMessage),
                 emptyToNull(state.accountId), emptyToNull(state.cardNumber),
                 emptyToNull(state.customerId));
@@ -3915,8 +3897,8 @@ public class AccountUpdateService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -3931,7 +3913,7 @@ public class AccountUpdateService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }
@@ -3943,5 +3925,27 @@ public class AccountUpdateService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
+    }
+
+    /**
+     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
+     * with the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
+     * number. That is a property of the read being reproduced rather than of the index, so
+     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
+     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
+     *
+     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
+     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
+     * coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when the account has none
+     */
+    private static Optional<CardCrossReference> firstXrefByBaseKey(
+            final List<CardCrossReference> candidates) {
+        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

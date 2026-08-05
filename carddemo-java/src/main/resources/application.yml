@@ -22,33 +22,21 @@
 # enforcement, trace sampling, management exposure, contract publication and logging levels all
 # differ by profile, and each is noted where it is declared below.
 #
-# THIS BASELINE IS FAIL-CLOSED, and that is a property to preserve rather than an observation. The
-# rule for every setting here is: assume the profile that inherits it is production, so a
-# convenience is declared closed here and WIDENED by the profile that needs it, never declared open
-# and narrowed by production - a deployment can forget to select a profile but it cannot forget to
-# inherit this file. Health detail, health components and contract publication are closed here and
-# opened only in the local overlay; HTTPS is required here and relaxed only in local and test.
-#
-# A PROFILE-LESS START CANNOT REACH A RUNNING STATE. Three values the application cannot operate
-# without are declared in no profile and defaulted nowhere - not to an empty value and not to a
-# placeholder: spring.datasource.url, carddemo.security.jwt.secret and
-# carddemo.security.field-encryption.key. Each overlay binds all three; this file binds none, and
-# the data-source resolution throws during context refresh, so the failure is deterministic and
-# arrives before the first request is accepted.
-#
 # THIS BASELINE IS FAIL-CLOSED, and that is a property to be preserved rather than a description of
 # how one environment happens to have it set. The rule for every setting here is: assume the profile
 # that inherits it is production. A convenience is therefore never declared here and then narrowed by
 # the production overlay - it is declared closed here and WIDENED by the profile that needs it,
 # because a deployment can forget to select a profile but it cannot forget to inherit this file.
-# Concretely, four settings are closed here and opened only in application-local.yml:
-#     management.endpoints.web.exposure.include   three endpoints, each a cross-file contract
+# Concretely, three settings are closed here and opened only in application-local.yml:
 #     management.endpoint.health.show-details     never - aggregate status only
 #     management.endpoint.health.show-components  never
 #     springdoc.api-docs                          disabled - the viewer is absent, see below
 # and two are closed here and relaxed only in the local and test overlays:
 #     carddemo.security.require-https             true
 #     carddemo.security.anonymous-metrics-scrape  false - the scrape endpoint needs a credential
+# The published management surface is a cross-file contract rather than a convenience: this file
+# exposes health, info, metrics and prometheus - four endpoints, each resolved by a sibling artefact -
+# and the local overlay adds to that set without changing what may be read anonymously.
 #
 # A PROFILE-LESS START CANNOT REACH A RUNNING STATE, and it fails during start-up rather than
 # serving anything. Three values that the application cannot operate without are declared in NO
@@ -122,55 +110,39 @@ spring:
   # -----------------------------------------------------------------------------------------------
   # Schema evolution: versioned, forward-only, and the only path by which an application table or a
   # seeded row is created. There is no framework-managed initialisation script for the application
-  # tables, so the migrations on the two locations below are the whole story for them.
+  # tables, so the migrations on the one location below are the whole story for them.
   #
-  #   classpath:db/migration/schema                                          EVERY profile
+  #   classpath:db/migration                                                 EVERY profile
   #     V1__create_schema.sql        the eleven application tables
   #     V2__create_indexes.sql       keys and alternate-index equivalents
+  #     V3__seed_reference_data.sql  the sample reference rows       - above the production ceiling
+  #     V4__seed_user_security.sql   the ten seeded sign-on identities - above the production ceiling
   #
-  #   classpath:db/migration/seed                                            local and test ONLY
-  #     V3__seed_reference_data.sql  the sample reference rows
-  #     V4__seed_user_security.sql   the ten seeded sign-on identities
+  # ONE FLAT LOCATION, AND THE SEEDS ARE HELD BACK BY THE VERSION CEILING. All four delivered scripts
+  # sit directly in classpath:db/migration; there is no schema/, no seed/, no local/, no test/ and no
+  # prod/ child directory, and none may be created. A directory-scoped location list therefore cannot
+  # separate V3 and V4 from V1 and V2, which is why the separation is expressed as a ceiling on the
+  # migration VERSION instead. See docs/decision-log.md DL-127, which supersedes DL-102 and DL-119.
+  # The delivered inventory is exactly V1, V2, V3, V4 - there is no V1.1, because the batch metadata
+  # tables are owned by Spring Batch.
   #
-  # TWO LOCATIONS, SPLIT BY PURPOSE, AND THE SEEDS ARE HELD BACK BY THE LOCATION LIST. This is the
-  # mechanism AAP 0.3.1 and 0.4.2 require directly: "FlywayConfig resolves V3 and V4 from profile-scoped
-  # locations so a production deployment migrates schema and indexes without inheriting sample data or
-  # seeded credentials." Production resolves the schema location alone, so the two seeds are not
-  # resolved there at all. The delivered inventory is exactly V1, V2, V3, V4 - there is no V1.1, because
-  # the batch metadata tables are owned by Spring Batch.
-  #
-  # THE SHARED PARENT classpath:db/migration HOLDS NO SCRIPT AND IS DECLARED BY NO PROFILE. That is what
-  # makes the location list a boundary rather than a label: a Flyway location is scanned RECURSIVELY, so
-  # a script left in the parent, or a profile that named the parent, would reach across the split. Two
-  # earlier revisions kept all four scripts flat in the parent for exactly that reason and relied on the
-  # ceiling alone; the recursion argument is sound, and what it actually supports is moving the schema
-  # scripts down as well, which is what has now been done. See docs/decision-log.md DL-127, which
-  # supersedes DL-102 and DL-119.
-  #
-  # THE CEILING IS RETAINED BEHIND THE LOCATION LIST, not instead of it. target "2" applies 1 and 2 and
-  # would decline 3 and 4 even if a seed location were resolved by mistake. This shared baseline carries
-  # "2" rather than the convenience value, so a profile silent about migrations inherits the PRODUCTION
-  # posture; only the local and test overlays lift it, and each lifts it explicitly for itself alongside
-  # the seed location it also adds.
+  # THE CEILING IS THE CONTROL, NOT A BACKSTOP. target "2" applies 1 and 2 and declines 3 and 4. This
+  # shared baseline carries "2" rather than the convenience value, so a profile silent about migrations
+  # inherits the PRODUCTION posture; only the local and test overlays lift it, and each lifts it
+  # explicitly for itself.
   #
   # THE CONSEQUENCE FOR A NEW SCRIPT, stated once here and repeated at each profile: a script that
-  # production MUST run is numbered at or below 2 and belongs in db/migration/schema; a script
-  # production must NEVER run is numbered above 2 and belongs in db/migration/seed. Both halves are part
-  # of the decision, and the directory is the half that production cannot be talked out of.
-  #
-  # WHAT THIS MEANS TO THE MIGRATION TOOL, CHECKED RATHER THAN ASSUMED. Under target "2" the two seeds
-  # are discovered and reported as above-target, and the migration still validates successfully, so a
-  # pending above-target script is not an error a deployment has to suppress. The
-  # configuration-baseline test asserts the resolved location list and the ceiling against the delivered
-  # scripts, so the sentences above cannot go stale unnoticed.
+  # production MUST run is numbered at or below 2; a script production must NEVER run is numbered above
+  # 2. The number is the whole of the decision, and it is the half that production cannot be talked out
+  # of, because FlywayConfig re-applies the ceiling after binding.
   #
   # THE CEILING IS ENFORCED A SECOND TIME IN CODE, AND PRODUCTION ADDS A HISTORY-AND-DATA CHECK.
   # com.carddemo.config.FlywayConfig refuses to start a production profile whose resolved ceiling
   # reaches version 3 or beyond, re-applying the pin AFTER the configuration has been bound so an
   # inherited value, an operator override or a merged property source cannot lift it in silence; it also
-  # refuses any resolved location outside classpath:db/migration/schema, which refuses the seed location
-  # by name and refuses the shared parent too, because a location above the split reaches the seeds
-  # recursively. com.carddemo.config.ProductionSeedRejectionCallback refuses a
+  # refuses any resolved location other than the one packaged classpath:db/migration, because another
+  # location could carry scripts the ceiling never measured.
+  # com.carddemo.config.ProductionSeedRejectionCallback refuses a
   # production
   # start-up against a database whose migration history already records a seed version, whose
   # user_security table holds any of the ten reserved fixture identifiers, or whose tables match all
@@ -189,17 +161,20 @@ spring:
   # skipped in silence against a database that already holds objects.
   flyway:
     enabled: true
-    # THE SCHEMA LOCATION ALONE. This is the production posture, and it is what a profile that stays
-    # silent about migrations inherits. V1 and V2 live here; the two seed scripts live in a separate
-    # location, classpath:db/migration/seed, which only the local and test overlays add.
+    # THE ONE MIGRATION LOCATION, SHARED BY EVERY PROFILE. All four scripts are physically flat in
+    # this single directory - V1__create_schema.sql, V2__create_indexes.sql,
+    # V3__seed_reference_data.sql and V4__seed_user_security.sql - and no child directory exists or
+    # may be created.
     #
-    # The shared parent classpath:db/migration is deliberately NOT declared. A Flyway location is
-    # scanned recursively, so naming the parent would reach the seeds through the child directory and
-    # the location list would stop being a boundary. See docs/decision-log.md DL-127.
-    locations: classpath:db/migration/schema
-    # Retained behind the location as belt and braces: V3 and V4 are numbered above this ceiling, so
-    # even a seed location resolved by mistake would not be executed. FlywayConfig refuses to start a
-    # production deployment whose bound ceiling reaches version 3 or beyond.
+    # A directory-scoped location therefore cannot separate the seeds from the schema, which is why
+    # the separation is expressed as a VERSION CEILING rather than as a location list. See
+    # docs/decision-log.md DL-127.
+    locations: classpath:db/migration
+    # THE CEILING IS THE CONTROL. This is the production posture, and it is what a profile that stays
+    # silent about migrations inherits: migration stops after V2, so the reference-data seed and the
+    # sign-on-identity seed - numbered 3 and 4 - are never executed. FlywayConfig re-asserts the same
+    # value under the production profile and refuses to start a production deployment whose bound
+    # ceiling reaches version 3 or beyond.
     target: "2"
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -215,6 +190,10 @@ spring:
       initialize-schema: always
       table-prefix: BATCH_
 
+  servlet:
+    multipart:
+      enabled: false
+
   # The region is bound from the environment with a development default; production binds it with no
   # fallback, because a defaulted region would place every resource in a region nobody chose.
   # queue-not-found-strategy is FAIL rather than CREATE on purpose: creating a missing queue would
@@ -226,25 +205,35 @@ spring:
         static: ${carddemo.aws.region}
       sqs:
         queue-not-found-strategy: FAIL
+        observation-enabled: true
 
   # Graceful shutdown: in-flight work finishes within the phase timeout, matching a batch step that
-  # must not be interrupted mid-record.
+  # must not be interrupted mid-record. The shipped Compose stack grants 35 seconds before SIGKILL,
+  # leaving a five-second margin beyond this 30-second application phase (decision log DL-157).
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
 server:
   port: ${APP_PORT:8080}
   shutdown: graceful
+  max-http-request-header-size: 8KB
+  tomcat:
+    max-http-form-post-size: 64KB
+    max-parameter-count: 64
+    max-swallow-size: 64KB
+    connection-timeout: 10s
 
 # THE MINIMUM SURFACE THAT STILL HONOURS THIS MODULE'S CROSS-FILE CONTRACTS. Exactly four endpoints
 # are published, each because something else resolves it: health is the Dockerfile HEALTHCHECK and
 # the readiness gate every Compose service waits on; prometheus is the scrape target of
 # config/prometheus/prometheus.yml; metrics is the surface the performance baseline is read from;
 # and info identifies the running build. Publishing an endpoint does not make it anonymously
-# readable - SecurityConfig permits only the health probe and the Prometheus scrape without a
-# credential and authenticates every other management path - so metrics is published and
-# authenticated. Health detail and components are withheld: an aggregate status is all an
-# unauthenticated probe may see, and a component list names the infrastructure behind it.
+# readable. SecurityConfig permits the health probe without a credential unconditionally, and adds an
+# anonymous permit for the Prometheus scrape path only when carddemo.security.anonymous-metrics-scrape
+# is set - which this baseline sets to false further down, so under this file alone the scrape path is
+# authenticated along with metrics and info. Health detail and components are withheld: an aggregate
+# status is all an unauthenticated probe may see, and a component list names the infrastructure behind
+# it.
 management:
   endpoints:
     web:
@@ -257,6 +246,16 @@ management:
       show-components: never
       probes:
         enabled: true
+      # Liveness answers only whether this process can continue. Readiness additionally requires the
+      # datasource and all three externally provisioned AWS resources. The report-submission path keeps
+      # the legacy queue's ignore-on-error response contract for an individual request, while readiness
+      # turns DOWN so a router stops sending new work to an instance whose destination is absent
+      # (decision log DL-155).
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,awsS3,awsSqs,awsSns
   health:
     db:
       enabled: true
@@ -313,24 +312,39 @@ logging:
     root: INFO
     com.carddemo: INFO
     org.springframework.batch: INFO
+    # The framework's job launcher is the one category deliberately raised above its parent. At INFO it
+    # announces every launch with the whole parameter map, values included, and this module's launch
+    # surface is reached over HTTP - so those values are a caller's. Every diagnostic this module authors
+    # reports parameter keys and withholds their values (see config/BatchConfig#batchJobBoundaryListener),
+    # and one framework line at INFO would undo that on every launch. Pinned HERE, in the shared baseline,
+    # rather than per overlay, so that an overlay raising the parent category cannot reach it. WARN rather
+    # than OFF because the same class reports genuine launch failures.
+    org.springframework.batch.core.launch.support.SimpleJobOperator: WARN
     org.flywaydb: INFO
 
-# Module-owned settings. The four AWS resource names are a frozen inventory shared with
-# docker-compose.yml, the LocalStack bootstrap script and every overlay, and they must agree
-# byte-identically: a disagreement produces a stack that starts cleanly and publishes nowhere. The
-# queue name must end in the FIFO suffix, which JobSubmissionService validates at construction, and
-# production binds the queue with no fallback so a missing value fails start-up. The S3 prefixes
-# separate the six staging areas the legacy job streams kept as separate datasets.
+# Module-owned settings. The queue name is the one AWS resource name prescribed by the migration
+# plan; the bucket, message group and topic are this module's choices. Every operational artefact must
+# nevertheless agree on each configured value: a disagreement produces a stack that starts cleanly
+# and publishes nowhere. The shared local staging root is the short-lived filesystem side of the S3
+# boundary; completed artifacts are published under execution-scoped object keys.
 carddemo:
+  web:
+    cors:
+      allowed-origins: ""
+    max-request-body-size: 64KB
+  batch:
+    # Every file-producing job may override this root under its own key, but defaults here so the
+    # container needs one writable mounted path rather than six unrelated temporary directories.
+    # Production durability comes from the object-store publication boundary, not from this volume;
+    # the volume keeps in-progress and completed local files observable and restartable.
+    staging-directory: ${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}}
   aws:
     # THE SIX KEYS UNDER THIS PREFIX ARE THE MIGRATION PLAN'S OWN CONTRACT, and com.carddemo.config
     # AwsProperties binds exactly these and nothing else: region, endpoint-override,
     # s3.batch-staging-bucket, sqs.job-queue, sqs.message-group-id and sns.job-notification-topic.
-    # An earlier revision of this file and of that class agreed with each other on a different set -
-    # s3.bucket, sqs.job-submission-queue, six s3.prefix.* keys, and no region or endpoint key at
-    # all - which is why the agreement between a document and its binder proves nothing about either:
-    # one edit can move both. The plan states the key paths, this document follows it, and a test
-    # asserts the withdrawn names are absent so a third round trip fails rather than passing review.
+    # The agreement between this document and its binder proves nothing on its own, because one edit
+    # can move both; the plan is what states the key paths, and a test asserts that no key outside this
+    # set is bound.
     #
     # The region, stated once per profile and derived from here by the AWS integration's own
     # spring.cloud.aws.region.static above rather than restated there. Every resource below is
@@ -343,13 +357,16 @@ carddemo:
     # Production declares none, which is what makes each client resolve the region's own real endpoint,
     # and a shared baseline value would be inherited by production and have to be blanked to undo.
     #
-    # Batch file staging, standing in for the sequential output datasets and generation-data-group
-    # bases the legacy jobs wrote to. One bucket carries every staged object; the key an object is
-    # written under is composed by the job that writes it, because a key names one object of one run
-    # while this namespace carries only what a deployment may decide. Six s3.prefix.* keys were
-    # declared here by an earlier revision and are withdrawn on the same principle as the two
-    # withdrawn queue keys below: nothing bound them and no writer read one, so they read as
-    # configuration while adjusting nothing. See docs/decision-log.md DL-094.
+    # Batch file staging, standing in for the sequential datasets and generation-data-group bases the
+    # legacy jobs read and wrote. BatchStagingArea is the one application boundary for this bucket:
+    # readers check for and download a staged object through it, and every dataset-producing job
+    # publishes its completed generation through it. Spring Batch's file writers still use an
+    # execution-local file because their restart state requires java.io.File access; the adapter
+    # uploads that buffer only after the writer closes successfully. It never provisions or deletes
+    # the bucket. Each job composes its own object key because a key names one object of one run while
+    # this namespace carries only what a deployment may decide. Six s3.prefix.* keys were declared
+    # here by an earlier revision and are withdrawn: no prefix is configurable and no job stages
+    # outside the shared adapter. See docs/decision-log.md DL-094.
     s3:
       batch-staging-bucket: ${CARDDEMO_S3_BUCKET:carddemo-batch-staging}
     # The single online-to-batch bridge of the legacy system: the CICS transient-data queue named
@@ -360,7 +377,7 @@ carddemo:
     #
     # The two names below are cross-file contracts rather than local choices: each appears
     # byte-identically in every place listed below, so changing one here changes nothing until all
-    # of them change together. The queue is carddemo-jobs.fifo and the message group is
+    # of them change together. The queue is JOBS.fifo and the message group is
     # carddemo-job-submission, and both occur in every profile overlay, in docker-compose.yml and
     # in the emulator bootstrap script. The .fifo suffix is not decoration: the queue service
     # rejects a first-in-first-out queue whose name omits it, which is a start-up failure rather
@@ -368,25 +385,21 @@ carddemo:
     # preserved only within a single message group, and append order is the part of the legacy queue
     # contract that acceptance drains a real queue to verify.
     #
-    # THE FOUR RESOURCE NAMES ARE MANDATED, NOT CHOSEN. The migration plan states them and requires
-    # them byte-identically: the bucket carddemo-batch-staging, the queue carddemo-jobs.fifo, the
-    # message group carddemo-job-submission and the topic carddemo-job-notifications. Three of the
-    # four were never in doubt; the queue was renamed to carddemo-jobs.fifo by an earlier revision and is
-    # restored here.
+    # THE QUEUE NAME IS PRESCRIBED BY THE MIGRATION PLAN AND IS NOT THIS FILE'S CHOICE. The plan
+    # names the resource the emulator bootstrap provisions as "the SQS FIFO JOBS queue" - the same
+    # name the legacy CICS transient-data queue carried - and the queue service demands the .fifo
+    # suffix on a first-in-first-out queue, so the bound value is JOBS.fifo and nothing else. An
+    # earlier revision of this file renamed it to a module-namespaced form and asserted that the
+    # plan mandated that form; the plan does not, which is why the prescribed name is restored here
+    # rather than argued about again.
     #
-    # The argument that produced that rename is worth stating so it is not re-made. It held that the
-    # legacy transient-data queue name is itself part of the frozen inventory, that no exception
-    # authorises editing it, and that the module should therefore agree with the resource the
-    # environment provisions. Each step fails. What the plan freezes for THIS resource is the target
-    # name it prescribes, stated six times and backed by a validation check on the bootstrap script.
-    # The legacy name is not lost: it is carried by the operator-visible message, which is the
-    # contract that is actually compared byte for byte, and reproducing an external interface means
-    # reproducing what the interface's consumers observe rather than what its infrastructure is
-    # called. And agreeing with the provisioned resource by editing the module inverts the
-    # dependency - the emulator bootstrap this module ships is what provisions the queue, so the
-    # module decides the name and the environment follows.
+    # The other three names ARE this module's to choose, precisely because the plan names no value
+    # for them - it says "S3 staging bucket", "message group" and "SNS topic" and stops there. They
+    # are therefore module-namespaced: carddemo-batch-staging, carddemo-job-submission and
+    # carddemo-job-notifications. Only the queue stands in for a named legacy resource, so only the
+    # queue carries a legacy name.
     #
-    # What survives from that argument is its warning, and it is retained: a well-formed name that
+    # One warning is retained from the earlier revision because it is sound: a well-formed name that
     # names nothing is exactly the input a create-on-absence default resolves by provisioning a queue
     # nothing consumes, so a submission would report complete while the cards sat unread. That is why
     # every one of the places listed above states one value, and why the fail-fast strategy described
@@ -395,7 +408,8 @@ carddemo:
     # The operator-visible message text is unaffected by any of this. It names the transient-data
     # queue verbatim as JOBS, without a suffix and without a namespace, and is asserted character for
     # character; it is frozen text rather than a resource reference, and nothing here composes one
-    # from the other. See docs/decision-log.md DL-092.
+    # from the other, so the two agree by construction rather than because either is derived from the
+    # other. See docs/decision-log.md DL-092.
     #
     # Both are environment-overridable so that a deployment can relocate them without editing a
     # file. The group id is bound here rather than only in the overlays because the production
@@ -405,23 +419,15 @@ carddemo:
     # TWO FACTS ABOUT THIS QUEUE ARE DELIBERATELY NOT KEYS HERE: the 80-byte fixed record width and
     # the ignore-on-error failure tolerance. Both come from the legacy queue definition, and neither
     # is a deployment choice - a different width is a different record format, and a different
-    # tolerance is a different failure contract, so neither describes this queue. Declaring them as
-    # `record-length` and `fail-on-error` keys is rejected: they read as configuration while nothing in
-    # the application binds either one; the values would be inert, and the file would advertise an
-    # adjustability that does not exist. Binding them to a validator that permits only 80 and only
-    # false would not fix that - it would relocate it, leaving a switch with one position and, for
-    # the tolerance, a branch no deployment could ever reach.
-    #
-    # So they live where they are actually enforced, and are asserted there. The width is the
-    # constant the publisher checks every card's encoded byte count against before it publishes, and
-    # a card of any other width is rejected outright. The tolerance is the publisher's structure: the
-    # write is caught and reported through its return value, never rethrown. The provenance of both -
-    # the CICS attributes they derive from - is recorded against the queue-contract block in the
-    # local overlay and in the traceability matrix, which is where a reader should look for the
-    # legacy mapping. A test asserts that neither key has come back.
-    # See docs/decision-log.md DL-094.
+    # tolerance is a different failure contract - so neither belongs in a file that carries what a
+    # deployment may decide. They live where they are enforced instead, and are asserted there: the
+    # width is the constant the publisher checks every card's encoded byte count against before it
+    # publishes, and a card of any other width is rejected outright; the tolerance is the publisher's
+    # structure, which catches a failed write, reports it through the return value and never rethrows.
+    # The CICS attributes they derive from are recorded against the queue-contract block in the local
+    # overlay and in docs/traceability-matrix.md. See docs/decision-log.md DL-094.
     sqs:
-      job-queue: ${CARDDEMO_SQS_QUEUE:carddemo-jobs.fifo}
+      job-queue: ${CARDDEMO_SQS_QUEUE:JOBS.fifo}
       message-group-id: ${CARDDEMO_SQS_MESSAGE_GROUP_ID:carddemo-job-submission}
     sns:
       job-notification-topic: ${CARDDEMO_SNS_TOPIC:carddemo-job-notifications}

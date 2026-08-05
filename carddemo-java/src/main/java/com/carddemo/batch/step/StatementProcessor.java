@@ -23,6 +23,7 @@ import com.carddemo.domain.Transaction;
 import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
+import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.util.StatementHtmlTemplates;
 import com.carddemo.util.StatementTextTemplates;
 import io.micrometer.core.instrument.Counter;
@@ -94,22 +95,22 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <p>A completed run therefore enters the dispatcher exactly
  * {@link #EXPECTED_DISPATCH_ENTRY_COUNT} times, in the execution order
- * {@link #EXPECTED_DISPATCH_SEQUENCE} publishes, and {@link #process(String)} proves that trace on
- * every item. Proving it here rather than trusting it is the point: re-entry is the behaviour a
+ * {@link #EXPECTED_DISPATCH_SEQUENCE} publishes, and
+ * {@link #process(StatementTransactionSource)} proves that trace on every item. Proving it here rather
+ * than trusting it is the point: re-entry is the behaviour a
  * reader most needs to be able to confirm, a nested-call refactor of the service would still
  * compile and would still produce records, and this assertion is what would fail if one were ever
  * made.
  *
- * <h2>The item, and why it is a resource name rather than a parameter</h2>
+ * <h2>The item is the frozen projected source, not a launch parameter</h2>
  *
  * <p>The legacy step at {@code [app/jcl/CREASTMT.JCL:L79]} carries <strong>no parameter of any
  * kind</strong> - no date, no range, no selector. Its inputs are four data definitions and its
  * outputs are two, and the only thing distinguishing one run from another is the content of the
- * transaction work file that the three preceding steps build. The item is therefore the
- * eight-character data-definition name of that work resource, and
- * {@link #process(String)} accepts it only when it names the transaction work file, so a reader
- * wired to the wrong resource fails at once instead of silently generating from whatever the
- * repository happens to hold.
+ * transaction work file that the three preceding steps build. The item is therefore a frozen
+ * {@link StatementTransactionSource} over those projected records. Passing the source explicitly is
+ * what prevents the generator from silently observing whatever the live transaction repository happens
+ * to hold after the sort step.
  *
  * <p><strong>No date parameter is invented.</strong> The sibling report job does carry one, and the
  * temptation to give this job the same shape for symmetry is exactly the feature expansion the
@@ -129,9 +130,9 @@ import org.springframework.batch.item.ItemProcessor;
  * reprojection. That is not fastidiousness. The same physical card-number field is typed as zoned
  * decimal by another job of the same estate and as character by this one, so a comparator shared
  * between the two would hand one of them the other's semantics without anything failing to compile.
- * The ordering the run depends on is stated once, by the key order the data-access service applies
- * to the transaction table, which is the same two keys in the same directions that the job's sort
- * declares - three artifacts agreeing, rather than one restated three times.
+ * The ordering the run depends on is established once by the job's private comparator and preserved by
+ * the transient work resource's key sequence; the data-access service consumes that frozen order and
+ * performs no second query or sort.
  *
  * <p>Condition-code transitions, transient resource setup and destination selection are likewise the
  * job configuration's, not this stage's.
@@ -245,7 +246,7 @@ import org.springframework.batch.item.ItemProcessor;
  * @see AbstractCobolStep
  * @since 1.0.0
  */
-public final class StatementProcessor implements ItemProcessor<String, StatementRun> {
+public final class StatementProcessor implements ItemProcessor<StatementTransactionSource, StatementRun> {
 
     /**
      * Diagnostics for this stage.
@@ -307,7 +308,7 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
     public static final String LEGACY_CLEAR_STEP = "STEP030";
 
     /**
-     * Data-definition name of the transaction work resource this stage's item must name, taken from
+     * Data-definition name of the transaction work resource the frozen source represents, taken from
      * {@link StatementDataAccessService#DD_TRNXFILE}.
      *
      * <p>It is the first of the statement step's four inputs at {@code [app/jcl/CREASTMT.JCL:L83]}
@@ -373,10 +374,8 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
 
     /**
      * Declared width of the data-definition field of the legacy parameter object, taken from
-     * {@link StatementDataAccessService#DD_NAME_WIDTH}.
-     *
-     * <p>The item this stage accepts is measured against it, so a name of any other width is rejected
-     * as a wiring fault rather than trimmed or padded into something that matches.
+     * {@link StatementDataAccessService#DD_NAME_WIDTH}. The generator's phase selectors and file
+     * requests remain bound to this width even though the batch item is now the frozen source itself.
      */
     public static final int DD_NAME_WIDTH = StatementDataAccessService.DD_NAME_WIDTH;
 
@@ -551,17 +550,15 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
     }
 
     /**
-     * Generates one whole run of statements from the transaction work resource the item names, and
-     * hands on both record streams with every record proved to its contracted width.
+     * Generates one whole run of statements from the frozen transaction-work snapshot supplied by the
+     * job, and hands on both record streams with every record proved to its contracted width.
      *
      * <p>Five things happen, in this order, and the order is deliberate:
      *
      * <ol>
-     *   <li>the item is rejected unless it names the transaction work resource. One item is one whole
-     *       run, so a null here would mean the framework contract had been breached rather than that
-     *       an input was empty - an empty input is a reader that yields no item - and a name that is
-     *       not the work resource is a wiring fault. The name is compared, never trimmed, padded or
-     *       shortened into something that matches;</li>
+     *   <li>the source is required. One item is one whole frozen run, so a null here would mean the
+     *       framework contract had been breached rather than that an input was empty - an empty
+     *       snapshot is a valid source whose first read reports end of file;</li>
      *   <li>the whole run is delegated to {@link StatementGenerationService}, which drives the
      *       explicit phase enum through its {@code while} loop over the ordered {@code switch},
      *       re-enters the dispatcher after every state change, performs all thirteen data-access
@@ -604,17 +601,13 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
      * so, and that ordering must not be disturbed by an intervening handler here. The only exception
      * handling on this path re-tags the timer and rethrows the very same exception.
      *
-     * @param  transactionWorkResource the data-definition name of the transaction work resource the
-     *                                 job's preceding steps materialised; never {@code null}, which
-     *                                 the framework's own contract for this method guarantees, and
-     *                                 required to equal {@value #INPUT_DD_TRNXFILE}
+     * @param  transactionSource the frozen, projected transaction-work snapshot materialised by the
+     *                           job's preceding steps; never {@code null}
      * @return the run's two ordered record streams, its per-card transaction summaries, its observed
      *         dispatch trace and its three counts; never {@code null}, because a null return would
      *         filter the only item and silently produce no statements
-     * @throws NullPointerException     if {@code transactionWorkResource} is {@code null}, or if the
-     *                                  delegate reports no result at all
-     * @throws IllegalArgumentException if {@code transactionWorkResource} does not name the
-     *                                  transaction work resource
+     * @throws NullPointerException     if {@code transactionSource} is {@code null}, or if the delegate
+     *                                  reports no result at all
      * @throws IllegalStateException    if the observed dispatch trace is not the expected one, if the
      *                                  run's counts are inconsistent with the legacy table's two
      *                                  dimensions, or if any record of either stream is not exactly its
@@ -622,15 +615,17 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
      *                                  US-ASCII cannot represent
      */
     @Override
-    public StatementRun process(final String transactionWorkResource) {
-        requireTransactionWorkResource(transactionWorkResource);
+    public StatementRun process(final StatementTransactionSource transactionSource) {
+        Objects.requireNonNull(transactionSource, () -> LEGACY_JOB + " "
+                + LEGACY_STATEMENT_STEP + " received no frozen " + INPUT_DD_TRNXFILE
+                + " transaction source");
 
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         final StatementRun run;
         try {
             run = Objects.requireNonNull(
-                    this.statementGenerationService.generate(this.regulatedFieldRevealer,
-                            this.regulatedFieldSealer),
+                    this.statementGenerationService.generate(transactionSource,
+                            this.regulatedFieldRevealer, this.regulatedFieldSealer),
                     () -> LEGACY_PROGRAM + " reported no result for the " + INPUT_DD_TRNXFILE
                             + " work resource");
             // The four proofs sit inside the timed region and inside this guard on purpose: they are
@@ -663,39 +658,6 @@ public final class StatementProcessor implements ItemProcessor<String, Statement
                 OUTPUT_DD_HTMLFILE, run.transactionSummaries().size(),
                 run.dispatchedPhases().size());
         return run;
-    }
-
-    /**
-     * Requires the item to name the transaction work resource.
-     *
-     * <p>Both checks are exact. The width is measured on the encoded byte array against the declared
-     * width of the legacy parameter object's data-definition field, so a name carrying a character
-     * outside US-ASCII cannot pass by measuring the right number of characters, and the name itself is
-     * then compared for equality. Neither check trims, pads, folds case or shortens: a data-definition
-     * name is an eight-character contract value, and adjusting a mismatched one into a match would
-     * turn a wiring fault into a silent generation from an unintended resource.
-     *
-     * @param  transactionWorkResource the item under test
-     * @throws NullPointerException     if the item is {@code null}
-     * @throws IllegalArgumentException if the item is not exactly the transaction work resource name
-     */
-    private static void requireTransactionWorkResource(final String transactionWorkResource) {
-        Objects.requireNonNull(transactionWorkResource, () -> LEGACY_JOB + " "
-                + LEGACY_STATEMENT_STEP + " received a null work-resource name; an absent "
-                + INPUT_DD_TRNXFILE + " input is expressed by the reader yielding no item at all");
-
-        final int measuredWidth =
-                transactionWorkResource.getBytes(StandardCharsets.US_ASCII).length;
-        if (measuredWidth != DD_NAME_WIDTH
-                || !INPUT_DD_TRNXFILE.equals(transactionWorkResource)) {
-            throw new IllegalArgumentException(LEGACY_JOB + " " + LEGACY_STATEMENT_STEP
-                    + " runs against the " + INPUT_DD_TRNXFILE + " work resource that "
-                    + LEGACY_SORT_STEP + " and " + LEGACY_LOAD_STEP + " materialise, but the item"
-                    + " named a resource of " + measuredWidth + " encoded byte(s) that is not it;"
-                    + " the other three inputs of this step - " + INPUT_DD_XREFFILE + ", "
-                    + INPUT_DD_CUSTFILE + " and " + INPUT_DD_ACCTFILE + " - are read by "
-                    + LEGACY_PROGRAM + " itself and are never the item");
-        }
     }
 
     /**

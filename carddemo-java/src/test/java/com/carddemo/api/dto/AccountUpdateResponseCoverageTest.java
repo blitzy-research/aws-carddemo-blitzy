@@ -1174,13 +1174,20 @@ class AccountUpdateResponseCoverageTest {
         }
 
         /**
-         * The declared surface beyond the accessors is the single presence test plus the private
-         * record-shape verification the compact constructor delegates to. The verification is not
-         * behaviour a caller can reach: it is private, static, and either returns or throws.
+         * The declared surface beyond the accessors is the single presence test, the copy factory the
+         * regulated-data boundary substitutes gated values through, and the private record-shape
+         * verification the compact constructor delegates to. The verification is not behaviour a caller
+         * can reach: it is private, static, and either returns or throws.
+         *
+         * <p>The copy factory is enrolled here rather than allowed by pattern. It exists because the
+         * eight regulated components must be replaced by the boundary before the screen is published,
+         * and restating fifty-six components at that call site would be the more fragile arrangement.
+         * Enrolling it by name means a further method added to this record still has to be justified
+         * against this assertion.
          */
         @Test
-        @DisplayName("declares one presence test and one private shape verification and nothing "
-                + "else")
+        @DisplayName("declares one presence test, one regulated-value copy factory and one private shape "
+                + "verification, and nothing else")
         void theDeclaredSurfaceBeyondTheAccessorsIsOnePresenceTestAndOneVerification()
                 throws NoSuchMethodException {
             List<String> declared =
@@ -1195,7 +1202,16 @@ class AccountUpdateResponseCoverageTest {
                             .filter(name -> !EXPECTED_COMPONENTS.contains(name))
                             .toList();
 
-            assertThat(declared).containsExactlyInAnyOrder("hasFieldErrors", "requireRecordShape");
+            assertThat(declared).containsExactlyInAnyOrder("hasFieldErrors", "withRegulatedValues",
+                    "requireRecordShape");
+            assertThat(AccountUpdateResponse.class.getDeclaredMethod("withRegulatedValues",
+                            String.class, String.class, String.class, String.class, String.class,
+                            String.class, String.class, String.class))
+                    .satisfies(method -> {
+                        assertThat(Modifier.isPublic(method.getModifiers())).isTrue();
+                        assertThat(Modifier.isStatic(method.getModifiers())).isFalse();
+                        assertThat(method.getReturnType()).isEqualTo(AccountUpdateResponse.class);
+                    });
             assertThat(AccountUpdateResponse.class.getDeclaredMethod(
                             "requireRecordShape", String.class, java.math.BigDecimal.class))
                     .satisfies(method -> {

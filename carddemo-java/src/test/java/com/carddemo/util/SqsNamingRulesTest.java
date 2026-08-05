@@ -73,7 +73,7 @@ class SqsNamingRulesTest {
     private static final String GROUP_PROPERTY = "carddemo.aws.sqs.message-group-id";
 
     /** The mandated queue name, which every accepted form below carries. */
-    private static final String CANONICAL_QUEUE = "carddemo-jobs.fifo";
+    private static final String CANONICAL_QUEUE = "JOBS.fifo";
 
     /** The mandated message group. */
     private static final String CANONICAL_GROUP = "carddemo-job-submission";
@@ -84,10 +84,10 @@ class SqsNamingRulesTest {
 
         @ParameterizedTest(name = "[{0}] is accepted")
         @ValueSource(strings = {
-            "carddemo-jobs.fifo",
-            "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs.fifo",
-            "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/carddemo-jobs.fifo",
-            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo"})
+            "JOBS.fifo",
+            "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS.fifo",
+            "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/JOBS.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo"})
         @DisplayName("every form the messaging template resolves is accepted, and returned unchanged")
         void everyResolvableFormIsAccepted(String destination) {
             assertThat(SqsNamingRules.requireQueueDestination(destination, QUEUE_PROPERTY))
@@ -171,8 +171,13 @@ class SqsNamingRulesTest {
         }
 
         @ParameterizedTest(name = "the non-ordered name [{0}] is refused")
-        @ValueSource(strings = {"carddemo-jobs", "carddemo-jobs.FIFO", "carddemo-jobs.fif",
-            "carddemo-jobs.fifo2", "JOBS"})
+        // Five distinct shapes, each unsuffixed for a different reason: the bare prescribed stem, the
+        // suffix in the wrong case, a truncated suffix, a suffix with more after it, and a name of an
+        // altogether different shape. The bare stem matters most - it is the legacy transient-data
+        // queue name exactly as the operator message carries it, and it must still be refused here,
+        // because a standard queue cannot honour the append order the bridge contract requires.
+        @ValueSource(strings = {"JOBS", "JOBS.FIFO", "JOBS.fif",
+            "JOBS.fifo2", "submission-queue"})
         @DisplayName("a name that does not end in the suffix is refused, because ordering is "
                 + "contractual and a standard queue cannot honour it")
         void aNameWithoutTheSuffixIsRefused(String candidate) {
@@ -275,7 +280,7 @@ class SqsNamingRulesTest {
         void theNameInsideAUrlIsStillChecked() {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> SqsNamingRules.requireQueueDestination(
-                            "https://sqs.us-east-1.amazonaws.com/000000000000/carddemo-jobs",
+                            "https://sqs.us-east-1.amazonaws.com/000000000000/JOBS",
                             QUEUE_PROPERTY))
                     .withMessageContaining(SqsNamingRules.FIFO_SUFFIX);
         }
@@ -442,7 +447,7 @@ class SqsNamingRulesTest {
         private static final String ACCOUNT = "000000000000";
 
         /** The canonical queue name. */
-        private static final String QUEUE = "carddemo-jobs.fifo";
+        private static final String QUEUE = "JOBS.fifo";
 
         /** The key every diagnostic names. */
         private static final String KEY = "carddemo.aws.sqs.job-submission-queue";
@@ -457,9 +462,9 @@ class SqsNamingRulesTest {
 
         @ParameterizedTest(name = "destination = {0}")
         @ValueSource(strings = {
-            "http://sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
-            "http://attacker.internal/carddemo-jobs.fifo",
-            "http://localhost:4566/000000000000/carddemo-jobs.fifo"})
+            "http://sqs.eu-west-2.amazonaws.com/000000000000/JOBS.fifo",
+            "http://attacker.internal/JOBS.fifo",
+            "http://localhost:4566/000000000000/JOBS.fifo"})
         @DisplayName("plain transport is refused whatever host it names, because a job-control card on "
                 + "an unencrypted connection is readable and rewritable in flight")
         void plainTransportIsRefused(final String destination) {
@@ -515,8 +520,8 @@ class SqsNamingRulesTest {
         }
 
         @ParameterizedTest(name = "path = {0}")
-        @ValueSource(strings = {"/carddemo-jobs.fifo", "/000000000000", "/000000000000/x/y",
-            "/000000000000/carddemo-jobs.fifo/"})
+        @ValueSource(strings = {"/JOBS.fifo", "/000000000000", "/000000000000/x/y",
+            "/000000000000/JOBS.fifo/"})
         @DisplayName("a path that is not exactly an account segment and a queue segment is refused")
         void aPathThatIsNotAccountAndQueueIsRefused(final String path) {
             assertThatExceptionOfType(IllegalArgumentException.class)
@@ -552,12 +557,12 @@ class SqsNamingRulesTest {
 
         @ParameterizedTest(name = "arn = {0}")
         @ValueSource(strings = {
-            "arn:aws-fictional:sqs:eu-west-2:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sns:eu-west-2:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sqs:us-east-1:000000000000:carddemo-jobs.fifo",
-            "arn:aws:sqs:eu-west-2:00000000000:carddemo-jobs.fifo",
-            "arn:aws:sqs:eu-west-2:00000000000a:carddemo-jobs.fifo",
-            "arn:aws:sqs:eu-west-2:000000000000:carddemo-jobs",
+            "arn:aws-fictional:sqs:eu-west-2:000000000000:JOBS.fifo",
+            "arn:aws:sns:eu-west-2:000000000000:JOBS.fifo",
+            "arn:aws:sqs:us-east-1:000000000000:JOBS.fifo",
+            "arn:aws:sqs:eu-west-2:00000000000:JOBS.fifo",
+            "arn:aws:sqs:eu-west-2:00000000000a:JOBS.fifo",
+            "arn:aws:sqs:eu-west-2:000000000000:JOBS",
             "arn:aws:sqs:eu-west-2:000000000000"})
         @DisplayName("an ARN whose partition, service, region, account or queue name this deployment "
                 + "cannot have meant is refused")
@@ -598,9 +603,9 @@ class SqsNamingRulesTest {
         }
 
         @ParameterizedTest(name = "destination = {0}")
-        @ValueSource(strings = {"ftp://sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
-            "//sqs.eu-west-2.amazonaws.com/000000000000/carddemo-jobs.fifo",
-            "sqs:carddemo-jobs.fifo"})
+        @ValueSource(strings = {"ftp://sqs.eu-west-2.amazonaws.com/000000000000/JOBS.fifo",
+            "//sqs.eu-west-2.amazonaws.com/000000000000/JOBS.fifo",
+            "sqs:JOBS.fifo"})
         @DisplayName("a value that is none of the three forms is refused rather than falling through "
                 + "to the bare-name rule")
         void anUnrecognisedFormIsRefused(final String destination) {

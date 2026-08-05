@@ -30,11 +30,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.PageMetadata;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
@@ -259,23 +255,12 @@ import com.carddemo.util.PfKeyTranslator;
  * and either would widen this member's edits to admit input it rejects, so the two edits below are
  * expressed against this member's own tests instead.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The turn is deliberately non-transactional. Repository browse failures are therefore caught
+ * after the repository call's own transaction has ended, preserving the returned legacy screen
+ * outcome instead of risking a rollback-only exception at service exit.
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class CardListService {
+public final class CardListService {
 
     /**
      * Structured diagnostic channel. {@code COCRDLIC} declares no {@code DISPLAY} statement of its own,
@@ -823,13 +808,13 @@ public class CardListService {
      *     itself rather than by routing away
      */
     public record CardListScreenInput(String attentionKeyIdentifier,
-                                      ScreenWorkArea workArea,
+                                      ScreenInputState workArea,
                                       List<String> selections,
-                                      PageMetadata.PageCursorRequest pageCursor,
+                                      BrowseWindow.CursorRequest pageCursor,
                                       int currentPageNumber,
                                       boolean lastPageAlreadyShown,
                                       boolean nextPageIndicated,
-                                      NavigationContext navigationContext) {
+                                      ScreenNavigationState navigationContext) {
 
         /**
          * Normalises the selection list to exactly seven immutable entries and rejects a longer one.
@@ -1044,10 +1029,10 @@ public class CardListService {
      *     chose, or zero when none was chosen. Zero is the source's own initial value from line 1097
      */
     public record CardListResult(NavigationService.Route route,
-                                 NavigationContext navigationContext,
+                                 ScreenNavigationState navigationContext,
                                  String reArmedTransactionId,
                                  List<CardListRow> rows,
-                                 PageMetadata pageMetadata,
+                                 BrowseWindow pageMetadata,
                                  String infoMessage,
                                  String errorMessage,
                                  List<Boolean> selectionErrorFlags,
@@ -1262,7 +1247,7 @@ public class CardListService {
         private KeyAction keyAction;
 
         /** The navigation state as the turn builds it, standing for {@code CARDDEMO-COMMAREA}. */
-        private NavigationContext navigationContext = NavigationContext.empty();
+        private ScreenNavigationState navigationContext = ScreenNavigationState.empty();
 
         /** The destination the dispatch resolves, standing for the transfer-control target. */
         private NavigationService.Route route;
@@ -1274,7 +1259,7 @@ public class CardListService {
         private final List<ValidationException.FieldError> fieldErrors = new ArrayList<>();
 
         /** Which way the browse walked, needed to build the paging metadata. */
-        private PageMetadata.PagingDirection direction = PageMetadata.PagingDirection.FORWARD;
+        private BrowseWindow.PagingDirection direction = BrowseWindow.PagingDirection.FORWARD;
 
         /** Whether this turn is a re-submission of the same screen: the decoration gate. */
         private boolean reEntry;
@@ -1377,7 +1362,6 @@ public class CardListService {
      * @return the outcome of the turn, never {@code null}
      * @throws NullPointerException if {@code input} is {@code null}
      */
-    @Transactional(readOnly = true)
     public CardListResult processCardList(final CardListScreenInput input) {
         Objects.requireNonNull(input, "input must not be null");
 
@@ -1389,7 +1373,7 @@ public class CardListService {
                 state.navigationContext,
                 LIT_THISTRANID,
                 assembleRows(state),
-                assemblePageMetadata(state),
+                assembleBrowseWindow(state),
                 state.infoMessage,
                 state.errorMessage,
                 assembleSelectionErrorFlags(state),
@@ -1422,7 +1406,7 @@ public class CardListService {
         // Lines 300 to 302 initialise the work areas. The turn state is created empty, so what remains
         // is to stage the two fields the shared work area transmits and the action it last held: an
         // unrecognised key leaves that field untouched, so it has to start from what arrived.
-        final ScreenWorkArea workArea = input.workArea();
+        final ScreenInputState workArea = input.workArea();
         if (workArea != null) {
             state.keyAction = workArea.keyAction();
         }
@@ -2052,7 +2036,7 @@ public class CardListService {
      * @param input the transmitted screen and the echoed navigation state
      */
     private void receiveScreen(final TurnState state, final CardListScreenInput input) {
-        final ScreenWorkArea workArea = input.workArea();
+        final ScreenInputState workArea = input.workArea();
         state.screenAccountId = workArea == null || workArea.accountId() == null
                 ? NO_MESSAGE
                 : workArea.accountId();
@@ -2424,7 +2408,7 @@ public class CardListService {
         state.screenCounter = 0;
         state.caNextPageExists = true;
         state.readLoopExit = false;
-        state.direction = PageMetadata.PagingDirection.FORWARD;
+        state.direction = BrowseWindow.PagingDirection.FORWARD;
 
         // Lines 1144 to 1256.
         while (!state.readLoopExit) {
@@ -2574,7 +2558,7 @@ public class CardListService {
         state.screenCounter = PAGE_SIZE + 1;
         state.caNextPageExists = true;
         state.readLoopExit = false;
-        state.direction = PageMetadata.PagingDirection.BACKWARD;
+        state.direction = BrowseWindow.PagingDirection.BACKWARD;
 
         // Lines 1294 to 1318: the first read is consumed and not stored.
         switch (readNext(state, browse, LIT_CARD_FILE)) {
@@ -3078,15 +3062,15 @@ public class CardListService {
      *
      * @return an empty navigation state carrying this screen's identity and marked as a first entry
      */
-    private static NavigationContext firstEntryContext() {
-        return new NavigationContext(
+    private static ScreenNavigationState firstEntryContext() {
+        return new ScreenNavigationState(
                 LIT_THISTRANID,
                 LIT_THISPGM,
                 null,
                 LIT_THISPGM,
                 null,
                 USER_TYPE_STANDARD,
-                NavigationContext.ProgramContext.ENTER,
+                ScreenNavigationState.ProgramContext.ENTER,
                 null,
                 null,
                 null,
@@ -3107,9 +3091,9 @@ public class CardListService {
      * @param nominatedProgram the legacy program name control is nominated to reach
      * @return the stamped navigation state
      */
-    private static NavigationContext screenIdentityContext(final NavigationContext base,
+    private static ScreenNavigationState screenIdentityContext(final ScreenNavigationState base,
             final String nominatedProgram) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 LIT_THISTRANID,
                 LIT_THISPGM,
                 base.toTransactionId(),
@@ -3136,9 +3120,9 @@ public class CardListService {
      * @param accountId the account filter's edit outcome
      * @return the amended navigation state
      */
-    private static NavigationContext withAccountIdentifier(final NavigationContext base,
+    private static ScreenNavigationState withAccountIdentifier(final ScreenNavigationState base,
             final String accountId) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 base.fromTransactionId(),
                 base.fromProgram(),
                 base.toTransactionId(),
@@ -3165,9 +3149,9 @@ public class CardListService {
      * @param cardNumber the card filter's edit outcome
      * @return the amended navigation state
      */
-    private static NavigationContext withCardNumber(final NavigationContext base,
+    private static ScreenNavigationState withCardNumber(final ScreenNavigationState base,
             final String cardNumber) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 base.fromTransactionId(),
                 base.fromProgram(),
                 base.toTransactionId(),
@@ -3361,14 +3345,14 @@ public class CardListService {
      * @param state the turn's working storage
      * @return the paging state the turn leaves, never null
      */
-    private static PageMetadata assemblePageMetadata(final TurnState state) {
+    private static BrowseWindow assembleBrowseWindow(final TurnState state) {
         final String displayedPageNumber = Integer.toString(state.caScreenNumber);
         final boolean hasPreviousPages = !state.onFirstPage();
-        if (state.direction == PageMetadata.PagingDirection.BACKWARD) {
-            return PageMetadata.backward(PAGE_SIZE, state.caFirstCardNumber, state.caLastCardNumber,
+        if (state.direction == BrowseWindow.PagingDirection.BACKWARD) {
+            return BrowseWindow.backward(PAGE_SIZE, state.caFirstCardNumber, state.caLastCardNumber,
                     state.caNextPageExists, hasPreviousPages, displayedPageNumber);
         }
-        return PageMetadata.forward(PAGE_SIZE, state.caFirstCardNumber, state.caLastCardNumber,
+        return BrowseWindow.forward(PAGE_SIZE, state.caFirstCardNumber, state.caLastCardNumber,
                 state.caNextPageExists, hasPreviousPages, displayedPageNumber);
     }
 
@@ -3542,7 +3526,7 @@ public class CardListService {
      * @return the retained first key, or an empty string when none was echoed
      */
     private static String previousCursorOf(final CardListScreenInput input) {
-        final PageMetadata.PageCursorRequest cursor = input.pageCursor();
+        final BrowseWindow.CursorRequest cursor = input.pageCursor();
         return cursor == null || cursor.previousCursorKey() == null
                 ? NO_MESSAGE
                 : cursor.previousCursorKey();
@@ -3555,7 +3539,7 @@ public class CardListService {
      * @return the retained last key, or an empty string when none was echoed
      */
     private static String nextCursorOf(final CardListScreenInput input) {
-        final PageMetadata.PageCursorRequest cursor = input.pageCursor();
+        final BrowseWindow.CursorRequest cursor = input.pageCursor();
         return cursor == null || cursor.nextCursorKey() == null ? NO_MESSAGE : cursor.nextCursorKey();
     }
 
@@ -3572,8 +3556,8 @@ public class CardListService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -3588,7 +3572,7 @@ public class CardListService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }

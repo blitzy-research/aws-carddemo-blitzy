@@ -78,11 +78,10 @@ dependency-check-data/
 # development values instead, which is precisely why a real credential must never reach this
 # tree. Compose reads a .env file from this directory and interpolates the AWS keys and the
 # database password from it, which makes a module-level .env the most likely place for a real
-# credential to be committed by accident. Last matching pattern wins, so the template
-# re-inclusion must follow the exclusions.
+# credential to be committed by accident. No environment template is part of the frozen module
+# inventory, so every .env variant stays excluded rather than creating an undocumented exception.
 .env
 .env.*
-!.env.example
 
 *.pem
 *.PEM
@@ -99,6 +98,21 @@ dependency-check-data/
 *.truststore
 *.TRUSTSTORE
 secrets/
+
+# Secret-bearing YAML appears under several conventional names in deployment tooling. Cover both
+# module-root files and arbitrarily deep overlays, and pair the lower/upper-case forms because Git
+# matching is case-sensitive. These are intentionally broader than the Spring-profile patterns below:
+# any file whose name advertises that it contains a secret is local deployment state, not source.
+secrets.yml
+secrets.yaml
+SECRETS.YML
+SECRETS.YAML
+**/secrets.y*ml
+**/SECRETS.Y*ML
+**/*secret*.yml
+**/*secret*.yaml
+**/*SECRET*.YML
+**/*SECRET*.YAML
 
 # Developer overrides, which commonly carry real credentials. None can match a committed
 # profile document: application-secret*.yml requires the literal segment "secret", and

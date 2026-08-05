@@ -1,0 +1,351 @@
+/*
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ */
+package com.carddemo.api;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.carddemo.api.dto.ErrorResponse;
+import com.carddemo.api.dto.FieldErrorDecorator;
+import com.carddemo.api.dto.NavigationContext;
+import com.carddemo.api.dto.PageMetadata;
+import com.carddemo.api.dto.ScreenWorkArea;
+import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
+import com.carddemo.service.BrowseWindow;
+import com.carddemo.service.FieldErrorMarks;
+import com.carddemo.service.ScreenInputState;
+import com.carddemo.service.ScreenNavigationState;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Unit tests for {@link ScreenStateAdapter}, the one boundary at which the four screen-contract wire
+ * carriers and their service-owned counterparts are converted.
+ *
+ * <p><strong>What this file is really guarding.</strong> Four properties, each of which a plausible
+ * "helpful" edit would break silently. That every conversion is a positional copy: nothing trimmed, padded,
+ * defaulted, re-cased or reordered, because three of the four carriers hold fixed-width blank-significant
+ * values and the fourth holds a page indicator whose leading zeros are what the screen displayed. That the
+ * round trip is lossless in both directions, which is the only reason the two type families may exist side
+ * by side. That the identity members are <em>not</em> reconciled here, because the ten screen services echo
+ * all sixteen communication-area fields exactly as their legacy programs did and overwriting one would
+ * change what a screen carries. And that absence is handled asymmetrically on purpose: inbound, an absent
+ * wire record becomes the empty service-owned carrier so no service has to null-check; outbound, an absent
+ * carrier stays absent so a response omits a member the turn never produced.
+ *
+ * <p>A pure unit test: no Spring context, no connection, no container.
+ *
+ * <p>Provenance: {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CVCRD01Y.cpy} and
+ * {@code app/cpy/CSSETATY.cpy}, read as read-only reference at checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
+ *
+ * @since 1.0.0
+ */
+@DisplayName("ScreenStateAdapter :: the one boundary between the wire carriers and their service twins")
+final class ScreenStateAdapterTest {
+
+    /** The adapter under test. */
+    private ScreenStateAdapter adapter;
+
+    /** Creates the stateless adapter. */
+    @BeforeEach
+    void setUp() {
+        adapter = new ScreenStateAdapter();
+    }
+
+    /** A fully populated wire navigation record, with padding on values that carry it. */
+    private static NavigationContext wireContext() {
+        return new NavigationContext("CT00", "COTRN00C", "CT01", "COTRN01C", "USER0001", "U",
+                NavigationContext.ProgramContext.REENTER, "000000011", "MARY ", " ANN", "SMITH",
+                "00000000011", "Y", "4111111111111111", "COTRN0A", "COTRN00");
+    }
+
+    /** A fully populated wire work area. */
+    private static ScreenWorkArea wireWorkArea() {
+        return new ScreenWorkArea(KeyAction.PFK03, "COCRDLIC", "COCRDLI", "CCRDLIA", " an error ",
+                " a return ", "00000000011", "4111111111111111", "000000011");
+    }
+
+    @Nested
+    @DisplayName("The adapter itself")
+    class TheAdapterItself {
+
+        @Test
+        @DisplayName("is final and holds no field, so the singleton is safe to share and has nothing to "
+                + "carry between turns")
+        void isFinalAndHoldsNoField() {
+            assertThat(Modifier.isFinal(ScreenStateAdapter.class.getModifiers())).isTrue();
+            for (final Field field : ScreenStateAdapter.class.getDeclaredFields()) {
+                assertThat(field.isSynthetic())
+                        .as("field %s must not be declared state", field.getName())
+                        .isTrue();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("The navigation state")
+    class TheNavigationState {
+
+        @Test
+        @DisplayName("copies all sixteen fields inbound, byte for byte and padding included")
+        void copiesAllSixteenFieldsInbound() {
+            final ScreenNavigationState state = adapter.toNavigationState(wireContext());
+
+            assertThat(state.fromTransactionId()).isEqualTo("CT00");
+            assertThat(state.fromProgram()).isEqualTo("COTRN00C");
+            assertThat(state.toTransactionId()).isEqualTo("CT01");
+            assertThat(state.toProgram()).isEqualTo("COTRN01C");
+            assertThat(state.userId()).isEqualTo("USER0001");
+            assertThat(state.userType()).isEqualTo("U");
+            assertThat(state.programContext())
+                    .isEqualTo(ScreenNavigationState.ProgramContext.REENTER);
+            assertThat(state.customerId()).isEqualTo("000000011");
+            assertThat(state.customerFirstName()).isEqualTo("MARY ");
+            assertThat(state.customerMiddleName()).isEqualTo(" ANN");
+            assertThat(state.customerLastName()).isEqualTo("SMITH");
+            assertThat(state.accountId()).isEqualTo("00000000011");
+            assertThat(state.accountStatus()).isEqualTo("Y");
+            assertThat(state.cardNumber()).isEqualTo("4111111111111111");
+            assertThat(state.lastMap()).isEqualTo("COTRN0A");
+            assertThat(state.lastMapset()).isEqualTo("COTRN00");
+        }
+
+        @Test
+        @DisplayName("round trips a populated record without losing or altering one field")
+        void roundTripsAPopulatedRecord() {
+            assertThat(adapter.toNavigationContext(adapter.toNavigationState(wireContext())))
+                    .isEqualTo(wireContext());
+        }
+
+        @Test
+        @DisplayName("does not reconcile the echoed identity, because the ten screen services echo what "
+                + "they were given exactly as their legacy programs did")
+        void doesNotReconcileTheEchoedIdentity() {
+            final ScreenNavigationState state = adapter.toNavigationState(wireContext());
+
+            assertThat(state.userId()).isEqualTo("USER0001");
+            assertThat(state.userType()).isEqualTo("U");
+            assertThat(state.agreesWith("USER0001", UserType.USER)).isTrue();
+            assertThat(adapter.toNavigationContext(state).userId()).isEqualTo("USER0001");
+        }
+
+        @Test
+        @DisplayName("turns an absent record into the empty state inbound and an absent state into nothing "
+                + "outbound, so a service never null-checks and a response omits what was never produced")
+        void handlesAbsenceAsymmetrically() {
+            assertThat(adapter.toNavigationState(null)).isEqualTo(ScreenNavigationState.empty());
+            assertThat(adapter.toNavigationContext(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("preserves an absent program-context flag in both directions rather than inventing "
+                + "the first-entry constant, so absence stays distinguishable")
+        void preservesAnAbsentProgramContextFlag() {
+            final NavigationContext withoutFlag = new NavigationContext("CT00", "COTRN00C", null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null);
+
+            assertThat(adapter.toNavigationState(withoutFlag).programContext()).isNull();
+            assertThat(adapter.toNavigationContext(adapter.toNavigationState(withoutFlag)))
+                    .isEqualTo(withoutFlag);
+        }
+
+        @Test
+        @DisplayName("maps the first-entry flag in both directions as well as the re-entry one")
+        void mapsBothProgramContextConstants() {
+            final NavigationContext entering = new NavigationContext(null, null, null, null, null, null,
+                    NavigationContext.ProgramContext.ENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            assertThat(adapter.toNavigationState(entering).programContext())
+                    .isEqualTo(ScreenNavigationState.ProgramContext.ENTER);
+            assertThat(adapter.toNavigationContext(adapter.toNavigationState(entering))
+                    .programContext())
+                    .isEqualTo(NavigationContext.ProgramContext.ENTER);
+        }
+    }
+
+    @Nested
+    @DisplayName("The screen input state")
+    class TheScreenInputState {
+
+        @Test
+        @DisplayName("copies all nine members in both directions, message padding included, because the "
+                + "message slots are part of the screen contract")
+        void copiesAllNineMembersBothWays() {
+            final ScreenInputState state = adapter.toInputState(wireWorkArea());
+
+            assertThat(state.keyAction()).isEqualTo(KeyAction.PFK03);
+            assertThat(state.nextProgram()).isEqualTo("COCRDLIC");
+            assertThat(state.nextMapset()).isEqualTo("COCRDLI");
+            assertThat(state.nextMap()).isEqualTo("CCRDLIA");
+            assertThat(state.errorMessage()).isEqualTo(" an error ");
+            assertThat(state.returnMessage()).isEqualTo(" a return ");
+            assertThat(state.accountId()).isEqualTo("00000000011");
+            assertThat(state.cardNumber()).isEqualTo("4111111111111111");
+            assertThat(state.customerId()).isEqualTo("000000011");
+            assertThat(adapter.toScreenWorkArea(state)).isEqualTo(wireWorkArea());
+        }
+
+        @Test
+        @DisplayName("turns an absent work area into the empty state inbound and an absent state into "
+                + "nothing outbound")
+        void handlesAbsenceAsymmetrically() {
+            assertThat(adapter.toInputState(null)).isEqualTo(ScreenInputState.empty());
+            assertThat(adapter.toScreenWorkArea(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("keeps an unresolved attention key unresolved, because the legacy mapping has no "
+                + "otherwise branch and no constant stands for one")
+        void keepsAnUnresolvedAttentionKeyUnresolved() {
+            final ScreenWorkArea noKey = new ScreenWorkArea(null, null, null, null, null, null, null,
+                    null, null);
+
+            assertThat(adapter.toInputState(noKey).attentionKey()).isEmpty();
+            assertThat(adapter.toScreenWorkArea(adapter.toInputState(noKey)).keyAction()).isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("The browse window")
+    class TheBrowseWindow {
+
+        @Test
+        @DisplayName("copies the seven paging components outbound and keeps the direction the service "
+                + "assembled the page in")
+        void copiesTheSevenComponentsOutbound() {
+            final BrowseWindow backward = BrowseWindow.backward(BrowseWindow.CARD_LIST_PAGE_SIZE,
+                    "4111111111111111", "4111111111111199", true, true, "00000002");
+
+            final PageMetadata wire = adapter.toPageMetadata(backward);
+
+            assertThat(wire).isNotNull();
+            assertThat(wire.pageSize()).isEqualTo(BrowseWindow.CARD_LIST_PAGE_SIZE);
+            assertThat(wire.previousCursorKey()).isEqualTo("4111111111111111");
+            assertThat(wire.nextCursorKey()).isEqualTo("4111111111111199");
+            assertThat(wire.direction()).isEqualTo(PageMetadata.PagingDirection.BACKWARD);
+            assertThat(wire.hasMorePages()).isTrue();
+            assertThat(wire.hasPreviousPages()).isTrue();
+            assertThat(wire.displayedPageNumber())
+                    .as("the indicator's leading zeros are what the screen displayed")
+                    .isEqualTo("00000002");
+        }
+
+        @Test
+        @DisplayName("maps the forward direction outbound as well as the backward one")
+        void mapsTheForwardDirectionOutbound() {
+            final PageMetadata wire = adapter.toPageMetadata(
+                    BrowseWindow.forward(10, null, "0000000000000009", true, false, "1"));
+
+            assertThat(wire).isNotNull();
+            assertThat(wire.direction()).isEqualTo(PageMetadata.PagingDirection.FORWARD);
+            assertThat(wire.previousCursorKey()).isNull();
+        }
+
+        @Test
+        @DisplayName("copies the inbound cursor request in both directions and preserves an absent "
+                + "direction, because the first turn of a browse asks for neither")
+        void copiesTheInboundCursorRequest() {
+            final BrowseWindow.CursorRequest forward = adapter.toCursorRequest(
+                    new PageMetadata.PageCursorRequest("first", "last",
+                            PageMetadata.PagingDirection.FORWARD));
+            final BrowseWindow.CursorRequest backward = adapter.toCursorRequest(
+                    new PageMetadata.PageCursorRequest("first", "last",
+                            PageMetadata.PagingDirection.BACKWARD));
+            final BrowseWindow.CursorRequest neither =
+                    adapter.toCursorRequest(new PageMetadata.PageCursorRequest(null, null, null));
+
+            assertThat(forward).isNotNull();
+            assertThat(forward.previousCursorKey()).isEqualTo("first");
+            assertThat(forward.nextCursorKey()).isEqualTo("last");
+            assertThat(forward.direction()).isEqualTo(BrowseWindow.PagingDirection.FORWARD);
+            assertThat(backward).isNotNull();
+            assertThat(backward.direction()).isEqualTo(BrowseWindow.PagingDirection.BACKWARD);
+            assertThat(neither).isNotNull();
+            assertThat(neither.direction()).isNull();
+        }
+
+        @Test
+        @DisplayName("turns an absent window and an absent cursor request into nothing, so a turn that "
+                + "assembled no page carries no paging member")
+        void turnsAbsenceIntoNothing() {
+            assertThat(adapter.toPageMetadata(null)).isNull();
+            assertThat(adapter.toCursorRequest(null)).isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("The field marks")
+    class TheFieldMarks {
+
+        /** An accumulation carrying one blank mark and one rejected mark, in that order. */
+        private static FieldErrorMarks marks() {
+            return FieldErrorMarks.none()
+                    .mark("accountStatus", "ACSTTUS", FieldErrorMarks.FlagState.BLANK)
+                    .mark("creditLimit", "ACRDLIM", FieldErrorMarks.FlagState.NOT_OK);
+        }
+
+        @Test
+        @DisplayName("converts to the wire decoration entry for entry, in marking sequence, keeping the "
+                + "blank and not-ok states distinct")
+        void convertsToTheWireDecorationInSequence() {
+            final FieldErrorDecorator decoration = adapter.toFieldErrorDecorator(marks());
+
+            assertThat(decoration.markedFields()).hasSize(2);
+            assertThat(decoration.markedFields().get(0).field()).isEqualTo("accountStatus");
+            assertThat(decoration.markedFields().get(0).bmsFieldId()).isEqualTo("ACSTTUS");
+            assertThat(decoration.markedFields().get(0).flagState())
+                    .isEqualTo(FieldErrorDecorator.FlagState.BLANK);
+            assertThat(decoration.markedFields().get(1).field()).isEqualTo("creditLimit");
+            assertThat(decoration.markedFields().get(1).flagState())
+                    .isEqualTo(FieldErrorDecorator.FlagState.NOT_OK);
+        }
+
+        @Test
+        @DisplayName("converts straight to the error contract's entries, mapping blank to missing and "
+                + "not-ok to invalid, which is the distinction the legacy marker drew")
+        void convertsStraightToTheErrorContract() {
+            final List<ErrorResponse.FieldError> errors = adapter.toFieldErrors(marks());
+
+            assertThat(errors).hasSize(2).isUnmodifiable();
+            assertThat(errors.get(0).fieldName()).isEqualTo("accountStatus");
+            assertThat(errors.get(0).screenFieldId()).isEqualTo("ACSTTUS");
+            assertThat(errors.get(0).state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(errors.get(0).message())
+                    .as("the macro emitted no per-field text and none is invented")
+                    .isNull();
+            assertThat(errors.get(1).state()).isEqualTo(ErrorResponse.FieldState.INVALID);
+        }
+
+        @Test
+        @DisplayName("turns an absent accumulation into an empty decoration and an empty entry list, so a "
+                + "first submission carries no field errors")
+        void turnsAbsenceIntoAnEmptyDecoration() {
+            assertThat(adapter.toFieldErrorDecorator(null).markedFields()).isEmpty();
+            assertThat(adapter.toFieldErrorDecorator(FieldErrorMarks.none()).markedFields()).isEmpty();
+            assertThat(adapter.toFieldErrors(null)).isEmpty();
+            assertThat(adapter.toFieldErrors(FieldErrorMarks.none())).isEmpty();
+        }
+    }
+}

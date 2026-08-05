@@ -19,6 +19,8 @@ package com.carddemo.service;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,10 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-import com.carddemo.api.dto.NavigationContext;
-import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
@@ -99,12 +98,11 @@ import com.carddemo.util.PfKeyTranslator;
  * not-found.
  *
  * <p>The cross-reference alternate key is non-unique, so a single row must be selected from a possibly
- * multi-row access path. The repository declares that selection as
- * {@code findFirstByXrefAcctIdOrderByXrefCardNumAsc}, which pushes "take the first" into the query rather
- * than leaving it to the caller, and an absent result stands in for the legacy not-found response. The
- * semantic is the one the action plan describes - first row wins, nothing found is a screen message and
- * not an exception - with the selection performed one layer lower than the plan anticipated. That
- * difference is recorded in the decision log.
+ * multi-row access path. The repository declares {@code findByXrefAcctId}, which returns every matching
+ * row, and this service selects the one with the lowest card number - the record a keyed read of that
+ * path would have returned, the card number being the cluster's base key. An absent result stands in for
+ * the legacy not-found response. The semantic is exactly the one the action plan describes: first row
+ * wins, and nothing found is a screen message rather than an exception.
  *
  * <p><strong>The card file is declared and never read.</strong> Lines 186 to 191 declare a card file name
  * and a card-by-account path name, and lines 151 to 183 declare the card list, card detail and card update
@@ -177,23 +175,12 @@ import com.carddemo.util.PfKeyTranslator;
  * storage the legacy program declares is modelled by a per-invocation local holder, so two concurrent
  * turns cannot observe each other's state.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>The turn is deliberately non-transactional. Each repository read owns its ordinary repository
+ * transaction, so a caught store failure cannot leave an enclosing read-only transaction
+ * rollback-only and replace the legacy screen result at proxy exit.
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class AccountViewService {
+public final class AccountViewService {
 
     /**
      * Diagnostic channel for this class, replacing the console-display statements that were the legacy
@@ -480,8 +467,8 @@ public class AccountViewService {
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /** An all-absent screen input, used when a caller supplies none at all. */
-    private static final ScreenWorkArea NO_SCREEN_INPUT =
-            new ScreenWorkArea(null, null, null, null, null, null, null, null, null);
+    private static final ScreenInputState NO_SCREEN_INPUT =
+            new ScreenInputState(null, null, null, null, null, null, null, null, null);
 
     private final AccountRepository accountRepository;
 
@@ -563,11 +550,10 @@ public class AccountViewService {
      *         nominates a destination that cannot be resolved or because an unexpected failure reaches the
      *         registered handler
      */
-    @Transactional(readOnly = true)
     public AccountViewResult viewAccount(final String attentionKeyIdentifier,
-            final ScreenWorkArea input,
-            final NavigationContext inboundContext) {
-        final ScreenWorkArea received = (input == null) ? NO_SCREEN_INPUT : input;
+            final ScreenInputState input,
+            final ScreenNavigationState inboundContext) {
+        final ScreenInputState received = (input == null) ? NO_SCREEN_INPUT : input;
         final WorkingStorage state = new WorkingStorage();
         state.transactionId = TRANSACTION_ID;
         state.returnMessage = RETURN_MESSAGE_OFF;
@@ -603,12 +589,12 @@ public class AccountViewService {
      * online turn with no state returns to sign-on, and the difference is the member's own - this screen
      * simply starts a fresh conversation instead.
      */
-    private void storePassedData(final NavigationContext inboundContext, final WorkingStorage state) {
+    private void storePassedData(final ScreenNavigationState inboundContext, final WorkingStorage state) {
         final boolean arrivedFromMenuOnFirstEntry = inboundContext != null
                 && MENU_PROGRAM_NAME.equals(stripFieldPadding(inboundContext.fromProgram()))
                 && !inboundContext.reEntry();
         if (state.commareaAbsent || arrivedFromMenuOnFirstEntry) {
-            state.commarea = NavigationContext.empty();
+            state.commarea = ScreenNavigationState.empty();
             return;
         }
         state.commarea = inboundContext;
@@ -631,7 +617,7 @@ public class AccountViewService {
      * invented, because the action vocabulary declares none.
      */
     private KeyAction yyyyStorePfkey(final String attentionKeyIdentifier,
-            final ScreenWorkArea received,
+            final ScreenInputState received,
             final WorkingStorage state) {
         if (attentionKeyIdentifier == null) {
             return yyyyStorePfkeyExit(received.keyAction());
@@ -749,7 +735,7 @@ public class AccountViewService {
      * resolved, reproducing what the legacy transfer would have done with an unresolvable program name.
      */
     private AccountViewResult transferToCallingProgram(final WorkingStorage state) {
-        final NavigationContext inbound = state.commarea;
+        final ScreenNavigationState inbound = state.commarea;
         final String destinationTransactionId = isFieldBlank(inbound.fromTransactionId())
                 ? MENU_TRANSACTION_ID
                 : inbound.fromTransactionId();
@@ -758,14 +744,14 @@ public class AccountViewService {
                 : inbound.fromProgram();
         final NavigationService.Route target =
                 navigationService.resolveBackNavigation(carriedState(inbound), NavigationService.Route.USER_MENU);
-        state.commarea = new NavigationContext(
+        state.commarea = new ScreenNavigationState(
                 TRANSACTION_ID,
                 PROGRAM_NAME,
                 destinationTransactionId,
                 destinationProgram,
                 inbound.userId(),
                 UserType.USER.getCode(),
-                NavigationContext.ProgramContext.ENTER,
+                ScreenNavigationState.ProgramContext.ENTER,
                 inbound.customerId(),
                 inbound.customerFirstName(),
                 inbound.customerMiddleName(),
@@ -796,7 +782,7 @@ public class AccountViewService {
      * is what keeps a rejected filter from reaching the database; otherwise the three reads run and the
      * screen is sent with whatever they produced. Both branches take the common return.
      */
-    private AccountViewResult processReceivedSelection(final ScreenWorkArea received,
+    private AccountViewResult processReceivedSelection(final ScreenInputState received,
             final WorkingStorage state) {
         processInputs(received, state);
         if (state.inputFlag.isError()) {
@@ -1048,7 +1034,7 @@ public class AccountViewService {
      * conversation stays here. The next-program field is declarative in the legacy - nothing dispatches on
      * it - and it is carried for the same reason: it is state the client echoes.
      */
-    private void processInputs(final ScreenWorkArea received, final WorkingStorage state) {
+    private void processInputs(final ScreenInputState received, final WorkingStorage state) {
         receiveMap(received, state);
         editMapInputs(state);
         state.errorMessage = state.returnMessage;
@@ -1072,7 +1058,7 @@ public class AccountViewService {
      * the part that matters: taking the filter field at its declared eleven-character width, so a shorter
      * or longer value cannot change the edits that follow. Nothing is trimmed, folded or normalised.
      */
-    private static void receiveMap(final ScreenWorkArea received, final WorkingStorage state) {
+    private static void receiveMap(final ScreenInputState received, final WorkingStorage state) {
         state.receivedAccountIdField = (received.accountId() == null)
                 ? null
                 : fieldImage(received.accountId(), ACCOUNT_ID_WIDTH);
@@ -1287,8 +1273,8 @@ public class AccountViewService {
      */
     private ReadOutcome readCrossReferenceRow(final WorkingStorage state) {
         try {
-            final Optional<CardCrossReference> located = cardCrossReferenceRepository
-                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.readAccountKey);
+            final Optional<CardCrossReference> located = firstXrefByBaseKey(
+                    cardCrossReferenceRepository.findByXrefAcctId(state.readAccountKey));
             state.cardCrossReference = located.orElse(null);
             return located.isPresent() ? ReadOutcome.FOUND : ReadOutcome.NOT_FOUND;
         } catch (final DataAccessException readFailure) {
@@ -1866,7 +1852,7 @@ public class AccountViewService {
      * carried state here is immutable, so the write becomes a rebuild of it - which is why this helper
      * exists rather than a setter.
      */
-    private static NavigationContext withCarriedAccountId(final NavigationContext context,
+    private static ScreenNavigationState withCarriedAccountId(final ScreenNavigationState context,
             final String accountId) {
         return rebuildCarriedState(context, accountId, context.customerId(), context.cardNumber());
     }
@@ -1879,7 +1865,7 @@ public class AccountViewService {
      * because the carried state goes back to the client, which echoes it on the next turn. It is the only
      * route by which a card number reaches this transaction, the card table having no access path here.
      */
-    private static NavigationContext withCarriedCustomerAndCard(final NavigationContext context,
+    private static ScreenNavigationState withCarriedCustomerAndCard(final ScreenNavigationState context,
             final String customerId, final String cardNumber) {
         return rebuildCarriedState(context, context.accountId(), customerId, cardNumber);
     }
@@ -1892,9 +1878,9 @@ public class AccountViewService {
      * caller and preserved by another. The account status field is among the thirteen: this member declares
      * it through its copybook and assigns it nowhere, so it is carried and not written.
      */
-    private static NavigationContext rebuildCarriedState(final NavigationContext context,
+    private static ScreenNavigationState rebuildCarriedState(final ScreenNavigationState context,
             final String accountId, final String customerId, final String cardNumber) {
-        return new NavigationContext(
+        return new ScreenNavigationState(
                 context.fromTransactionId(),
                 context.fromProgram(),
                 context.toTransactionId(),
@@ -1953,8 +1939,8 @@ public class AccountViewService {
      *
      * <p>Two entities are carried rather than copied field by field. That is safe because this module
      * declares no association anywhere, so neither is a lazy proxy and neither can fail to initialise after
-     * the read-only transaction has closed. Both may be absent, and absence is not an error: it is what a
-     * miss looks like.
+     * its repository call has completed. Both may be absent, and absence is not an error: it is what a miss
+     * looks like.
      */
     public record AccountViewResult(
             /* The destination, replacing a transfer or a re-arm. Absent on the two paths that end the
@@ -1962,7 +1948,7 @@ public class AccountViewService {
             String route,
 
             /* The carried state the client echoes on the next turn, replacing the communication area. */
-            NavigationContext navigationContext,
+            ScreenNavigationState navigationContext,
 
             /* The six header fields the initialisation paragraph populates. Absent on the transfer path,
              * which sends no screen. */
@@ -2436,7 +2422,7 @@ public class AccountViewService {
         private boolean commareaAbsent;
 
         /** The carried state, which the legacy holds in working storage through its copybook inclusion. */
-        private NavigationContext commarea = NavigationContext.empty();
+        private ScreenNavigationState commarea = ScreenNavigationState.empty();
 
         /** The mapped attention key; absent is the low-value state the mapping construct can leave. */
         private KeyAction keyAction;
@@ -2589,8 +2575,8 @@ public class AccountViewService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return {@code true} when no navigation state was carried into this turn
      */
-    private static boolean isNavigationStateAbsent(final NavigationContext context) {
-        return context == null || NavigationContext.empty().equals(context);
+    private static boolean isNavigationStateAbsent(final ScreenNavigationState context) {
+        return context == null || ScreenNavigationState.empty().equals(context);
     }
 
     /**
@@ -2605,7 +2591,7 @@ public class AccountViewService {
      * @param context the echoed navigation record, which may be {@code null}
      * @return the carried state the navigation rules read, never {@code null}
      */
-    private static ConversationState carriedState(final NavigationContext context) {
+    private static ConversationState carriedState(final ScreenNavigationState context) {
         if (context == null) {
             return ConversationState.empty();
         }
@@ -2617,5 +2603,27 @@ public class AccountViewService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
+    }
+
+    /**
+     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
+     * with the lowest card number.
+     *
+     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
+     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
+     * number. That is a property of the read being reproduced rather than of the index, so
+     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
+     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
+     *
+     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
+     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
+     * coincide.
+     *
+     * @param candidates every row the account path resolved, possibly empty
+     * @return the row with the lowest card number, or an empty result when the account has none
+     */
+    private static Optional<CardCrossReference> firstXrefByBaseKey(
+            final List<CardCrossReference> candidates) {
+        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

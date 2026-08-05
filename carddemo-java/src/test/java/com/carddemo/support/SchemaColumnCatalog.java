@@ -60,7 +60,7 @@ import java.util.regex.Pattern;
 public final class SchemaColumnCatalog {
 
     /** Classpath location of the schema-creating migration. */
-    private static final String MIGRATION_RESOURCE = "/db/migration/schema/V1__create_schema.sql";
+    private static final String MIGRATION_RESOURCE = "/db/migration/V1__create_schema.sql";
 
     /** Matches one {@code CREATE TABLE name ( body );} statement, body captured lazily. */
     private static final Pattern TABLE_PATTERN = Pattern.compile(

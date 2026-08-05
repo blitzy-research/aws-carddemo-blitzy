@@ -20,7 +20,10 @@ package com.carddemo.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
+import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.service.SensitiveFieldEncryptionService;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.support.InMemoryCredentialMaster;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -162,23 +165,14 @@ final class ApplicationProfileStartupTest {
     /** The property that selects a profile, set on the environment before the loader runs. */
     private static final String KEY_ACTIVE_PROFILES = "spring.profiles.active";
 
-    /** The schema location every profile migrates from, holding the two schema scripts. */
-    private static final String SCHEMA_LOCATION = "classpath:db/migration/schema";
-
     /**
-     * The seed location only the local and test profiles add, holding the two seed scripts, and which
-     * a production profile is refused.
+     * The one location EVERY profile migrates from, holding all four delivered scripts flat.
+     *
+     * <p>There is no schema subdirectory and no seed subdirectory: the four scripts sit side by side
+     * in this one location, so what a profile resolves is never the difference between a seeded and an
+     * unseeded database. The version pin is that difference, and it is the only one.
      */
-    private static final String SEED_LOCATION = "classpath:db/migration/seed";
-
-    /**
-     * The shared parent of the two, which no profile may resolve. Flyway scans a location recursively,
-     * so a profile naming the parent reaches the seeds through the child directory.
-     */
-    private static final String PARENT_LOCATION = "classpath:db/migration";
-
-    /** The two delivered locations a seeding profile resolves, in the order the overlay declares them. */
-    private static final List<String> SEEDING_LOCATIONS = List.of(SCHEMA_LOCATION, SEED_LOCATION);
+    private static final String MIGRATION_LOCATION = "classpath:db/migration";
 
     /** The pin that applies the schema and leaves both seeds pending. */
     private static final String SCHEMA_ONLY_TARGET = "2";
@@ -243,6 +237,35 @@ final class ApplicationProfileStartupTest {
     /** Whether the metrics scrape endpoint answers a collector that presents no credential. */
     private static final String KEY_ANONYMOUS_SCRAPE = "carddemo.security.anonymous-metrics-scrape";
 
+    /** The exact-origin browser allow-list, empty unless a deployment supplies one. */
+    private static final String KEY_CORS_ALLOWED_ORIGINS =
+            WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY;
+
+    /** Generic request-body ceiling applied before JSON conversion. */
+    private static final String KEY_MAX_REQUEST_BODY_SIZE =
+            WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY;
+
+    /** Combined request-line and header-block ceiling. */
+    private static final String KEY_MAX_REQUEST_HEADER_SIZE =
+            "server.max-http-request-header-size";
+
+    /** Container form-body ceiling. */
+    private static final String KEY_MAX_FORM_POST_SIZE =
+            "server.tomcat.max-http-form-post-size";
+
+    /** Combined query and form parameter-count ceiling. */
+    private static final String KEY_MAX_PARAMETER_COUNT =
+            "server.tomcat.max-parameter-count";
+
+    /** Rejected-body discard ceiling. */
+    private static final String KEY_MAX_SWALLOW_SIZE = "server.tomcat.max-swallow-size";
+
+    /** Request-line delivery timeout. */
+    private static final String KEY_CONNECTION_TIMEOUT = "server.tomcat.connection-timeout";
+
+    /** Upload parsing switch, closed because the module exposes no upload route. */
+    private static final String KEY_MULTIPART_ENABLED = "spring.servlet.multipart.enabled";
+
     /** A static cloud access key, which production must resolve from no source. */
     private static final String KEY_CLOUD_ACCESS_KEY = "spring.cloud.aws.credentials.access-key";
 
@@ -258,6 +281,9 @@ final class ApplicationProfileStartupTest {
 
     /** The closed management surface, spelled once. */
     private static final String CLOSED_EXPOSURE = "health,info,metrics,prometheus";
+
+    /** The local diagnostic posture: health detail remains available only after authentication. */
+    private static final String AUTHORIZED_HEALTH_DETAIL = "when-authorized";
 
     /**
      * One production requirement: an environment variable, the shipped key that reads it, and a value
@@ -313,7 +339,7 @@ final class ApplicationProfileStartupTest {
                     "management.otlp.tracing.endpoint",
                     "http://collector.internal:4318/v1/traces"),
             new RequiredSecret("CARDDEMO_SQS_QUEUE", "carddemo.aws.sqs.job-queue",
-                    "carddemo-jobs.fifo"),
+                    "JOBS.fifo"),
             new RequiredSecret("CARDDEMO_JWT_SECRET", "carddemo.security.jwt.secret",
                     SUPPLIED_JWT_SECRET),
             new RequiredSecret("CARDDEMO_FIELD_ENCRYPTION_KEY",
@@ -347,11 +373,10 @@ final class ApplicationProfileStartupTest {
                                 + "it and by nothing else")
                         .isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(bound.getLocations())
-                        .as("the schema location alone, so the seed scripts are not resolved at all - "
-                                + "and not the shared parent %s, which Flyway would scan recursively and "
-                                + "which would therefore reach them", PARENT_LOCATION)
-                        .containsExactly(SCHEMA_LOCATION)
-                        .doesNotContain(SEED_LOCATION, PARENT_LOCATION);
+                        .as("the one shared location, which every profile resolves: all four scripts "
+                                + "are resolvable here and the pin above is what decides which of them "
+                                + "are applied")
+                        .containsExactly(MIGRATION_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("a production migration must not be able to drop the schema it manages")
                         .isTrue();
@@ -366,17 +391,15 @@ final class ApplicationProfileStartupTest {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
 
                 assertThat(bound.getTarget()).isEqualTo(SCHEMA_ONLY_TARGET);
-                assertThat(bound.getLocations())
-                        .containsExactly(SCHEMA_LOCATION)
-                        .doesNotContain(SEED_LOCATION, PARENT_LOCATION);
+                assertThat(bound.getLocations()).containsExactly(MIGRATION_LOCATION);
                 assertThat(bound.isCleanDisabled()).isTrue();
             });
         }
 
-        @ParameterizedTest(name = "the {0} profile adds the seed location and lifts the pin to the head")
+        @ParameterizedTest(name = "the {0} profile lifts the pin to the head")
         @ValueSource(strings = {LOCAL, TEST})
-        @DisplayName("the two profiles that need reference rows resolve BOTH the seed location and the "
-                + "head, which together is the only way a seed is ever applied")
+        @DisplayName("the two profiles that need reference rows lift the pin to the head, which is the "
+                + "only way a seed is ever applied")
         void theTwoSeedingProfilesResolveTheHead(final String profile) {
             runner(MigrationSettings.class, profile).run(context -> {
                 FlywayProperties bound = context.getBean(FlywayProperties.class);
@@ -386,11 +409,10 @@ final class ApplicationProfileStartupTest {
                                 + "profile seeded", profile)
                         .isEqualTo(HEAD_TARGET);
                 assertThat(bound.getLocations())
-                        .as("%s resolves the seed location production is refused, which is the primary "
-                                + "difference and the reason a seed is resolvable here at all; the lifted "
-                                + "pin above is the second half of the same opt-in", profile)
-                        .containsExactly(SEEDING_LOCATIONS.toArray(String[]::new))
-                        .doesNotContain(PARENT_LOCATION);
+                        .as("%s resolves the SAME one location production resolves; with all four "
+                                + "scripts flat in it, the lifted pin above is the whole of the opt-in "
+                                + "and the location list carries none of it", profile)
+                        .containsExactly(MIGRATION_LOCATION);
                 assertThat(bound.isCleanDisabled())
                         .as("%s iterates on migrations, so dropping and re-applying is permitted here "
                                 + "and only here", profile)
@@ -441,44 +463,37 @@ final class ApplicationProfileStartupTest {
                     .isEqualTo(PRODUCTION);
         }
 
-        @ParameterizedTest(name = "{0} resolves only delivered locations, never the shared parent")
+        @ParameterizedTest(name = "{0} resolves the one delivered location and nothing beneath it")
         @ValueSource(strings = {PRODUCTION, LOCAL, TEST})
-        @DisplayName("every profile resolves only the delivered locations and never their shared parent, "
-                + "which Flyway would scan recursively across the split")
+        @DisplayName("every profile resolves the same one delivered location, because the delivered "
+                + "directory is flat and there is no subdirectory to scope a profile to")
         void everyProfileResolvesOnlyDeliveredLocations(final String profile) {
             runner(MigrationSettings.class, profile).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
                             .isNotEmpty()
                             .allSatisfy(location -> assertThat(location)
-                                    .as("the parent resolves both halves of the split and so is never a "
-                                            + "legitimate declaration")
-                                    .isNotEqualTo(PARENT_LOCATION)
-                                    .isIn(SEEDING_LOCATIONS)));
+                                    .as("a subdirectory descriptor would name a directory that does "
+                                            + "not exist, so the migration would resolve no script at "
+                                            + "all and report success over an empty database")
+                                    .isEqualTo(MIGRATION_LOCATION)));
         }
 
         @Test
-        @DisplayName("the location production resolves is the location the code control admits, so "
-                + "neither half of the location control is silently doing nothing")
+        @DisplayName("the location every profile resolves is the location the code control admits, so "
+                + "the guard is not protecting a directory nothing ships from")
         void theResolvedLocationIsTheLocationTheCodeAdmits() {
             runner(MigrationSettings.class, PRODUCTION).run(context ->
                     assertThat(context.getBean(FlywayProperties.class).getLocations())
                             .as("FlywayConfig refuses a production profile resolving any location other "
                                     + "than %s; a configured value naming a different one would leave "
                                     + "the deployment refused at start-up rather than migrated",
-                                    FlywayConfig.SCHEMA_LOCATION)
-                            .containsExactly(FlywayConfig.SCHEMA_LOCATION));
+                                    FlywayConfig.MIGRATION_LOCATION)
+                            .containsExactly(FlywayConfig.MIGRATION_LOCATION));
 
-            assertThat(FlywayConfig.SEED_LOCATION)
-                    .as("and the location the code control refuses must be the one the two seeding "
-                            + "overlays add, or the refusal would guard a directory nothing ships from")
-                    .isEqualTo(SEED_LOCATION);
-            assertThat(FlywayConfig.SEED_LOCATION)
-                    .as("the two must be siblings rather than nested, or one listing would resolve both "
-                            + "and production could not be given the schema alone")
-                    .doesNotStartWith(FlywayConfig.SCHEMA_LOCATION);
-            assertThat(FlywayConfig.SCHEMA_LOCATION)
-                    .doesNotStartWith(FlywayConfig.SEED_LOCATION)
-                    .isNotEqualTo(PARENT_LOCATION);
+            assertThat(FlywayConfig.MIGRATION_LOCATION)
+                    .as("and it must be the location the overlays declare, or the refusal would guard "
+                            + "a directory nothing ships from")
+                    .isEqualTo(MIGRATION_LOCATION);
         }
     }
 
@@ -612,8 +627,15 @@ final class ApplicationProfileStartupTest {
         @DisplayName("the token provider refuses to be built from that placeholder text, which is what "
                 + "converts the silent binding into a start-up failure")
         void theTokenProviderRefusesToBeBuiltFromPlaceholderText() {
-            runner(new Class<?>[] {TokenSettings.class, JpaAuditConfig.class, JwtTokenProvider.class},
-                    PRODUCTION).run(context -> assertThat(context)
+            runner(new Class<?>[] {TokenSettings.class, JpaAuditConfig.class, JwtTokenProvider.class,
+                SignOnStateService.class}, PRODUCTION)
+                    // The record reader and a stand-in for its repository are registered so that the only
+                    // thing this start is missing is the signing secret; without them the context would
+                    // fail for a second reason and the assertion below would no longer be about the
+                    // secret at all.
+                    .withBean(UserSecurityRepository.class,
+                            () -> new InMemoryCredentialMaster().repository())
+                    .run(context -> assertThat(context)
                     .as("without this check a production deployment would mint and accept tokens signed "
                             + "with a value printed in the repository")
                     .hasFailed()
@@ -628,9 +650,11 @@ final class ApplicationProfileStartupTest {
         @DisplayName("the token provider is built once the secret variable is supplied, so the failure "
                 + "above is about the missing value and not about the wiring")
         void theTokenProviderIsBuiltOnceTheSecretIsSupplied() {
-            runner(new Class<?>[] {TokenSettings.class, JpaAuditConfig.class, JwtTokenProvider.class},
-                    PRODUCTION, "CARDDEMO_JWT_SECRET=" + SUPPLIED_JWT_SECRET).run(context ->
-                    assertThat(context)
+            runner(new Class<?>[] {TokenSettings.class, JpaAuditConfig.class, JwtTokenProvider.class,
+                SignOnStateService.class}, PRODUCTION, "CARDDEMO_JWT_SECRET=" + SUPPLIED_JWT_SECRET)
+                    .withBean(UserSecurityRepository.class,
+                            () -> new InMemoryCredentialMaster().repository())
+                    .run(context -> assertThat(context)
                             .hasNotFailed()
                             .hasSingleBean(JwtTokenProvider.class));
         }
@@ -748,10 +772,11 @@ final class ApplicationProfileStartupTest {
                         .isFalse();
                 assertThat(environment.getProperty(KEY_FLYWAY_TARGET)).isEqualTo(SCHEMA_ONLY_TARGET);
                 assertThat(environment.getProperty(KEY_FLYWAY_LOCATIONS))
-                        .as("the schema location alone; resolving the seed location here is what would "
-                                + "put fifty synthetic customer rows and ten known sign-on identities "
-                                + "into a production database")
-                        .isEqualTo(SCHEMA_LOCATION);
+                        .as("the one shared location; the pin asserted immediately above is what keeps "
+                                + "fifty synthetic customer rows and ten known sign-on identities out "
+                                + "of a production database, since all four scripts are resolvable "
+                                + "from this location in every profile")
+                        .isEqualTo(MIGRATION_LOCATION);
             });
         }
 
@@ -762,7 +787,10 @@ final class ApplicationProfileStartupTest {
             runner(MigrationSettings.class, LOCAL).run(context -> {
                 Environment environment = context.getEnvironment();
 
-                assertThat(environment.getProperty(KEY_SHOW_DETAILS)).isEqualTo("always");
+                assertThat(environment.getProperty(KEY_SHOW_DETAILS))
+                        .isEqualTo(AUTHORIZED_HEALTH_DETAIL);
+                assertThat(environment.getProperty(KEY_SHOW_COMPONENTS))
+                        .isEqualTo(AUTHORIZED_HEALTH_DETAIL);
                 assertThat(environment.getProperty(KEY_API_DOCS_ENABLED, Boolean.class)).isTrue();
                 assertThat(environment.getProperty(KEY_REQUIRE_HTTPS, Boolean.class)).isFalse();
                 assertThat(environment.getProperty(KEY_ANONYMOUS_SCRAPE, Boolean.class))
@@ -774,6 +802,31 @@ final class ApplicationProfileStartupTest {
                         .as("the one setting the local profile does not relax: even locally, schema "
                                 + "arrives through a migration")
                         .isEqualTo("validate");
+            });
+        }
+    }
+
+    @Nested
+    @DisplayName("the bounded HTTP posture every started profile resolves")
+    final class TheBoundedHttpPostureEveryStartedProfileResolves {
+
+        @ParameterizedTest(name = "{0} resolves every shared request ceiling")
+        @ValueSource(strings = {PRODUCTION, LOCAL, TEST})
+        @DisplayName("every profile resolves the same request-line, header, body, form and parser limits")
+        void everyProfileResolvesTheSameRequestLimits(final String profile) {
+            final String[] supplied = PRODUCTION.equals(profile) ? allSupplied() : new String[0];
+
+            runner(MigrationSettings.class, profile, supplied).run(context -> {
+                final Environment environment = context.getEnvironment();
+                assertThat(environment.getProperty(KEY_CORS_ALLOWED_ORIGINS)).isEmpty();
+                assertThat(environment.getProperty(KEY_MAX_REQUEST_HEADER_SIZE)).isEqualTo("8KB");
+                assertThat(environment.getProperty(KEY_MAX_REQUEST_BODY_SIZE)).isEqualTo("64KB");
+                assertThat(environment.getProperty(KEY_MAX_FORM_POST_SIZE)).isEqualTo("64KB");
+                assertThat(environment.getProperty(KEY_MAX_PARAMETER_COUNT, Integer.class))
+                        .isEqualTo(64);
+                assertThat(environment.getProperty(KEY_MAX_SWALLOW_SIZE)).isEqualTo("64KB");
+                assertThat(environment.getProperty(KEY_CONNECTION_TIMEOUT)).isEqualTo("10s");
+                assertThat(environment.getProperty(KEY_MULTIPART_ENABLED, Boolean.class)).isFalse();
             });
         }
     }

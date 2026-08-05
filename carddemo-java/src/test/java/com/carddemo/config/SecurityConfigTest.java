@@ -16,8 +16,14 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.BatchJobController;
 import com.carddemo.api.GlobalExceptionHandler;
+import com.carddemo.api.JsonRefusalBodyRenderer;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.CredentialDigestService;
+import com.carddemo.service.SignOnStateService;
+import com.carddemo.support.InMemoryCredentialMaster;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.OctetSequenceKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
@@ -38,6 +44,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -79,33 +86,25 @@ import org.springframework.web.bind.annotation.RestController;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
  * Asserts what the request-authorization boundary actually answers, by exercising the real filter chain
  * and reading real response statuses.
  *
- * <p>Two review findings are answered here, and both were findings about a <em>claim</em> that nothing
- * enforced. The configuration described the metrics scrape endpoint as an unauthenticated surface and
- * reopened the interface description in one profile, while no filter chain existed at all - so the
- * framework's defaults decided reachability, permitting the health probe and authenticating the scrape
- * endpoint. Separately, a token issuer, a token lifetime and a mandatory-transport setting were published
- * with no binder, provider, filter or channel rule consuming any of them, leaving the framework's
- * generated-user login in place as the actual authentication mechanism.</p>
- *
  * <p><strong>Every assertion below is a response status or a response body, never a reading of the
  * configuration that produced it.</strong> That distinction is the point: a test that inspected the rules
  * would agree with a chain that had been assembled in the wrong order, and rule order is precisely what
  * decides whether a management endpoint added to a profile's exposure list becomes anonymous. The chain is
  * obtained from a real context and driven through real requests, so the order is exercised rather than
- * described.</p>
+ * described. The probe endpoints exist only to give each rule a reachable target: without a handler, a
+ * permitted path could only be shown to be "not refused", which cannot be told apart from a path that is
+ * missing, whereas with one a permitted path answers {@code 200} and the distinction is unambiguous.</p>
  *
- * <p>The probe endpoints exist only to give each rule a reachable target: without a handler, a permitted
- * path could only be shown to be "not refused", which cannot be told apart from a path that is missing.
- * With one, a permitted path answers {@code 200} and the distinction between permitted and refused is
- * unambiguous.</p>
- *
- * <p>No real credential appears in this class, and no value any profile ships is restated here.</p>
+ * <p>No real credential appears in this class, and no value any profile ships is restated here. Every value
+ * handed to the hasher below is generated in the test, as is every piece of signing material any slice
+ * needs.</p>
  *
  * <p><strong>Subject.</strong> The class under test is {@link SecurityConfig}, the module's whole
  * route-to-role table and its only decision about what may be reached without a credential. What this file
@@ -123,26 +122,26 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * re-verification of that census must match {@code DEFINE X(} rather than an anchored {@code ^DEFINE},
  * because the file indents every definition by one column and an anchored search silently returns none.</p>
  *
- * <p><strong>The decisive legacy finding is that the transaction manager enforced nothing.</strong> All
- * eighteen definition blocks end {@code RESSEC(NO) CMDSEC(NO)} - resource security and command security both
- * disabled - so the estate's administrative gate was purely application-level: the two menu catalogues
- * ({@code app/cpy/COMEN02Y.cpy}, {@code app/cpy/COADM02Y.cpy}) and the one-character user-type test at
- * {@code app/cbl/COSGN00C.cbl} L230, whose alternative at L235 is unconditional. What this file asserts is
- * therefore a faithful reproduction of that application-level gate, and the fact that the framework now
- * <em>enforces</em> it is a strict improvement over the legacy posture rather than a behavioural change. The
- * same reading applies to the data layer, where every application file was defined
+ * <p><strong>The transaction manager enforced nothing, so the gate this file asserts is the
+ * application-level one.</strong> All eighteen definition blocks end {@code RESSEC(NO) CMDSEC(NO)} -
+ * resource security and command security both disabled - so the estate's administrative gate rested entirely
+ * on the two menu catalogues ({@code app/cpy/COMEN02Y.cpy}, {@code app/cpy/COADM02Y.cpy}) and the
+ * one-character user-type test at {@code app/cbl/COSGN00C.cbl} L230, whose alternative at L235 is
+ * unconditional. What this file asserts is a faithful reproduction of that application-level gate, and the
+ * framework <em>enforcing</em> it is a strict improvement over the legacy posture rather than a behavioural
+ * change. The same reading applies to the data layer, where every application file was defined
  * {@code READINTEG(UNCOMMITTED) RECOVERY(NONE) JOURNAL(NO)} with correctness resting on record locking plus
  * before-and-after image comparison, so read-committed isolation plus an optimistic version column is also
- * strictly stronger. Both improvements belong in {@code docs/decision-log.md} so that a reviewer does not
- * mistake a stronger posture for a regression.</p>
+ * strictly stronger. Both improvements are recorded in {@code docs/decision-log.md} so that a reviewer does
+ * not mistake a stronger posture for a regression.</p>
  *
  * <p><strong>Anomaly register entry 3: one definition binds a program that has no source member.</strong>
  * The developer transaction {@code CDV1} names a program definition for which no member exists anywhere in
  * {@code app/cbl}, which was established by looking rather than assumed. The table keeps the entry, because
  * an inventory that quietly drops its own anomaly cannot be audited, and this file asserts both halves of
  * the consequence: the entry is present, and no type is declared for that program anywhere in the module.
- * The three references the program name still has in production sources are documentation of the anomaly,
- * not an implementation of it.</p>
+ * The references the program name has in production sources document the anomaly rather than implementing
+ * it.</p>
  *
  * <p><strong>The credential hasher is the migration's one documented parity exception.</strong> The sign-on
  * record is exactly eighty bytes - identifier eight, first name twenty, last name twenty, credential eight,
@@ -154,8 +153,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * in the eleven-entity schema. The column itself is asserted by the migration and repository tiers, not here.
  * The provisioning job seeds ten identities, five administrative and five standard; those identifiers, names
  * and types are non-secret metadata, their rows belong to {@code FlywayConfigTest}, and the shared cleartext
- * credential they carry appears nowhere in this file, in any name, message or comment. Every value handed to
- * the hasher below is generated in the test, as is every piece of signing material any slice needs.</p>
+ * credential they carry appears nowhere in this file, in any name, message or comment.</p>
  *
  * <p><strong>Statelessness is what the estate's conversational re-arm becomes.</strong> The legacy tier
  * carried a one-hundred-and-sixty-byte communication area across pseudo-conversational turns
@@ -183,8 +181,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * every secret from the environment with no fallback - the token signing secret, the database address, user
  * and password, and the AWS region and access pair - so a missing value stops start-up instead of binding a
  * placeholder; the mechanical sweep of that file for defaulted placeholders is owned once, by
- * {@code JwtPropertiesTest}, and is deliberately not repeated here. No drifted default value from an earlier
- * delivery is written into this file in any form.</p>
+ * {@code JwtPropertiesTest}, and is deliberately not repeated here. No default value from any profile is
+ * written into this file in any form.</p>
  *
  * <p><strong>Four behaviours of the sign-on program are contractual and are recorded here as metadata
  * only.</strong> They are implemented in the authentication service, and what this file asserts is that
@@ -213,12 +211,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * chain is obtained from a {@code WebApplicationContextRunner} and driven with a standalone client. Both of
  * the preferred mechanisms are available - the table is directly addressable as published immutable
  * structure, and the chain is constructible in this tier - so <strong>nothing is migrated to the
- * integration tier</strong>. End-to-end sign-on over HTTP, and the routing outcome for each user type,
- * remain owned by the {@code api} integration tier and the online end-to-end test, which is where a real
- * dispatcher and a real database belong. Per-entry census detail for the table - each entry's bound program,
- * its definition line, the four and eight character widths, immutability and identifier resolution - is
- * asserted once in {@code SecurityConfigRouteTableTest}; this file asserts the partition contract the
- * chain's rules are actually derived from, and the two are complementary rather than duplicates.</p>
+ * integration tier</strong>. Sign-on over a real dispatcher, and the routing outcome for each user type,
+ * belong to the {@code api} tier's own tests, where a real dispatcher and a real database belong.
+ * Per-entry census detail for the table - each entry's bound program, its definition line, the four and
+ * eight character widths, immutability and identifier resolution - is asserted once in
+ * {@code SecurityConfigRouteTableTest}; this file asserts the partition contract the chain's rules are
+ * actually derived from, and the two are complementary rather than duplicates.</p>
  *
  * <p><strong>Standards.</strong> The project's rules document states that no user rules were provided, which
  * was confirmed by reading it in full; that absence lowers nothing, and the work is held instead to the
@@ -276,8 +274,54 @@ class SecurityConfigTest {
     /** An administrative route, beneath the administrative prefix. */
     private static final String ADMIN_ROUTE = SecurityConfig.ADMIN_PATH_PREFIX + "/users";
 
+    /**
+     * A batch control route, beneath the batch control path and deliberately NOT beneath the
+     * administrative prefix.
+     *
+     * <p>That placement is what these assertions turn on: batch control was job submission in the estate
+     * rather than one of the eighteen registered transactions, so it carries the administrative entitlement
+     * under its own rule instead of by sitting under a prefix that stands for five transactions.</p>
+     */
+    private static final String BATCH_CONTROL_ROUTE = "/api/batch/jobs/postTransactionJob/launch";
+
     /** A protected route that commits its answer before failing authorization. */
     private static final String COMMITTED_ROUTE = "/api/accounts/commit-then-deny";
+
+    /**
+     * The batch-control launch operation, addressed exactly as the controller maps it.
+     *
+     * <p>Assembled from the published constants rather than written out, so a moved mapping moves this
+     * assertion with it instead of leaving the assertion probing an address nothing claims.
+     */
+    private static final String BATCH_LAUNCH_ROUTE =
+            BatchJobController.BATCH_JOBS_PATH + "/postTransactionJob/launch";
+
+    /** The batch-control status operation, addressed the same way. */
+    private static final String BATCH_STATUS_ROUTE =
+            BatchJobController.BATCH_JOBS_PATH + "/executions/4271";
+
+    /**
+     * The administrative operator the fixture credential master holds.
+     *
+     * <p>Two identifiers rather than one, because the record now decides what a token may claim: a token
+     * naming the administrative role is only established while the record it was minted from carries the
+     * administrative code, so a single record could not serve both roles. Eight characters, the fixed width
+     * of the record's key.</p>
+     */
+    private static final String ADMIN_USER_ID = "TESTADM1";
+
+    /** The standard-user operator the fixture credential master holds, at the same fixed width. */
+    private static final String STANDARD_USER_ID = "TESTUSR1";
+
+    /**
+     * The credential master the chain reads when it decides whether a presented token still names its
+     * record.
+     *
+     * <p>Shared and re-seeded before each test rather than built per context, so that a test can change
+     * the record between two requests through the same chain - which is the only way to observe that a
+     * demotion, a deletion or a credential reset takes effect at once.</p>
+     */
+    private static final InMemoryCredentialMaster CREDENTIAL_MASTER = new InMemoryCredentialMaster();
 
     /** Instant the fixed clock reports, so token windows are exact. */
     private static final Instant NOW = Instant.parse("2026-01-01T12:00:00Z");
@@ -381,6 +425,14 @@ class SecurityConfigTest {
     @AfterEach
     void clearSecurityContext() {
         SecurityContextHolder.clearContext();
+    }
+
+    /** Re-seeds the two fixture operators, so no test inherits another's record state. */
+    @BeforeEach
+    void seedCredentialMaster() {
+        CREDENTIAL_MASTER.reset()
+                .with(ADMIN_USER_ID, UserType.ADMIN.getCode())
+                .with(STANDARD_USER_ID, UserType.USER.getCode());
     }
 
     /**
@@ -491,6 +543,16 @@ class SecurityConfigTest {
         }
 
         /**
+         * Stands in for the readiness group that includes the required AWS resources.
+         *
+         * @return a fixed body
+         */
+        @GetMapping(MANAGEMENT_BASE + "/health/readiness")
+        String readiness() {
+            return "readiness";
+        }
+
+        /**
          * Stands in for the metrics scrape endpoint.
          *
          * @return a fixed body
@@ -594,6 +656,29 @@ class SecurityConfigTest {
         }
 
         /**
+         * Stands in for the batch-control launch operation.
+         *
+         * <p>A state-changing method, because launching a job is one, and the operation whose reachability
+         * by an ordinary signed-on caller was the defect this nest asserts is closed.
+         *
+         * @return a fixed body
+         */
+        @PostMapping(BATCH_LAUNCH_ROUTE)
+        String batchLaunch() {
+            return "batch-launch";
+        }
+
+        /**
+         * Stands in for the batch-control status operation.
+         *
+         * @return a fixed body
+         */
+        @GetMapping(BATCH_STATUS_ROUTE)
+        String batchStatus() {
+            return "batch-status";
+        }
+
+        /**
          * Begins answering and only then fails authorization, which is the one way a refusal can be
          * reached after the response has already been committed.
          *
@@ -663,11 +748,15 @@ class SecurityConfigTest {
                 .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class,
                         SecurityAutoConfiguration.class, UserDetailsServiceAutoConfiguration.class))
                 .withUserConfiguration(SecurityConfig.class, JwtTokenProvider.class,
-                        FixedClockConfig.class)
+                        SignOnStateService.class, JsonRefusalBodyRenderer.class,
+                        WebMvcConfig.class, FixedClockConfig.class)
+                .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                 .withPropertyValues(
                         JwtProperties.PREFIX + ".secret=" + SECRET,
                         JwtProperties.PREFIX + ".issuer=" + ISSUER,
                         JwtProperties.PREFIX + ".expiration=PT30M",
+                        WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY + "=",
+                        WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB",
                         "carddemo.security.require-https=" + requireHttps,
                         "carddemo.security.anonymous-metrics-scrape=" + anonymousScrape,
                         "springdoc.api-docs.enabled=" + publishDocs,
@@ -692,6 +781,23 @@ class SecurityConfigTest {
     }
 
     /**
+     * Reads the cost factor a digest declares, out of the digest itself.
+     *
+     * <p>Read from the produced value rather than from any encoder's configuration, so that an encoder
+     * built at one strength and hashing at another would be caught.</p>
+     *
+     * @param digest a BCrypt digest
+     * @return the cost factor it declares
+     */
+    private static int costFactorOf(final String digest) {
+        final String[] fields = DIGEST_FIELD_DELIMITER.split(digest);
+        assertThat(fields)
+                .as("a digest carries an empty leading field, a variant, a cost and the remainder")
+                .hasSize(DIGEST_FIELD_COUNT);
+        return Integer.parseInt(fields[DIGEST_COST_FIELD_INDEX]);
+    }
+
+    /**
      * Builds a client that drives the context's real security chain ahead of the probe handlers.
      *
      * @param context a started context carrying the chain
@@ -712,7 +818,21 @@ class SecurityConfigTest {
      * @return the credential value to present
      */
     private static String tokenFor(final AssertableWebApplicationContext context, final UserType type) {
-        return context.getBean(JwtTokenProvider.class).issue("TESTUSR1", type);
+        return context.getBean(JwtTokenProvider.class).issue(identifierFor(type), type);
+    }
+
+    /**
+     * Names the fixture operator whose record carries a given type.
+     *
+     * <p>The provider refuses to mint a role its record does not carry, so a token for a type has to be
+     * minted for the identifier holding that type. Choosing here rather than at each call site keeps every
+     * existing assertion reading as "a token for this type".</p>
+     *
+     * @param type the type the token should carry
+     * @return the identifier of the fixture operator holding that type
+     */
+    private static String identifierFor(final UserType type) {
+        return type.isAdmin() ? ADMIN_USER_ID : STANDARD_USER_ID;
     }
 
     /**
@@ -733,7 +853,7 @@ class SecurityConfigTest {
                 new OctetSequenceKey.Builder(SECRET.getBytes(StandardCharsets.UTF_8)).build();
         final JwtClaimsSet.Builder claims = JwtClaimsSet.builder()
                 .issuer(ISSUER)
-                .subject("TESTUSR1")
+                .subject(STANDARD_USER_ID)
                 .issuedAt(NOW)
                 .expiresAt(NOW.plus(Duration.ofMinutes(30)));
         if (roleCode != null) {
@@ -750,7 +870,10 @@ class SecurityConfigTest {
     class OperationalSurfaces {
 
         @ParameterizedTest(name = "GET {0}")
-        @ValueSource(strings = {MANAGEMENT_BASE + "/health", MANAGEMENT_BASE + "/health/liveness"})
+        @ValueSource(strings = {
+            MANAGEMENT_BASE + "/health",
+            MANAGEMENT_BASE + "/health/liveness",
+            MANAGEMENT_BASE + "/health/readiness" })
         @DisplayName("answer the health probe without a credential, because the image health check and "
                 + "every waiting Compose service present none")
         void permitTheHealthProbe(final String path) throws Exception {
@@ -911,6 +1034,151 @@ class SecurityConfigTest {
             plainTransport().run(context -> clientFor(context).perform(get(ADMIN_ROUTE))
                     .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
         }
+
+        @Test
+        @DisplayName("admit the batch control surface to an administrator's token, because starting a job "
+                + "was job submission and only whoever held submission rights could do it")
+        void admitBatchControlToAnAdministrator() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(BATCH_CONTROL_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("REFUSE the batch control surface to a standard user's token, which the closing "
+                + "catch-all alone would have admitted - so this proves the rule of its own is reached")
+        void refuseBatchControlToAStandardUser() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(BATCH_CONTROL_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus())
+                                .as("an ordinary cardholder identity must not be able to re-run posting, "
+                                        + "accrual or statement generation over the whole estate")
+                                .isEqualTo(403);
+                        assertThat(result.getResponse().getContentAsString())
+                                .doesNotContain("batch-control");
+                    }));
+        }
+
+        @Test
+        @DisplayName("refuse the batch control surface presenting no credential at all as unauthorized, "
+                + "not forbidden")
+        void refuseBatchControlWithoutACredential() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(post(BATCH_CONTROL_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("gate the batch control surface by a rule of its own rather than by the "
+                + "administrative prefix, so the eighteen-transaction census stays honest")
+        void gateBatchControlByARuleOfItsOwn() {
+            assertThat(SecurityConfig.BATCH_CONTROL_PATH_PATTERN)
+                    .as("folding this path under the administrative prefix would report batch control as "
+                            + "a nineteenth registered transaction")
+                    .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX)
+                    .isEqualTo("/api/batch/jobs/**");
+            assertThat(BATCH_CONTROL_ROUTE).startsWith("/api/batch/jobs/");
+        }
+    }
+
+    @Nested
+    @DisplayName("The batch-control surface, which is not a transaction and is gated on its own")
+    class BatchControlRoutes {
+
+        @Test
+        @DisplayName("admit the launch operation to an administrator's token, because an operator is who "
+                + "submitted a job")
+        void admitTheLaunchOperationToAnAdministrator() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(BATCH_LAUNCH_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("REFUSE the launch operation to a standard user's token, because the backup job's "
+                + "second step clears the transaction master and no transaction ever exposed that")
+        void refuseTheLaunchOperationToAStandardUser() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(post(BATCH_LAUNCH_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus())
+                                .as("a principal exists and is not entitled")
+                                .isEqualTo(403);
+                        // Were the rule absent, this same token would satisfy the closing catch-all and
+                        // the handler would answer 200 with this body - so the body assertion is what
+                        // proves the gate is reached rather than merely written.
+                        assertThat(result.getResponse().getContentAsString())
+                                .doesNotContain("batch-launch");
+                    }));
+        }
+
+        @Test
+        @DisplayName("refuse the launch operation presenting no credential at all as unauthorized, not "
+                + "forbidden")
+        void refuseTheLaunchOperationWithoutACredential() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(post(BATCH_LAUNCH_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("admit the status operation to an administrator's token, so both halves of the "
+                + "surface answer the same caller")
+        void admitTheStatusOperationToAnAdministrator() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(BATCH_STATUS_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("REFUSE the status operation to a standard user's token, because what has run and "
+                + "how it ended is the same operational detail as starting it")
+        void refuseTheStatusOperationToAStandardUser() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(BATCH_STATUS_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+                        assertThat(result.getResponse().getContentAsString())
+                                .doesNotContain("batch-status");
+                    }));
+        }
+
+        @Test
+        @DisplayName("refuse the status operation presenting no credential at all as unauthorized")
+        void refuseTheStatusOperationWithoutACredential() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(BATCH_STATUS_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("gate the whole prefix and not the two operations, so an operation added beneath it "
+                + "is administrator-only from the moment it exists")
+        void gateTheWholePrefixRatherThanTheTwoOperations() {
+            assertThat(BatchJobController.BATCH_JOBS_PATH)
+                    .as("a mapping outside the gated prefix would answer under the closing catch-all")
+                    .startsWith(SecurityConfig.BATCH_CONTROL_PATH_PREFIX);
+            assertThat(SecurityConfig.BATCH_CONTROL_PATH_PREFIX)
+                    .isEqualTo(BatchJobController.BATCH_CONTROL_PATH_PREFIX);
+        }
+
+        @Test
+        @DisplayName("keep the batch-control surface out of the route-to-role table, because that table "
+                + "is the census of the eighteen legacy transaction definitions")
+        void keepTheSurfaceOutOfTheRouteToRoleTable() {
+            assertThat(SecurityConfig.TransactionRoute.registeredTransactions())
+                    .as("a nineteenth row for a surface with no legacy counterpart would make the "
+                            + "census untrue, which is why the rule is stated separately")
+                    .hasSize(18);
+            assertThat(SecurityConfig.TransactionRoute
+                            .enforcementPatternsFor(SecurityConfig.Gating.ADMINISTRATIVE))
+                    .allSatisfy(pattern -> assertThat(pattern)
+                            .doesNotContain(SecurityConfig.BATCH_CONTROL_PATH_PREFIX));
+        }
     }
 
     @Nested
@@ -936,11 +1204,12 @@ class SecurityConfigTest {
                 // both its lifetime and the verifier's permitted skew by the time the chain sees it.
                 final JwtTokenProvider past = new JwtTokenProvider(
                         new JwtProperties(SECRET, ISSUER, Duration.ofMinutes(30)),
-                        Clock.fixed(NOW.minus(Duration.ofHours(2)), ZoneOffset.UTC));
+                        Clock.fixed(NOW.minus(Duration.ofHours(2)), ZoneOffset.UTC),
+                        new SignOnStateService(CREDENTIAL_MASTER.repository()));
 
                 clientFor(context)
                         .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
-                                "Bearer " + past.issue("TESTUSR1", UserType.ADMIN)))
+                                "Bearer " + past.issue(ADMIN_USER_ID, UserType.ADMIN)))
                         .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
             });
         }
@@ -952,11 +1221,12 @@ class SecurityConfigTest {
             plainTransport().run(context -> {
                 final JwtTokenProvider foreign = new JwtTokenProvider(
                         new JwtProperties(FOREIGN_SECRET, ISSUER, Duration.ofMinutes(30)),
-                        Clock.fixed(NOW, ZoneOffset.UTC));
+                        Clock.fixed(NOW, ZoneOffset.UTC),
+                        new SignOnStateService(CREDENTIAL_MASTER.repository()));
 
                 clientFor(context)
                         .perform(get(ADMIN_ROUTE).header(HttpHeaders.AUTHORIZATION,
-                                "Bearer " + foreign.issue("TESTUSR1", UserType.ADMIN)))
+                                "Bearer " + foreign.issue(ADMIN_USER_ID, UserType.ADMIN)))
                         .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
             });
         }
@@ -993,6 +1263,169 @@ class SecurityConfigTest {
                     .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
                             "Bearer " + tokenCarryingRole(null)))
                     .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+
+        @Test
+        @DisplayName("establishes no identity when it verifies and carries a declared user type but no "
+                + "record fingerprint, so a token minted before that claim existed cannot bypass the "
+                + "currency check by omitting it")
+        void establishesNoIdentityWhenTheFingerprintIsAbsent() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    // Assembled with the chain's own signing material, the issuer it requires and a window
+                    // around its own clock, and carrying the type the seeded record genuinely holds - so
+                    // the only thing wrong with it is the absent fingerprint.
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenCarryingRole(UserType.USER.getCode())))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
+        }
+    }
+
+    /**
+     * A session that has stopped describing its record, which the chain must stop admitting.
+     *
+     * <p><strong>What these assertions are for.</strong> The legacy system had nothing to revoke: every
+     * terminal turn re-entered a transaction that read the credential master again, so a record changed
+     * between two turns was simply read again on the next one. A bearer token is the opposite - it stays
+     * true to its signature after it has stopped being true about the record it describes - so a chain that
+     * trusted the signature alone left an administrator's demotion, an operator's deletion and a credential
+     * reset with no effect at all until the token already in the operator's hands expired.</p>
+     *
+     * <p>Each assertion below is written as the pair that makes it discriminate: the same token, through the
+     * same chain, before and after one administrative change. A test that only showed the refusal would be
+     * satisfied by a chain that refused everything, and a test that only showed the acceptance would be
+     * satisfied by the defect. The change is made against the credential master the chain actually reads,
+     * which is why the evidence is a real response status and not a stubbed return.</p>
+     *
+     * <p>Every refusal here is {@code 401} rather than {@code 403}, and the distinction is the contract: a
+     * token that no longer names its record establishes <em>no identity at all</em>, so the request reaches
+     * the rules as an anonymous one. A {@code 403} would mean an identity had been established and then
+     * found insufficient, which is a different statement about what the boundary decided.</p>
+     */
+    @Nested
+    @DisplayName("A session that no longer describes its record")
+    class RevokedSessions {
+
+        @Test
+        @DisplayName("is admitted while the record still stands, which is the control every refusal below "
+                + "is measured against")
+        void isAdmittedWhileTheRecordStillStands() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ADMIN_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("is refused once the operator is demoted, so an administrative entitlement does not "
+                + "outlive the record that granted it")
+        void isRefusedOnceTheOperatorIsDemoted() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.ADMIN);
+
+                CREDENTIAL_MASTER.withUserType(ADMIN_USER_ID, UserType.USER.getCode());
+
+                clientFor(context)
+                        .perform(get(ADMIN_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("is refused on an ordinary route too once the operator is demoted, so the demotion "
+                + "is not merely a narrowing of what the same session may reach")
+        void isRefusedOnAnOrdinaryRouteOnceDemoted() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.ADMIN);
+
+                CREDENTIAL_MASTER.withUserType(ADMIN_USER_ID, UserType.USER.getCode());
+
+                clientFor(context)
+                        .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("is refused once the operator is deleted, so a removed sign-on record removes the "
+                + "session with it")
+        void isRefusedOnceTheOperatorIsDeleted() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.USER);
+
+                CREDENTIAL_MASTER.without(STANDARD_USER_ID);
+
+                clientFor(context)
+                        .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("is refused once the credential is set, so setting a credential ends the sessions "
+                + "issued against the previous one")
+        void isRefusedOnceTheCredentialIsSet() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.USER);
+
+                CREDENTIAL_MASTER.withResetCredential(STANDARD_USER_ID);
+
+                clientFor(context)
+                        .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("is still admitted after a change that is not a security fact, so correcting a family "
+                + "name does not end anybody's session")
+        void isStillAdmittedAfterANonSecurityChange() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.USER);
+
+                CREDENTIAL_MASTER.findById(STANDARD_USER_ID).orElseThrow().setSecUsrFname("Corrected");
+
+                clientFor(context)
+                        .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("covering the name fields would end a session because somebody fixed "
+                                        + "a spelling")
+                                .isEqualTo(200));
+            });
+        }
+
+        @Test
+        @DisplayName("is refused when the credential master cannot be reached, failing closed rather than "
+                + "leaving sessions standing while revocation is not working")
+        void isRefusedWhenTheCredentialMasterCannotBeReached() throws Exception {
+            plainTransport().run(context -> {
+                final String credential = "Bearer " + tokenFor(context, UserType.USER);
+
+                CREDENTIAL_MASTER.failLookupsWith(
+                        new IllegalStateException("credential master unreachable"));
+
+                clientFor(context)
+                        .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION, credential))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("a refusal rather than a server error: the boundary absorbs the "
+                                        + "failure and establishes nothing")
+                                .isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("leaves the anonymous surfaces reachable, because the record is consulted only for a "
+                + "request that actually presents a credential")
+        void leavesTheAnonymousSurfacesReachable() throws Exception {
+            plainTransport().run(context -> {
+                CREDENTIAL_MASTER.failLookupsWith(
+                        new IllegalStateException("credential master unreachable"));
+
+                clientFor(context).perform(get(MANAGEMENT_BASE + "/health"))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("the health probe presents no credential, so nothing reads a record "
+                                        + "on its behalf")
+                                .isEqualTo(200));
+            });
         }
     }
 
@@ -1251,7 +1684,11 @@ class SecurityConfigTest {
             new WebApplicationContextRunner()
                     .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class))
                     .withUserConfiguration(SecurityConfig.class, JwtTokenProvider.class,
-                            FixedClockConfig.class)
+                            SignOnStateService.class, FixedClockConfig.class)
+                    // Contributed so that the only thing this slice is missing is the signing secret;
+                    // without it the context would fail for a second reason and the assertion below would
+                    // no longer be about the secret at all.
+                    .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                     .withPropertyValues(
                             JwtProperties.PREFIX + ".issuer=" + ISSUER,
                             JwtProperties.PREFIX + ".expiration=PT30M",
@@ -1544,6 +1981,37 @@ class SecurityConfigTest {
         }
 
         @Test
+        @DisplayName("hashes at the same strength as the digest service, which is the module's single "
+                + "hashing policy rather than two encoders that happen to agree")
+        void hashesAtTheSameStrengthAsTheDigestService() {
+            plainTransport().run(context -> {
+                final String fromTheBean =
+                        context.getBean(PasswordEncoder.class).encode(throwawayValue());
+                final String fromTheDigestService = new CredentialDigestService().encode(throwawayValue());
+
+                assertThat(costFactorOf(fromTheBean))
+                        .as("two live encoders at two strengths is not a verification failure - a digest "
+                                + "carries its own cost - it is a silent policy split in which the weaker "
+                                + "becomes the module's real strength")
+                        .isEqualTo(costFactorOf(fromTheDigestService));
+                assertThat(costFactorOf(fromTheBean))
+                        .as("and the strength both read is the one the digest service publishes")
+                        .isEqualTo(CredentialDigestService.HASHING_STRENGTH)
+                        .isEqualTo(EXPECTED_HASHING_COST);
+            });
+        }
+
+        @Test
+        @DisplayName("takes its strength from the digest service's published constant, so the expectation "
+                + "in this file and the policy in the module cannot drift apart")
+        void takesItsStrengthFromThePublishedConstant() {
+            assertThat(CredentialDigestService.HASHING_STRENGTH)
+                    .as("raising the strength is a one-line change in the service; this assertion is what "
+                            + "makes a change here deliberate rather than accidental")
+                    .isEqualTo(EXPECTED_HASHING_COST);
+        }
+
+        @Test
         @DisplayName("produces a digest of the declared width, marked with a recognised variant")
         void producesADigestOfTheDeclaredWidth() {
             plainTransport().run(context -> {
@@ -1655,6 +2123,34 @@ class SecurityConfigTest {
                     .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
         }
 
+        @Test
+        @DisplayName("the shipped empty origin list rejects a browser preflight before authentication")
+        void theShippedOriginPolicyRejectsEveryPreflight() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(options(ORDINARY_ROUTE)
+                            .header(HttpHeaders.ORIGIN, "https://client.example")
+                            .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST"))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("an exact configured origin receives its preflight without presenting a bearer token")
+        void anExactConfiguredOriginReceivesItsPreflight() throws Exception {
+            plainTransport()
+                    .withPropertyValues(WebMvcConfig.CORS_ALLOWED_ORIGINS_PROPERTY
+                            + "=https://client.example")
+                    .run(context -> clientFor(context)
+                            .perform(options(ORDINARY_ROUTE)
+                                    .header(HttpHeaders.ORIGIN, "https://client.example")
+                                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST"))
+                            .andExpect(result -> {
+                                assertThat(result.getResponse().getStatus()).isEqualTo(200);
+                                assertThat(result.getResponse().getHeader(
+                                        HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN))
+                                        .isEqualTo("https://client.example");
+                            }));
+        }
+
         @ParameterizedTest(name = "GET {0}")
         @ValueSource(strings = {FRAMEWORK_LOGIN_PATH, FRAMEWORK_LOGIN_PATH + "?error"})
         @DisplayName("publishes no login page at the framework's own address, because there is no browser "
@@ -1761,7 +2257,11 @@ class SecurityConfigTest {
             return new WebApplicationContextRunner()
                     .withConfiguration(AutoConfigurations.of(JacksonAutoConfiguration.class,
                             SecurityAutoConfiguration.class, UserDetailsServiceAutoConfiguration.class))
-                    .withUserConfiguration(FixedClockConfig.class)
+                    // The record reader and its repository are present so that the one participant these
+                    // slices differ by is the class under test, and the one dependency the token provider
+                    // cannot satisfy here is the settings record.
+                    .withUserConfiguration(SignOnStateService.class, FixedClockConfig.class)
+                    .withBean(UserSecurityRepository.class, CREDENTIAL_MASTER::repository)
                     .withPropertyValues(
                             JwtProperties.PREFIX + ".secret=" + SECRET,
                             JwtProperties.PREFIX + ".issuer=" + ISSUER,
@@ -1841,10 +2341,13 @@ class SecurityConfigTest {
      * The types this package does not contain.
      *
      * <p>The request filter is a private nested type of the class under test, which is why no top-level
-     * filter type exists here. Route values belong to the navigation service and user loading to the
-     * authentication service over its repository, which is why no route holder and no user-lookup
-     * implementation exist here either. Each absence is asserted beside the behaviour that would otherwise
-     * need one, so the pair says both that the capability works and that it is not a separate type.</p>
+     * filter type exists here. Route values belong to the navigation service, and reading a sign-on record
+     * belongs to the service layer - the authentication service over its repository for a sign-on, and the
+     * sign-on state service over the same repository for the currency check the filter makes - which is why
+     * no route holder and no user-lookup implementation exist here either. The boundary consults a record;
+     * it does not implement the consulting. Each absence is asserted beside the behaviour that would
+     * otherwise need one, so the pair says both that the capability works and that it is not a separate
+     * type.</p>
      */
     @Nested
     @DisplayName("The types this package does not contain")

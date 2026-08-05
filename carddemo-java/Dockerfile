@@ -29,7 +29,13 @@
 #   only in the sense that they, too, turned source into a deployable artifact.
 #
 # HOW TO USE IT
-#   Build : docker build -t carddemo-java:local .
+#   Build : APP_VERSION="$(./mvnw -q -DforceStdout help:evaluate \
+#             -Dexpression=project.version)" \
+#           SOURCE_REVISION="$(git rev-parse HEAD)" \
+#           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+#           docker build --build-arg APP_VERSION --build-arg SOURCE_REVISION \
+#             --build-arg SOURCE_DATE_EPOCH \
+#             -t carddemo-java:local .
 #   Run   : docker run --rm -p 8080:8080 -e SPRING_PROFILES_ACTIVE=local \
 #             ... (see docker-compose.yml for the full local wiring) \
 #             carddemo-java:local
@@ -50,6 +56,13 @@
 #     distinction between skipping tests and weakening the compiler.
 # =============================================================================
 
+# The image identity has no safe default. A version copied into this file would drift from pom.xml,
+# and a source revision copied here would describe the commit that edited the Dockerfile rather than
+# the commit a later build packages. Callers must supply both; each stage redeclares them explicitly.
+ARG APP_VERSION
+ARG SOURCE_REVISION
+ARG SOURCE_DATE_EPOCH=1658188800
+
 
 # --------------------------------------------------------------- stage 1: build
 # Eclipse Temurin 25 JDK - a JDK, not a JRE, because this stage compiles.
@@ -61,7 +74,36 @@
 # underneath a build that is required to be reproducible.
 FROM eclipse-temurin:25.0.3_9-jdk-noble@sha256:8a7eef57766680298c451d4c6158d6541cc4f4a17a3d216a23940ec1f24885ee AS build
 
+ARG APP_VERSION
+ARG SOURCE_REVISION
+ARG SOURCE_DATE_EPOCH
+
 WORKDIR /workspace
+
+# Refuse missing, malformed or sentinel identity before any dependency resolution. The source
+# revision is the full lowercase object name emitted by `git rev-parse HEAD`; accepting an
+# abbreviation would make two repositories capable of producing the same label. The version grammar
+# intentionally admits Maven's ordinary release and qualifier characters but no whitespace or shell
+# metacharacter.
+RUN set -eu; \
+    case "$APP_VERSION" in \
+      '' | *[!0-9A-Za-z._+-]*) \
+        echo 'FATAL: APP_VERSION must be the exact Maven project version' >&2; exit 1 ;; \
+    esac; \
+    case "$SOURCE_REVISION" in \
+      *[!0-9a-f]*) \
+        echo 'FATAL: SOURCE_REVISION must be a 40-character lowercase Git SHA' >&2; exit 1 ;; \
+    esac; \
+    [ "${#SOURCE_REVISION}" -eq 40 ] \
+      || { echo 'FATAL: SOURCE_REVISION must be a 40-character lowercase Git SHA' >&2; exit 1; }; \
+    [ "$SOURCE_REVISION" != '0000000000000000000000000000000000000000' ] \
+      || { echo 'FATAL: SOURCE_REVISION must not be the all-zero sentinel' >&2; exit 1; }; \
+    case "$SOURCE_DATE_EPOCH" in \
+      '' | *[!0-9]*) \
+        echo 'FATAL: SOURCE_DATE_EPOCH must be a positive integer epoch second' >&2; exit 1 ;; \
+    esac; \
+    [ "$SOURCE_DATE_EPOCH" -gt 0 ] \
+      || { echo 'FATAL: SOURCE_DATE_EPOCH must be a positive integer epoch second' >&2; exit 1; }
 
 # Dependency layer first, sources second. Maven resolution is by far the most
 # expensive step and depends only on pom.xml, so it gets a layer of its own that
@@ -114,7 +156,32 @@ COPY src/ src/
 #   diagnostic, and none may ever be added: if the image build tolerated a
 #   diagnostic that CI rejects, the image would not be the artifact CI
 #   verified.
-RUN ./mvnw -B -ntp clean package -DskipTests
+RUN ./mvnw -B -ntp clean package -DskipTests \
+    -Dbuild.revision="$SOURCE_REVISION" \
+    -Dsource.date.epoch="$SOURCE_DATE_EPOCH"
+
+# The build-information file is the artifact's own statement of identity. Read it back before the
+# image crosses the stage boundary and require both caller-supplied values to agree exactly. This is
+# what prevents a valid-looking OCI label from being attached to a jar of another version or revision.
+RUN set -eu; \
+    info='target/classes/META-INF/build-info.properties'; \
+    [ -f "$info" ] || { echo "FATAL: $info was not generated" >&2; exit 1; }; \
+    [ "$(grep -c '^build.version=' "$info")" -eq 1 ] \
+      || { echo 'FATAL: build-info must carry exactly one build.version' >&2; exit 1; }; \
+    [ "$(grep -c '^build.source-revision=' "$info")" -eq 1 ] \
+      || { echo 'FATAL: build-info must carry exactly one build.source-revision' >&2; exit 1; }; \
+    [ "$(grep -c '^build.time=' "$info")" -eq 1 ] \
+      || { echo 'FATAL: build-info must carry exactly one deterministic build.time' >&2; exit 1; }; \
+    actual_version="$(sed -n 's/^build.version=//p' "$info")"; \
+    actual_revision="$(sed -n 's/^build.source-revision=//p' "$info")"; \
+    actual_time="$(sed -n 's/^build.time=//p' "$info" | tr -d '\\')"; \
+    expected_time="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"; \
+    [ "$actual_version" = "$APP_VERSION" ] \
+      || { echo 'FATAL: APP_VERSION does not match the packaged Maven version' >&2; exit 1; }; \
+    [ "$actual_revision" = "$SOURCE_REVISION" ] \
+      || { echo 'FATAL: SOURCE_REVISION did not reach the packaged build identity' >&2; exit 1; }; \
+    [ "$actual_time" = "$expected_time" ] \
+      || { echo 'FATAL: SOURCE_DATE_EPOCH did not reach the packaged build time' >&2; exit 1; }
 
 # Explode the layered jar so the runtime stage can copy it as four layers whose
 # churn rates differ: third-party dependencies almost never change, application
@@ -154,14 +221,10 @@ RUN set -eu; \
 # by tag and digest for the same reasons as the build stage.
 FROM eclipse-temurin:25.0.3_9-jre-noble@sha256:0b32bb744e7ef5df10b4ca1a6fd24a34cb6298efe435d7abdef1b6a4e48e940f AS runtime
 
-# Metadata only. APP_VERSION mirrors <version> in pom.xml purely so the image
-# does not inherit the base image's own version label (which reports the Ubuntu
-# release and would be actively misleading); it takes part in no path, so a
-# version change cannot break the build. Override with
-# `--build-arg APP_VERSION=...` when tagging a different release. The
-# authoritative artefact version at run time is META-INF/build-info.properties,
-# published by Actuator at /actuator/info.
-ARG APP_VERSION=1.0.0
+# Redeclared because global arguments are available to FROM interpolation but do not otherwise enter
+# a stage. Both values were already validated against the packaged build-information file above.
+ARG APP_VERSION
+ARG SOURCE_REVISION
 
 # image.revision records the source commit this artefact was produced from, and
 # the legacy-estate label records the upstream mainframe release stamp carried
@@ -172,7 +235,7 @@ ARG APP_VERSION=1.0.0
 LABEL org.opencontainers.image.title="carddemo-java" \
       org.opencontainers.image.description="AWS CardDemo mainframe estate migrated to Java 25 LTS and Spring Boot 3.5.16" \
       org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.revision="7756d895ffeb65f7ea72aaa609e356d9899afcec" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.vendor="Amazon.com, Inc. or its affiliates" \
       org.opencontainers.image.source="https://github.com/Blitzy-Sandbox/blitzy-card-demo" \
@@ -188,7 +251,8 @@ LABEL org.opencontainers.image.title="carddemo-java" \
 RUN groupadd --system --gid 10001 carddemo \
  && useradd  --system --uid 10001 --gid 10001 \
              --create-home --home-dir /home/carddemo \
-             --shell /usr/sbin/nologin carddemo
+             --shell /usr/sbin/nologin carddemo \
+ && install --directory --owner=10001 --group=10001 --mode=0750 /var/lib/carddemo/batch
 
 WORKDIR /app
 
@@ -204,8 +268,9 @@ WORKDIR /app
 #
 # Left owned by root and readable-but-not-writable by the runtime account, which
 # is deliberate: the application logs only to stdout (there is no file appender
-# anywhere in logback-spring.xml) and writes nothing under /app, so a process
-# that cannot modify its own bytecode loses no capability it actually uses.
+# anywhere in logback-spring.xml) and writes batch staging only under the separately owned and mounted
+# /var/lib/carddemo/batch path, so a process that cannot modify its own bytecode loses no capability it
+# actually uses.
 COPY --from=build /workspace/extracted/dependencies/ ./
 COPY --from=build /workspace/extracted/spring-boot-loader/ ./
 COPY --from=build /workspace/extracted/snapshot-dependencies/ ./
@@ -245,9 +310,10 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=90s --retries=3 \
 # Exec form, so the JVM is PID 1 and receives SIGTERM directly. Wrapping this in
 # `sh -c` would put a shell at PID 1 that does not forward signals, and the
 # application's graceful shutdown - configured to drain in-flight work for up to
-# 30 s - would never be triggered; the container would be killed instead. An
-# orchestrator should therefore allow at least that long before SIGKILL (Docker
-# defaults to 10 s; set stop_grace_period accordingly).
+# 30 s - would never be triggered; the container would be killed instead. The
+# shipped Compose stack grants 35 s before SIGKILL, leaving a five-second margin
+# over the application phase timeout. Other orchestrators must preserve the same
+# greater-than relationship rather than inheriting Docker's ten-second default.
 #
 # The class named is the launcher of the exploded layered application; the
 # working directory above is its classpath. Only the two determinism flags are

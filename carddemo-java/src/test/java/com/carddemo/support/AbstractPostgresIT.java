@@ -113,16 +113,15 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * integration test previously repeated. Flyway is idempotent, but running it once rather than once
  * per class also removes a source of ordering surprise.
  *
- * <h2>Why the migration resolves both locations, and not the schema location alone</h2>
- * The four delivered migrations sit in two sibling locations: {@code db/migration/schema} holds
- * {@code V1} and {@code V2}, which create the schema and the indexes, and {@code db/migration/seed}
- * holds {@code V3} and {@code V4}, which seed sample reference rows and ten sign-on identities. A
- * directory is what separates them - production resolves the schema location alone, with
- * {@code FlywayConfig} refusing it the seed location outright, and additionally sets
- * {@code spring.flyway.target: 2}. <strong>This base reproduces the
+ * <h2>Why the migration runs to the head and is not pinned</h2>
+ * All four delivered migrations sit FLAT in one location, {@code db/migration}: {@code V1} and
+ * {@code V2} create the schema and the indexes, and {@code V3} and {@code V4} seed sample reference
+ * rows and ten sign-on identities. No directory separates them, so a location list cannot either -
+ * the VERSION is what separates them, and production sets {@code spring.flyway.target: 2} so the two
+ * scripts numbered above it are never applied. <strong>This base reproduces the
  * TEST profile rather than the production one</strong>, because that is the posture the module actually
- * ships for tests: {@code src/test/resources/application-test.yml} declares both locations and lifts
- * the ceiling to the head, and
+ * ships for tests: {@code src/test/resources/application-test.yml} declares that same one location and
+ * lifts the ceiling to the head, and
  * the container-backed tier asserts against the seeded rows themselves - the fifty seeded customers and
  * their protected identifiers, the fifty seeded accounts, and the seventeen rows of each disclosure
  * group are read directly from this server by several subclasses. Pinning the shared server to the
@@ -130,9 +129,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * unrelated to what they test.
  *
  * <p>The production-shaped posture is nonetheless proven, and proven better than a pin here could prove
- * it: {@code SeedMigrationIT} migrates into a schema of its own, once with a production-shaped
- * location list and once with the seeding one, and asserts what each run applied and what it left
- * unresolved. That keeps the claim about
+ * it: {@code SeedMigrationIT} migrates into a schema of its own, twice from this same location - once
+ * under the production ceiling and once under the head - and asserts what each run applied and what it
+ * left unapplied. That keeps the claim about
  * production in a test that is about production, and keeps this shared server predictable for every
  * subclass. A subclass that must observe an empty table therefore reserves a key range of its own and
  * asserts emptiness within that range - which is what every subclass here already does - rather than
@@ -202,24 +201,14 @@ public abstract class AbstractPostgresIT {
     protected static final String DATABASE_PASSWORD = "carddemo";
 
     /**
-     * The schema location every shipped profile declares, holding {@code V1} and {@code V2}.
+     * The one location every shipped profile declares, holding all four delivered migrations flat.
      *
      * <p>This base exists to reproduce a shipped profile rather than to invent a third arrangement, so
-     * it declares exactly what the test profile declares: this location and {@link #SEED_LOCATION}. A
-     * production-shaped run declares this one alone.</p>
+     * it declares exactly what the test profile declares: this location, and no other. A
+     * production-shaped run declares the same one and differs only in its version ceiling, which is
+     * why {@code SeedMigrationIT} proves that posture by changing the ceiling rather than the list.</p>
      */
-    protected static final String MIGRATION_LOCATION = "classpath:db/migration/schema";
-
-    /**
-     * The seed location the local and test profiles add, holding {@code V3} and {@code V4}, and which
-     * a production profile is refused. Declared beside {@link #MIGRATION_LOCATION} here because the
-     * container-backed tier asserts against the seeded rows.
-     *
-     * <p>The shared parent {@code classpath:db/migration} is deliberately not used in its place: a
-     * Flyway location is scanned recursively, so naming the parent alongside either child would resolve
-     * every script twice and the migration tool would reject the repeated version.</p>
-     */
-    protected static final String SEED_LOCATION = "classpath:db/migration/seed";
+    protected static final String MIGRATION_LOCATION = "classpath:db/migration";
 
     /**
      * The highest migration version that belongs to the schema rather than to the seeds.
@@ -335,7 +324,7 @@ public abstract class AbstractPostgresIT {
         container.start();
         Flyway.configure()
                 .dataSource(container.getJdbcUrl(), container.getUsername(), container.getPassword())
-                .locations(MIGRATION_LOCATION, SEED_LOCATION)
+                .locations(MIGRATION_LOCATION)
                 .load()
                 .migrate();
         return container;
@@ -468,12 +457,12 @@ public abstract class AbstractPostgresIT {
     /**
      * Reads back the application tables that actually exist on the shared server, in name order.
      *
-     * <p>Two families of table are excluded, and excluding them is the whole point of this method.
+     * <p>Three families of table are excluded, and excluding them is the whole point of this method.
      * Spring Batch provisions its own job-repository tables from its bundled script because every
-     * shipped profile asks it to, and the migration tool keeps a history table of its own. Both are
-     * real, both are expected, and neither is an application table - so a count that included them
-     * would never equal the eleven that {@link #APPLICATION_TABLES} lists, and every assertion built on
-     * it would fail for a reason that has nothing to do with the schema.</p>
+     * shipped profile asks it to, the migration tool keeps a history table of its own, and the queue
+     * bridge keeps an operational outbox table that maps no legacy record layout. All are real and
+     * expected, and none belongs to the eleven-table business inventory - so a count that included
+     * them would fail for a reason that has nothing to do with the record schema.</p>
      *
      * <p>The exclusion is written against lower-case names because the server folds unquoted
      * identifiers, so the job-repository tables land lower-cased however they were declared.</p>
@@ -490,6 +479,7 @@ public abstract class AbstractPostgresIT {
                  WHERE table_schema = 'public'
                    AND table_name NOT LIKE 'batch\\_%'
                    AND table_name <> 'flyway_schema_history'
+                   AND table_name <> 'job_submission_outbox'
                  ORDER BY table_name
                 """);
     }
@@ -567,7 +557,7 @@ public abstract class AbstractPostgresIT {
         forgetSeedMigrationHistory();
         Flyway.configure()
                 .dataSource(jdbcUrl(), databaseUser(), databasePassword())
-                .locations(MIGRATION_LOCATION, SEED_LOCATION)
+                .locations(MIGRATION_LOCATION)
                 .load()
                 .migrate();
     }

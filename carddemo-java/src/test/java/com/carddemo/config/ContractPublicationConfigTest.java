@@ -16,8 +16,11 @@
  */
 package com.carddemo.config;
 
+import com.carddemo.api.PublishedContractTypeRoster;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -77,6 +80,9 @@ final class ContractPublicationConfigTest {
 
     /** The artifact coordinate the generated identity must carry. */
     private static final String ORACLE_BUILD_ARTIFACT = "carddemo-java";
+
+    /** The deterministic fallback build epoch, derived from the upstream estate release date. */
+    private static final String ORACLE_BUILD_EPOCH = "1658188800";
 
     /** The scheme name every secured operation references. */
     private static final String ORACLE_BEARER_SCHEME_NAME = "bearerAuth";
@@ -146,7 +152,8 @@ final class ContractPublicationConfigTest {
      * @return the published document
      */
     private static OpenAPI documentFor(final BuildProperties buildProperties) {
-        return new OpenApiConfig(new StubBuildPropertiesProvider(buildProperties)).cardDemoOpenApi();
+        return new OpenApiConfig(new StubBuildPropertiesProvider(buildProperties),
+                new PublishedContractTypeRoster()).cardDemoOpenApi();
     }
 
     @Nested
@@ -245,9 +252,23 @@ final class ContractPublicationConfigTest {
         }
 
         @Test
+        @DisplayName("the metadata names the delivered inventory and carries shared response components")
+        void theMetadataNamesTheDeliveredInventoryAndSharedResponses() {
+            final OpenAPI document = documentFor(null);
+
+            assertThat(document.getInfo().getDescription())
+                    .contains("19 operations")
+                    .doesNotContain("no request-mapped operation has been delivered yet");
+            assertThat(document.getComponents().getHeaders())
+                    .containsKey(OpenApiConfig.AUTHORIZATION_HEADER_COMPONENT);
+            assertThat(document.getComponents().getResponses()).hasSize(6);
+        }
+
+        @Test
         @DisplayName("each call yields an independent document, so a mutating consumer cannot leak")
         void eachCallYieldsAnIndependentDocument() {
-            final OpenApiConfig config = new OpenApiConfig(new StubBuildPropertiesProvider(null));
+            final OpenApiConfig config = new OpenApiConfig(new StubBuildPropertiesProvider(null),
+                    new PublishedContractTypeRoster());
 
             final OpenAPI first = config.cardDemoOpenApi();
             final OpenAPI second = config.cardDemoOpenApi();
@@ -288,10 +309,15 @@ final class ContractPublicationConfigTest {
             assertThat(generated.getProperty("build.group")).isEqualTo(ORACLE_BUILD_GROUP);
             assertThat(generated.getProperty("build.artifact")).isEqualTo(ORACLE_BUILD_ARTIFACT);
             assertThat(generated.getProperty("build.version")).isEqualTo(ORACLE_MODULE_VERSION);
+            assertThat(generated.getProperty("build.source-revision"))
+                    .as("the generated identity must carry the explicit build input, or the "
+                            + "non-claim used by a plain Maven build")
+                    .isEqualTo(System.getProperty("build.revision", "not-supplied"));
             assertThat(generated.getProperty("build.time"))
-                    .as("a build identity without a build time cannot distinguish two builds of one "
-                            + "version")
-                    .isNotBlank();
+                    .as("the build time must derive from the reproducible source epoch, never the "
+                            + "wall clock")
+                    .isEqualTo(Instant.ofEpochSecond(Long.parseLong(
+                            System.getProperty("source.date.epoch", ORACLE_BUILD_EPOCH))).toString());
         }
 
         @Test
@@ -300,13 +326,14 @@ final class ContractPublicationConfigTest {
             // The information endpoint's environment contributor stays disabled in configuration so
             // that a property whose name begins with the exposed prefix can never be published. The
             // generated file must not reintroduce by another route what that setting excludes, so the
-            // payload is asserted to be exactly the four coordinate and timing keys and nothing else.
+            // payload is asserted to be exactly the coordinate, timing and explicit source-revision
+            // keys and nothing else.
             final Properties generated = loadGeneratedBuildInformation();
 
             assertThat(generated.stringPropertyNames())
                     .containsExactlyInAnyOrder(
                             "build.group", "build.artifact", "build.name", "build.version",
-                            "build.time");
+                            "build.time", "build.source-revision");
         }
 
         @Test

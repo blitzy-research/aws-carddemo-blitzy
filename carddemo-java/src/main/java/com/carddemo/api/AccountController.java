@@ -21,6 +21,7 @@ import com.carddemo.api.dto.AccountUpdateResponse;
 import com.carddemo.api.dto.AccountViewResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.ScreenWorkArea;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.AccountUpdateService;
 import com.carddemo.service.AccountViewService;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -30,11 +31,14 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
+import java.util.Collection;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -60,12 +64,21 @@ import org.springframework.web.bind.annotation.RestController;
  * has no source member anywhere in the estate, gets no route, because a route that answers nothing is
  * worse than no route at all.
  *
- * <p><strong>Why both routes carry no authorization rule of their own.</strong> The resource definition
- * makes both account transactions reachable by any signed-on operator, so neither is administrative.
- * Both paths therefore sit under {@code /api} and deliberately <em>outside</em>
- * {@code com.carddemo.config.SecurityConfig#ADMIN_PATH_PREFIX}, which leaves them to the filter chain's
- * closing {@code anyRequest().authenticated()} rule. That is the safe direction for the mistake to fail
- * in: a route that is mis-prefixed becomes administrator-only or unroutable, never anonymous.
+ * <p><strong>Why both routes share one operator gate.</strong> The resource definition makes both account
+ * transactions reachable by either declared CardDemo user type, so neither is administrator-only. Both
+ * paths sit under one controller-owned prefix which the filter chain names as an online-data operator
+ * surface. That preserves both legacy user types and refuses an unrelated authenticated principal without
+ * inventing the account ownership relation the user-security record lacks.
+ *
+ * <p><strong>Route-level authentication is not the whole of the access control, and this class carries
+ * the rest of it.</strong> The account identifier is a request field rather than a property of the
+ * caller, so a signed-on caller may name any account - which is what the estate allowed and what the
+ * route must keep allowing. What it may then <em>see</em> is a separate question, because four of the
+ * customer values on both screens are regulated. Both turns therefore pass their regulated components
+ * through {@link AccountProtectedDataAdapter}: an administrator reveals, and every other caller receives
+ * masks at the widths the revealed values occupy. The view turn has always done so; the update turn now
+ * does too, through {@code gatedForUpdate}, and the two use the same gate so they cannot come to disagree
+ * about what a masked screen looks like.
  *
  * <p><strong>Why the turn is submitted rather than fetched, even for the view.</strong> Both turns need
  * the communication area the client echoed back - the record that carries the enter-or-re-enter flag on
@@ -104,11 +117,12 @@ public class AccountController {
     /**
      * Common prefix of both account routes.
      *
-     * <p>Under {@code /api} so the filter chain's closing rule authenticates it, and pointedly not under
-     * the administrative prefix, because the resource definition makes both account transactions
-     * reachable by any signed-on operator. It is also not {@code /actuator} and not the published
-     * API-document prefix, so this class shadows neither the management surface nor the contract
-     * document.
+     * <p>Under {@code /api} and named directly by the filter chain's online-data operator rule. The
+     * resource definitions make both declared CardDemo user types trusted operators of these screens but
+     * declare no account ownership relation, so the rule admits those two authorities and refuses an
+     * unrelated authenticated principal rather than inventing an owner. It is also not {@code /actuator}
+     * and not the published API-document prefix, so this class shadows neither the management surface nor
+     * the contract document.
      */
     public static final String ACCOUNTS_PATH = "/api/accounts";
 
@@ -173,6 +187,15 @@ public class AccountController {
     /** Value of {@link #TAG_OUTCOME} for a turn that raised one. */
     private static final String OUTCOME_REJECTED = "rejected";
 
+    /** Value of {@link #TAG_OUTCOME} for a view turn that returned a screen. */
+    private static final String OUTCOME_COMPLETED = "completed";
+
+    /** Value of {@link #TAG_OUTCOME} for a turn that raised before returning a screen. */
+    private static final String OUTCOME_FAILED = "failed";
+
+    /** Presentation tag used when no view outcome was available. */
+    private static final String PRESENTATION_UNRESOLVED = "UNRESOLVED";
+
     /**
      * Width at which the view contract publishes the postal code.
      *
@@ -212,6 +235,15 @@ public class AccountController {
     private static final AccountProtectedDataAdapter.AccountViewProtectedValues NO_PROTECTED_VALUES =
             new AccountProtectedDataAdapter.AccountViewProtectedValues(null, null, null, null);
 
+    /**
+     * Prefix the filter chain puts in front of a user type when it grants the authority.
+     *
+     * <p>Resolving a user type out of the granted authority is the inverse of that single mapping, and
+     * the prefix is named once here rather than spelled into the resolution, exactly as the menu surface
+     * names it.
+     */
+    private static final String ROLE_AUTHORITY_PREFIX = "ROLE_";
+
     /** The account-view transaction. */
     private final AccountViewService accountViewService;
 
@@ -229,6 +261,27 @@ public class AccountController {
      */
     private final AccountProtectedDataAdapter accountProtectedDataAdapter;
 
+    /**
+     * The only permitted converter between the wire screen carriers and the service-owned ones.
+     *
+     * <p>The account-view transaction takes the work area and the echoed navigation state in the forms
+     * the service layer owns, and returns the navigation state in the same form, because nothing may
+     * depend upward on {@code api.dto}. This collaborator is where each of those crossings happens, and
+     * it converts positionally: no value is trimmed, padded, defaulted or reconciled on the way through.
+     */
+    private final ScreenStateAdapter screenStateAdapter;
+
+    /**
+     * The only permitted converter between the account-update wire contract and the service-owned pair.
+     *
+     * <p>The update transaction takes the transmitted screen, and returns the settled turn, in the forms the
+     * service layer owns, because nothing may depend upward on {@code api.dto}. This collaborator is where
+     * both crossings happen, and it converts positionally over forty-six components inbound and fifty-seven
+     * outbound: no operator-typed value is trimmed, padded, defaulted, parsed or re-scaled on the way
+     * through, and no monetary component is rounded.
+     */
+    private final AccountUpdateContractAdapter accountUpdateContractAdapter;
+
     /** Registry the two turn timers are registered against. */
     private final MeterRegistry meterRegistry;
 
@@ -238,12 +291,17 @@ public class AccountController {
      * @param accountViewService the account-view transaction
      * @param accountUpdateService the account-update transaction
      * @param accountProtectedDataAdapter the gate over the four regulated values
+     * @param screenStateAdapter the converter between the wire screen carriers and the service-owned ones
+     * @param accountUpdateContractAdapter the converter between the update wire contract and the
+     *     service-owned command and outcome
      * @param meterRegistry the metrics registry
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public AccountController(final AccountViewService accountViewService,
                             final AccountUpdateService accountUpdateService,
                             final AccountProtectedDataAdapter accountProtectedDataAdapter,
+                            final ScreenStateAdapter screenStateAdapter,
+                            final AccountUpdateContractAdapter accountUpdateContractAdapter,
                             final MeterRegistry meterRegistry) {
         this.accountViewService =
                 Objects.requireNonNull(accountViewService, "accountViewService must not be null");
@@ -251,6 +309,10 @@ public class AccountController {
                 Objects.requireNonNull(accountUpdateService, "accountUpdateService must not be null");
         this.accountProtectedDataAdapter = Objects.requireNonNull(accountProtectedDataAdapter,
                 "accountProtectedDataAdapter must not be null");
+        this.screenStateAdapter =
+                Objects.requireNonNull(screenStateAdapter, "screenStateAdapter must not be null");
+        this.accountUpdateContractAdapter = Objects.requireNonNull(accountUpdateContractAdapter,
+                "accountUpdateContractAdapter must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -291,7 +353,9 @@ public class AccountController {
         @ApiResponse(responseCode = "400",
                 description = "The echoed communication area exceeded the widths it declares."),
         @ApiResponse(responseCode = "401",
-                description = "No session was presented, or the one presented did not verify.")})
+                description = "No session was presented, or the one presented did not verify."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<AccountViewResponse> viewAccount(
             @RequestParam(name = ACCOUNT_ID_PARAM, required = false)
             @Parameter(description = "Account-identifier search field of the view screen, eleven "
@@ -304,25 +368,32 @@ public class AccountController {
             @Valid @RequestBody(required = false) final NavigationContext navigationContext) {
 
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String presentation = PRESENTATION_UNRESOLVED;
+        String outcome = OUTCOME_FAILED;
+        try {
+            // The work area is assembled rather than accepted as a body: this screen's only input field is
+            // the account identifier, and the transaction reads no other member of it.
+            final ScreenWorkArea screenInput = new ScreenWorkArea(
+                    null, null, null, null, null, null, accountId, null, null);
 
-        // The work area is assembled rather than accepted as a body: this screen's only input field is
-        // the account identifier, and the transaction reads no other member of it. The remaining
-        // members are left absent, which is the state the legacy initialising statement leaves them in.
-        final ScreenWorkArea screenInput = new ScreenWorkArea(
-                null, null, null, null, null, null, accountId, null, null);
+            final AccountViewService.AccountViewResult result = this.accountViewService.viewAccount(
+                    attentionKey,
+                    this.screenStateAdapter.toInputState(screenInput),
+                    this.screenStateAdapter.toNavigationState(navigationContext));
+            final AccountViewResponse body = toViewResponse(result);
 
-        final AccountViewService.AccountViewResult result =
-                this.accountViewService.viewAccount(attentionKey, screenInput, navigationContext);
-        final AccountViewResponse body = toViewResponse(result);
-
-        sample.stop(Timer.builder(METRIC_VIEW_TURN)
-                .description("Elapsed time of one CardDemo account view turn, transaction CAVW")
-                .tag(TAG_PRESENTATION, result.presentation().name())
-                .register(this.meterRegistry));
-
-        LOG.debug("Account view turn completed: presentation={} route={} inputError={}",
-                result.presentation(), result.route(), result.errorFlag());
-        return ResponseEntity.ok(body);
+            presentation = result.presentation().name();
+            outcome = OUTCOME_COMPLETED;
+            LOG.debug("Account view turn completed: presentation={} route={} inputError={}",
+                    result.presentation(), result.route(), result.errorFlag());
+            return ResponseEntity.ok(body);
+        } finally {
+            sample.stop(Timer.builder(METRIC_VIEW_TURN)
+                    .description("Elapsed time of one CardDemo account view turn, transaction CAVW")
+                    .tag(TAG_PRESENTATION, presentation)
+                    .tag(TAG_OUTCOME, outcome)
+                    .register(this.meterRegistry));
+        }
     }
 
     /**
@@ -354,7 +425,11 @@ public class AccountController {
                     + "legacy screen could compose - a fetch, a rejected edit, a confirmation prompt, a "
                     + "committed change, a detected conflict or an exit - because each of those is a "
                     + "screen the transaction completed. Rejected fields are reported per field as "
-                    + "MISSING or INVALID, and only on a re-submitted turn.")
+                    + "MISSING or INVALID, and only on a re-submitted turn. The three national-identifier "
+                    + "positions, the three date-of-birth positions, the government-issued identifier and "
+                    + "the electronic-funds account identifier are masked at the widths their revealed "
+                    + "forms occupy unless the caller carries the administrative authority; a caller that "
+                    + "receives masks cannot change those fields.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed. Carries the screen values, the informational and "
@@ -365,6 +440,8 @@ public class AccountController {
                 description = "A field exceeded the width the update map declares."),
         @ApiResponse(responseCode = "401",
                 description = "No session was presented, or the one presented did not verify."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator."),
         @ApiResponse(responseCode = "409",
                 description = "The fetched record was changed by another actor before this turn could "
                         + "save it.")})
@@ -373,20 +450,134 @@ public class AccountController {
             @RequestParam(name = ATTENTION_KEY_PARAM, required = false)
             @Parameter(description = "Terminal attention identifier as transmitted, for example "
                     + "DFHPF05 to save. Optional; absent uses the typed action the body carries.")
-            final String attentionKey) {
+            final String attentionKey,
+            final Authentication authentication) {
 
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        try {
+            final AccountUpdateResponse composed = this.accountUpdateContractAdapter.toResponse(
+                    this.accountUpdateService.handle(
+                            this.accountUpdateContractAdapter.toCommand(request), attentionKey));
+            final AccountUpdateResponse body = gatedForUpdate(composed, authentication);
 
-        final AccountUpdateResponse body = this.accountUpdateService.handle(request, attentionKey);
+            outcome = body.error() ? OUTCOME_REJECTED : OUTCOME_ACCEPTED;
+            LOG.debug("Account update turn completed: route={} inputError={} fieldErrorCount={}",
+                    body.nextRoute(), body.error(), body.fieldErrors().size());
+            return ResponseEntity.ok(body);
+        } finally {
+            sample.stop(Timer.builder(METRIC_UPDATE_TURN)
+                    .description("Elapsed time of one CardDemo account update turn, transaction CAUP")
+                    .tag(TAG_OUTCOME, outcome)
+                    .register(this.meterRegistry));
+        }
+    }
 
-        sample.stop(Timer.builder(METRIC_UPDATE_TURN)
-                .description("Elapsed time of one CardDemo account update turn, transaction CAUP")
-                .tag(TAG_OUTCOME, body.error() ? OUTCOME_REJECTED : OUTCOME_ACCEPTED)
-                .register(this.meterRegistry));
+    /**
+     * Applies the regulated-data gate to the screen the update transaction composed.
+     *
+     * <p><strong>What this closes.</strong> The update transaction resolves an account by the identifier
+     * the request names, fetches the customer joined to it, and composes a screen carrying that
+     * customer's national identifier, date of birth, government-issued identifier and electronic-funds
+     * account identifier. The route is reachable by any signed-on caller, exactly as the resource
+     * definition makes it, and the identifier is a request field rather than a property of the caller -
+     * so before this gate existed, any signed-on caller could name any account and read four regulated
+     * values in the clear. The view turn had been gated since it was written; the update turn had not,
+     * and that asymmetry was the defect.
+     *
+     * <p><strong>Why the gate is applied here rather than in the transaction.</strong> The transaction
+     * needs the cleartext: it compares every typed field against the stored value to decide whether a
+     * change occurred, and two of those fields are the protected identifiers. It also may not name the
+     * gate, because a service does not depend on this package. So the transaction keeps composing the
+     * screen it always composed, and the boundary that knows who is asking replaces the eight regulated
+     * components before the screen is published.
+     *
+     * <p><strong>What authority is asserted, and what is deliberately not.</strong> An administrator
+     * reveals. Every other caller receives masks at the same widths the revealed values occupy, so no
+     * client has to lay the screen out differently. Ownership is <em>not</em> asserted: the sign-on
+     * record carries no account linkage and no program in the estate checks one, so this boundary has no
+     * honest way to establish that a caller owns the account it named - and asking for a mask is the
+     * truthful request when that is the case. The echoed communication area is never consulted for this,
+     * because it is a client-supplied value and an authorization decided by request content is not an
+     * authorization.
+     *
+     * <p><strong>The consequence is stated rather than hidden.</strong> A caller that receives masks
+     * cannot submit the masked values back as changes - the transaction's own edits refuse a
+     * non-numeric identifier exactly as they refuse any other malformed one - so changing a regulated
+     * field requires the authority to see it. That is a deliberate divergence from the estate, which
+     * showed the full identifier to any signed-on operator, and it is recorded in
+     * {@code docs/decision-log.md} on the same footing as the credential-hashing exception.
+     *
+     * @param composed the screen the transaction composed, never {@code null}
+     * @param authentication the established identity, which may be {@code null} on a route the chain
+     *                       does not authenticate
+     * @return the screen with its eight regulated components revealed or masked
+     */
+    private AccountUpdateResponse gatedForUpdate(final AccountUpdateResponse composed,
+                                                 final Authentication authentication) {
+        final UserType signedOnType = signedOnUserType(authentication);
+        final AccountProtectedDataAdapter.RevealAuthorization authority =
+                signedOnType == UserType.ADMIN
+                        ? AccountProtectedDataAdapter.RevealAuthorization.administrator(
+                                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_UPDATE)
+                        : AccountProtectedDataAdapter.RevealAuthorization.unprivileged(
+                                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_UPDATE, signedOnType);
 
-        LOG.debug("Account update turn completed: route={} inputError={} fieldErrorCount={}",
-                body.nextRoute(), body.error(), body.fieldErrors().size());
-        return ResponseEntity.ok(body);
+        final AccountProtectedDataAdapter.AccountUpdateProtectedValues gated =
+                this.accountProtectedDataAdapter.gateForUpdate(
+                        new AccountProtectedDataAdapter.AccountUpdateProtectedValues(
+                                composed.ssnPart1(),
+                                composed.ssnPart2(),
+                                composed.ssnPart3(),
+                                composed.dateOfBirthYear(),
+                                composed.dateOfBirthMonth(),
+                                composed.dateOfBirthDay(),
+                                composed.governmentIssuedId(),
+                                composed.eftAccountId()),
+                        authority);
+
+        return composed.withRegulatedValues(
+                gated.ssnPart1(),
+                gated.ssnPart2(),
+                gated.ssnPart3(),
+                gated.dateOfBirthYear(),
+                gated.dateOfBirthMonth(),
+                gated.dateOfBirthDay(),
+                gated.governmentIssuedId(),
+                gated.eftAccountId());
+    }
+
+    /**
+     * Reads the user type of the established identity out of the authority the chain granted it.
+     *
+     * <p>This is a read of an identity that has already been established, not a check of one: the chain
+     * has already refused every caller with no business reaching the handler, and nothing here admits or
+     * refuses anybody. The value decides only whether the regulated components are revealed or masked.
+     *
+     * <p>Resolution is the inverse of the single mapping the chain applies when it grants the authority:
+     * the framework's role prefix followed by the name of the user type. An identity carrying neither
+     * declared authority yields {@code null}, which the gate treats as no authority to reveal rather than
+     * as a type it must guess.
+     *
+     * @param authentication the established identity, which may be {@code null}
+     * @return the user type the granted authority names, or {@code null} when none does
+     */
+    private static UserType signedOnUserType(final Authentication authentication) {
+        if (authentication == null) {
+            return null;
+        }
+        final Collection<? extends GrantedAuthority> granted = authentication.getAuthorities();
+        if (granted == null) {
+            return null;
+        }
+        for (final GrantedAuthority authority : granted) {
+            for (final UserType candidate : UserType.values()) {
+                if ((ROLE_AUTHORITY_PREFIX + candidate.name()).equals(authority.getAuthority())) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -495,7 +686,7 @@ public class AccountController {
                 result.errorFlag(),
                 result.focusScreenFieldId(),
                 result.route(),
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**

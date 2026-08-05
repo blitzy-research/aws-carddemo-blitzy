@@ -16,6 +16,8 @@
  */
 package com.carddemo.service;
 
+import com.carddemo.config.MenuOptionCatalog;
+
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -30,6 +32,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 
+import com.carddemo.config.MenuOptionCatalog;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.AbendException;

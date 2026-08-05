@@ -96,15 +96,12 @@ import org.springframework.web.bind.annotation.RestController;
  * idempotency key, no request fingerprint, no replay cache and no retry, because inventing any of them
  * would change the observable contract.
  *
- * <p><strong>Authorization.</strong> The route is reachable by any caller that has established an
- * identity, whatever user type that identity carries, and is reachable by no caller that has not.
- * That is the entitlement the legacy grants: the sign-on program's alternative branch is
- * unconditional, so every user type reaches the main menu and every option on it. No rule is declared
- * for this path in the security chain and none should be, because the chain closes by requiring an
- * identity of every request it has not already named - which is what makes a newly published endpoint
- * protected before it is written rather than after somebody remembers it. The one prefix the chain
- * gates on an administrative authority is deliberately not the prefix below, so this surface is
- * neither public nor administrator-only.
+ * <p><strong>Authorization.</strong> The route is an online-data operator surface. Both user types the
+ * estate declares retain access, because the sign-on program sends them into one of the two operator
+ * menus, while an unrelated authenticated principal does not acquire account-wide payment authority
+ * merely by carrying a credential. The user-security record declares no account ownership relation, so
+ * none is inferred from the caller-supplied account identifier. The route is neither public nor
+ * administrator-only; it is protected by the closed operator-authority set in the security chain.
  *
  * <p><strong>Instrumentation.</strong> One timer per turn, tagged with two bounded values read
  * straight off the returned outcome, following the naming the rest of the module uses. No latency,
@@ -144,9 +141,10 @@ public class BillPaymentController {
      * <p>The final segment is the same text the navigation vocabulary publishes as this screen's route
      * value, so the destination a response nominates and the address a client calls to reach it read
      * identically. It sits under the shared interface prefix and deliberately not under the
-     * administrative prefix the security chain gates on an administrative authority, which is what
-     * makes the surface reachable by any signed-on caller. It also shadows neither the management
-     * endpoints nor the published contract document, both of which live outside this prefix.
+     * administrative prefix the security chain gates on an administrative authority. Instead, the
+     * security chain reads this constant for its online-data operator rule, so mapping and entitlement
+     * cannot drift. It also shadows neither the management endpoints nor the published contract document,
+     * both of which live outside this prefix.
      */
     public static final String BILL_PAYMENT_PATH = "/api/bill-payment";
 
@@ -180,6 +178,15 @@ public class BillPaymentController {
      */
     private static final String TAG_PAYMENT_ACCEPTED = "paymentAccepted";
 
+    /** Tag separating a completed boundary call from one that raised. */
+    private static final String TAG_OUTCOME = "outcome";
+
+    private static final String OUTCOME_COMPLETED = "completed";
+
+    private static final String OUTCOME_FAILED = "failed";
+
+    private static final String CONFIRMATION_UNRESOLVED = "UNRESOLVED";
+
     /**
      * The bill-payment transaction, and the only collaborator that holds a rule.
      *
@@ -201,21 +208,37 @@ public class BillPaymentController {
     private final MeterRegistry meterRegistry;
 
     /**
+     * The only permitted converter between the wire navigation record and the service-owned state.
+     *
+     * <p>The transaction takes the echoed state, and returns it, in the form the service layer owns,
+     * because nothing may depend upward on {@code api.dto}. This collaborator is where both crossings
+     * happen, and it converts positionally: none of the sixteen fixed-width, blank-significant members
+     * is trimmed, padded, defaulted or reconciled on the way through, so what the client echoed is what
+     * the transaction receives and what the transaction produced is what the response carries.
+     */
+    private final ScreenStateAdapter screenStateAdapter;
+
+    /**
      * Creates the controller over its collaborators.
      *
-     * <p>Both arguments are required. Rejecting an absent collaborator at construction rather than at
-     * the first request means a misconfigured context fails while it is starting, where the failure
+     * <p>All three arguments are required. Rejecting an absent collaborator at construction rather than
+     * at the first request means a misconfigured context fails while it is starting, where the failure
      * names the missing bean, instead of failing later inside a payment.
      *
      * @param billPaymentService the bill-payment transaction; must not be {@code null}
+     * @param screenStateAdapter the converter between the wire navigation record and the service-owned
+     *     state; must not be {@code null}
      * @param meterRegistry the metrics registry the turn timer is registered against; must not be
      *     {@code null}
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if any argument is {@code null}
      */
     public BillPaymentController(final BillPaymentService billPaymentService,
+                                 final ScreenStateAdapter screenStateAdapter,
                                  final MeterRegistry meterRegistry) {
         this.billPaymentService = Objects.requireNonNull(billPaymentService,
                 "billPaymentService must not be null");
+        this.screenStateAdapter = Objects.requireNonNull(screenStateAdapter,
+                "screenStateAdapter must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -269,28 +292,38 @@ public class BillPaymentController {
                 description = "The request exceeded the widths the bill-payment map declares."),
         @ApiResponse(responseCode = "401",
                 description = "The request carried no established identity."),
+        @ApiResponse(responseCode = "403",
+                description = "The authenticated principal is not an approved online-data operator."),
         @ApiResponse(responseCode = "409",
                 description = "Another writer changed the account between this turn's read and its "
                         + "write, so nothing was settled and the turn may be retried.")})
     public ResponseEntity<BillPaymentResponse> payBill(
             @Valid @RequestBody final BillPaymentRequest request) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
+        String outcome = OUTCOME_FAILED;
+        String confirmation = CONFIRMATION_UNRESOLVED;
+        String paymentAccepted = Boolean.FALSE.toString();
+        try {
+            final BillPaymentService.BillPaymentResult result =
+                    this.billPaymentService.processBillPayment(
+                            new BillPaymentService.BillPaymentScreenInput(
+                                    request.accountId(),
+                                    request.confirm(),
+                                    request.keyAction(),
+                                    this.screenStateAdapter.toNavigationState(
+                                            request.navigationContext())));
+            final BillPaymentResponse response = toResponse(result);
 
-        final BillPaymentService.BillPaymentResult result =
-                this.billPaymentService.processBillPayment(new BillPaymentService.BillPaymentScreenInput(
-                        request.accountId(),
-                        request.confirm(),
-                        request.keyAction(),
-                        request.navigationContext()));
+            confirmation = result.confirmationState().name();
+            paymentAccepted = Boolean.toString(result.paymentAccepted());
+            outcome = OUTCOME_COMPLETED;
 
-        recordTurn(sample, result);
-
-        // Route and both flags only. No identifier, card number, balance, confirmation character or
-        // message text reaches the diagnostic channel.
-        LOG.debug("Bill-payment turn served: route={} paymentAccepted={} generalError={}",
-                result.route().getRouteValue(), result.paymentAccepted(), result.errorFlag());
-
-        return ResponseEntity.ok(toResponse(result));
+            LOG.debug("Bill-payment turn served: route={} paymentAccepted={} generalError={}",
+                    result.route().getRouteValue(), result.paymentAccepted(), result.errorFlag());
+            return ResponseEntity.ok(response);
+        } finally {
+            recordTurn(sample, outcome, confirmation, paymentAccepted);
+        }
     }
 
     /**
@@ -310,11 +343,13 @@ public class BillPaymentController {
      * @param sample the timing sample started at the head of the turn
      * @param result the outcome the turn reached
      */
-    private void recordTurn(final Timer.Sample sample, final BillPaymentService.BillPaymentResult result) {
+    private void recordTurn(final Timer.Sample sample, final String outcome,
+            final String confirmation, final String paymentAccepted) {
         sample.stop(Timer.builder(METRIC_BILL_PAYMENT_TURN)
                 .description("Elapsed time of one CardDemo bill-payment turn, transaction CB00")
-                .tag(TAG_CONFIRMATION, result.confirmationState().name())
-                .tag(TAG_PAYMENT_ACCEPTED, Boolean.toString(result.paymentAccepted()))
+                .tag(TAG_OUTCOME, outcome)
+                .tag(TAG_CONFIRMATION, confirmation)
+                .tag(TAG_PAYMENT_ACCEPTED, paymentAccepted)
                 .register(this.meterRegistry));
     }
 
@@ -358,7 +393,7 @@ public class BillPaymentController {
      *     guarantees an outcome or a raised conflict
      * @return the response body, never {@code null}
      */
-    private static BillPaymentResponse toResponse(final BillPaymentService.BillPaymentResult result) {
+    private BillPaymentResponse toResponse(final BillPaymentService.BillPaymentResult result) {
         return new BillPaymentResponse(
                 result.screen().accountId(),
                 result.screenBalance(),
@@ -375,7 +410,7 @@ public class BillPaymentController {
                 result.errorFlag(),
                 result.focusField(),
                 result.route().getRouteValue(),
-                result.navigationContext());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
     }
 
     /**

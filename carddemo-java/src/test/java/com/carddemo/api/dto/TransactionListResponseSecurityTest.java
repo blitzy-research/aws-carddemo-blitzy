@@ -67,9 +67,9 @@ class TransactionListResponseSecurityTest {
     private static final String PREVIOUS_CURSOR = "PRV7295836142058317";
     private static final String NEXT_CURSOR = "NXT8461372935172994";
 
-    /** The three components the outer renderer withholds, in declaration order. */
+    /** The four components the outer renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_OUTER_COMPONENTS =
-            List.of("rows", "pageMetadata", "transactionIdFilter");
+            List.of("rows", "pageMetadata", "continuation", "transactionIdFilter");
 
     /** The three components the row renderer withholds, in declaration order. */
     private static final List<String> WITHHELD_ROW_COMPONENTS =

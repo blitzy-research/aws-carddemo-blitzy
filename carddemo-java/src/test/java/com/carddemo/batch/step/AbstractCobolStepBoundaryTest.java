@@ -491,7 +491,7 @@ class AbstractCobolStepBoundaryTest {
 
         @Test
         @DisplayName("the tasklet entry point runs the lifecycle and reports it finished")
-        void theTaskletEntryPointRunsTheLifecycleAndFinishes() {
+        void theTaskletEntryPointRunsTheLifecycleAndFinishes() throws Exception {
             HarnessStep step = harness();
             step.deliver("RECORD-1");
 
