@@ -41,6 +41,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -419,6 +420,120 @@ class TransactionListRequestCoverageTest {
                     .as("a sequence at exactly the screen's depth is accepted, so the bound is "
                             + "inclusive")
                     .hasSize(EXPECTED_ROW_COUNT);
+        }
+    }
+
+    /**
+     * Reading the echoed page indicator is a total operation over every value the pattern admits.
+     *
+     * <p>The indicator is a value the client echoes back, so this type cannot assume it is well formed.
+     * It is read on the way in to decide which page to fetch, which means a value the reader cannot
+     * make sense of has to resolve to a page number rather than propagate a parse failure: an operator
+     * who edits or corrupts the field they were handed must get a screen back, not a server fault. The
+     * declared pattern narrows what can arrive at all, and this reader answers whatever still does.</p>
+     */
+    @Nested
+    @DisplayName("Reading the echoed page indicator")
+    class ReadingTheEchoedPageIndicator {
+
+        /**
+         * Builds a continuation carrying only the supplied page indicator.
+         *
+         * @param displayedPageNumber the indicator as echoed back, possibly {@code null}
+         * @return the continuation
+         */
+        private static TransactionListRequest.ScreenContinuation echoing(
+                final String displayedPageNumber) {
+            return new TransactionListRequest.ScreenContinuation(
+                    null, null, null, displayedPageNumber, false, List.of());
+        }
+
+        @Test
+        @DisplayName("a well-formed indicator reads as the number it spells, with the map's padding "
+                + "ignored on either side")
+        void aWellFormedIndicatorReadsAsItsNumber() {
+            assertThat(echoing("00000003").currentPageNumber()).isEqualTo(3);
+            assertThat(echoing("3       ").currentPageNumber()).isEqualTo(3);
+            assertThat(echoing("      42").currentPageNumber()).isEqualTo(42);
+            assertThat(echoing("  7     ").currentPageNumber()).isEqualTo(7);
+        }
+
+        @Test
+        @DisplayName("an absent, empty or all-space indicator reads as no page rather than throwing")
+        void anAbsentIndicatorReadsAsNoPage() {
+            assertThat(echoing(null).currentPageNumber()).isZero();
+            assertThat(echoing("").currentPageNumber()).isZero();
+            assertThat(echoing("        ").currentPageNumber()).isZero();
+        }
+
+        /**
+         * The value that previously produced a server fault.
+         *
+         * <p>An embedded space between two digit runs satisfied the earlier pattern and then failed to
+         * parse, so a corrupted echo became a generic fault rather than a screen. The reader now answers
+         * it, and the tightened pattern refuses it before the reader is even reached.</p>
+         */
+        @ParameterizedTest(name = "an indicator of \"{0}\" reads as no page instead of faulting")
+        @ValueSource(strings = {"1 2", " 1 2 ", "1  2", "12 34"})
+        @DisplayName("an indicator with an embedded space reads as no page rather than faulting")
+        void anIndicatorWithAnEmbeddedSpaceReadsAsNoPage(String echoed) {
+            assertThatCode(() -> echoing(echoed).currentPageNumber()).doesNotThrowAnyException();
+
+            assertThat(echoing(echoed).currentPageNumber()).isZero();
+        }
+
+        @Test
+        @DisplayName("an indicator carrying a non-digit reads as no page rather than faulting")
+        void anIndicatorCarryingANonDigitReadsAsNoPage() {
+            assertThat(echoing("PAGE0001").currentPageNumber()).isZero();
+            assertThat(echoing("-1").currentPageNumber()).isZero();
+            assertThat(echoing("+3").currentPageNumber()).isZero();
+            assertThat(echoing("1.5").currentPageNumber()).isZero();
+            assertThat(echoing("\u0000").currentPageNumber()).isZero();
+        }
+
+        /**
+         * A value that would overflow the accumulator is refused by width before it can be read.
+         */
+        @Test
+        @DisplayName("an indicator longer than the map's field reads as no page")
+        void anOverWideIndicatorReadsAsNoPage() {
+            assertThat(echoing("9".repeat(EXPECTED_DISPLAYED_PAGE_NUMBER_WIDTH + 1)).currentPageNumber())
+                    .isZero();
+            assertThat(echoing("9".repeat(40)).currentPageNumber()).isZero();
+        }
+
+        /**
+         * The declared pattern is the first line of defence, and it now refuses embedded spaces.
+         *
+         * <p>Rejecting the value at validation is the better outcome, because the operator is told the
+         * field is wrong rather than silently returned to page one. The reader's totality is the second
+         * line of defence, for any path that reaches it without validation having run.</p>
+         */
+        @Test
+        @DisplayName("the declared pattern refuses an embedded space, so the malformed echo is "
+                + "reported as a violation rather than silently reset")
+        void theDeclaredPatternRefusesAnEmbeddedSpace() {
+            TransactionListRequest request = new TransactionListRequest(
+                    null, null, null, NavigationContext.empty(), echoing("1 2"));
+
+            assertThat(validator.validate(request)).singleElement()
+                    .satisfies(violation -> assertThat(violation.getPropertyPath())
+                            .hasToString("continuation.displayedPageNumber"));
+        }
+
+        @Test
+        @DisplayName("the declared pattern still admits the padded forms the map actually produces")
+        void theDeclaredPatternAdmitsThePaddedForms() {
+            for (String admitted : List.of("00000001", "1       ", "       1", "  7     ", "",
+                    "        ")) {
+                TransactionListRequest request = new TransactionListRequest(
+                        null, null, null, NavigationContext.empty(), echoing(admitted));
+
+                assertThat(validator.validate(request))
+                        .as("the map produces \"%s\", so validation has to admit it", admitted)
+                        .isEmpty();
+            }
         }
     }
 

@@ -21,12 +21,20 @@ import com.carddemo.api.dto.FieldErrorDecorator;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.api.dto.ScreenWorkArea;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.BrowseWindow;
 import com.carddemo.service.FieldErrorMarks;
+import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenInputState;
 import com.carddemo.service.ScreenNavigationState;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.stereotype.Component;
 
 /**
@@ -49,14 +57,30 @@ import org.springframework.stereotype.Component;
  * are part of what the screen displayed, so a helpful normalisation here would be a parity defect several
  * layers away from where it was introduced.
  *
- * <p><strong>What this class deliberately does not do.</strong> It does not reconcile the echoed identity
- * against the authenticated principal. The ten screen services carry all sixteen communication-area fields
- * across a turn and hand back what they were given, exactly as their legacy programs did, and overwriting
- * the identity members here would change what those screens echo. Where reconciliation is the required
- * behaviour it is already performed, by {@code ConversationStateAdapter} on the sign-on and menu families,
- * whose services take the narrow five-field carrier instead; {@link ScreenNavigationState} exposes the same
- * reconciliation for a caller that needs it. This class also resolves no route, applies no validation and
- * reads no repository: it converts, and that is all.
+ * <p><strong>Identity is reconciled against the authenticated principal, in both directions.</strong> Both
+ * conversion methods require the established identity as an argument, so a protected route cannot forget to
+ * supply it - the compiler refuses the call. Inbound, the two identity members are replaced by the
+ * principal's own, which means a service physically cannot read a client-chosen identifier or role: the
+ * values are gone before it is called. Outbound, they are restated from the same principal, so a
+ * client-supplied identity cannot survive a turn and come back looking as though the server had asserted
+ * it. The other fourteen members cross byte for byte in both directions, because correcting identity is not
+ * licence to rewrite echoed navigation state, and the ten screen services still carry and hand back the
+ * whole communication area exactly as their legacy programs did.
+ *
+ * <p><strong>The two routing nominations are screened, for a reason the legacy did not have.</strong> The
+ * from- and to-program members carry an eight-character program name, and the navigation authority's
+ * unresolvable arm reproduces the abend a legacy transfer to an unknown program would have raised. That arm
+ * was defensive and unreachable on the mainframe, where the region held the communication area; over HTTP
+ * the caller holds it. A nomination that resolves to no destination is therefore carried as empty - the
+ * legacy's own "nominates nothing" state, on which the calling screen's default applies - so every name the
+ * estate declares still crosses unchanged while an invented one can no longer reach a terminal failure. The
+ * from-side transaction identifier is screened on the same terms, because the sign-off rule resolves it
+ * through the same kind of lookup.
+ *
+ * <p>Beyond those two things this class still resolves no route, applies no validation, takes no
+ * authorization decision and reads no repository: it converts, and that is all. Where the narrower
+ * five-field carrier is what a service takes, {@code ConversationStateAdapter} performs the same
+ * reconciliation for the sign-on and menu families.
  *
  * <p><strong>Absence is preserved rather than filled in, except where a null-free carrier exists.</strong>
  * An absent wire record converts to the empty service-owned carrier rather than to {@code null}, because a
@@ -64,8 +88,8 @@ import org.springframework.stereotype.Component;
  * treats as no carry-over. In the outbound direction an absent carrier converts back to {@code null}, so a
  * response omits a member the turn never produced rather than carrying an all-blank one.
  *
- * <p>Stateless and immutable, holding no field of any kind, so the singleton is safe for unsynchronised
- * concurrent use.
+ * <p>Immutable and free of per-turn state, holding only the navigation authority it screens nominations
+ * against, so the singleton is safe for unsynchronised concurrent use.
  *
  * <p>Provenance: {@code app/cpy/COCOM01Y.cpy}, {@code app/cpy/CVCRD01Y.cpy},
  * {@code app/cpy/CSSETATY.cpy} and the three paginated programs {@code app/cbl/COCRDLIC.cbl},
@@ -79,22 +103,69 @@ import org.springframework.stereotype.Component;
 public final class ScreenStateAdapter {
 
     /**
-     * Converts the client-echoed navigation record into the state the service layer owns.
+     * Prefix the filter chain grants a user type's authority under.
+     *
+     * <p>Declared here so the grant and this inverse reading name one spelling. The chain grants the
+     * framework's conventional role prefix followed by the user type's own constant name, and reading it
+     * back is the only way this boundary can learn a type from an identity the chain established.
+     */
+    private static final String ROLE_AUTHORITY_PREFIX = "ROLE_";
+
+    /** Diagnostic channel. It records that a nomination was screened, never the value screened out. */
+    private static final Logger LOG = LoggerFactory.getLogger(ScreenStateAdapter.class);
+
+    /** Resolves an echoed nomination to a destination, which is how a screened nomination is recognised. */
+    private final NavigationService navigationService;
+
+    /**
+     * Creates the adapter over the navigation authority it screens nominations against.
+     *
+     * @param navigationService the destination vocabulary; must not be {@code null}
+     */
+    public ScreenStateAdapter(final NavigationService navigationService) {
+        this.navigationService =
+                Objects.requireNonNull(navigationService, "navigationService must not be null");
+    }
+
+    /**
+     * Converts the client-echoed navigation record into the state the service layer owns, reconciled
+     * against the authenticated principal and with its routing nominations screened.
+     *
+     * <p><strong>Identity is replaced, never carried.</strong> The two identity members are overwritten
+     * with the authenticated principal's own, so a service reads who is acting from the credential the
+     * chain verified rather than from a field the caller typed. The remaining fourteen members cross byte
+     * for byte, because correcting identity is not licence to rewrite echoed navigation state.
+     *
+     * <p><strong>Routing nominations are screened.</strong> Two of the four routing members carry an
+     * eight-character program name that the navigation authority resolves to a destination, and its
+     * unresolvable arm reproduces the abend a legacy transfer to an unknown program would have raised.
+     * On the mainframe that arm was defensive and unreachable: the communication area was held by the
+     * region, so only the system itself could put a name in it. Over HTTP the caller holds it, so an
+     * invented name would reach that arm and surface as a terminal failure. A nomination that resolves to
+     * no destination is therefore carried as blank - which is exactly "nominates nothing", the legacy's own
+     * empty-field case, so the calling screen's default applies. Every name the estate actually declares
+     * still crosses unchanged, so no reachable legacy behaviour changes; what changes is that the
+     * unreachable arm stays unreachable.
      *
      * @param context the record the client echoed, which may be {@code null}
+     * @param authentication the identity the filter chain established, which may be {@code null} only on a
+     *                       route the chain does not authenticate
      * @return the sixteen-field service-owned state, never {@code null}
      */
-    public ScreenNavigationState toNavigationState(final NavigationContext context) {
+    public ScreenNavigationState toNavigationState(final NavigationContext context,
+                                                   final Authentication authentication) {
         if (context == null) {
-            return ScreenNavigationState.empty();
+            return ScreenNavigationState.empty()
+                    .reconciledWith(authenticatedUserId(authentication),
+                            authenticatedUserType(authentication));
         }
         return new ScreenNavigationState(
-                context.fromTransactionId(),
-                context.fromProgram(),
-                context.toTransactionId(),
-                context.toProgram(),
-                context.userId(),
-                context.userType(),
+                screenedTransactionId(context.fromTransactionId()),
+                screenedProgramName(context.fromProgram()),
+                screenedTransactionId(context.toTransactionId()),
+                screenedProgramName(context.toProgram()),
+                authenticatedUserId(authentication),
+                codeOf(authenticatedUserType(authentication)),
                 toProgramContext(context.programContext()),
                 context.customerId(),
                 context.customerFirstName(),
@@ -108,12 +179,20 @@ public final class ScreenStateAdapter {
     }
 
     /**
-     * Converts the service-owned navigation state back into the record a response carries.
+     * Converts the service-owned navigation state back into the record a response carries, reconciled
+     * against the authenticated principal.
+     *
+     * <p>Reconciling on the way out as well as on the way in is what stops a client-supplied identity
+     * surviving a turn and coming back looking as though the server had asserted it. The service never saw
+     * a client identity - the inbound conversion replaced it - so this is a restatement rather than a
+     * correction, and it holds even if a service were later to write those members itself.
      *
      * @param state the state the service produced, which may be {@code null}
+     * @param authentication the identity the filter chain established, which may be {@code null}
      * @return the wire record, or {@code null} when the turn produced no state
      */
-    public NavigationContext toNavigationContext(final ScreenNavigationState state) {
+    public NavigationContext toNavigationContext(final ScreenNavigationState state,
+                                                 final Authentication authentication) {
         if (state == null) {
             return null;
         }
@@ -122,8 +201,8 @@ public final class ScreenStateAdapter {
                 state.fromProgram(),
                 state.toTransactionId(),
                 state.toProgram(),
-                state.userId(),
-                state.userType(),
+                authenticatedUserId(authentication),
+                codeOf(authenticatedUserType(authentication)),
                 toWireProgramContext(state.programContext()),
                 state.customerId(),
                 state.customerFirstName(),
@@ -134,6 +213,119 @@ public final class ScreenStateAdapter {
                 state.cardNumber(),
                 state.lastMap(),
                 state.lastMapset());
+    }
+
+    /**
+     * Reads the identifier of the authenticated principal.
+     *
+     * <p>This is a read of an identity the chain has already established, not a check of one: nothing here
+     * admits or refuses anybody. An absent principal yields {@code null}, which the reconciliation treats
+     * as "no identity to assert" and which can only occur on a route the chain does not authenticate.
+     *
+     * @param authentication the established identity, which may be {@code null}
+     * @return the principal's name, or {@code null} when none is established
+     */
+    public static String authenticatedUserId(final Authentication authentication) {
+        return (authentication == null) ? null : authentication.getName();
+    }
+
+    /**
+     * Reads the user type of the authenticated principal out of the authority the chain granted it.
+     *
+     * <p>Resolution is the inverse of the single mapping the chain applies when it grants the authority:
+     * the framework's conventional role prefix followed by the name of the user type. An identity carrying
+     * neither declared authority yields {@code null} rather than a type this method had to guess.
+     *
+     * @param authentication the established identity, which may be {@code null}
+     * @return the user type the granted authority names, or {@code null} when none does
+     */
+    public static UserType authenticatedUserType(final Authentication authentication) {
+        if (authentication == null) {
+            return null;
+        }
+        final Collection<? extends GrantedAuthority> granted = authentication.getAuthorities();
+        if (granted == null) {
+            return null;
+        }
+        for (final GrantedAuthority authority : granted) {
+            for (final UserType candidate : UserType.values()) {
+                if ((ROLE_AUTHORITY_PREFIX + candidate.name()).equals(authority.getAuthority())) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Renders a user type as the raw one-character code the communication area carried.
+     *
+     * @param userType the type, which may be {@code null}
+     * @return its declared code, or {@code null} when no type is established
+     */
+    private static String codeOf(final UserType userType) {
+        return (userType == null) ? null : userType.getCode();
+    }
+
+    /**
+     * Screens an echoed program-name nomination, keeping only a name that resolves to a destination.
+     *
+     * @param nominatedProgram the eight-character program name the client echoed, possibly {@code null}
+     * @return the same value when it resolves or is already empty, and {@code null} otherwise
+     */
+    private String screenedProgramName(final String nominatedProgram) {
+        if (isEffectivelyEmpty(nominatedProgram)
+                || this.navigationService.routeForLegacyProgram(nominatedProgram).isPresent()) {
+            return nominatedProgram;
+        }
+        LOG.debug("Echoed program nomination names no destination and is carried as empty: length={}",
+                nominatedProgram.length());
+        return null;
+    }
+
+    /**
+     * Screens an echoed transaction-identifier nomination on the same terms as a program name.
+     *
+     * <p>Screened for the same reason and not for a different one: the sign-off rule reads the from-side
+     * transaction identifier and resolves it through the same fixed-width lookup, so an invented value
+     * there reaches the same unresolvable arm.
+     *
+     * @param nominatedTransactionId the four-character identifier the client echoed, possibly {@code null}
+     * @return the same value when it resolves or is already empty, and {@code null} otherwise
+     */
+    private String screenedTransactionId(final String nominatedTransactionId) {
+        if (isEffectivelyEmpty(nominatedTransactionId)
+                || this.navigationService.routeForLegacyTransactionId(nominatedTransactionId)
+                        .isPresent()) {
+            return nominatedTransactionId;
+        }
+        LOG.debug("Echoed transaction nomination names no destination and is carried as empty: length={}",
+                nominatedTransactionId.length());
+        return null;
+    }
+
+    /**
+     * Reports whether a fixed-width nomination field nominates nothing.
+     *
+     * <p>The legacy test is {@code = SPACES OR LOW-VALUES}, so an absent value, an empty one, one made only
+     * of spaces and one made only of low values are the same state. Screening treats that state as already
+     * empty and leaves it exactly as received, because a blank field is significant: it is what makes the
+     * calling screen's default apply.
+     *
+     * @param value the transmitted nomination, possibly {@code null}
+     * @return {@code true} when the field nominates nothing
+     */
+    private static boolean isEffectivelyEmpty(final String value) {
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character != ' ' && character != '\0') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

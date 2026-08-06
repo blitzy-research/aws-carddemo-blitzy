@@ -457,7 +457,7 @@ class OpenApiConfigBoundaryTest {
                 Pattern.compile("^\\s+@(Get|Post|Put|Patch|Delete)Mapping", Pattern.MULTILINE);
 
         /** How many operations the module delivers. Asserted, not assumed - see the test below. */
-        private static final long DELIVERED_OPERATIONS = 19L;
+        private static final long DELIVERED_OPERATIONS = 20L;
 
         /**
          * Reads the description from a freshly built document.

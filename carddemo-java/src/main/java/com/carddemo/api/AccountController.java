@@ -19,6 +19,7 @@ package com.carddemo.api;
 import com.carddemo.api.dto.AccountUpdateRequest;
 import com.carddemo.api.dto.AccountUpdateResponse;
 import com.carddemo.api.dto.AccountViewResponse;
+import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.enums.UserType;
@@ -31,14 +32,15 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
-import java.util.Collection;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -207,6 +209,20 @@ public class AccountController {
      */
     private static final int PUBLISHED_ZIP_CODE_WIDTH = 5;
 
+    /** Response property the account-filter finding names, matching the component the screen echoes. */
+    private static final String ACCOUNT_ID_FILTER_PROPERTY = "accountIdFilter";
+
+    /** Response property the customer-filter finding names; the screen has no input item for it. */
+    private static final String CUSTOMER_ID_PROPERTY = "customerId";
+
+    /**
+     * Stand-in for the legacy map field a finding names when the screen has none.
+     *
+     * <p>The empty string rather than {@code null} because the published finding normalises an absent
+     * identifier to the empty string anyway, and stating it here keeps the two consistent.
+     */
+    private static final String EMPTY_SCREEN_FIELD_ID = "";
+
     /** Width at which the view contract publishes either telephone number, for the same reason. */
     private static final int PUBLISHED_PHONE_NUMBER_WIDTH = 13;
 
@@ -234,15 +250,6 @@ public class AccountController {
      */
     private static final AccountProtectedDataAdapter.AccountViewProtectedValues NO_PROTECTED_VALUES =
             new AccountProtectedDataAdapter.AccountViewProtectedValues(null, null, null, null);
-
-    /**
-     * Prefix the filter chain puts in front of a user type when it grants the authority.
-     *
-     * <p>Resolving a user type out of the granted authority is the inverse of that single mapping, and
-     * the prefix is named once here rather than spelled into the resolution, exactly as the menu surface
-     * names it.
-     */
-    private static final String ROLE_AUTHORITY_PREFIX = "ROLE_";
 
     /** The account-view transaction. */
     private final AccountViewService accountViewService;
@@ -365,7 +372,8 @@ public class AccountController {
             @Parameter(description = "Terminal attention identifier as transmitted, for example "
                     + "DFHPF03 to leave the screen. Optional; absent reads as the enter key.")
             final String attentionKey,
-            @Valid @RequestBody(required = false) final NavigationContext navigationContext) {
+            @Valid @RequestBody(required = false) final NavigationContext navigationContext,
+            final Authentication authentication) {
 
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String presentation = PRESENTATION_UNRESOLVED;
@@ -379,8 +387,8 @@ public class AccountController {
             final AccountViewService.AccountViewResult result = this.accountViewService.viewAccount(
                     attentionKey,
                     this.screenStateAdapter.toInputState(screenInput),
-                    this.screenStateAdapter.toNavigationState(navigationContext));
-            final AccountViewResponse body = toViewResponse(result);
+                    this.screenStateAdapter.toNavigationState(navigationContext, authentication));
+            final AccountViewResponse body = toViewResponse(result, authentication);
 
             presentation = result.presentation().name();
             outcome = OUTCOME_COMPLETED;
@@ -458,7 +466,9 @@ public class AccountController {
         try {
             final AccountUpdateResponse composed = this.accountUpdateContractAdapter.toResponse(
                     this.accountUpdateService.handle(
-                            this.accountUpdateContractAdapter.toCommand(request), attentionKey));
+                            this.accountUpdateContractAdapter.toCommand(request, authentication),
+                            attentionKey),
+                    authentication);
             final AccountUpdateResponse body = gatedForUpdate(composed, authentication);
 
             outcome = body.error() ? OUTCOME_REJECTED : OUTCOME_ACCEPTED;
@@ -515,7 +525,7 @@ public class AccountController {
      */
     private AccountUpdateResponse gatedForUpdate(final AccountUpdateResponse composed,
                                                  final Authentication authentication) {
-        final UserType signedOnType = signedOnUserType(authentication);
+        final UserType signedOnType = ScreenStateAdapter.authenticatedUserType(authentication);
         final AccountProtectedDataAdapter.RevealAuthorization authority =
                 signedOnType == UserType.ADMIN
                         ? AccountProtectedDataAdapter.RevealAuthorization.administrator(
@@ -545,39 +555,6 @@ public class AccountController {
                 gated.dateOfBirthDay(),
                 gated.governmentIssuedId(),
                 gated.eftAccountId());
-    }
-
-    /**
-     * Reads the user type of the established identity out of the authority the chain granted it.
-     *
-     * <p>This is a read of an identity that has already been established, not a check of one: the chain
-     * has already refused every caller with no business reaching the handler, and nothing here admits or
-     * refuses anybody. The value decides only whether the regulated components are revealed or masked.
-     *
-     * <p>Resolution is the inverse of the single mapping the chain applies when it grants the authority:
-     * the framework's role prefix followed by the name of the user type. An identity carrying neither
-     * declared authority yields {@code null}, which the gate treats as no authority to reveal rather than
-     * as a type it must guess.
-     *
-     * @param authentication the established identity, which may be {@code null}
-     * @return the user type the granted authority names, or {@code null} when none does
-     */
-    private static UserType signedOnUserType(final Authentication authentication) {
-        if (authentication == null) {
-            return null;
-        }
-        final Collection<? extends GrantedAuthority> granted = authentication.getAuthorities();
-        if (granted == null) {
-            return null;
-        }
-        for (final GrantedAuthority authority : granted) {
-            for (final UserType candidate : UserType.values()) {
-                if ((ROLE_AUTHORITY_PREFIX + candidate.name()).equals(authority.getAuthority())) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
     }
 
     /**
@@ -611,9 +588,11 @@ public class AccountController {
      * item for it, so publishing it would add a component the screen contract does not have.
      *
      * @param result the turn the transaction produced, never {@code null}
+     * @param authentication the established identity, which the echoed state is reconciled against
      * @return the response body, never {@code null}
      */
-    private AccountViewResponse toViewResponse(final AccountViewService.AccountViewResult result) {
+    private AccountViewResponse toViewResponse(final AccountViewService.AccountViewResult result,
+                                               final Authentication authentication) {
         final AccountViewService.ScreenHeader header = result.screenHeader();
         final boolean accountPresented = result.accountFieldsPresented() && result.account() != null;
         final boolean customerPresented = result.customerFieldsPresented() && result.customer() != null;
@@ -684,9 +663,62 @@ public class AccountController {
                 result.infoMessage(),
                 result.errorMessage(),
                 result.errorFlag(),
+                toViewFieldErrors(result),
                 result.focusScreenFieldId(),
                 result.route(),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(),
+                        authentication));
+    }
+
+    /**
+     * Projects the turn's two filter states onto the ordered two-state error contract.
+     *
+     * <p><strong>Two filters, three states each, and the states are not interchangeable.</strong> The
+     * transaction keeps an account-filter state and a customer-filter state, and each holds valid, not in
+     * order, or blank. Blank is how the screen says a filter was never supplied; not-in-order is how it says
+     * one was supplied and cannot be used. The legacy renders the two differently - the attribute setup at
+     * {@code app/cbl/COACTVWC.cbl} lines 546 to 574 writes the marker for the blank state and only the
+     * colour change for the not-in-order one - so publishing one boolean and one message line loses both
+     * which filter was at fault and which of its two states it was in.
+     *
+     * <p><strong>The blank state is conditional and the not-in-order state is not.</strong> The marker is
+     * written only on a re-entry, which is the same gate the field-decoration macro applies across this
+     * family of screens: on a first entry the operator has not been asked yet, so nothing is marked. The
+     * turn establishes both conditions itself, so they are read from it rather than recomputed here.
+     *
+     * <p><strong>Order is the transaction's, not this method's.</strong> The account filter is edited and
+     * can fail before the customer master is ever read, so its finding precedes the customer one. The
+     * customer finding names no screen field, and that is not an omission: this screen has exactly one input
+     * item, so the customer-filter state has no map field of its own - it exists to tell the customer-master
+     * miss apart from the other two misses on a screen with one cursor position.
+     *
+     * @param result the settled turn
+     * @return the findings in the transaction's own order, never {@code null} and possibly empty
+     */
+    private static List<ErrorResponse.FieldError> toViewFieldErrors(
+            final AccountViewService.AccountViewResult result) {
+        final List<ErrorResponse.FieldError> findings = new ArrayList<>(2);
+        if (result.filterMissingOnReEntry()) {
+            findings.add(new ErrorResponse.FieldError(
+                    ACCOUNT_ID_FILTER_PROPERTY,
+                    AccountViewService.ACCOUNT_ID_SCREEN_FIELD_ID,
+                    ErrorResponse.FieldState.MISSING,
+                    result.errorMessage()));
+        } else if (result.filterInError()) {
+            findings.add(new ErrorResponse.FieldError(
+                    ACCOUNT_ID_FILTER_PROPERTY,
+                    AccountViewService.ACCOUNT_ID_SCREEN_FIELD_ID,
+                    ErrorResponse.FieldState.INVALID,
+                    result.errorMessage()));
+        }
+        if (result.customerFilterFlag() == AccountViewService.FilterFlag.NOT_OK) {
+            findings.add(new ErrorResponse.FieldError(
+                    CUSTOMER_ID_PROPERTY,
+                    EMPTY_SCREEN_FIELD_ID,
+                    ErrorResponse.FieldState.INVALID,
+                    result.errorMessage()));
+        }
+        return Collections.unmodifiableList(findings);
     }
 
     /**

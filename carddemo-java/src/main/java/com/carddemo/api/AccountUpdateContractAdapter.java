@@ -19,12 +19,14 @@ package com.carddemo.api;
 import com.carddemo.api.dto.AccountUpdateRequest;
 import com.carddemo.api.dto.AccountUpdateResponse;
 import com.carddemo.api.dto.ErrorResponse;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.AccountUpdateCommand;
 import com.carddemo.service.AccountUpdateOutcome;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
 /**
@@ -93,10 +95,14 @@ public final class AccountUpdateContractAdapter {
      * reference - which is what this screen's own reset condition already treats as no carry-over.
      *
      * @param request the transmitted screen; must not be {@code null}
+     * @param authentication the identity the filter chain established, which the echoed navigation state
+     *                       is reconciled against so the transaction reads the authenticated operator
+     *                       rather than the one the caller typed
      * @return the command the transaction reads, never {@code null}
      * @throws NullPointerException if the request is {@code null}
      */
-    public AccountUpdateCommand toCommand(final AccountUpdateRequest request) {
+    public AccountUpdateCommand toCommand(final AccountUpdateRequest request,
+                                          final Authentication authentication) {
         Objects.requireNonNull(request, "request must not be null");
         return new AccountUpdateCommand(
                 request.accountId(),
@@ -143,8 +149,26 @@ public final class AccountUpdateContractAdapter {
                 request.eftAccountId(),
                 request.primaryCardHolderIndicator(),
                 request.keyAction(),
-                this.screenStateAdapter.toNavigationState(request.navigationContext()),
-                request.concurrencyToken());
+                this.screenStateAdapter.toNavigationState(request.navigationContext(), authentication),
+                request.concurrencyToken(),
+                !permitsReveal(authentication));
+    }
+
+    /**
+     * Reports whether the caller's own authority permits the regulated values to be revealed.
+     *
+     * <p>The same decision the outbound gate makes, taken from the same source - the authenticated
+     * principal - so the two can never disagree. It has to be stated on the command because the
+     * transaction is the only layer holding the stored record, and therefore the only layer that can tell
+     * a withheld stand-in from a value an operator typed; and it has to come from the principal rather
+     * than from the body, because a caller that could assert it would be able to have its own typed
+     * values silently replaced by the stored ones.
+     *
+     * @param authentication the identity the filter chain established, or {@code null} when none was
+     * @return {@code true} when the caller may see the regulated values, so nothing was withheld
+     */
+    private static boolean permitsReveal(final Authentication authentication) {
+        return ScreenStateAdapter.authenticatedUserType(authentication) == UserType.ADMIN;
     }
 
     /**
@@ -155,10 +179,13 @@ public final class AccountUpdateContractAdapter {
      * cascade reported them, because that order is the order an operator saw the fields marked.
      *
      * @param outcome the settled turn; must not be {@code null}
+     * @param authentication the identity the filter chain established, which the echoed navigation state
+     *                       is reconciled against on the way out as well as on the way in
      * @return the published response, never {@code null}
      * @throws NullPointerException if the outcome is {@code null}
      */
-    public AccountUpdateResponse toResponse(final AccountUpdateOutcome outcome) {
+    public AccountUpdateResponse toResponse(final AccountUpdateOutcome outcome,
+                                            final Authentication authentication) {
         Objects.requireNonNull(outcome, "outcome must not be null");
         return new AccountUpdateResponse(
                 outcome.transactionName(),
@@ -215,7 +242,7 @@ public final class AccountUpdateContractAdapter {
                 outcome.error(),
                 outcome.focusScreenFieldId(),
                 outcome.nextRoute(),
-                this.screenStateAdapter.toNavigationContext(outcome.navigationContext()),
+                this.screenStateAdapter.toNavigationContext(outcome.navigationContext(), authentication),
                 toResponseFieldErrors(outcome.fieldErrors()),
                 outcome.concurrencyToken());
     }

@@ -20,7 +20,10 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.carddemo.api.dto.BatchJobLaunchRequest;
 import com.carddemo.api.dto.ErrorResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.carddemo.config.FixedLocaleMessageInterpolator;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
@@ -1355,6 +1358,38 @@ class GlobalExceptionHandlerTest {
             assertThat(body).isNotNull();
             assertThat(body.message()).isEqualTo(ORACLE_MALFORMED_BODY);
             assertNothingSensitiveEscaped(body);
+        }
+
+        @Test
+        @DisplayName("a batch launch body carrying a property the closed launch surface does not declare "
+                + "answers 400, and the refused property name is not echoed back, so a caller learns that "
+                + "the body was refused without learning which names the surface holds")
+        void aClosedLaunchSurfaceRefusalAnswersWithTheReadSummaryAndNamesNothing() throws Exception {
+            UnrecognizedPropertyException refusal = null;
+            try {
+                new ObjectMapper().readValue("{\"transactionBackupCurrentGeneration\":\"G0007V00\"}",
+                        BatchJobLaunchRequest.class);
+            } catch (final UnrecognizedPropertyException expected) {
+                refusal = expected;
+            }
+            assertThat(refusal)
+                    .as("the closed surface is what raises the refusal, before any handler runs")
+                    .isNotNull();
+
+            ResponseEntity<ErrorResponse> response = handler.handleUnreadableBody(
+                    new HttpMessageNotReadableException(refusal.getMessage(), refusal,
+                            new EmptyInputMessage()));
+
+            assertFrameworkRejection(response, ORACLE_MALFORMED_BODY);
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.message()).isEqualTo(ORACLE_MALFORMED_BODY);
+            assertThat(body.hasFieldErrors())
+                    .as("a body that did not bind has no field to attribute an error to")
+                    .isFalse();
+            assertThat(body.toString())
+                    .doesNotContain("transactionBackupCurrentGeneration")
+                    .doesNotContain("interestParmDate");
         }
     }
 

@@ -653,7 +653,8 @@ class TransactionListRequestSecurityTest {
                             .toList();
 
             assertThat(declared)
-                    .containsExactly("previousCursorKey", "nextCursorKey", "direction")
+                    .containsExactly("previousCursorKey", "nextCursorKey", "direction",
+                            "displayedPageNumber", "nextPageIndicated")
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("size"))
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("count"))
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("limit"));

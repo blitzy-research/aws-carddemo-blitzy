@@ -351,15 +351,6 @@ public final class CombineTransactionsJobConfig {
     public static final String SYNTHESIZED_RESOURCE_PROPERTY =
             RESOURCE_PROPERTY_PREFIX + "synthesized-transaction";
 
-    /**
-     * Typed-launch compatibility name for the first configured input. The controller may expose this
-     * name while the deployed location remains server-owned.
-     */
-    public static final String BACKUP_INPUT_NAME = "transactionBackupCurrentGeneration";
-
-    /** Typed-launch compatibility name for the second configured input. */
-    public static final String SYNTHESIZED_INPUT_NAME = "synthesizedTransactionCurrentGeneration";
-
     /** Prefix of the per-execution combined object staged for downstream inspection or reuse. */
     private static final String COMBINED_OBJECT_KEY_PREFIX = JOB_NAME + "/combined/";
 

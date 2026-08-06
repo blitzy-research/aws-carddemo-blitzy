@@ -18,6 +18,7 @@ package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.ReportPeriod;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 
 /**
  * Immutable acknowledgement of a transaction-report request, legacy transaction {@code CR00}: the one
@@ -78,9 +79,41 @@ public record ReportResponse(
         boolean submissionAccepted,
         String message,
         boolean generalError,
+
+        /* The field-level detail behind the flag above, in the order the turn established it. Never
+         * null; empty when the turn faulted nothing.
+         *
+         * Two states rather than one, because the legacy screen distinguishes a field the operator left
+         * blank from one that was supplied and failed its edit: the first is highlighted AND marked with
+         * an asterisk, the second is only highlighted. This screen raises both kinds - a report type
+         * that was never marked and a date part that was marked and cannot be used are different
+         * failures - and the whole-screen flag beside this list cannot say which occurred, nor on which
+         * of the ten input positions. Without this component a client re-presenting the screen can
+         * highlight nothing, so the operator is told only that something is wrong. */
+        List<ErrorResponse.FieldError> fieldErrors,
+
         @Size(max = ReportResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
+
+    /**
+     * Canonical constructor. Normalises the field-error list and leaves every other component exactly
+     * as supplied.
+     *
+     * <p>An absent list becomes an empty one, and a supplied one is copied into an unmodifiable view.
+     * Normalising rather than admitting a null is what makes the component's two meanings distinguishable
+     * on the wire: because the module omits nulls and writes empties, an empty list is published as
+     * {@code []} and a reader can tell "this turn faulted no field" from "this reply says nothing about
+     * fields". A null would collapse both onto absence.
+     *
+     * <p>No string is trimmed, padded, re-cased or reordered here. The three selector positions and the
+     * six date parts are re-presented exactly as the operator transmitted them, and the field-error
+     * entries keep the order the turn established.
+     */
+    public ReportResponse {
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+    }
+
     /**
      * Declared width of each report-type selector position, one character, from the symbolic map
      * {@code app/cpy-bms/CORPT00.CPY} lines 60, 66 and 72.

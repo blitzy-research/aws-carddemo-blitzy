@@ -154,7 +154,20 @@ class TransactionViewResponseCoverageTest {
             "currentTime", "searchTransactionId", "transactionId", "cardNumber", "typeCode",
             "categoryCode", "source", "description", "amount", "originationDate", "processingDate",
             "merchantId", "merchantName", "merchantCity", "merchantZip", "errorMessage",
-            "generalError", "focusScreenFieldId", "nextRoute", "navigationContext");
+            "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext");
+
+    /**
+     * The two components that are written on every reply, however empty the turn was.
+     *
+     * <p>Neither can be absent, and each for its own reason. The whole-screen flag is a primitive, so
+     * it has no null to omit. The field findings are normalised to an empty list by the canonical
+     * constructor, and the module's inclusion policy omits nulls rather than empties, so an empty list
+     * crosses the wire as {@code []}. A reader can therefore distinguish "the turn raised nothing" from
+     * "this reply does not speak about field findings at all", which is exactly the distinction the
+     * two-state error contract needs.</p>
+     */
+    private static final List<String> ALWAYS_WRITTEN_COMPONENTS =
+            List.of("generalError", "fieldErrors");
 
     /** The twenty-one components that declare a width bound. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -316,7 +329,7 @@ class TransactionViewResponseCoverageTest {
                 "merchantCity".equals(component) ? value : null,
                 "merchantZip".equals(component) ? value : null,
                 "errorMessage".equals(component) ? value : null,
-                false,
+                false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
                 null);
@@ -330,7 +343,7 @@ class TransactionViewResponseCoverageTest {
      */
     private static TransactionViewResponse withAmount(BigDecimal amount) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, amount, null, null, null, null, null, null, null, false, null, null,
+                null, null, null, amount, null, null, null, null, null, null, null, false, List.of(), null, null,
                 null);
     }
 
@@ -344,7 +357,7 @@ class TransactionViewResponseCoverageTest {
         return new TransactionViewResponse(TRANSACTION_NAME, TITLE_LINE_1, CURRENT_DATE, PROGRAM_NAME,
                 TITLE_LINE_2, CURRENT_TIME, SEARCH_TRANSACTION_ID, TRANSACTION_ID, CARD_NUMBER,
                 TYPE_CODE, CATEGORY_CODE, SOURCE, DESCRIPTION, AMOUNT, ORIGINATION_DATE,
-                PROCESSING_DATE, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, null, false,
+                PROCESSING_DATE, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, null, false, List.of(),
                 FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, navigation);
     }
 
@@ -358,7 +371,7 @@ class TransactionViewResponseCoverageTest {
         return new TransactionViewResponse(TRANSACTION_NAME, TITLE_LINE_1, CURRENT_DATE, PROGRAM_NAME,
                 TITLE_LINE_2, CURRENT_TIME, SEARCH_TRANSACTION_ID, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
-                TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true, FOCUS_SCREEN_FIELD_ID,
+                TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true, List.of(), FOCUS_SCREEN_FIELD_ID,
                 NEXT_ROUTE, null);
     }
 
@@ -654,7 +667,7 @@ class TransactionViewResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("no member is declared beyond the twenty-five accessors, so this type parses "
+        @DisplayName("no member is declared beyond the twenty-six accessors, so this type parses "
                 + "nothing, scales nothing and dispatches nothing")
         void noMemberIsDeclaredBeyondTheAccessors() {
             List<String> instanceMethods =
@@ -943,7 +956,7 @@ class TransactionViewResponseCoverageTest {
         void aRaisedIndicatorBesideABlankMessageIsReachable() throws JsonProcessingException {
             TransactionViewResponse response = new TransactionViewResponse(null, null, null, null,
                     null, null, SEARCH_TRANSACTION_ID, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, true, null, null, null);
+                    null, null, null, null, null, null, null, true, List.of(), null, null, null);
 
             assertThat(response.generalError()).isTrue();
             assertThat(response.errorMessage()).isNull();
@@ -1327,15 +1340,18 @@ class TransactionViewResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("an absent member is omitted while the error indicator is always written, "
-                + "because a primitive has no absent state")
+        @DisplayName("an absent member is omitted while the error indicator and the field findings are "
+                + "always written, because a primitive has no absent state and an empty list is not a "
+                + "null")
         void absentMembersAreOmittedAndTheIndicatorIsAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(withAmount(null));
 
-            assertThat(payload.size()).isEqualTo(1);
+            assertThat(payload.size()).isEqualTo(ALWAYS_WRITTEN_COMPONENTS.size());
             assertThat(payload.get("generalError").asBoolean()).isFalse();
+            assertThat(payload.get("fieldErrors").isArray()).isTrue();
+            assertThat(payload.get("fieldErrors")).isEmpty();
             for (String component : EXPECTED_COMPONENTS) {
-                if (!"generalError".equals(component)) {
+                if (!ALWAYS_WRITTEN_COMPONENTS.contains(component)) {
                     assertThat(payload.has(component))
                             .as("%s is absent rather than written as null", component)
                             .isFalse();
@@ -1580,10 +1596,10 @@ class TransactionViewResponseCoverageTest {
         void theErrorIndicatorParticipatesInEquality() {
             TransactionViewResponse flagged = new TransactionViewResponse(null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, "same", true, null, null, null);
+                    null, null, null, "same", true, List.of(), null, null, null);
             TransactionViewResponse clear = new TransactionViewResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, "same", false, null, null, null);
+                    null, null, "same", false, List.of(), null, null, null);
 
             assertThat(flagged).isNotEqualTo(clear);
         }

@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <h2>What is under test</h2>
  *
- * <p>The transport contract of the card-list submission: the thirteen components, the four declared
+ * <p>The transport contract of the card-list submission: the fourteen components, the four declared
  * widths, the seven positional row action codes and the order-preserving projection over them, the
  * wire form under the module's declared serialisation settings, and the diagnostic rendering - which
  * on this type is not the generated one and is the most consequential thing in the file.
@@ -84,7 +84,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * withholding the page indicator, the row codes and the attention key would remove the only useful
  * diagnostic content without protecting anything.
  *
- * <h2>One of the thirteen components is bound in one direction only</h2>
+ * <h2>One of the fourteen components is bound in one direction only</h2>
  *
  * <p>The page indicator is written outbound and ignored inbound. The legacy program writes that screen
  * field and never reads it, and the browse keys the paging component carries are what actually
@@ -108,11 +108,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DisplayName("CardListRequest :: card-list request contract of legacy transaction CCLI")
 class CardListRequestCoverageTest {
 
-    /** The thirteen components in declaration order. */
+    /** The fourteen components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "accountIdFilter", "cardNumberFilter", "displayedPageNumber",
             "selection1", "selection2", "selection3", "selection4", "selection5", "selection6",
-            "selection7", "pageMetadata", "keyAction", "navigationContext");
+            "selection7", "pageMetadata", "lastPageAlreadyShown", "keyAction", "navigationContext");
 
     /** Number of card rows the screen presents, measured from the legacy row table. */
     private static final int EXPECTED_ROW_COUNT = 7;
@@ -169,7 +169,7 @@ class CardListRequestCoverageTest {
             String accountFilter, String cardFilter, String... rowCodes) {
         return new CardListRequest(accountFilter, cardFilter, null,
                 rowCodes[0], rowCodes[1], rowCodes[2], rowCodes[3],
-                rowCodes[4], rowCodes[5], rowCodes[6], null, null, null);
+                rowCodes[4], rowCodes[5], rowCodes[6], null, false, null, null);
     }
 
     /**
@@ -200,7 +200,7 @@ class CardListRequestCoverageTest {
                 "selection5".equals(component) ? value : null,
                 "selection6".equals(component) ? value : null,
                 "selection7".equals(component) ? value : null,
-                null, null, null);
+                null, false, null, null);
     }
 
     /**
@@ -220,7 +220,7 @@ class CardListRequestCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the thirteen components are declared in the order the screen submits them")
+        @DisplayName("the fourteen components are declared in the order the screen submits them")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(CardListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
@@ -278,12 +278,16 @@ class CardListRequestCoverageTest {
             RecordComponent[] components = CardListRequest.class.getRecordComponents();
 
             assertThat(components[10].getType())
-                    .as("a submission nominates a direction and the two cursor keys it was handed; "
-                            + "it has no row count to nominate, so the request-shaped carrier is a "
-                            + "narrower type than the response metadata")
+                    .as("a submission nominates a direction, the two cursor keys it was handed and the "
+                            + "two retained values the program reads back; it has no row count to "
+                            + "nominate, so the request-shaped carrier is a narrower type than the "
+                            + "response metadata")
                     .isEqualTo(PageMetadata.PageCursorRequest.class);
-            assertThat(components[11].getType()).isEqualTo(KeyAction.class);
-            assertThat(components[12].getType()).isEqualTo(NavigationContext.class);
+            assertThat(components[11].getType())
+                    .as("the third retained paging value is a flag, not a measurement")
+                    .isEqualTo(boolean.class);
+            assertThat(components[12].getType()).isEqualTo(KeyAction.class);
+            assertThat(components[13].getType()).isEqualTo(NavigationContext.class);
         }
 
         @Test
@@ -386,7 +390,7 @@ class CardListRequestCoverageTest {
                     ACCOUNT_FILTER, CARD_FILTER, "999",
                     "S", "S", "S", "S", "S", "S", "S",
                     new PageMetadata.PageCursorRequest(null, null,
-                            PageMetadata.PagingDirection.FORWARD),
+                            PageMetadata.PagingDirection.FORWARD, null, false), false,
                     KeyAction.PFK08, NavigationContext.empty());
 
             assertThat(validator.validate(request)).isEmpty();
@@ -453,14 +457,14 @@ class CardListRequestCoverageTest {
     class WireShape {
 
         @Test
-        @DisplayName("a fully populated request renders all thirteen members under their contract "
+        @DisplayName("a fully populated request renders all fourteen members under their contract "
                 + "names, and the seven row codes appear as seven separate members")
-        void aFullyPopulatedRequestRendersAllThirteenMembers() throws JsonProcessingException {
+        void aFullyPopulatedRequestRendersAllFourteenMembers() throws JsonProcessingException {
             CardListRequest request = new CardListRequest(
                     ACCOUNT_FILTER, CARD_FILTER, "002",
                     "S", "", " ", "U", "", "", "",
                     new PageMetadata.PageCursorRequest("prev", "next",
-                            PageMetadata.PagingDirection.BACKWARD),
+                            PageMetadata.PagingDirection.BACKWARD, null, false), false,
                     KeyAction.PFK07, JsonContractSupport.populatedNavigation());
 
             JsonNode payload = payloadOf(request);
@@ -532,7 +536,7 @@ class CardListRequestCoverageTest {
                     ACCOUNT_FILTER, CARD_FILTER, "007",
                     "S", " ", "", "U", "s", "u", "X",
                     new PageMetadata.PageCursorRequest("p", "n",
-                            PageMetadata.PagingDirection.FORWARD),
+                            PageMetadata.PagingDirection.FORWARD, null, false), false,
                     KeyAction.PFK08, JsonContractSupport.populatedNavigation());
 
             ObjectMapper mapper = JsonContractSupport.declaredSettingsMapper();
@@ -550,7 +554,7 @@ class CardListRequestCoverageTest {
                     .isEqualTo(new CardListRequest(
                             ACCOUNT_FILTER, CARD_FILTER, null,
                             "S", " ", "", "U", "s", "u", "X",
-                            request.pageMetadata(), request.keyAction(),
+                            request.pageMetadata(), false, request.keyAction(),
                             request.navigationContext()));
             assertThat(returned.selectionsInRowOrder())
                     .containsExactly("S", " ", "", "U", "s", "u", "X");
@@ -581,7 +585,7 @@ class CardListRequestCoverageTest {
                     ACCOUNT_FILTER, CARD_FILTER, "003",
                     "S", null, null, null, null, null, null,
                     new PageMetadata.PageCursorRequest(CARD_FILTER + ACCOUNT_FILTER,
-                            CARD_FILTER + ACCOUNT_FILTER, PageMetadata.PagingDirection.FORWARD),
+                            CARD_FILTER + ACCOUNT_FILTER, PageMetadata.PagingDirection.FORWARD, null, false), false,
                     KeyAction.PFK08, null);
 
             String rendered = request.toString();
@@ -630,7 +634,7 @@ class CardListRequestCoverageTest {
         void theScreenInteractionStateIsRetained() {
             CardListRequest request = new CardListRequest(
                     ACCOUNT_FILTER, CARD_FILTER, "042",
-                    "S", "U", "s", "u", "X", "1", "?", null, KeyAction.PFK07, null);
+                    "S", "U", "s", "u", "X", "1", "?", null, false, KeyAction.PFK07, null);
 
             assertThat(request.toString())
                     .contains("displayedPageNumber=042")
@@ -649,7 +653,7 @@ class CardListRequestCoverageTest {
                 + "identifying values")
         void theNavigationStateIsPrintedByDelegation() {
             CardListRequest request = new CardListRequest(
-                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, false, null,
                     JsonContractSupport.populatedNavigation());
 
             assertThat(request.toString())
@@ -670,7 +674,7 @@ class CardListRequestCoverageTest {
                     ACCOUNT_FILTER, CARD_FILTER, "003",
                     null, null, null, null, null, null, null,
                     new PageMetadata.PageCursorRequest("p", "n",
-                            PageMetadata.PagingDirection.FORWARD),
+                            PageMetadata.PagingDirection.FORWARD, null, false), false,
                     null, null);
 
             assertThat(request.accountIdFilter())

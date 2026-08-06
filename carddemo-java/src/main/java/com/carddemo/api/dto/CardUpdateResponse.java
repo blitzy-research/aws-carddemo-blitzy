@@ -230,12 +230,15 @@ import jakarta.validation.constraints.Size;
  *                           type neither interprets nor acts on.
  * @param navigationContext  the echoed navigation state, or {@code null} when the caller carries
  *                           none. Immutable request state, not a server session.
- * @param concurrencyToken   the opaque, integrity-protected description of the card as it stood when
- *                           this response was built, minted by
- *                           {@code com.carddemo.service.CardConcurrencyTokenService}, or {@code null}
- *                           on a shape that presents no card to confirm. Not a map field: it is the
- *                           sealed counterpart of the program work area the legacy transaction returns
- *                           with the screen at program line 550. A client stores it untouched and
+ * @param concurrencyToken   the opaque, integrity-protected conversation state as this turn settled on
+ *                           it: the state-machine position the turn reached and the card image it
+ *                           fetched, sealed together by
+ *                           {@code com.carddemo.service.CardConcurrencyTokenService}. Freshly sealed on
+ *                           every turn rather than echoed back from the request - echoing would freeze
+ *                           the machine at whatever state the client last held and no follow-up turn
+ *                           could ever reach the validate, confirm or write arms. Not a map field: it is
+ *                           the sealed counterpart of the program work area the legacy transaction
+ *                           returns with the screen at program line 550. A client stores it untouched and
  *                           echoes it on the confirming {@link CardUpdateRequest}; it carries no
  *                           readable structure, so nothing may be parsed out of it, compared against
  *                           another card's proof or used for anything but that echo. Carried without

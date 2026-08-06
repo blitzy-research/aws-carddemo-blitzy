@@ -31,6 +31,7 @@ import com.carddemo.service.AccountViewService;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.AccountUpdateCommand;
 import com.carddemo.service.AccountUpdateOutcome;
+import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenInputState;
 import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.service.SensitiveFieldEncryptionService;
@@ -151,7 +152,7 @@ class AccountControllerTest {
                 new AccountProtectedDataAdapter(new SensitiveFieldEncryptionService(FIXTURE_KEY));
         // The real converter rather than a mock: it holds no state, performs a positional copy and is the
         // seam under test here, so stubbing it would measure the stub instead of the crossing.
-        screenStateAdapter = new ScreenStateAdapter();
+        screenStateAdapter = new ScreenStateAdapter(new NavigationService());
         accountUpdateContractAdapter = new AccountUpdateContractAdapter(screenStateAdapter);
         meterRegistry = new SimpleMeterRegistry();
         controller = new AccountController(accountViewService, accountUpdateService,
@@ -226,6 +227,34 @@ class AccountControllerTest {
                 AccountViewService.FilterFlag.VALID, AccountViewService.FilterFlag.VALID,
                 account != null, customer != null, accountPresented, customerPresented,
                 false, false, false, "LONG TEXT");
+    }
+
+    /**
+     * Builds a view result carrying the two filter states and the two decoration conditions the turn
+     * establishes for them.
+     *
+     * <p>The decoration conditions are supplied rather than derived, because the turn is what establishes
+     * them - the unusable condition unconditionally from the flag, the unsupplied one only on a re-entry -
+     * and a fixture that recomputed them would be asserting its own arithmetic instead of the projection.
+     *
+     * @param accountFilter the account-filter state the turn settled on
+     * @param customerFilter the customer-filter state the turn settled on
+     * @param filterInError whether the turn marked the filter unusable
+     * @param filterMissingOnReEntry whether the turn marked the filter unsupplied on a re-entry
+     * @return the result
+     */
+    private static AccountViewService.AccountViewResult filterResult(
+            final AccountViewService.FilterFlag accountFilter,
+            final AccountViewService.FilterFlag customerFilter,
+            final boolean filterInError,
+            final boolean filterMissingOnReEntry) {
+        return new AccountViewService.AccountViewResult(
+                "account-view", ScreenNavigationState.empty(), header(),
+                AccountViewService.Presentation.MAP, null, null,
+                ACCOUNT_ID, "ERROR TEXT", "INFO TEXT", "ACCTSID", true, false,
+                accountFilter, customerFilter,
+                false, false, false, false,
+                filterInError, filterMissingOnReEntry, false, "LONG TEXT");
     }
 
     /**
@@ -342,7 +371,7 @@ class AccountControllerTest {
         void theSubmittedIdentifierIsTheOnlyPopulatedMember() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            controller.viewAccount(ACCOUNT_ID, "DFHENTER", NavigationContext.empty());
+            controller.viewAccount(ACCOUNT_ID, "DFHENTER", NavigationContext.empty(), identityOf(UserType.USER));
 
             ArgumentCaptor<ScreenInputState> captor = ArgumentCaptor.forClass(ScreenInputState.class);
             verify(accountViewService).viewAccount(eq("DFHENTER"), captor.capture(), any());
@@ -364,14 +393,15 @@ class AccountControllerTest {
         void anAbsentIdentifierReachesTheTransactionAsAbsent() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            controller.viewAccount(null, null, null);
+            controller.viewAccount(null, null, null, identityOf(UserType.USER));
 
             ArgumentCaptor<ScreenInputState> captor = ArgumentCaptor.forClass(ScreenInputState.class);
             // An absent body reaches the transaction as the empty carried state rather than as a null
             // reference, which is what this screen already treats as no carry-over: its own absence test
             // answers identically for a null reference and for an all-blank state.
             verify(accountViewService).viewAccount(isNull(), captor.capture(),
-                    eq(ScreenNavigationState.empty()));
+                    eq(ScreenNavigationState.empty()
+                            .reconciledWith("TESTUSR1", UserType.USER)));
             assertThat(captor.getValue().accountId()).isNull();
         }
 
@@ -383,12 +413,150 @@ class AccountControllerTest {
                     "B", "SMITH", "00000000456", "Y", "4111111111111111", "CACTVWA", "COACTVW");
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            controller.viewAccount(ACCOUNT_ID, "DFHPF03", echoed);
+            controller.viewAccount(ACCOUNT_ID, "DFHPF03", echoed, identityOf(UserType.USER));
 
             // Every one of the sixteen members crosses positionally, so the state the transaction receives
             // is the echoed record component for component and nothing was trimmed, dropped or defaulted.
             verify(accountViewService).viewAccount(eq("DFHPF03"), any(),
-                    eq(new ScreenStateAdapter().toNavigationState(echoed)));
+                    eq(new ScreenStateAdapter(new NavigationService())
+                            .toNavigationState(echoed, identityOf(UserType.USER))));
+        }
+
+        @Test
+        @DisplayName("the identity the transaction reads is the authenticated one, not the one the client "
+                + "echoed, so a standard user cannot present itself as an administrator")
+        void theTransactionReadsTheAuthenticatedIdentity() {
+            NavigationContext claimingAdmin = new NavigationContext("CAVW", "COMEN01C", "CAVW",
+                    "COACTVWC", "SOMEBODY", "A", NavigationContext.ProgramContext.REENTER, null,
+                    null, null, null, null, null, null, null, null);
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            controller.viewAccount(ACCOUNT_ID, null, claimingAdmin, identityOf(UserType.USER));
+
+            ArgumentCaptor<ScreenNavigationState> captor =
+                    ArgumentCaptor.forClass(ScreenNavigationState.class);
+            verify(accountViewService).viewAccount(any(), any(), captor.capture());
+            assertThat(captor.getValue().userId()).isEqualTo("TESTUSR1");
+            assertThat(captor.getValue().userType()).isEqualTo(UserType.USER.getCode());
+        }
+
+        @Test
+        @DisplayName("an echoed program name that names no destination reaches the transaction as blank "
+                + "rather than as a terminal failure, because a blank nomination is what makes the "
+                + "calling screen's default apply")
+        void anUnresolvableProgramNominationReachesTheTransactionAsBlank() {
+            NavigationContext invented = new NavigationContext("CAVW", "NOTAPGM1", "CAVW", "ALSONOPE",
+                    "USER0001", "U", NavigationContext.ProgramContext.REENTER, null, null, null,
+                    null, null, null, null, null, null);
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            ResponseEntity<AccountViewResponse> answer =
+                    controller.viewAccount(ACCOUNT_ID, null, invented, identityOf(UserType.USER));
+
+            assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
+            ArgumentCaptor<ScreenNavigationState> captor =
+                    ArgumentCaptor.forClass(ScreenNavigationState.class);
+            verify(accountViewService).viewAccount(any(), any(), captor.capture());
+            assertThat(captor.getValue().fromProgram()).isNull();
+            assertThat(captor.getValue().toProgram()).isNull();
+            // The rest of the turn is untouched: the transaction identifiers the estate declares and the
+            // re-entry gate both survive the screening.
+            assertThat(captor.getValue().fromTransactionId()).isEqualTo("CAVW");
+            assertThat(captor.getValue().reEntry()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("The view route's two filter states become ordered field-level findings")
+    class ViewFilterFindings {
+
+        @Test
+        @DisplayName("a filter that was never supplied reports as unsupplied, which the legacy shows with "
+                + "the marker beside the field rather than only with a colour change")
+        void anUnsuppliedFilterReportsAsUnsupplied() {
+            when(accountViewService.viewAccount(any(), any(), any()))
+                    .thenReturn(filterResult(AccountViewService.FilterFlag.BLANK,
+                            AccountViewService.FilterFlag.VALID, false, true));
+
+            AccountViewResponse body =
+                    controller.viewAccount(null, null, null, identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.fieldErrors()).hasSize(1);
+            assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("accountIdFilter");
+            assertThat(body.fieldErrors().get(0).screenFieldId()).isEqualTo("ACCTSID");
+            assertThat(body.fieldErrors().get(0).state())
+                    .isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(body.fieldErrors().get(0).message()).isEqualTo("ERROR TEXT");
+        }
+
+        @Test
+        @DisplayName("a filter that was supplied and cannot be used reports as unusable, so the two states "
+                + "stay distinguishable rather than collapsing onto one flag")
+        void anUnusableFilterReportsAsUnusable() {
+            when(accountViewService.viewAccount(any(), any(), any()))
+                    .thenReturn(filterResult(AccountViewService.FilterFlag.NOT_OK,
+                            AccountViewService.FilterFlag.VALID, true, false));
+
+            AccountViewResponse body =
+                    controller.viewAccount("0000000000A", null, null, identityOf(UserType.USER))
+                            .getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.fieldErrors()).hasSize(1);
+            assertThat(body.fieldErrors().get(0).state())
+                    .isEqualTo(ErrorResponse.FieldState.INVALID);
+        }
+
+        @Test
+        @DisplayName("an unsupplied filter reports nothing on a first entry, because the operator has not "
+                + "been asked yet - the same gate the field-decoration macro applies")
+        void anUnsuppliedFilterReportsNothingOnAFirstEntry() {
+            when(accountViewService.viewAccount(any(), any(), any()))
+                    .thenReturn(filterResult(AccountViewService.FilterFlag.BLANK,
+                            AccountViewService.FilterFlag.VALID, false, false));
+
+            AccountViewResponse body =
+                    controller.viewAccount(null, null, null, identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.fieldErrors()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the customer-master miss reports as its own finding after the account one, which is "
+                + "how it is told apart on a screen with a single input item")
+        void theCustomerMissReportsAsItsOwnFindingAfterTheAccountOne() {
+            when(accountViewService.viewAccount(any(), any(), any()))
+                    .thenReturn(filterResult(AccountViewService.FilterFlag.NOT_OK,
+                            AccountViewService.FilterFlag.NOT_OK, true, false));
+
+            AccountViewResponse body =
+                    controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER))
+                            .getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::fieldName)
+                    .as("the account filter is edited before the customer master is ever read, so its "
+                            + "finding precedes the customer one")
+                    .containsExactly("accountIdFilter", "customerId");
+            assertThat(body.fieldErrors().get(1).screenFieldId())
+                    .as("this screen has one input item, so the customer state names no map field")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a turn with both filters valid publishes an empty finding list rather than none, so "
+                + "a clean screen is distinguishable from one whose findings were never established")
+        void aCleanTurnPublishesAnEmptyFindingList() {
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            AccountViewResponse body =
+                    controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.fieldErrors()).isNotNull().isEmpty();
         }
     }
 
@@ -402,7 +570,7 @@ class AccountControllerTest {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
             AccountViewResponse body =
-                    controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+                    controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.transactionName()).isEqualTo("CAVW");
@@ -421,7 +589,7 @@ class AccountControllerTest {
                     result(null, null, null, false, false,
                             AccountViewService.Presentation.TRANSFER));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, "DFHPF03", null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, "DFHPF03", null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.transactionName()).isNull();
@@ -437,7 +605,7 @@ class AccountControllerTest {
         void theAccountGroupIsCarriedAcrossWhenPresented() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.accountId()).isEqualTo(ACCOUNT_ID);
@@ -461,7 +629,7 @@ class AccountControllerTest {
                     result(header(), account(), customer(), false, true,
                             AccountViewService.Presentation.MAP));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.accountStatus()).isNull();
@@ -479,7 +647,7 @@ class AccountControllerTest {
                     result(header(), null, customer(), true, true,
                             AccountViewService.Presentation.MAP));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.accountStatus()).isNull();
@@ -491,7 +659,7 @@ class AccountControllerTest {
         void theUnregulatedCustomerItemsAreCarriedAcross() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.customerId()).isEqualTo("000000011");
@@ -512,7 +680,7 @@ class AccountControllerTest {
         void theCityItemIsPopulatedFromTheThirdAddressLine() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.city()).isEqualTo("Detroit");
@@ -525,7 +693,7 @@ class AccountControllerTest {
                     result(header(), account(), customer(), true, false,
                             AccountViewService.Presentation.MAP));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.customerId()).isNull();
@@ -546,7 +714,7 @@ class AccountControllerTest {
         void theRegulatedComponentsArriveMasked() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.dateOfBirth()).isEqualTo("*".repeat(BIRTH_DATE.length()));
@@ -561,7 +729,7 @@ class AccountControllerTest {
         void anAbsentRegulatedColumnArrivesAbsent() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.ssn()).isNull();
@@ -576,7 +744,7 @@ class AccountControllerTest {
                     result(header(), account(), null, true, true,
                             AccountViewService.Presentation.MAP));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.ssn()).isNull();
@@ -595,7 +763,7 @@ class AccountControllerTest {
         void aLongPostcodeIsCutBack() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.zipCode()).isEqualTo("48226").hasSize(5);
@@ -607,7 +775,7 @@ class AccountControllerTest {
         void telephoneNumbersAreCutBackOnlyWhenTooLong() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.phoneNumber1()).isEqualTo("(313)555-0100").hasSize(13);
@@ -624,7 +792,7 @@ class AccountControllerTest {
                     result(header(), account(), withoutContact, true, true,
                             AccountViewService.Presentation.MAP));
 
-            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null).getBody();
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
             assertThat(body.zipCode()).isNull();
@@ -643,7 +811,7 @@ class AccountControllerTest {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
             ResponseEntity<AccountViewResponse> answer =
-                    controller.viewAccount(ACCOUNT_ID, null, null);
+                    controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER));
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
             AccountViewResponse body = answer.getBody();
@@ -653,7 +821,12 @@ class AccountControllerTest {
             assertThat(body.inputError()).isTrue();
             assertThat(body.focusScreenFieldId()).isEqualTo("ACCTSID");
             assertThat(body.nextRoute()).isEqualTo("account-view");
-            assertThat(body.navigationContext()).isEqualTo(NavigationContext.empty());
+            // Empty in every member the turn produced, and carrying the authenticated identity in the two
+            // it does not produce: the record the response echoes names whoever the credential named.
+            assertThat(body.navigationContext())
+                    .isEqualTo(new NavigationContext(null, null, null, null, "TESTUSR1",
+                            UserType.USER.getCode(), null, null, null, null, null, null, null, null,
+                            null, null));
         }
 
         @Test
@@ -662,7 +835,7 @@ class AccountControllerTest {
         void theViewTurnIsTimedUnderItsPresentationArm() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
-            controller.viewAccount(ACCOUNT_ID, null, null);
+            controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.USER));
 
             assertThat(viewTimed(AccountViewService.Presentation.MAP.name())).isEqualTo(1L);
         }
@@ -674,7 +847,7 @@ class AccountControllerTest {
                     result(null, null, null, false, false,
                             AccountViewService.Presentation.TRANSFER));
 
-            controller.viewAccount(ACCOUNT_ID, "DFHPF03", null);
+            controller.viewAccount(ACCOUNT_ID, "DFHPF03", null, identityOf(UserType.USER));
 
             assertThat(viewTimed(AccountViewService.Presentation.TRANSFER.name()))
                     .isEqualTo(1L);
@@ -707,13 +880,15 @@ class AccountControllerTest {
             // claim now that a crossing exists: identity would survive a conversion that dropped a
             // component, whereas this compares all fifty-seven.
             assertThat(answer.getBody())
-                    .isEqualTo(accountUpdateContractAdapter.toResponse(composed));
+                    .isEqualTo(accountUpdateContractAdapter.toResponse(composed,
+                            identityOf(UserType.ADMIN)));
             // And the command the screen received is the submitted record component for component.
             ArgumentCaptor<AccountUpdateCommand> captor =
                     ArgumentCaptor.forClass(AccountUpdateCommand.class);
             verify(accountUpdateService).handle(captor.capture(), eq("DFHENTER"));
             assertThat(captor.getValue())
-                    .isEqualTo(accountUpdateContractAdapter.toCommand(submitted));
+                    .isEqualTo(accountUpdateContractAdapter.toCommand(submitted,
+                            identityOf(UserType.ADMIN)));
         }
 
         @Test
@@ -851,7 +1026,8 @@ class AccountControllerTest {
                     "DFHENTER", identityOf(UserType.USER)).getBody();
 
             assertThat(body).isNotNull();
-            final AccountUpdateResponse expected = accountUpdateContractAdapter.toResponse(composed);
+            final AccountUpdateResponse expected =
+                    accountUpdateContractAdapter.toResponse(composed, identityOf(UserType.USER));
             assertThat(body.error()).isEqualTo(expected.error());
             assertThat(body.errorMessage()).isEqualTo(expected.errorMessage());
             assertThat(body.focusScreenFieldId()).isEqualTo(expected.focusScreenFieldId());

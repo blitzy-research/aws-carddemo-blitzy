@@ -32,7 +32,6 @@ import java.util.Objects;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -159,17 +158,6 @@ public class ReportController {
     /** Period tag used when the ordered evaluation resolved no report type at all. */
     private static final String PERIOD_NONE = "none";
 
-    /**
-     * Prefix the framework's role convention puts in front of an authority name.
-     *
-     * <p>The two authority values this module grants are this prefix applied to the two names of
-     * {@link UserType}, which is what the security layer's own mapping produces. It is rebuilt from the
-     * enumeration here rather than copied as a literal, and rebuilt rather than imported because the API
-     * layer is not permitted to depend on the configuration layer. Deriving it means a renamed
-     * enumeration constant moves both ends together instead of leaving a stale string behind.
-     */
-    private static final String ROLE_AUTHORITY_PREFIX = "ROLE_";
-
     /** The report-request transaction. */
     private final ReportRequestService reportRequestService;
 
@@ -241,8 +229,9 @@ public class ReportController {
         try {
             final NavigationContext echoedContext = request.navigationContext();
             final UserType authenticatedUserType = authenticatedUserTypeOf(authentication);
-            final String authenticatedUserId =
-                    (authenticatedUserType == null) ? null : authentication.getName();
+            final String authenticatedUserId = (authenticatedUserType == null)
+                    ? null
+                    : ScreenStateAdapter.authenticatedUserId(authentication);
 
             final ReportRequestService.ReportRequestResult result = this.reportRequestService
                     .processReportRequest(this.reportContractAdapter.toScreenInput(request), retryToken);
@@ -265,8 +254,11 @@ public class ReportController {
     /**
      * Reads the user type the presented credential carries.
      *
-     * <p>Resolved by matching the granted authorities against the authority each user type maps to, so
-     * nothing is inferred from the absence of one: an identity that carries neither known authority - an
+     * <p>Delegated to the one reader every authenticated screen route uses, rather than resolved again
+     * here. Resolution is the inverse of the single mapping the security layer applies when it grants the
+     * authority, so two independent copies of it could drift apart and leave one route reading a type
+     * another route would not - which is precisely the divergence a single authenticated boundary exists to
+     * prevent. Nothing is inferred from an absence: an identity that carries neither declared authority - an
      * anonymous caller, or this handler driven without a security chain - resolves to {@code null} and the
      * response then asserts no identity rather than a guessed one. The security chain grants exactly one of
      * the two for a verified credential, so a caller that reached this route resolves to that one.
@@ -275,18 +267,7 @@ public class ReportController {
      * @return the user type the credential carries, or {@code null} when no known authority is present
      */
     private static UserType authenticatedUserTypeOf(final Authentication authentication) {
-        if (authentication == null) {
-            return null;
-        }
-        for (final GrantedAuthority granted : authentication.getAuthorities()) {
-            final String value = granted.getAuthority();
-            for (final UserType candidate : UserType.values()) {
-                if ((ROLE_AUTHORITY_PREFIX + candidate.name()).equals(value)) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
+        return ScreenStateAdapter.authenticatedUserType(authentication);
     }
 
     /**

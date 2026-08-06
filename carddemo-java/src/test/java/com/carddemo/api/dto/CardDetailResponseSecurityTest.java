@@ -84,13 +84,13 @@ class CardDetailResponseSecurityTest {
                 "CCDL", "TITLE ONE", "07/19/22", "COCRDSLC", "TITLE TWO", "14:23:07",
                 ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME,
                 "Y", EXPIRY_MONTH, EXPIRY_YEAR,
-                "INFORMATION LINE", "ERROR LINE", true, "CARDSID", "route/next", navigation);
+                "INFORMATION LINE", "ERROR LINE", true, List.of(), "CARDSID", "route/next", navigation);
     }
 
     private static CardDetailResponse empty() {
         return new CardDetailResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                false, null, null, null);
+                false, List.of(), null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -194,7 +194,7 @@ class CardDetailResponseSecurityTest {
             CardDetailResponse other = new CardDetailResponse(
                     "CCDL", "TITLE ONE", "07/19/22", "COCRDSLC", "TITLE TWO", "14:23:07",
                     "00000000001", "5500005555555559", "A", "Y", "11", "2031",
-                    "INFORMATION LINE", "ERROR LINE", true, "CARDSID", "route/next", null);
+                    "INFORMATION LINE", "ERROR LINE", true, List.of(), "CARDSID", "route/next", null);
             assertThat(other.toString()).isEqualTo(populated().toString());
         }
     }

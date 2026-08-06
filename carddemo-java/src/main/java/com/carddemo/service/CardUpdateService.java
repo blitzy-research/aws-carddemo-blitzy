@@ -157,8 +157,9 @@ import com.carddemo.util.PfKeyTranslator;
  * <h2>Concurrency</h2>
  *
  * <p>The entity carries a row version and the persistence provider checks it when the update is flushed.
- * This class catches that failure and translates it to {@code OptimisticLockConflictException}; the
- * conflict is recoverable and non-abending and never reaches the abend service. No pessimistic mode is
+ * This class catches that failure and records it on the turn as the write outcome the legacy sets at lines
+ * 1487 to 1490, so the conflict is reported on the screen the operator is holding rather than raised past
+ * it; the conflict is recoverable and non-abending and never reaches the abend service. No pessimistic mode is
  * used anywhere - there is no lock hint and no lock-mode reference in this class. The row version plus
  * the database's read-committed isolation is a <em>strict improvement</em> over the legacy baseline of
  * uncommitted read integrity with no recovery and no journalling, and is recorded as such in the
@@ -3881,11 +3882,17 @@ public final class CardUpdateService {
      * Reassigning the identifier of a managed row is not permitted and would achieve nothing.
      *
      * <p>The write is flushed immediately so the row-version check happens where it can be translated,
-     * rather than at the end of the transaction where the failure would surface outside this method.
+     * rather than at the end of the transaction where the failure would surface outside this method and
+     * outside the state machine that has to report it.
+     *
+     * <p>Neither failure path raises. Lines 1487 to 1490 test the response code and answer any non-normal
+     * one with the single statement {@code SET LOCKED-BUT-UPDATE-FAILED TO TRUE}, after which the paragraph
+     * falls through its own exit and the turn composes a screen carrying that outcome. A row-version
+     * disagreement and any other write failure are two ways of reaching the same non-normal response, so
+     * both are recorded on the turn and both leave the transaction marked for rollback.
      *
      * @param state the turn's working storage
      * @param lockedRecord the row read for update
-     * @throws OptimisticLockConflictException when the row version check fails on flush
      */
     private void rewriteCardRecord(final TurnState state, final Card lockedRecord) {
         // MOVE CC-ACCT-ID-N TO CARD-UPDATE-ACCT-ID, line 1463.
@@ -3921,15 +3928,24 @@ public final class CardUpdateService {
             // The working copy now holds what was written, so the projection reflects it.
             state.foldedRecordEmbossedName = state.newEmbossedName;
         } catch (final OptimisticLockingFailureException conflict) {
-            // The row version disagreed. The transaction cannot continue, so this is raised rather than
-            // returned - carrying the legacy's own text for the same outcome, and never abending.
+            // The row version disagreed, which is one of the ways the provider reports what lines 1487 to
+            // 1490 report as a non-normal response code. The legacy answer to any such response is a single
+            // statement - SET LOCKED-BUT-UPDATE-FAILED TO TRUE - after which the paragraph falls through
+            // its own exit and the turn goes on to compose a screen. It does not abend, does not abandon
+            // the conversation, and does not answer the operator with anything other than that screen.
+            //
+            // So this is absorbed rather than raised, exactly as the arm below absorbs every other write
+            // failure. Raising it instead would replace the recoverable screen the route promises with a
+            // conflict body, which is an outcome the legacy screen has no way to produce: the operator
+            // would lose the keyed changes and the message telling them the record moved, and would be
+            // given a transport-level error in their place. The transaction is marked for rollback because
+            // it cannot continue; the state machine reads the outcome and composes the notice.
             LOG.warn("Card update refused by row version: rule=optimistic-lock resource={} outcome={}"
                     + " failureChain={}", LEGACY_CARD_FILE_NAME.trim(),
                     WriteOutcome.UPDATE_FAILED_AFTER_LOCK, FailureDiagnostics.failureChainOf(conflict));
             state.writeOutcome = WriteOutcome.UPDATE_FAILED_AFTER_LOCK;
             state.returnMessage = OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED;
-            throw new OptimisticLockConflictException(state.writeOutcome.conflictKind(),
-                    ENTITY_NAME_CARD, lockedRecord.getCardNum(), conflict);
+            this.recordWriter.markRollbackOnly();
         } catch (final RuntimeException failure) {
             // Lines 1488 to 1492: a write that did not succeed for any other reason is reported on the
             // screen, exactly as the source reports it, and the turn continues.

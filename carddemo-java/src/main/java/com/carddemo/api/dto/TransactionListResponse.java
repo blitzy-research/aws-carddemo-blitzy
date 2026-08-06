@@ -54,6 +54,25 @@ public record TransactionListResponse(
         @Size(max = TransactionListResponse.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
         @Size(max = TransactionListResponse.MESSAGE_LENGTH) String message,
         boolean error,
+
+        /* The field-level detail behind the flag above, in the order the turn established it. Never
+         * null; empty when the turn raised nothing. Two states rather than one, because the legacy
+         * screen distinguishes a selector or filter that was left blank from one that was supplied and
+         * cannot be used, and marks the two differently. */
+        List<ErrorResponse.FieldError> fieldErrors,
+
+        /* The identifier a row selection nominated, for the client to carry to the transaction-view
+         * screen, which takes it as a separate input. Blank when this turn nominated none. The legacy
+         * carried it in the communication area at COTRN00C line 61 and transferred control itself; here
+         * the client makes the next call, so the value has to be published rather than held. */
+        @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String selectedTransactionId,
+
+        /* Whether the client keeps the page it is displaying. The legacy answers a browse that walked
+         * past the last page by re-sending the SAME screen with a message rather than by clearing it, so
+         * a boundary response that said nothing here would leave a client unable to tell "here is an
+         * empty page" from "keep what you have and read the message". */
+        boolean preserveDisplayedPage,
+
         @Size(max = TransactionListResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String title01,
         @Size(max = TransactionListResponse.SCREEN_TITLE_LENGTH) String title02,
@@ -104,63 +123,6 @@ public record TransactionListResponse(
     public static final String MESSAGE_REACHED_TOP = "You have reached the top of the page...";
 
     /**
-     * Compatibility constructor for producers that have not yet projected the combined continuation.
-     */
-    public TransactionListResponse(final List<TransactionRow> rows,
-                                   final PageMetadata pageMetadata,
-                                   final NavigationContext navigationContext,
-                                   final String nextRoute,
-                                   final String transactionIdFilter,
-                                   final String displayedPageNumber,
-                                   final String message,
-                                   final boolean error,
-                                   final String focusScreenFieldId,
-                                   final String title01,
-                                   final String title02,
-                                   final String currentDate,
-                                   final String currentTime,
-                                   final String transactionName,
-                                   final String programName) {
-        this(rows, pageMetadata, ContinuationFactory.from(rows, pageMetadata, displayedPageNumber),
-                navigationContext, nextRoute, transactionIdFilter,
-                displayedPageNumber, message, error, focusScreenFieldId, title01, title02,
-                currentDate, currentTime, transactionName, programName);
-    }
-
-    private static final class ContinuationFactory {
-
-        private static TransactionListRequest.ScreenContinuation from(
-                final List<TransactionRow> rows,
-                final PageMetadata pageMetadata,
-                final String displayedPageNumber) {
-            if (rows != null && rows.size() > PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
-                return null;
-            }
-            if (pageMetadata == null && displayedPageNumber == null
-                    && (rows == null || rows.isEmpty())) {
-                return null;
-            }
-            final List<String> displayedIdentifiers = rows == null
-                    ? List.of()
-                    : rows.stream()
-                            .map(row -> row == null || row.transactionId() == null
-                                    ? ""
-                                    : row.transactionId())
-                            .toList();
-            return new TransactionListRequest.ScreenContinuation(
-                    pageMetadata == null ? null : pageMetadata.previousCursorKey(),
-                    pageMetadata == null ? null : pageMetadata.nextCursorKey(),
-                    pageMetadata == null ? null : pageMetadata.direction(),
-                    displayedPageNumber,
-                    pageMetadata != null && pageMetadata.hasMorePages(),
-                    displayedIdentifiers);
-        }
-
-        private ContinuationFactory() {
-        }
-    }
-
-    /**
      * Normalizes the row collection and refuses a page longer than the screen can present.
      *
      * <p>A {@code null} collection becomes the empty immutable list, and a non-{@code null} one is
@@ -192,6 +154,7 @@ public record TransactionListResponse(
      */
     public TransactionListResponse {
         rows = (rows == null) ? List.of() : List.copyOf(rows);
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
         if (rows.size() > PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
             throw new IllegalArgumentException("rows may hold at most "
                     + PageMetadata.TRANSACTION_LIST_PAGE_SIZE + " entries, because that is how many"
@@ -206,13 +169,16 @@ public record TransactionListResponse(
 
     /**
      * One row of the transaction-list screen &mdash; the five values a single row family of
-     * {@code app/cpy-bms/COTRN00.CPY} presents, modelled once instead of ten times.
+     * {@code app/cpy-bms/COTRN00.CPY} presents plus the slot it occupies, modelled once instead of ten
+     * times.
      *
      * <p>Every family has an identical shape, so one record type carried in a list reproduces the
      * screen exactly while collapsing what would otherwise be fifty discrete components. The
      * generated field-name suffixes are not reproduced - they are inconsistent artefacts of how the
-     * map generator forms names and carry no meaning - and a row's position is its index in the
-     * enclosing list. The generated length, flag and attribute items and the terminal-area filler are
+     * map generator forms names and carry no meaning - but a row's slot <em>is</em> carried, because
+     * its index in the enclosing list is not the same thing: a backward browse fills the screen's
+     * slots downward from the last, so on a partial backward page the two differ and the selector a
+     * client returns is addressed by slot. The generated length, flag and attribute items and the terminal-area filler are
      * likewise absent as terminal plumbing.</p>
      *
      * <p>Every component may be {@code null} or blank, because a row the browse did not fill is blank
@@ -232,6 +198,12 @@ public record TransactionListResponse(
      *     rescales, rounds or formats it. May be {@code null} where the row is blank.
      */
     public record TransactionRow(
+            /* The one-based slot on the screen this row occupies, which the list position does not
+             * carry. A backward page fills the slots downward from the last, so a partial backward page
+             * presents its rows at the bottom and the list position and the slot differ; the selector a
+             * client sends back is addressed by slot, so a client that inferred the slot from the
+             * position would mark its action against a different transaction than the operator chose. */
+            int screenRow,
             @Size(max = TransactionListResponse.SELECTION_LENGTH) String selection,
             @Size(max = TransactionListResponse.TRANSACTION_ID_LENGTH) String transactionId,
             @Size(max = TransactionListResponse.DISPLAYED_DATE_LENGTH) String displayedDate,
@@ -244,7 +216,8 @@ public record TransactionListResponse(
         @Override
         public String toString() {
             return "TransactionRow["
-                    + "selection=" + selection
+                    + "screenRow=" + screenRow
+                    + ", selection=" + selection
                     + ", transactionId=" + REDACTION_PLACEHOLDER
                     + ", displayedDate=" + displayedDate
                     + ", description=" + REDACTION_PLACEHOLDER
@@ -285,6 +258,9 @@ public record TransactionListResponse(
                 + ", displayedPageNumber=" + displayedPageNumber
                 + ", message=" + message
                 + ", error=" + error
+                + ", fieldErrors=" + fieldErrors
+                + ", selectedTransactionId=" + REDACTION_PLACEHOLDER
+                + ", preserveDisplayedPage=" + preserveDisplayedPage
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", title01=" + title01
                 + ", title02=" + title02

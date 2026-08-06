@@ -19,9 +19,12 @@ package com.carddemo.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.carddemo.api.dto.BatchJobLaunchRequest;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 
 import jakarta.validation.MessageInterpolator;
 import java.lang.reflect.Method;
@@ -111,20 +114,21 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("the public surface is the four bean contributions plus the CORS callback")
-    void theHookDeclaresOnlyItsFiveFrameworkContributions() {
+    @DisplayName("the public surface is the five bean contributions plus the CORS callback")
+    void theHookDeclaresOnlyItsSixFrameworkContributions() {
         List<Method> declared = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .filter(method -> Modifier.isPublic(method.getModifiers()))
                 .toList();
 
-        assertThat(declared).hasSize(5);
+        assertThat(declared).hasSize(6);
         assertThat(declared).extracting(Method::getName)
                 .containsExactlyInAnyOrder(
                         "addCorsMappings",
                         "corsConfigurationSource",
                         "requestBodyLimitFilter",
                         "strictScalarCoercionCustomizer",
+                        "declaredClosedBodyCustomizer",
                         "defaultValidator");
         assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings")
                         || method.getName().equals("requestBodyLimitFilter"))
@@ -144,6 +148,7 @@ class WebMvcConfigBoundaryTest {
                         CorsConfigurationSource.class,
                         FilterRegistrationBean.class,
                         Jackson2ObjectMapperBuilderCustomizer.class,
+                        Jackson2ObjectMapperBuilderCustomizer.class,
                         LocalValidatorFactoryBean.class);
         assertThat(Arrays.stream(WebMvcConfig.class.getDeclaredFields())
                 .filter(field -> !Modifier.isStatic(field.getModifiers()))
@@ -154,18 +159,19 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("all four bean-producing methods are accounted for by annotation")
-    void theAnnotatedBeanMethodsAreTheFourDeclaredContributions() {
+    @DisplayName("all five bean-producing methods are accounted for by annotation")
+    void theAnnotatedBeanMethodsAreTheFiveDeclaredContributions() {
         List<Method> beanMethods = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Bean.class))
                 .toList();
 
-        assertThat(beanMethods).hasSize(4);
+        assertThat(beanMethods).hasSize(5);
         assertThat(beanMethods).extracting(Method::getName)
                 .containsExactlyInAnyOrder(
                         "corsConfigurationSource",
                         "requestBodyLimitFilter",
                         "strictScalarCoercionCustomizer",
+                        "declaredClosedBodyCustomizer",
                         "defaultValidator");
     }
 
@@ -256,6 +262,102 @@ class WebMvcConfigBoundaryTest {
      * @param text the value a screen field would carry, always external text
      */
     private record TextHolder(String text) {
+    }
+
+    /**
+     * Builds the mapper the web layer actually binds with: tolerant of an unknown property, because the
+     * configuration file disables the mapper-wide failure so a screen body carrying an echoed member the
+     * server no longer reads still binds, and then narrowed by the module's own two customisers.
+     *
+     * @return a mapper configured exactly as the served one is
+     */
+    private static ObjectMapper webLayerMapper() {
+        final Jackson2ObjectMapperBuilder builder = Jackson2ObjectMapperBuilder.json()
+                .featuresToDisable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        final WebMvcConfig hook = new WebMvcConfig();
+
+        hook.strictScalarCoercionCustomizer().customize(builder);
+        hook.declaredClosedBodyCustomizer().customize(builder);
+        return builder.build();
+    }
+
+    @Test
+    @DisplayName("a batch launch body carrying a property the surface does not declare is refused even "
+            + "though the mapper is configured to tolerate one, because a dropped launch parameter starts "
+            + "a run the caller believes was parameterised")
+    void aClosedLaunchBodyRefusesAnUndeclaredProperty() {
+        final ObjectMapper mapper = webLayerMapper();
+
+        assertThatThrownBy(() -> mapper.readValue("{\"interestParmDte\":\"2022071900\"}",
+                BatchJobLaunchRequest.class))
+                .as("a misspelling is refused rather than silently dropped")
+                .isInstanceOf(UnrecognizedPropertyException.class);
+        assertThatThrownBy(() -> mapper.readValue(
+                "{\"interestParmDate\":\"2022071900\",\"runIdentifier\":\"1\"}",
+                BatchJobLaunchRequest.class))
+                .as("and so is an extra property alongside a declared one")
+                .isInstanceOf(UnrecognizedPropertyException.class);
+    }
+
+    @Test
+    @DisplayName("the same mapper still binds a declared launch parameter unaltered, so closing the "
+            + "surface refuses nothing legitimate")
+    void aClosedLaunchBodyStillBindsEveryDeclaredParameter() throws Exception {
+        final BatchJobLaunchRequest bound = webLayerMapper().readValue("""
+                {"interestParmDate":"2022071900","reportStartDate":"2022-07-01",
+                 "reportEndDate":"2022-07-31","fileProbeMode":"account"}
+                """, BatchJobLaunchRequest.class);
+
+        assertThat(bound).isEqualTo(new BatchJobLaunchRequest("2022071900", "2022-07-01", "2022-07-31",
+                "account"));
+    }
+
+    @Test
+    @DisplayName("closing the launch surface leaves every other body as tolerant as the configuration "
+            + "file declares, so a screen turn echoing a member the server no longer reads still binds")
+    void closingTheLaunchSurfaceDoesNotCloseTheScreenBodies() throws Exception {
+        final ObjectMapper mapper = webLayerMapper();
+
+        assertThat(mapper.readValue("{\"text\":\"0000000001\",\"echoedByTheClient\":\"x\"}",
+                TextHolder.class).text())
+                .as("a type that declares no closure keeps the module-wide tolerance")
+                .isEqualTo("0000000001");
+        assertThat(mapper.readValue("{\"text\":\"0000000001\",\"echoedByTheClient\":\"x\"}",
+                TolerantHolder.class).text())
+                .as("and so does a type that declares tolerance explicitly")
+                .isEqualTo("0000000001");
+    }
+
+    @Test
+    @DisplayName("the closure follows the declaration rather than one named type, so a second body that "
+            + "declares itself closed is closed too and cannot be left silently open")
+    void theClosureFollowsTheDeclarationRatherThanOneNamedType() {
+        final ObjectMapper mapper = webLayerMapper();
+
+        assertThatThrownBy(() -> mapper.readValue("{\"text\":\"x\",\"undeclared\":\"y\"}",
+                ClosedHolder.class))
+                .as("a type this configuration has never heard of, closed by its own declaration")
+                .isInstanceOf(UnrecognizedPropertyException.class);
+    }
+
+    /**
+     * Stand-in for a body that declares itself closed, used to show that the rule follows the
+     * declaration and not a list of known types.
+     *
+     * @param text the single value the body declares
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
+    private record ClosedHolder(String text) {
+    }
+
+    /**
+     * Stand-in for a body that declares tolerance explicitly, used to show that an explicit tolerance is
+     * honoured rather than overridden.
+     *
+     * @param text the single value the body declares
+     */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
+    private record TolerantHolder(String text) {
     }
 
     @Test

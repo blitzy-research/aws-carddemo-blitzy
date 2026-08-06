@@ -268,18 +268,6 @@ public final class BatchJobController {
     /** Name of the path variable carrying the execution identifier. */
     public static final String EXECUTION_ID_PATH_VARIABLE = "executionId";
 
-    /** Body member naming the execution the framework assigned. */
-    public static final String FIELD_EXECUTION_ID = "executionId";
-
-    /** Body member naming the job, always one of {@link #LAUNCHABLE_JOB_NAMES}. */
-    public static final String FIELD_JOB_NAME = "jobName";
-
-    /** Body member carrying the framework's batch status by name. */
-    public static final String FIELD_STATUS = "status";
-
-    /** Body member carrying the framework's exit code. */
-    public static final String FIELD_EXIT_CODE = "exitCode";
-
     /**
      * The closed set of jobs this surface will start, one entry per registered job.
      *
@@ -501,12 +489,7 @@ public final class BatchJobController {
     public ResponseEntity<BatchJobLaunchResponse> launchTypedJob(
             @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName,
             @Valid @RequestBody(required = false) final BatchJobLaunchRequest launchRequest) {
-        final ResponseEntity<Map<String, Object>> response =
-                launchJob(jobName, parametersOf(launchRequest));
-        final Map<String, Object> body = Objects.requireNonNull(response.getBody());
-        return ResponseEntity.status(response.getStatusCode()).body(new BatchJobLaunchResponse(
-                (Long) body.get(FIELD_EXECUTION_ID),
-                (String) body.get(FIELD_JOB_NAME)));
+        return launchJob(jobName, parametersOf(launchRequest));
     }
 
     @Operation(summary = "Launch one batch job on demand",
@@ -534,7 +517,7 @@ public final class BatchJobController {
                         + "authority this surface requires."),
         @ApiResponse(responseCode = "404",
                 description = "The name is not one of the nine jobs this surface will start.")})
-    public ResponseEntity<Map<String, Object>> launchJob(
+    public ResponseEntity<BatchJobLaunchResponse> launchJob(
             @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName,
             @RequestParam final Map<String, String> jobParameters) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
@@ -564,14 +547,10 @@ public final class BatchJobController {
             throw registrationFault(stableJobName, notRegistered);
         }
 
-        final Map<String, Object> body = Map.of(
-                FIELD_EXECUTION_ID, executionId,
-                FIELD_JOB_NAME, stableJobName);
-
         recordLaunch(sample, stableJobName, OUTCOME_LAUNCHED);
         LOG.info("Batch job launched: job={} executionId={}", stableJobName, executionId);
 
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok(new BatchJobLaunchResponse(executionId, stableJobName));
     }
 
     /**
@@ -619,7 +598,7 @@ public final class BatchJobController {
                         + "operational control requires."),
         @ApiResponse(responseCode = "404",
                 description = "The name is not one of the nine jobs this surface will start.")})
-    public ResponseEntity<Map<String, Object>> startNextJobInstance(
+    public ResponseEntity<BatchJobLaunchResponse> startNextJobInstance(
             @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
 
@@ -656,14 +635,10 @@ public final class BatchJobController {
             throw new ValidationException(NOT_RESTARTABLE_MESSAGE);
         }
 
-        final Map<String, Object> body = Map.of(
-                FIELD_EXECUTION_ID, executionId,
-                FIELD_JOB_NAME, stableJobName);
-
         recordNextInstance(sample, stableJobName, OUTCOME_LAUNCHED);
         LOG.info("Batch job next instance started: job={} executionId={}", stableJobName, executionId);
 
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok(new BatchJobLaunchResponse(executionId, stableJobName));
     }
 
     /**
@@ -708,7 +683,7 @@ public final class BatchJobController {
         @ApiResponse(responseCode = "404",
                 description = "No such execution is held, or it belongs to a job this surface does not "
                         + "own.")})
-    public ResponseEntity<Map<String, Object>> restartJobExecution(
+    public ResponseEntity<BatchJobLaunchResponse> restartJobExecution(
             @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
 
@@ -742,15 +717,12 @@ public final class BatchJobController {
             throw registrationFault(stableJobName, notRegistered);
         }
 
-        final Map<String, Object> body = Map.of(
-                FIELD_EXECUTION_ID, restartedExecutionId,
-                FIELD_JOB_NAME, stableJobName);
-
         recordRestart(sample, stableJobName, OUTCOME_LAUNCHED);
         LOG.info("Batch job execution restarted: job={} executionId={} restartedAs={}", stableJobName,
                 executionId, restartedExecutionId);
 
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok(
+                new BatchJobLaunchResponse(restartedExecutionId, stableJobName));
     }
 
     /**
@@ -779,13 +751,7 @@ public final class BatchJobController {
                 description = "The execution was found and its bounded status is returned.")})
     public ResponseEntity<BatchJobExecutionResponse> readTypedJobExecution(
             @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
-        final ResponseEntity<Map<String, Object>> response = readJobExecution(executionId);
-        final Map<String, Object> body = Objects.requireNonNull(response.getBody());
-        return ResponseEntity.status(response.getStatusCode()).body(new BatchJobExecutionResponse(
-                (Long) body.get(FIELD_EXECUTION_ID),
-                (String) body.get(FIELD_JOB_NAME),
-                (String) body.get(FIELD_STATUS),
-                (String) body.get(FIELD_EXIT_CODE)));
+        return readJobExecution(executionId);
     }
 
     @Operation(summary = "Report one batch job execution",
@@ -811,7 +777,7 @@ public final class BatchJobController {
         @ApiResponse(responseCode = "404",
                 description = "No such execution is held, or it belongs to a job this surface does not "
                         + "own.")})
-    public ResponseEntity<Map<String, Object>> readJobExecution(
+    public ResponseEntity<BatchJobExecutionResponse> readJobExecution(
             @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
 
@@ -824,16 +790,12 @@ public final class BatchJobController {
         }
 
         final String stableJobName = report.jobName();
-        final Map<String, Object> body = Map.of(
-                FIELD_EXECUTION_ID, executionId,
-                FIELD_JOB_NAME, stableJobName,
-                FIELD_STATUS, report.status(),
-                FIELD_EXIT_CODE, report.exitCode());
 
         recordStatus(sample, stableJobName, OUTCOME_REPORTED);
         LOG.debug("Batch job execution reported: job={} executionId={}", stableJobName, executionId);
 
-        return ResponseEntity.ok(body);
+        return ResponseEntity.ok(new BatchJobExecutionResponse(
+                executionId, stableJobName, report.status(), report.exitCode()));
     }
 
     /**
@@ -851,10 +813,6 @@ public final class BatchJobController {
         putIfPresent(parameters, "reportStartDate", request.reportStartDate());
         putIfPresent(parameters, "reportEndDate", request.reportEndDate());
         putIfPresent(parameters, "fileProbeMode", request.fileProbeMode());
-        putIfPresent(parameters, "transactionBackupCurrentGeneration",
-                request.transactionBackupCurrentGeneration());
-        putIfPresent(parameters, "synthesizedTransactionCurrentGeneration",
-                request.synthesizedTransactionCurrentGeneration());
         return Map.copyOf(parameters);
     }
 

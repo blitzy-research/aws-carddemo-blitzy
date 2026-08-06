@@ -180,7 +180,7 @@ class ReportResponseRuleComplianceTest {
                 startDay, startYear, endMonth, endDay, endYear,
                 confirm, TRANSACTION_NAME, "CardDemo", "07/19/22", PROGRAM_NAME,
                 "Transaction Reports", "10:30:00", errorMessage, submissionAccepted, message,
-                generalError, focusScreenFieldId, "/api/menu/user", NavigationContext.empty());
+                generalError, List.of(), focusScreenFieldId, "/api/menu/user", NavigationContext.empty());
     }
 
     /**
@@ -198,7 +198,7 @@ class ReportResponseRuleComplianceTest {
                 null, null, null, null, null,
                 confirm, null, null, null, null,
                 null, null, errorMessage, false, null,
-                false, null, null, null);
+                false, List.of(), null, null, null);
     }
 
     /**
@@ -586,10 +586,10 @@ class ReportResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty-four components in screen order, the three "
+        @DisplayName("the response declares twenty-five components in screen order, the three "
                 + "selector positions, the resolved period, two date triples, the confirmation, the "
                 + "screen furniture and the routing block")
-        void theResponseDeclaresTwentyFourComponentsInScreenOrder() {
+        void theResponseDeclaresTwentyFiveComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(ReportResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
@@ -598,9 +598,9 @@ class ReportResponseRuleComplianceTest {
                     "startMonth", "startDay", "startYear",
                     "endMonth", "endDay", "endYear", "confirm", "transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "errorMessage",
-                    "submissionAccepted", "message", "generalError", "focusScreenFieldId",
+                    "submissionAccepted", "message", "generalError", "fieldErrors", "focusScreenFieldId",
                     "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(24);
+            assertThat(declared).hasSize(25);
             assertThat(declared)
                     .as("no separate derived report name survives on the wire")
                     .doesNotContainAnyElementsOf(REMOVED_COMPONENTS);
@@ -709,35 +709,35 @@ class ReportResponseRuleComplianceTest {
         private ReportResponse responseWith(final String componentName, final String value) {
             return switch (componentName) {
                 case "startMonth" -> new ReportResponse(null, null, null,null, value, null, null, null, null, null, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "startDay" -> new ReportResponse(null, null, null,null, null, value, null, null, null, null, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "startYear" -> new ReportResponse(null, null, null,null, null, null, value, null, null, null, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "endMonth" -> new ReportResponse(null, null, null,null, null, null, null, value, null, null, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "endDay" -> new ReportResponse(null, null, null,null, null, null, null, null, value, null, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "endYear" -> new ReportResponse(null, null, null,null, null, null, null, null, null, value, null, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "confirm" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, value, null, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "transactionName" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, value, null, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "title01" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, value, null, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "currentDate" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, value, null, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "programName" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, value, null, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "title02" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, value, null,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "currentTime" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, value,
-                        null, false, null, false, null, null, null);
+                        null, false, null, false, List.of(), null, null, null);
                 case "errorMessage" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                        value, false, null, false, null, null, null);
+                        value, false, null, false, List.of(), null, null, null);
                 case "focusScreenFieldId" -> new ReportResponse(null, null, null,null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                        null, false, null, false, value, null, null);
+                        null, false, null, false, List.of(), value, null, null);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
             };

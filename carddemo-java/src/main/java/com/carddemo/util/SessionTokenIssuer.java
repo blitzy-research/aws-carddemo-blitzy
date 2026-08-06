@@ -50,22 +50,38 @@ public interface SessionTokenIssuer {
      * Issues a session for an operator whose credential has verified.
      *
      * <p>Called only after verification, so the caller has already established that the operator exists
-     * and that the role is the one resolved from the credential record.
+     * and that both the stored type code and the authority resolved from it are the ones the credential
+     * record yielded.
      *
-     * <p><strong>An implementation may nevertheless re-check both, and the delivered one does.</strong>
+     * <p><strong>Why the stored code and the resolved authority are two arguments and not one.</strong>
+     * The legacy route split tests one condition - is the stored code the administrator letter - and its
+     * alternative is unconditional, so <em>every</em> other stored value, including one the estate never
+     * declared, resolves to the standard authority. The stored code and the resolved authority therefore
+     * genuinely differ for such a record: the code is whatever the record holds and the authority is the
+     * standard one. Collapsing them into a single argument forces an implementation to either re-derive
+     * the code from the authority - which invents a value the record does not carry - or to compare the
+     * two for equality, which refuses exactly the records the legacy admitted. Both are passed so that
+     * neither is guessed.
+     *
+     * <p><strong>An implementation may nevertheless re-check the record, and the delivered one does.</strong>
      * The reason is not distrust of the caller: a session has to carry something that lets a later
      * request find out whether these facts are <em>still</em> true, that something can only be derived
      * from the record, and so the record is read again regardless. Once it has been read, an operator
-     * who has been deleted, or whose stored type no longer matches the role being issued, is visible for
+     * who has been deleted, or whose stored type code is no longer the one being minted, is visible for
      * nothing - and issuing a session in either case would hand out a credential describing a record
      * that does not say what it says. An implementation that finds either condition refuses rather than
-     * returning a session, which is why this method is declared to throw.
+     * returning a session, which is why this method is declared to throw. What it must <em>not</em> do is
+     * require the stored code to equal the resolved authority's own code, because that is false for every
+     * record carrying an undeclared code and those records sign on successfully.
      *
      * @param userId the identifier the credential record is keyed by, never {@code null}
-     * @param userType the role resolved from that record, never {@code null}
+     * @param userType the authority resolved from that record, never {@code null}
+     * @param userTypeCode the raw one-character type code exactly as the record holds it, never
+     *                     {@code null}; the column is declared not-null, so an admitted operator always
+     *                     has one
      * @return the encoded session, without the scheme prefix
      * @throws IllegalStateException if the credential record no longer exists, or no longer carries the
-     *                               role being issued, at the moment the session is minted
+     *                               type code being issued, at the moment the session is minted
      */
-    String issue(String userId, UserType userType);
+    String issue(String userId, UserType userType, String userTypeCode);
 }

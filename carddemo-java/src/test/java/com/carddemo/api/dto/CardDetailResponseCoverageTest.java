@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>What is under test</h2>
  *
- * <p>The transport contract of the card-detail response: the eighteen components in the order the
+ * <p>The transport contract of the card-detail response: the nineteen components in the order the
  * screen presents them, the fourteen declared widths that bound fifteen of those components, the two
  * screen-field identities, the sixteen single-purpose texts, the wire form under the module's declared
  * serialisation settings, and the value semantics of a record that normalises nothing and computes
@@ -84,7 +84,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * response type precisely so a neighbouring screen's wider informational width cannot silently widen
  * this one. A test below pins it to forty and states the value it must not become.
  *
- * <h2>Five of the eighteen components are withheld from the diagnostic rendering</h2>
+ * <h2>Five of the nineteen components are withheld from the diagnostic rendering</h2>
  *
  * <p>This type declares a diagnostic override. {@code accountId}, {@code cardNumber},
  * {@code embossedName}, {@code expiryMonth} and {@code expiryYear} are replaced by a fixed stand-in,
@@ -115,12 +115,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("CardDetailResponse :: card-detail response contract of legacy transaction CCDL")
 class CardDetailResponseCoverageTest {
 
-    /** The eighteen components in declaration order. */
+    /** The nineteen components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02",
             "currentTime", "accountId", "cardNumber", "embossedName", "cardActiveStatus",
             "expiryMonth", "expiryYear", "infoMessage", "errorMessage", "generalError",
-            "focusScreenFieldId", "nextRoute", "navigationContext");
+            "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext");
 
     /** The fifteen components that declare a width bound. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
@@ -243,7 +243,7 @@ class CardDetailResponseCoverageTest {
                 "expiryYear".equals(component) ? value : null,
                 "infoMessage".equals(component) ? value : null,
                 "errorMessage".equals(component) ? value : null,
-                false,
+                false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
                 null);
@@ -252,7 +252,7 @@ class CardDetailResponseCoverageTest {
     /** @return a response in which every component is absent and the error indicator is clear. */
     private static CardDetailResponse empty() {
         return new CardDetailResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, null, null, null);
+                null, null, null, null, false, List.of(), null, null, null);
     }
 
     /**
@@ -265,7 +265,7 @@ class CardDetailResponseCoverageTest {
         return new CardDetailResponse(TRANSACTION_NAME, SCREEN_TITLE_LINE_1, CURRENT_DATE,
                 PROGRAM_NAME, SCREEN_TITLE_LINE_2, CURRENT_TIME, ACCOUNT_ID, CARD_NUMBER,
                 EMBOSSED_NAME, CARD_ACTIVE_STATUS, EXPIRY_MONTH, EXPIRY_YEAR,
-                CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false,
+                CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false, List.of(),
                 CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID, ROUTE, navigation);
     }
 
@@ -286,7 +286,7 @@ class CardDetailResponseCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the eighteen components are declared in the order the screen presents them")
+        @DisplayName("the nineteen components are declared in the order the screen presents them")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(CardDetailResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
@@ -419,7 +419,7 @@ class CardDetailResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("no member is declared beyond the eighteen accessors, so this type computes "
+        @DisplayName("no member is declared beyond the nineteen accessors, so this type computes "
                 + "nothing and composes nothing")
         void noMemberIsDeclaredBeyondTheAccessors() {
             List<String> instanceMethods =
@@ -941,15 +941,17 @@ class CardDetailResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("an absent member is omitted while the error indicator is always written, "
-                + "because a primitive has no absent state")
+        @DisplayName("an absent member is omitted while the error indicator and the finding list are "
+                + "always written, because a primitive has no absent state and an absent list became "
+                + "an empty one")
         void absentMembersAreOmittedAndTheIndicatorIsAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(empty());
 
-            assertThat(payload.size()).isEqualTo(1);
+            assertThat(payload.size()).isEqualTo(2);
             assertThat(payload.get("generalError").asBoolean()).isFalse();
+            assertThat(payload.get("fieldErrors").isEmpty()).isTrue();
             for (String component : EXPECTED_COMPONENTS) {
-                if (!"generalError".equals(component)) {
+                if (!List.of("generalError", "fieldErrors").contains(component)) {
                     assertThat(payload.has(component))
                             .as("%s is absent rather than written as null", component)
                             .isFalse();
@@ -973,7 +975,7 @@ class CardDetailResponseCoverageTest {
         void theErrorIndicatorIsIndependentOfTheErrorText() throws JsonProcessingException {
             JsonNode informationalOnly = payloadOf(displayed(null));
             JsonNode flaggedWithoutText = payloadOf(new CardDetailResponse(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, true, null, null,
+                    null, null, null, null, null, null, null, null, null, null, true, List.of(), null, null,
                     null));
 
             assertThat(informationalOnly.get("generalError").asBoolean())
@@ -1035,7 +1037,7 @@ class CardDetailResponseCoverageTest {
             List<String> renderedValues = List.of(TRANSACTION_NAME, SCREEN_TITLE_LINE_1,
                     CURRENT_DATE, PROGRAM_NAME, SCREEN_TITLE_LINE_2, CURRENT_TIME, ACCOUNT_ID,
                     CARD_NUMBER, EMBOSSED_NAME, CARD_ACTIVE_STATUS, EXPIRY_MONTH, EXPIRY_YEAR,
-                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, "null", "false",
+                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, "null", "false", "[]",
                     CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID, ROUTE, "null");
             StringBuilder expected = new StringBuilder("CardDetailResponse[");
             for (int index = 0; index < EXPECTED_COMPONENTS.size(); index++) {
@@ -1090,7 +1092,7 @@ class CardDetailResponseCoverageTest {
             String empty = new CardDetailResponse(TRANSACTION_NAME, SCREEN_TITLE_LINE_1,
                     CURRENT_DATE, PROGRAM_NAME, SCREEN_TITLE_LINE_2, CURRENT_TIME, null, null, null,
                     CARD_ACTIVE_STATUS, null, null,
-                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false,
+                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false, List.of(),
                     CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID, ROUTE, null).toString();
 
             assertThat(empty).isEqualTo(populated);
@@ -1164,9 +1166,9 @@ class CardDetailResponseCoverageTest {
                 + "response carrying the same text are distinguishable")
         void theErrorIndicatorParticipatesInEquality() {
             CardDetailResponse flagged = new CardDetailResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, "same", true, null, null, null);
+                    null, null, null, null, null, null, null, "same", true, List.of(), null, null, null);
             CardDetailResponse clear = new CardDetailResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, "same", false, null, null, null);
+                    null, null, null, null, null, null, null, "same", false, List.of(), null, null, null);
 
             assertThat(flagged).isNotEqualTo(clear);
         }

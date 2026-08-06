@@ -485,7 +485,15 @@ public record UserRequest(
                                 + " only, from PASSWDI at app/cpy-bms/COUSR01.CPY line 78 and"
                                 + " app/cpy-bms/COUSR02.CPY line 78. Accepted inbound and never"
                                 + " emitted outbound: the stored value is a one-way digest, so no"
-                                + " response in this package can echo it.")
+                                + " response in this package can echo it."
+                                + " REQUIRED on add, because a new record has no stored digest to carry"
+                                + " forward. CONDITIONALLY required on update, where three states are"
+                                + " distinguished: omitted leaves the credential unchanged and carries"
+                                + " the stored digest forward; present but blank is reported as a"
+                                + " missing field, which is the legacy map's own empty-item condition;"
+                                + " present and populated is hashed and replaces the stored digest."
+                                + " Rejected outright on list and delete, whose maps declare no"
+                                + " credential item at all.")
         String password,
 
         /* User-type item, width 1, COUSR01.CPY line 84 / COUSR02.CPY line 84 / COUSR03.CPY line 78.

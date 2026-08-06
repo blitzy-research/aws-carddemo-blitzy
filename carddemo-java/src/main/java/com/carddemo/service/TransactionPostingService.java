@@ -32,7 +32,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
@@ -44,6 +43,7 @@ import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
+import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
@@ -148,12 +148,13 @@ import com.carddemo.util.ZonedDecimalCodec;
  * leak across records, which is precisely what the per-record reset at lines 208 to 209 exists to
  * prevent. One container-managed instance is therefore safely shared.
  *
- * <p>The class and its transactional method are intentionally not {@code final}: the per-record
- * boundary {@link #post(DailyTransaction)} is transactional, and a class-based proxy cannot subclass
- * a final type. Because that proxy is what applies the transaction, a caller wanting one transaction
- * per record must invoke {@code post} on the injected bean rather than reach it through
- * {@link #postAll(Iterable, Consumer)}, which reproduces the mainline loop and runs inside whatever
- * unit of work its own caller established.
+ * <p>The per-record unit of work belongs to {@link PostingRecordTransactionBoundary} rather than to a
+ * transactional method on this class. That is not a style preference: this class reproduces the mainline
+ * loop in {@link #postAll(Iterable, Consumer)}, and a loop calling a transactional method on its own
+ * instance reaches the target directly, so no proxy is consulted and the annotation applies to none of
+ * the records the loop drives. Delegating to a separate bean removes the possibility of that split -
+ * {@link #post(DailyTransaction)} and the loop take the same path, and it is the transactional one.
+ * The class remains non-{@code final} because the framework still proxies it for other reasons.
  */
 @Service
 public class TransactionPostingService {
@@ -302,6 +303,13 @@ public class TransactionPostingService {
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
+    /**
+     * The record this program rewrites, named on a version conflict so a caller can say which record
+     * moved. Declared locally, as the two other services that raise the same conflict do, because the
+     * name is the operator-facing word for the record and not a shared identifier.
+     */
+    private static final String ACCOUNT_ENTITY_NAME = "Account";
+
     private final DailyTransactionRepository dailyTransactionRepository;
 
     private final TransactionRepository transactionRepository;
@@ -315,6 +323,8 @@ public class TransactionPostingService {
     private final RecordWriter recordWriter;
 
     private final AbendService abendService;
+
+    private final PostingRecordTransactionBoundary postingRecordTransactionBoundary;
 
     private final Clock clock;
 
@@ -335,6 +345,8 @@ public class TransactionPostingService {
      * @param recordWriter                         explicit create-only write boundary
      * @param abendService                         the estate's single abend path, reached from
      *                                             {@code 9999-ABEND-PROGRAM} at lines 707 to 711
+     * @param postingRecordTransactionBoundary     the per-record unit of work of lines 440 to 442, held
+     *                                             on its own bean so the mainline loop cannot bypass it
      * @param clock                                the time source the processing timestamp is built
      *                                             from at lines 692 to 705
      * @throws NullPointerException if any collaborator is {@code null}
@@ -347,6 +359,7 @@ public class TransactionPostingService {
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final RecordWriter recordWriter,
             final AbendService abendService,
+            final PostingRecordTransactionBoundary postingRecordTransactionBoundary,
             final Clock clock) {
         this.dailyTransactionRepository = Objects.requireNonNull(dailyTransactionRepository,
                 "dailyTransactionRepository must not be null");
@@ -361,6 +374,9 @@ public class TransactionPostingService {
                 "transactionCategoryBalanceRepository must not be null");
         this.recordWriter = Objects.requireNonNull(recordWriter, "recordWriter must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
+        this.postingRecordTransactionBoundary = Objects.requireNonNull(
+                postingRecordTransactionBoundary,
+                "postingRecordTransactionBoundary must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -618,21 +634,37 @@ public class TransactionPostingService {
      * <p>No legacy rollback arm is translated here, because the legacy member has none - the estate's
      * only explicit rollback belongs to the online account-update program. A reject is therefore an
      * ordinary return carrying a verdict, not a rollback: the record's three posting stages never ran,
-     * so there is nothing to undo and the transaction commits. What still rolls back is a failure: this
-     * method is transactional, so any unchecked exception that escapes it - an abend, a file-status
-     * failure, or an optimistic-lock conflict on the account's version attribute - marks the transaction
-     * for rollback under the framework's own rule, and the record's stages are discarded together. That
-     * is the framework's rollback, not a legacy one, and none of those three is translated into a
-     * handled arm because the legacy member handles none of them.
+     * so there is nothing to undo and the transaction commits. What still rolls back is a failure: the
+     * work runs inside {@link PostingRecordTransactionBoundary}, so any unchecked exception that escapes
+     * it - an abend, a file-status failure, or an optimistic-lock conflict on the account's version
+     * attribute - marks that record's transaction for rollback under the framework's own rule, and the
+     * record's stages are discarded together. That is the framework's rollback, not a legacy one, and
+     * none of those three is translated into a handled arm because the legacy member handles none of
+     * them.
+     *
+     * <p>The boundary is a separate bean and the call below is the only per-record path, so the mainline
+     * loop of {@link #postAll(Iterable, Consumer)} obtains the same transaction this entry point does.
+     * A transactional annotation on this method could not have achieved that: the loop's call would have
+     * been a self-invocation, which reaches the target without consulting a proxy.
      *
      * @param  record the daily-transaction record to post
      * @return the verdict together with every artefact it produced
      * @throws NullPointerException if the record is absent
      * @throws AbendException       if a category-balance or transaction-file operation fails
      */
-    @Transactional
     public PostingResult post(final DailyTransaction record) {
         Objects.requireNonNull(record, "record must not be null");
+        return this.postingRecordTransactionBoundary.execute(() -> postOneRecord(record));
+    }
+
+    /**
+     * The body of one record's processing, run inside the per-record transaction the boundary opened.
+     *
+     * @param  record the daily-transaction record to post, already checked for presence
+     * @return the verdict together with every artefact it produced
+     * @throws AbendException if a category-balance or transaction-file operation fails
+     */
+    private PostingResult postOneRecord(final DailyTransaction record) {
 
         // Lines 208 to 209: MOVE 0 TO the fail reason, MOVE SPACES TO its description. Per record,
         // every record, before anything is looked at.
@@ -1318,9 +1350,11 @@ public class TransactionPostingService {
                     account.getAcctCurrCycDebit().add(amount));
         }
 
-        // Lines 554 to 559: REWRITE ... INVALID KEY. The update count is the rewrite status.
+        // Lines 554 to 559: REWRITE ... INVALID KEY. The update count is the rewrite status. The
+        // version read during validation is part of the predicate, so the statement is a compare-and-set
+        // and a concurrent write cannot be overwritten unnoticed.
         final int rewritten = this.accountRepository.rewritePostingBalances(account.getAcctId(),
-                currentBalance, currentCycleCredit, currentCycleDebit);
+                account.getVersion(), currentBalance, currentCycleCredit, currentCycleDebit);
 
         // The bulk update cleared the persistence context. Keep the detached result image aligned with
         // the values the paragraph attempted to rewrite, including on the inert invalid-key path.
@@ -1329,6 +1363,23 @@ public class TransactionPostingService {
         account.setAcctCurrCycDebit(currentCycleDebit);
 
         if (rewritten == 0) {
+            // Two conditions produce no row, and they are not the same event. The row may be gone, which
+            // is the legacy invalid-key condition and reaches the inert reject code 109 exactly as the
+            // source does. Or the row may still be there carrying a different version, which means
+            // another writer committed between this record's read and this rewrite. The legacy file had
+            // no way to observe that - it read uncommitted with no recovery - so there is no legacy arm
+            // to reproduce; the correct answer is to refuse the record rather than to report an absent
+            // account that is not absent, and to let the record's transaction roll back so the
+            // transaction-file write and the category-balance update do not harden against a balance that
+            // was never rewritten.
+            if (this.accountRepository.existsById(account.getAcctId())) {
+                LOG.warn("account rewrite lost a version race program={} accountRef={} effect=none",
+                        PROGRAM_NAME, SensitiveLogRedactor.redact(account.getAcctId()));
+                throw new OptimisticLockConflictException(
+                        OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
+                        ACCOUNT_ENTITY_NAME, account.getAcctId());
+            }
+
             LOG.warn("account rewrite found no row program={} accountRef={} reasonCode={} reason={}"
                             + " effect=none",
                     PROGRAM_NAME, SensitiveLogRedactor.redact(account.getAcctId()),

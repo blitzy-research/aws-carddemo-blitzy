@@ -18,6 +18,8 @@ package com.carddemo.api;
 
 import com.carddemo.api.dto.BillPaymentRequest;
 import com.carddemo.api.dto.BillPaymentResponse;
+import com.carddemo.api.dto.ErrorResponse;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BillPaymentService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -25,10 +27,13 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -298,7 +303,8 @@ public class BillPaymentController {
                 description = "Another writer changed the account between this turn's read and its "
                         + "write, so nothing was settled and the turn may be retried.")})
     public ResponseEntity<BillPaymentResponse> payBill(
-            @Valid @RequestBody final BillPaymentRequest request) {
+            @Valid @RequestBody final BillPaymentRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         String confirmation = CONFIRMATION_UNRESOLVED;
@@ -311,8 +317,8 @@ public class BillPaymentController {
                                     request.confirm(),
                                     request.keyAction(),
                                     this.screenStateAdapter.toNavigationState(
-                                            request.navigationContext())));
-            final BillPaymentResponse response = toResponse(result);
+                                            request.navigationContext(), authentication)));
+            final BillPaymentResponse response = toResponse(result, authentication);
 
             confirmation = result.confirmationState().name();
             paymentAccepted = Boolean.toString(result.paymentAccepted());
@@ -393,7 +399,8 @@ public class BillPaymentController {
      *     guarantees an outcome or a raised conflict
      * @return the response body, never {@code null}
      */
-    private BillPaymentResponse toResponse(final BillPaymentService.BillPaymentResult result) {
+    private BillPaymentResponse toResponse(final BillPaymentService.BillPaymentResult result,
+                                           final Authentication authentication) {
         return new BillPaymentResponse(
                 result.screen().accountId(),
                 result.screenBalance(),
@@ -408,9 +415,49 @@ public class BillPaymentController {
                 result.header().errorMessage(),
                 result.paymentAccepted(),
                 result.errorFlag(),
+                toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 result.route().getRouteValue(),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
+    }
+
+    /**
+     * Translates the per-field detail of a turn into the response contract's own field-error vocabulary.
+     *
+     * <p>Both vocabularies distinguish the same two legacy states - a field that was not supplied from
+     * one supplied wrongly - so the mapping is one to one and total. The switch is exhaustive over the
+     * carrier's two constants with no default arm, so adding a third state to either enumeration stops
+     * the build here rather than silently degrading a response, and arrow form means no arm can fall
+     * through into the next.
+     *
+     * <p>Order is preserved. The entries arrive in the order the service checked the fields - the account
+     * number before the confirmation, matching the order the source edits them - and that order is what
+     * tells a client which failure came first and which field to place the cursor on. Nothing is
+     * reordered, merged, de-duplicated or filtered, and no text is composed: a per-field explanation
+     * crosses exactly as the service supplied it, including its absence.
+     *
+     * <p>The two identifying components are read as the empty string when absent, because the response
+     * contract requires both: an entry a client cannot locate on the screen is worse than no entry, and
+     * refusing the whole response over a missing label would hide the populated summary message the
+     * operator needs.
+     *
+     * @param fieldErrors the turn's per-field detail, never {@code null} as the outcome normalises it
+     * @return the translated detail in the same order, never {@code null}
+     */
+    private static List<ErrorResponse.FieldError> toResponseFieldErrors(
+            final List<ValidationException.FieldError> fieldErrors) {
+        final List<ErrorResponse.FieldError> translated = new ArrayList<>(fieldErrors.size());
+        for (final ValidationException.FieldError fieldError : fieldErrors) {
+            translated.add(new ErrorResponse.FieldError(
+                    Objects.requireNonNullElse(fieldError.field(), ""),
+                    Objects.requireNonNullElse(fieldError.bmsFieldId(), ""),
+                    switch (fieldError.state()) {
+                        case MISSING -> ErrorResponse.FieldState.MISSING;
+                        case INVALID -> ErrorResponse.FieldState.INVALID;
+                    },
+                    fieldError.message()));
+        }
+        return translated;
     }
 
     /**

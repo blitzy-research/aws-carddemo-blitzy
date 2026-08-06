@@ -85,6 +85,7 @@ final class AccountRepositoryIT extends AbstractPostgresIT {
 
                 final int rewritten = repository.rewritePostingBalances(
                         RESERVED_ACCOUNT,
+                        versionBeforeRewrite,
                         new BigDecimal("125.25"),
                         new BigDecimal("30.25"),
                         new BigDecimal("-5.00"));
@@ -104,11 +105,38 @@ final class AccountRepositoryIT extends AbstractPostgresIT {
 
                 assertThat(repository.rewritePostingBalances(
                         ABSENT_ACCOUNT,
+                        0L,
                         new BigDecimal("1.00"),
                         new BigDecimal("1.00"),
                         new BigDecimal("0.00")))
                         .as("zero rows is the REWRITE INVALID KEY outcome that becomes reason 109")
                         .isZero();
+
+                // The version the first rewrite consumed is now stale. Offering it again must change
+                // nothing: this is the compare-and-set that stops a concurrent online write from being
+                // silently overwritten, and it is why a zero-row outcome no longer means "absent".
+                assertThat(repository.rewritePostingBalances(
+                        RESERVED_ACCOUNT,
+                        versionBeforeRewrite,
+                        new BigDecimal("999.99"),
+                        new BigDecimal("999.99"),
+                        new BigDecimal("-999.99")))
+                        .as("a stale version rewrites no row even though the row is present")
+                        .isZero();
+                assertThat(repository.findById(RESERVED_ACCOUNT))
+                        .get()
+                        .satisfies(account -> {
+                            assertThat(account.getAcctCurrBal())
+                                    .as("the earlier write survives the stale attempt untouched")
+                                    .isEqualByComparingTo(new BigDecimal("125.25"));
+                            assertThat(account.getVersion())
+                                    .as("and the counter did not advance a second time")
+                                    .isEqualTo(versionBeforeRewrite + 1L);
+                        });
+                assertThat(repository.existsById(RESERVED_ACCOUNT))
+                        .as("the row is present, which is how the caller tells a lost race from an "
+                                + "absent account")
+                        .isTrue();
             } finally {
                 repository.deleteById(RESERVED_ACCOUNT);
                 repository.flush();

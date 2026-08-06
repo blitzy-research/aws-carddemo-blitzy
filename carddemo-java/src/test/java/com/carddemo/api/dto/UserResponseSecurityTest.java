@@ -127,18 +127,18 @@ class UserResponseSecurityTest {
 
     private static UserResponse populatedWith(NavigationContext navigation) {
         return new UserResponse(
-                List.of(row(), row()), page(), USER_ID, FIRST_NAME, LAST_NAME, "A",
+                List.of(row(), row()), page(), null, USER_ID, FIRST_NAME, LAST_NAME, "A",
                 "CU01", "TITLE ONE", "07/19/22", "COUSR01C", "TITLE TWO", "14:23:07",
                 additionConfirmation(),
                 List.of(new ErrorResponse.FieldError(
                         "firstName", "FNAME", ErrorResponse.FieldState.MISSING, "ERROR LINE")),
-                true, true, "USRIDIN", "route/next", navigation);
+                true, true, false, "USRIDIN", "route/next", navigation);
     }
 
     private static UserResponse empty() {
         return new UserResponse(
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                false, false, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                false, false, false, null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -237,12 +237,12 @@ class UserResponseSecurityTest {
         void noRowContentIsRecoverable() {
             UserRow other = new UserRow("S", "USER9999", "CORNELIUS", "ABERNATHY", "A");
             UserResponse differentPeople = new UserResponse(
-                    List.of(other, other), page(), "OTHER001", "GRETCHEN", "HAMMES", "U",
+                    List.of(other, other), page(), null, "OTHER001", "GRETCHEN", "HAMMES", "U",
                     "CU01", "TITLE ONE", "07/19/22", "COUSR01C", "TITLE TWO", "14:23:07",
                     additionConfirmation(),
                     List.of(new ErrorResponse.FieldError(
                             "firstName", "FNAME", ErrorResponse.FieldState.MISSING, "ERROR LINE")),
-                    true, true, "USRIDIN", "route/next", null);
+                    true, true, false, "USRIDIN", "route/next", null);
 
             assertThat(differentPeople.toString()).isEqualTo(populated().toString());
             assertThat(populated().toString()).contains("rowCount=2");

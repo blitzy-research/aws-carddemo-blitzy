@@ -32,6 +32,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.dao.QueryTimeoutException;
@@ -740,6 +741,114 @@ final class TransactionListServiceTest {
             assertThat(result.message()).isEqualTo(EXPECTED_REACHED_TOP);
             assertThat(result.error()).isFalse();
             assertThat(keysetReads).isNotEmpty();
+        }
+    }
+
+    /**
+     * A selector is addressed by the slot it sits in, so the carried identifiers are positional.
+     *
+     * <p>The turn walks the ten selector positions in order and takes the identifier at the same
+     * position, reproducing the {@code EVALUATE TRUE} over the ten row selectors at
+     * {@code app/cbl/COTRN00C.cbl:L148-L182}. That makes the carried identifier list a ten-position
+     * array indexed by screen slot rather than a list of whatever the last page happened to display: a
+     * backward page fills from slot ten upward at {@code app/cbl/COTRN00C.cbl:L349}, so a page holding
+     * one row can legitimately have that row in slot ten with slots one to nine empty.</p>
+     *
+     * <p>These cases pin the positional reading, because a list that had been compacted to its
+     * non-empty entries would resolve every one of them to the wrong record while still returning a
+     * plausible-looking screen.</p>
+     */
+    @Nested
+    @DisplayName("A selector resolves against the slot it occupies")
+    final class SlotIndexedSelection {
+
+        /** A ten-position selector column carrying one mark, in the given one-based slot. */
+        private static List<String> selectorInSlot(final int slot) {
+            final List<String> selectors = new ArrayList<>(Collections.nCopies(10, " "));
+            selectors.set(slot - 1, "S");
+            return List.copyOf(selectors);
+        }
+
+        /** A ten-position identifier list carrying one identifier, in the given one-based slot. */
+        private static List<String> identifierInSlot(final int slot, final String identifier) {
+            final List<String> identifiers = new ArrayList<>(Collections.nCopies(10, ""));
+            identifiers.set(slot - 1, identifier);
+            return List.copyOf(identifiers);
+        }
+
+        @Test
+        @DisplayName("a mark in the tenth slot resolves to the identifier carried in the tenth "
+                + "position, which is where a backward page puts its first row")
+        void aMarkInTheTenthSlotResolvesToTheTenthIdentifier() {
+            final TransactionListService.TransactionListResult result =
+                    serviceOver(transactions(25)).listTransactions(
+                            new TransactionListService.TransactionListCommand(
+                                    KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
+                                    null, selectorInSlot(10), identifierInSlot(10, identifier(17)),
+                                    null, false, 1));
+
+            assertThat(result.selectedTransactionId())
+                    .as("the tenth slot's identifier, not the first non-empty one")
+                    .isEqualTo(identifier(17));
+            assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_VIEW_ROUTE);
+        }
+
+        @ParameterizedTest(name = "a mark in slot {0} resolves to that slot''s identifier")
+        @ValueSource(ints = {1, 2, 5, 9, 10})
+        @DisplayName("every slot resolves to the identifier carried at its own position")
+        void everySlotResolvesToItsOwnIdentifier(final int slot) {
+            final String expected = identifier(slot + 3);
+
+            final TransactionListService.TransactionListResult result =
+                    serviceOver(transactions(25)).listTransactions(
+                            new TransactionListService.TransactionListCommand(
+                                    KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
+                                    null, selectorInSlot(slot), identifierInSlot(slot, expected),
+                                    null, false, 1));
+
+            assertThat(result.selectedTransactionId()).isEqualTo(expected);
+        }
+
+        /**
+         * Two marks resolve to the first, so the walk order is first-match and not last-match.
+         */
+        @Test
+        @DisplayName("two marks resolve to the one in the lower slot, because the walk stops at its "
+                + "first match")
+        void twoMarksResolveToTheLowerSlot() {
+            final List<String> selectors = new ArrayList<>(Collections.nCopies(10, " "));
+            selectors.set(3, "S");
+            selectors.set(7, "S");
+            final List<String> identifiers = new ArrayList<>(Collections.nCopies(10, ""));
+            identifiers.set(3, identifier(4));
+            identifiers.set(7, identifier(8));
+
+            final TransactionListService.TransactionListResult result =
+                    serviceOver(transactions(25)).listTransactions(
+                            new TransactionListService.TransactionListCommand(
+                                    KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
+                                    null, List.copyOf(selectors), List.copyOf(identifiers), null,
+                                    false, 1));
+
+            assertThat(result.selectedTransactionId()).isEqualTo(identifier(4));
+        }
+
+        /**
+         * An empty slot carries no identifier, so a mark there resolves to nothing and stays put.
+         */
+        @Test
+        @DisplayName("a mark in a slot the page never filled resolves to no identifier and the "
+                + "screen stays where it is")
+        void aMarkInAnUnfilledSlotResolvesToNothing() {
+            final TransactionListService.TransactionListResult result =
+                    serviceOver(transactions(25)).listTransactions(
+                            new TransactionListService.TransactionListCommand(
+                                    KeyAction.ENTER, ScreenNavigationState.empty().withReEntry(),
+                                    null, selectorInSlot(4), Collections.nCopies(10, ""), null,
+                                    false, 1));
+
+            assertThat(result.selectedTransactionId()).isBlank();
+            assertThat(result.route().getRouteValue()).isEqualTo(EXPECTED_LIST_ROUTE);
         }
     }
 

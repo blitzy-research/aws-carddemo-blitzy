@@ -245,7 +245,7 @@ class BillPaymentResponseTest {
     private static final List<String> WIRE_KEYS_IN_DECLARATION_ORDER = List.of(
             "accountId", "currentBalance", "confirm", "newTransactionId", "transactionName",
             "title01", "currentDate", "programName", "title02", "currentTime", "errorMessage",
-            "paymentAccepted", "generalError", "focusScreenFieldId", "nextRoute",
+            "paymentAccepted", "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute",
             "navigationContext");
 
     /**
@@ -328,7 +328,7 @@ class BillPaymentResponseTest {
     private static BillPaymentResponse populated() {
         return new BillPaymentResponse(ACCOUNT_ID, BALANCE, "y", FIRST_TRANSACTION_ID, "CB00",
                 "CardDemo bill payment", "06/10/22", "COBIL00C", "Pay the full balance", "19:27:53",
-                BillPaymentResponse.MSG_CONFIRM_BILL_PAYMENT, false, false,
+                BillPaymentResponse.MSG_CONFIRM_BILL_PAYMENT, false, false, List.of(),
                 BillPaymentResponse.CONFIRM_FIELD_ID, "/api/menu", navigation());
     }
 
@@ -342,7 +342,7 @@ class BillPaymentResponseTest {
      */
     private static BillPaymentResponse allAbsent() {
         return new BillPaymentResponse(null, null, null, null, null, null, null, null, null, null,
-                null, false, false, null, null, null);
+                null, false, false, List.of(), null, null, null);
     }
 
     /**
@@ -354,7 +354,7 @@ class BillPaymentResponseTest {
      */
     private static BillPaymentResponse withMessage(String message, boolean generalError) {
         return new BillPaymentResponse(null, null, null, null, null, null, null, null, null, null,
-                message, false, generalError, null, null, null);
+                message, false, generalError, List.of(), null, null, null);
     }
 
     /**
@@ -365,7 +365,7 @@ class BillPaymentResponseTest {
      */
     private static BillPaymentResponse withBalance(BigDecimal balance) {
         return new BillPaymentResponse(null, balance, null, null, null, null, null, null, null, null,
-                null, false, false, null, null, null);
+                null, false, false, List.of(), null, null, null);
     }
 
     /**
@@ -735,7 +735,7 @@ class BillPaymentResponseTest {
             String assembled = assembledSuccessMessage();
             BillPaymentResponse carried = roundTrip(new BillPaymentResponse(null, null, null,
                     FIRST_TRANSACTION_ID, null, null, null, null, null, null, assembled, true,
-                    false, BillPaymentResponse.ACCOUNT_ID_FIELD_ID, "/api/menu", null));
+                    false, List.of(), BillPaymentResponse.ACCOUNT_ID_FIELD_ID, "/api/menu", null));
 
             assertThat(carried.errorMessage()).isEqualTo(assembled).hasSize(61);
             assertThat(carried.errorMessage()).contains("successful.  Your");
@@ -873,7 +873,7 @@ class BillPaymentResponseTest {
             // has to be carriable alongside that very text.
             BillPaymentResponse carried = roundTrip(new BillPaymentResponse(ACCOUNT_ID,
                     ZERO_BALANCE, null, null, null, null, null, null, null, null,
-                    NOTHING_TO_PAY_TEXT, false, true, BillPaymentResponse.ACCOUNT_ID_FIELD_ID, null,
+                    NOTHING_TO_PAY_TEXT, false, true, List.of(), BillPaymentResponse.ACCOUNT_ID_FIELD_ID, null,
                     null));
 
             assertThat(carried.currentBalance().scale()).isEqualTo(2);
@@ -1000,7 +1000,7 @@ class BillPaymentResponseTest {
             // the semantic flag below.
             BillPaymentResponse carried = roundTrip(new BillPaymentResponse(null, null, null,
                     FIRST_TRANSACTION_ID, null, null, null, null, null, null,
-                    assembledSuccessMessage(), true, false, null, "/api/menu", null));
+                    assembledSuccessMessage(), true, false, List.of(), null, "/api/menu", null));
 
             assertThat(carried.errorMessage()).isEqualTo(assembledSuccessMessage()).isNotEmpty();
             assertThat(carried.generalError()).isFalse();
@@ -1060,7 +1060,7 @@ class BillPaymentResponseTest {
             // An affirmative answer only selects the posting path; every step after it can still
             // fail, so acceptance is true only once the write has returned normally.
             BillPaymentResponse affirmativeButFailed = new BillPaymentResponse(ACCOUNT_ID, BALANCE,
-                    "y", null, null, null, null, null, null, null, UNABLE_TO_ADD_TEXT, false, true,
+                    "y", null, null, null, null, null, null, null, UNABLE_TO_ADD_TEXT, false, true, List.of(),
                     BillPaymentResponse.ACCOUNT_ID_FIELD_ID, null, null);
 
             assertThat(affirmativeButFailed.confirm()).isEqualTo("y");
@@ -1069,7 +1069,7 @@ class BillPaymentResponseTest {
 
             BillPaymentResponse acceptedWithBlankedEchoes = new BillPaymentResponse(null, null, null,
                     FIRST_TRANSACTION_ID, null, null, null, null, null, null,
-                    assembledSuccessMessage(), true, false, null, null, null);
+                    assembledSuccessMessage(), true, false, List.of(), null, null, null);
 
             assertThat(acceptedWithBlankedEchoes.confirm()).isNull();
             assertThat(acceptedWithBlankedEchoes.paymentAccepted()).isTrue();
@@ -1080,7 +1080,7 @@ class BillPaymentResponseTest {
         @DisplayName("publishes both flags as independent booleans on the wire")
         void publishesBothFlagsAsIndependentBooleansOnTheWire() {
             JsonNode accepted = payloadOf(new BillPaymentResponse(null, null, null, null, null, null,
-                    null, null, null, null, assembledSuccessMessage(), true, false, null, null,
+                    null, null, null, null, assembledSuccessMessage(), true, false, List.of(), null, null,
                     null));
 
             assertThat(accepted.get("paymentAccepted").isBoolean()).isTrue();
@@ -1147,10 +1147,10 @@ class BillPaymentResponseTest {
 
             assertThat(padded).hasSize(ACCOUNT_ID_WIDTH);
             assertThat(roundTrip(new BillPaymentResponse(padded, null, null, null, null, null, null,
-                    null, null, null, "  message  ", false, false, null, null, null))
+                    null, null, null, "  message  ", false, false, List.of(), null, null, null))
                     .accountId()).isEqualTo(padded);
             assertThat(roundTrip(new BillPaymentResponse(padded, null, null, null, null, null, null,
-                    null, null, null, "  message  ", false, false, null, null, null))
+                    null, null, null, "  message  ", false, false, List.of(), null, null, null))
                     .errorMessage()).isEqualTo("  message  ");
         }
 
@@ -1173,9 +1173,11 @@ class BillPaymentResponseTest {
             assertThat(roundTrip(withConfirm(" ")).confirm()).isEqualTo(" ").hasSize(CONFIRM_WIDTH);
             assertThat(roundTrip(withConfirm("")).confirm()).isEqualTo("").isEmpty();
             assertThat(roundTrip(withConfirm(null)).confirm()).isNull();
-            // No derived boolean stands beside it: the answer travels only as this one character.
+            // No derived boolean stands beside it: the answer travels only as this one character. The
+            // three members alongside it are the ones that have no absent state - the two primitive
+            // flags and the empty decoration list - rather than any second rendering of the answer.
             assertThat(wireKeysOf(withConfirm("y")))
-                    .containsExactly("confirm", "paymentAccepted", "generalError");
+                    .containsExactly("confirm", "paymentAccepted", "generalError", "fieldErrors");
         }
 
         @Test
@@ -1287,7 +1289,7 @@ class BillPaymentResponseTest {
          */
         private BillPaymentResponse withConfirm(String confirm) {
             return new BillPaymentResponse(null, null, confirm, null, null, null, null, null, null,
-                    null, null, false, false, null, null, null);
+                    null, null, false, false, List.of(), null, null, null);
         }
     }
 
@@ -1368,10 +1370,10 @@ class BillPaymentResponseTest {
         void boundsTheConfirmationAnswerAtOne() {
             assertThat(violatedPropertiesOf(new BillPaymentResponse(null, null,
                     textOfLength(CONFIRM_WIDTH), null, null, null, null, null, null, null, null,
-                    false, false, null, null, null))).isEmpty();
+                    false, false, List.of(), null, null, null))).isEmpty();
             assertThat(violatedPropertiesOf(new BillPaymentResponse(null, null,
                     textOfLength(CONFIRM_WIDTH + 1), null, null, null, null, null, null, null, null,
-                    false, false, null, null, null))).containsExactly("confirm");
+                    false, false, List.of(), null, null, null))).containsExactly("confirm");
         }
 
         @Test
@@ -1379,10 +1381,10 @@ class BillPaymentResponseTest {
         void boundsTheTransactionIdentifierAtSixteen() {
             assertThat(violatedPropertiesOf(new BillPaymentResponse(null, null, null,
                     textOfLength(TRANSACTION_ID_WIDTH), null, null, null, null, null, null, null,
-                    false, false, null, null, null))).isEmpty();
+                    false, false, List.of(), null, null, null))).isEmpty();
             assertThat(violatedPropertiesOf(new BillPaymentResponse(null, null, null,
                     textOfLength(TRANSACTION_ID_WIDTH + 1), null, null, null, null, null, null, null,
-                    false, false, null, null, null))).containsExactly("newTransactionId");
+                    false, false, List.of(), null, null, null))).containsExactly("newTransactionId");
         }
 
         @Test
@@ -1403,7 +1405,7 @@ class BillPaymentResponseTest {
         @DisplayName("leaves the next route unbounded, because the route vocabulary is not its own")
         void leavesTheNextRouteUnbounded() {
             BillPaymentResponse longRoute = new BillPaymentResponse(null, null, null, null, null,
-                    null, null, null, null, null, null, false, false, null, textOfLength(512), null);
+                    null, null, null, null, null, null, false, false, List.of(), null, textOfLength(512), null);
 
             assertThat(violatedPropertiesOf(longRoute)).isEmpty();
             assertThat(roundTrip(longRoute).nextRoute()).hasSize(512);
@@ -1418,7 +1420,7 @@ class BillPaymentResponseTest {
             BillPaymentResponse overLong = new BillPaymentResponse(
                     textOfLength(ACCOUNT_ID_WIDTH + 1), null, textOfLength(CONFIRM_WIDTH + 1),
                     textOfLength(TRANSACTION_ID_WIDTH + 1), null, null, null, null, null, null,
-                    textOfLength(MESSAGE_WIDTH + 1), false, false,
+                    textOfLength(MESSAGE_WIDTH + 1), false, false, List.of(),
                     textOfLength(FOCUS_HINT_WIDTH + 1), null, null);
 
             assertThat(violatedPropertiesOf(overLong)).containsExactly(
@@ -1434,7 +1436,7 @@ class BillPaymentResponseTest {
          */
         private BillPaymentResponse withAccountId(String accountId) {
             return new BillPaymentResponse(accountId, null, null, null, null, null, null, null, null,
-                    null, null, false, false, null, null, null);
+                    null, null, false, false, List.of(), null, null, null);
         }
 
         /**
@@ -1445,7 +1447,7 @@ class BillPaymentResponseTest {
          */
         private BillPaymentResponse withFocusHint(String focusScreenFieldId) {
             return new BillPaymentResponse(null, null, null, null, null, null, null, null, null,
-                    null, null, false, false, focusScreenFieldId, null, null);
+                    null, null, false, false, List.of(), focusScreenFieldId, null, null);
         }
     }
 
@@ -1454,22 +1456,34 @@ class BillPaymentResponseTest {
     class TheWireShape {
 
         @Test
-        @DisplayName("publishes exactly the sixteen components, each under its own name")
-        void publishesExactlyTheSixteenComponents() {
+        @DisplayName("publishes exactly the seventeen components, each under its own name")
+        void publishesExactlyTheSeventeenComponents() {
             // This one assertion is the component inventory. A payload whose top-level key set is
-            // exactly these sixteen names cannot carry a seventeenth serialisable component, so every
+            // exactly these seventeen names cannot carry an eighteenth serialisable component, so every
             // absence asserted elsewhere in this class rests on it - and it is established without
             // any run-time metadata enquiry.
             assertThat(wireKeysOf(populated()))
-                    .hasSize(16)
+                    .hasSize(17)
                     .containsExactlyElementsOf(WIRE_KEYS_IN_DECLARATION_ORDER);
         }
 
+        /**
+         * Three members have no absent state, so an otherwise empty reply still carries them.
+         *
+         * <p>The two indicators are primitives and never were null. The per-field decoration list is
+         * normalised to an empty list by the canonical constructor, and the module omits nulls rather
+         * than empties, so it crosses as {@code []}. That is deliberate: a reader has to be able to tell
+         * "this turn faulted no field" from "this reply does not speak about fields", and only a member
+         * that is always present can carry that distinction.</p>
+         */
         @Test
-        @DisplayName("omits an absent component rather than publishing a null")
+        @DisplayName("omits an absent component rather than publishing a null, leaving the two flags "
+                + "and the empty decoration list")
         void omitsAnAbsentComponentRatherThanPublishingNull() {
-            assertThat(wireKeysOf(allAbsent())).containsExactly("paymentAccepted", "generalError");
+            assertThat(wireKeysOf(allAbsent()))
+                    .containsExactly("paymentAccepted", "generalError", "fieldErrors");
             assertThat(jsonOf(allAbsent())).doesNotContain("null");
+            assertThat(payloadOf(allAbsent()).get("fieldErrors")).isEmpty();
         }
 
         @Test
@@ -1495,8 +1509,21 @@ class BillPaymentResponseTest {
             assertThat(read.generalError()).isFalse();
         }
 
+        /**
+         * The summary message is one text and is never a list of texts.
+         *
+         * <p>The legacy screen has a single message line, so a response offering several messages would
+         * be offering something the screen cannot show and a client would have to pick one.
+         *
+         * <p>The per-field decoration list is expected rather than forbidden here. It is not a second
+         * rendering of the message: each entry names one of the screen's two input fields and the state
+         * it is in, which the legacy expresses through that field's attribute byte and asterisk marker
+         * rather than through the message line. One message line and several highlighted fields coexist
+         * on the real screen, so they coexist in this contract.</p>
+         */
         @Test
-        @DisplayName("publishes the message as one textual value rather than a list")
+        @DisplayName("publishes the message as one textual value rather than a list, while the "
+                + "per-field decoration list is a separate contract and is present")
         void publishesTheMessageAsOneTextualValueRatherThanAList() {
             JsonNode message = payloadOf(populated()).get("errorMessage");
 
@@ -1505,8 +1532,10 @@ class BillPaymentResponseTest {
             assertThat(message.isObject()).isFalse();
             assertThat(jsonOf(populated()))
                     .doesNotContain("\"errorMessages\"")
-                    .doesNotContain("\"messages\"")
-                    .doesNotContain("\"fieldErrors\"");
+                    .doesNotContain("\"messages\"");
+            assertThat(payloadOf(populated()).get("fieldErrors").isArray())
+                    .as("the decoration list is the one array this contract publishes")
+                    .isTrue();
         }
 
         @Test
@@ -1552,7 +1581,8 @@ class BillPaymentResponseTest {
                     .doesNotContain("\"detail\":")
                     .doesNotContain("\"instance\":");
             assertThat(wireKeysOf(withMessage(UNABLE_TO_ADD_TEXT, true)))
-                    .containsExactly("errorMessage", "paymentAccepted", "generalError");
+                    .containsExactly("errorMessage", "paymentAccepted", "generalError",
+                            "fieldErrors");
         }
 
         @Test
@@ -1580,7 +1610,7 @@ class BillPaymentResponseTest {
          */
         private BillPaymentResponse withNextRoute(String nextRoute) {
             return new BillPaymentResponse(null, null, null, null, null, null, null, null, null,
-                    null, null, false, false, null, nextRoute, null);
+                    null, null, false, false, List.of(), null, nextRoute, null);
         }
     }
 
@@ -1658,7 +1688,7 @@ class BillPaymentResponseTest {
          */
         private BillPaymentResponse withNavigation(NavigationContext navigationContext) {
             return new BillPaymentResponse(null, null, null, null, null, null, null, null, null,
-                    null, null, false, false, null, null, navigationContext);
+                    null, null, false, false, List.of(), null, null, navigationContext);
         }
     }
 
@@ -1706,7 +1736,7 @@ class BillPaymentResponseTest {
             BillPaymentResponse distinctIdentifiers = new BillPaymentResponse("00000000011",
                     BALANCE, "y", "0000000000000042", "CB00", "CardDemo bill payment", "06/10/22",
                     "COBIL00C", "Pay the full balance", "19:27:53", CONFIRM_PROMPT_TEXT, false,
-                    false, BillPaymentResponse.CONFIRM_FIELD_ID, "/api/menu", null);
+                    false, List.of(), BillPaymentResponse.CONFIRM_FIELD_ID, "/api/menu", null);
 
             assertThat("0000000000000042").doesNotContain("00000000011");
             assertThat(distinctIdentifiers.toString())

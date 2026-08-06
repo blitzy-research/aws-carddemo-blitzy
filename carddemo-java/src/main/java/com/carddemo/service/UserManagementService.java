@@ -967,8 +967,7 @@ public final class UserManagementService {
         if (selectedPosition > 0) {
             final String marker = request.rowSelections().get(selectedPosition - 1);
             final Optional<String> selectedUserId =
-                    selectedUserIdAtPosition(browse, state, request.rowSnapshotToken(),
-                            request.firstUserIdOnPage(), selectedPosition);
+                    selectedUserIdAtPosition(state, request.rowSnapshotToken(), selectedPosition);
             // L187-L188: both the marker and the selected identifier must be present to dispatch.
             if (selectedUserId.isPresent()) {
                 if (dispatchSelection(state, marker, selectedUserId.get())) {
@@ -1352,6 +1351,10 @@ public final class UserManagementService {
                 List.copyOf(state.fieldErrors),
                 state.errorFlag.isOn(),
                 state.actionSucceeded,
+                // The positive form of the erase flag examined immediately above: the two
+                // already-at-the-boundary arms cleared it and returned no rows, and this is what tells
+                // a client to keep the page it is showing rather than blank it.
+                !state.sendEraseFlag.isYes(),
                 state.focusFieldId,
                 state.route == null ? null : state.route.getRouteValue(),
                 state.context);
@@ -1502,45 +1505,55 @@ public final class UserManagementService {
      * Recovers the identifier displayed at one row of the page the operator was looking at.
      *
      * <p>The legacy reads this straight out of the echoed map, which holds the identifier the screen
-     * displayed in that row. A REST client cannot safely echo those identifiers directly, and
-     * re-reading a mutable page would allow an intervening insert or delete to move a different user
-     * into the selected position. The response therefore seals the ordered displayed identifiers in
-     * an authenticated page token, and this method resolves the marker only from that snapshot.
+     * displayed in that row. A REST client cannot safely echo those identifiers directly, so the
+     * response seals the ordered displayed identifiers into an authenticated page token and this method
+     * resolves the marker <strong>only</strong> from that snapshot.
      *
-     * @param state     the turn being assembled
-     * @param rowSnapshotToken authenticated snapshot echoed from the displayed rows
+     * <p><strong>The snapshot is required, not preferred.</strong> Resolving a marked position by
+     * re-reading the page instead would reintroduce exactly the race the token exists to close: the
+     * marker names a position on a page the operator is looking at, and between that page being sent
+     * and the marker arriving, an insert or delete anywhere at or before the page's anchor shifts every
+     * later row up or down by one. The re-read would then return a different user than the one standing
+     * in the marked row, and the turn would go on to open the update or delete screen against them. A
+     * delete is not recoverable, so a fallback that is usually right is not good enough.
+     *
+     * <p>An absent snapshot therefore takes the same refusal arm an unopenable one already takes: the
+     * turn reports that it could not resolve the selection and rebuilds the page, which is what the
+     * legacy does whenever the marked slot yields no identifier. The operator sees a fresh page and can
+     * mark again against rows this server just published. That is a strictly better outcome than acting
+     * on the wrong record, and it is reachable only by a client that did not echo the token it was
+     * given.
+     *
+     * <p>No browse is taken as a parameter, and that absence is the point: resolving a marked row now
+     * reads nothing from the store at all, so there is no window in which the store could change under
+     * the resolution. The browse that this turn holds is still used for paging, which is a different
+     * question - where the page starts - and one whose answer a concurrent write may legitimately move.
+     *
+     * @param state            the turn being assembled
+     * @param rowSnapshotToken authenticated snapshot echoed from the displayed rows; required whenever
+     *                         a row is marked
      * @param position         the one-based row position that was marked
      * @return the identifier that occupied that displayed position, or an empty result when the
-     *         snapshot was shorter than the submitted position
+     *         snapshot is absent, unopenable, or shorter than the submitted position
      */
-    private Optional<String> selectedUserIdAtPosition(final SequentialBrowse browse,
-                                                      final TurnState state,
+    private Optional<String> selectedUserIdAtPosition(final TurnState state,
                                                       final String rowSnapshotToken,
-                                                      final String firstOnPage,
                                                       final int position) {
-        if (!isBlank(rowSnapshotToken)) {
-            try {
-                return pageTokenService.resolve(rowSnapshotToken, position);
-            } catch (final IllegalArgumentException rejected) {
-                LOG.warn("User list page snapshot was refused: transaction={} failureChain={}",
-                        LIST_TRANSACTION_ID, FailureDiagnostics.failureChainOf(rejected));
-                applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
-                return Optional.empty();
-            }
-        }
-
-        final BrowseAnchor anchor = isBlank(firstOnPage)
-                ? BrowseAnchor.LOW_VALUES
-                : BrowseAnchor.KEY;
-        final OptionalLong pageStart = probeAnchor(browse, state, anchor, firstOnPage);
-        if (pageStart.isEmpty()) {
-            if (!isBlank(firstOnPage) && !state.errorFlag.isOn()) {
-                applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
-            }
+        if (isBlank(rowSnapshotToken)) {
+            LOG.warn("User list selection was refused for want of a page snapshot:"
+                    + " transaction={} rule=snapshot-required position={}",
+                    LIST_TRANSACTION_ID, position);
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
             return Optional.empty();
         }
-        return probeRowAt(browse, state, pageStart.getAsLong() + position - 1L)
-                .map(UserSecurity::getSecUsrId);
+        try {
+            return pageTokenService.resolve(rowSnapshotToken, position);
+        } catch (final IllegalArgumentException rejected) {
+            LOG.warn("User list page snapshot was refused: transaction={} failureChain={}",
+                    LIST_TRANSACTION_ID, FailureDiagnostics.failureChainOf(rejected));
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
+            return Optional.empty();
+        }
     }
 
     /**
@@ -1842,33 +1855,35 @@ public final class UserManagementService {
      * @param state the turn being assembled, already carrying the received field values
      */
     private void processAddEnterKey(final TurnState state) {
-        // L118-L123: WHEN FNAMEI = SPACES OR LOW-VALUES.
+        // An ordered cascade and not five independent tests, because EVALUATE TRUE stops at its first
+        // true WHEN. Every arm at L118-L147 raises the flag, moves its own text and moves -1 to its own
+        // field's length, then performs the send; no later arm is evaluated. Independent tests would
+        // report all five empty items at once, which is a screen the legacy cannot produce.
         if (isBlank(state.firstName)) {
+            // L118-L123: WHEN FNAMEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
                     UserOutcome.MSG_ADD_FIRST_NAME_EMPTY);
-        }
-        // L124-L129: WHEN LNAMEI = SPACES OR LOW-VALUES.
-        if (isBlank(state.lastName)) {
+            return;
+        } else if (isBlank(state.lastName)) {
+            // L124-L129: WHEN LNAMEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
                     UserOutcome.MSG_ADD_LAST_NAME_EMPTY);
-        }
-        // L130-L135: WHEN USERIDI = SPACES OR LOW-VALUES.
-        if (isBlank(state.userId)) {
+            return;
+        } else if (isBlank(state.userId)) {
+            // L130-L135: WHEN USERIDI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_ADD_USER_ID,
                     UserOutcome.MSG_ADD_USER_ID_EMPTY);
-        }
-        // L136-L141: WHEN PASSWDI = SPACES OR LOW-VALUES. The submitted credential is inspected only
-        // for emptiness; its value is neither retained on the turn nor placed in any error entry.
-        if (isBlank(state.submittedCredential)) {
+            return;
+        } else if (isBlank(state.submittedCredential)) {
+            // L136-L141: WHEN PASSWDI = SPACES OR LOW-VALUES. The submitted credential is inspected
+            // only for emptiness; its value is neither retained on the turn nor placed in any entry.
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
                     UserOutcome.MSG_ADD_CREDENTIAL_FIELD_EMPTY);
-        }
-        // L142-L147: WHEN USRTYPEI = SPACES OR LOW-VALUES.
-        if (isBlank(state.userType)) {
+            return;
+        } else if (isBlank(state.userType)) {
+            // L142-L147: WHEN USRTYPEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
                     UserOutcome.MSG_ADD_USER_TYPE_EMPTY);
-        }
-        if (state.errorFlag.isOn()) {
             return;
         }
         // L148-L150: WHEN OTHER places the cursor on the given-name field and continues.
@@ -2200,33 +2215,34 @@ public final class UserManagementService {
      * @param state the turn being assembled
      */
     private void updateUserInfo(final TurnState state) {
-        // L180-L185: WHEN USRIDINI = SPACES OR LOW-VALUES.
+        // An ordered cascade and not five independent tests, for the reason given on the add screen:
+        // EVALUATE TRUE at L179-L212 stops at its first true WHEN, so exactly one item is reported with
+        // its own text and its own cursor position however many are empty.
         if (isBlank(state.userId)) {
+            // L180-L185: WHEN USRIDINI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_USER_ID, FIELD_LIST_USER_ID,
                     UserOutcome.MSG_UPDATE_USER_ID_EMPTY);
-        }
-        // L186-L191: WHEN FNAMEI = SPACES OR LOW-VALUES.
-        if (isBlank(state.firstName)) {
+            return;
+        } else if (isBlank(state.firstName)) {
+            // L186-L191: WHEN FNAMEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_FIRST_NAME, FIELD_FIRST_NAME,
                     UserOutcome.MSG_UPDATE_FIRST_NAME_EMPTY);
-        }
-        // L192-L197: WHEN LNAMEI = SPACES OR LOW-VALUES.
-        if (isBlank(state.lastName)) {
+            return;
+        } else if (isBlank(state.lastName)) {
+            // L192-L197: WHEN LNAMEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_LAST_NAME, FIELD_LAST_NAME,
                     UserOutcome.MSG_UPDATE_LAST_NAME_EMPTY);
-        }
-        // L198-L203: WHEN PASSWDI = SPACES OR LOW-VALUES. An absent item is not an empty one: see the
-        // three-case account in this method's documentation.
-        if (state.submittedCredential != null && isBlank(state.submittedCredential)) {
+            return;
+        } else if (state.submittedCredential != null && isBlank(state.submittedCredential)) {
+            // L198-L203: WHEN PASSWDI = SPACES OR LOW-VALUES. An absent item is not an empty one: see
+            // the three-case account in this method's documentation.
             raiseFieldError(state, PROPERTY_PASSWORD, FIELD_PASSWORD,
                     UserOutcome.MSG_UPDATE_CREDENTIAL_FIELD_EMPTY);
-        }
-        // L204-L209: WHEN USRTYPEI = SPACES OR LOW-VALUES.
-        if (isBlank(state.userType)) {
+            return;
+        } else if (isBlank(state.userType)) {
+            // L204-L209: WHEN USRTYPEI = SPACES OR LOW-VALUES.
             raiseFieldError(state, PROPERTY_USER_TYPE, FIELD_USER_TYPE,
                     UserOutcome.MSG_UPDATE_USER_TYPE_EMPTY);
-        }
-        if (state.errorFlag.isOn()) {
             return;
         }
         // L210-L212: WHEN OTHER places the cursor on the given-name field and continues.
@@ -2880,6 +2896,11 @@ public final class UserManagementService {
         return new UserOutcome(
                 List.of(),
                 null,
+                // No page snapshot. These three screens display no rows, so there is no displayed page
+                // to seal and nothing a later selector could address. Stated explicitly rather than
+                // reached through a defaulting constructor, so that a screen which does publish rows
+                // cannot omit its snapshot by accident.
+                null,
                 state.userId,
                 state.firstName,
                 state.lastName,
@@ -2894,6 +2915,11 @@ public final class UserManagementService {
                 List.copyOf(state.fieldErrors),
                 state.errorFlag.isOn(),
                 state.actionSucceeded,
+                // Never retained. Each of the three single-record screens has one send verb and it
+                // always erases, so there is no arm on which the legacy overwrites in place. Stating
+                // the constant rather than reading the flag records that this is a property of these
+                // three screens and not a value their turns compute.
+                false,
                 state.focusFieldId,
                 state.route == null ? null : state.route.getRouteValue(),
                 state.context);

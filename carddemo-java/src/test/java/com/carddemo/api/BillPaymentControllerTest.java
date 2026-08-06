@@ -18,6 +18,8 @@ package com.carddemo.api;
 
 import com.carddemo.api.dto.BillPaymentResponse;
 import com.carddemo.config.SecurityConfig;
+import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BillPaymentService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenNavigationState;
@@ -36,6 +38,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -112,13 +117,29 @@ class BillPaymentControllerTest {
     /** Standalone servlet harness over the controller. */
     private MockMvc mockMvc;
 
+    /**
+     * Builds an established identity carrying the single authority the chain grants for a user type.
+     *
+     * <p>Supplied as the request principal rather than through a security filter, because this route is
+     * exercised standalone: the framework resolves an {@code Authentication} parameter from the request's own
+     * user principal, so the boundary sees exactly what the chain would have handed it.
+     *
+     * @param userId the principal name
+     * @param userType the type whose declared authority is granted
+     * @return an authenticated token the boundary can read identity from
+     */
+    private static Authentication identityOf(final String userId, final UserType userType) {
+        return new TestingAuthenticationToken(userId, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
+    }
+
     /** Assembles the controller over a stubbed transaction and the shared failure handler. */
     @BeforeEach
     void setUp() {
         billPaymentService = mock(BillPaymentService.class);
         // The real converter rather than a mock: it holds no state and performs a positional copy, so
         // stubbing it would measure the stub instead of the crossing it is here to prove.
-        screenStateAdapter = new ScreenStateAdapter();
+        screenStateAdapter = new ScreenStateAdapter(new NavigationService());
         meterRegistry = new SimpleMeterRegistry();
         mockMvc = MockMvcBuilders
                 .standaloneSetup(new BillPaymentController(billPaymentService, screenStateAdapter,
@@ -340,12 +361,14 @@ class BillPaymentControllerTest {
         }
 
         @Test
-        @DisplayName("an echoed navigation record crosses component for component, so nothing the client "
+        @DisplayName("an echoed navigation record crosses component for component, except the two identity "
+                + "members, which the authenticated principal supplies instead of the caller, so nothing the client "
                 + "echoed is trimmed, dropped or defaulted on the way in")
         void anEchoedNavigationRecordCrossesComponentForComponent() throws Exception {
             givenSettlementCompleted();
 
             mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .principal(identityOf("USER0001", UserType.USER))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"accountId\":\"" + ACCOUNT_ID + "\",\"confirm\":\"Y\","
                                     + "\"keyAction\":\"ENTER\",\"navigationContext\":"
@@ -442,6 +465,123 @@ class BillPaymentControllerTest {
     // ------------------------------------------------------------------------------------------
     // What crosses outbound
     // ------------------------------------------------------------------------------------------
+
+    /**
+     * Places an outcome carrying the supplied field findings at the boundary.
+     *
+     * @param fieldErrors the findings the turn raised, in the order it raised them
+     */
+    private void givenOutcomeFaulting(
+            final List<ValidationException.FieldError> fieldErrors) {
+        when(billPaymentService.processBillPayment(any())).thenReturn(
+                new BillPaymentService.BillPaymentResult(
+                        NavigationService.Route.BILL_PAYMENT,
+                        ScreenNavigationState.empty(),
+                        "CB00",
+                        null,
+                        null,
+                        null,
+                        BillPaymentResponse.MSG_ACCT_ID_EMPTY,
+                        false,
+                        BillPaymentResponse.ACCOUNT_ID_FIELD_ID,
+                        true,
+                        BillPaymentService.ConfirmPaymentFlag.NO,
+                        true,
+                        fieldErrors,
+                        new BillPaymentService.ScreenHeader(TITLE_01, TITLE_02, "CB00", "COBIL00C",
+                                "07/19/22", "23:12:33", BillPaymentResponse.MSG_ACCT_ID_EMPTY),
+                        new BillPaymentService.ScreenFields("", "+0000000000.00", "")));
+    }
+
+    /**
+     * The per-field detail the turn computed reaches the client rather than being dropped here.
+     *
+     * <p>This screen has two inputs and each can fail in either of the two ways the legacy distinguishes:
+     * an account number can be absent or present-and-unusable, and a confirmation can be absent or carry
+     * an answer other than the two accepted ones. The legacy draws the first kind with an asterisk beside
+     * the field and the second with only a colour change, so the whole-screen flag alone cannot tell a
+     * client which happened, nor on which of the two fields.</p>
+     */
+    @Nested
+    @DisplayName("the outbound projection publishes the per-field detail the turn computed")
+    class TheOutboundProjectionPublishesFieldDetail {
+
+        @Test
+        @DisplayName("an absent account number publishes as missing, under its own map identifier")
+        void anAbsentAccountNumberPublishesAsMissing() throws Exception {
+            givenOutcomeFaulting(List.of(new ValidationException.FieldError("accountId",
+                    BillPaymentResponse.ACCOUNT_ID_FIELD_ID,
+                    ValidationException.FieldState.MISSING,
+                    BillPaymentResponse.MSG_ACCT_ID_EMPTY)));
+
+            mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("", "")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(1))
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("accountId"))
+                    .andExpect(jsonPath("$.fieldErrors[0].screenFieldId")
+                            .value(BillPaymentResponse.ACCOUNT_ID_FIELD_ID))
+                    .andExpect(jsonPath("$.fieldErrors[0].state").value("MISSING"))
+                    .andExpect(jsonPath("$.fieldErrors[0].message")
+                            .value(BillPaymentResponse.MSG_ACCT_ID_EMPTY));
+        }
+
+        @Test
+        @DisplayName("an unusable confirmation answer publishes as invalid, which is a different "
+                + "state from missing")
+        void anUnusableConfirmationPublishesAsInvalid() throws Exception {
+            givenOutcomeFaulting(List.of(new ValidationException.FieldError("confirm",
+                    BillPaymentResponse.CONFIRM_FIELD_ID, ValidationException.FieldState.INVALID,
+                    "\"X\" is not a valid value to confirm...")));
+
+            mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ACCOUNT_ID, "X")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("confirm"))
+                    .andExpect(jsonPath("$.fieldErrors[0].screenFieldId")
+                            .value(BillPaymentResponse.CONFIRM_FIELD_ID))
+                    .andExpect(jsonPath("$.fieldErrors[0].state").value("INVALID"));
+        }
+
+        @Test
+        @DisplayName("two findings publish in the order the turn raised them, the account before the "
+                + "confirmation")
+        void twoFindingsPublishInOrder() throws Exception {
+            givenOutcomeFaulting(List.of(
+                    new ValidationException.FieldError("accountId",
+                            BillPaymentResponse.ACCOUNT_ID_FIELD_ID,
+                            ValidationException.FieldState.MISSING, "first"),
+                    new ValidationException.FieldError("confirm",
+                            BillPaymentResponse.CONFIRM_FIELD_ID,
+                            ValidationException.FieldState.INVALID, "second")));
+
+            mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("", "X")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(2))
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("accountId"))
+                    .andExpect(jsonPath("$.fieldErrors[0].state").value("MISSING"))
+                    .andExpect(jsonPath("$.fieldErrors[1].fieldName").value("confirm"))
+                    .andExpect(jsonPath("$.fieldErrors[1].state").value("INVALID"));
+        }
+
+        @Test
+        @DisplayName("a turn that faulted nothing publishes an empty array, not an absent member")
+        void aCleanTurnPublishesAnEmptyArray() throws Exception {
+            givenSettlementCompleted();
+
+            mockMvc.perform(post(BillPaymentController.BILL_PAYMENT_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ACCOUNT_ID, "Y")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath("$.fieldErrors").isEmpty());
+        }
+    }
 
     @Nested
     @DisplayName("the outbound projection")

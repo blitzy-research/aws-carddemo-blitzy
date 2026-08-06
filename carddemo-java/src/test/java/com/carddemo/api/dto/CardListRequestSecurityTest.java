@@ -84,11 +84,11 @@ import com.carddemo.domain.enums.KeyAction;
 @DisplayName("CardListRequest - the CCLI inbound contract")
 class CardListRequestSecurityTest {
 
-    /** The thirteen components in declaration order. A change here is a change to the REST contract. */
+    /** The fourteen components in declaration order. A change here is a change to the REST contract. */
     private static final List<String> COMPONENTS_IN_ORDER = List.of(
             "accountIdFilter", "cardNumberFilter", "displayedPageNumber", "selection1", "selection2",
             "selection3", "selection4", "selection5", "selection6", "selection7", "pageMetadata",
-            "keyAction", "navigationContext");
+            "lastPageAlreadyShown", "keyAction", "navigationContext");
 
     /** The seven positional selection components, in row order. */
     private static final List<String> SELECTION_COMPONENTS = List.of(
@@ -136,13 +136,13 @@ class CardListRequestSecurityTest {
      */
     private static PageMetadata.PageCursorRequest populatedPage() {
         return new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR,
-                PageMetadata.PagingDirection.FORWARD);
+                PageMetadata.PagingDirection.FORWARD, null, false);
     }
 
     /** A realistic forward-page submission with a selection on the third row. */
     private static CardListRequest populated() {
         return new CardListRequest(ACCOUNT_ID_FILTER, CARD_NUMBER_FILTER, DISPLAYED_PAGE_NUMBER, " ",
-                " ", "S", " ", " ", " ", " ", populatedPage(), KeyAction.PFK08,
+                " ", "S", " ", " ", " ", " ", populatedPage(), false, KeyAction.PFK08,
                 NavigationContext.empty().withReEntry());
     }
 
@@ -173,13 +173,13 @@ class CardListRequestSecurityTest {
     class TheComponentSetIsTheBrowseMap {
 
         @Test
-        @DisplayName("thirteen components are declared in order")
-        void thirteenComponentsAreDeclaredInOrder() {
+        @DisplayName("fourteen components are declared in order")
+        void fourteenComponentsAreDeclaredInOrder() {
             List<String> declared = Arrays.stream(CardListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(13);
+            assertThat(declared).containsExactlyElementsOf(COMPONENTS_IN_ORDER).hasSize(14);
         }
 
         @Test
@@ -222,7 +222,11 @@ class CardListRequestSecurityTest {
                     .noneMatch(name -> name.contains("colour") || name.contains("color"))
                     .noneMatch(name -> name.contains("cursor"))
                     .noneMatch(name -> name.endsWith("len") || name.endsWith("length"))
-                    .noneMatch(name -> name.contains("flag"));
+                    // "flag" would also have caught the retained end-of-data value, which is paging
+                    // state rather than a screen attribute, so the exclusion names the attribute
+                    // families instead of a spelling that overlaps one of them.
+                    .noneMatch(name -> name.contains("highlight"))
+                    .noneMatch(name -> name.contains("protected") || name.contains("darken"));
         }
 
         @Test
@@ -235,6 +239,8 @@ class CardListRequestSecurityTest {
                     case "keyAction" -> assertThat(component.getType()).isEqualTo(KeyAction.class);
                     case "navigationContext" ->
                             assertThat(component.getType()).isEqualTo(NavigationContext.class);
+                    case "lastPageAlreadyShown" ->
+                            assertThat(component.getType()).isEqualTo(boolean.class);
                     default -> assertThat(component.getType())
                             .as("component %s", component.getName())
                             .isEqualTo(String.class);
@@ -269,7 +275,7 @@ class CardListRequestSecurityTest {
                 + "compacting it would move a selection onto a different card")
         void theOrderedViewPreservesEveryPosition() {
             CardListRequest request = new CardListRequest(null, null, null, null, "U", null, null,
-                    "S", null, null, null, null, null);
+                    "S", null, null, null, false, null, null);
 
             List<String> ordered = request.selectionsInRowOrder();
 
@@ -292,8 +298,8 @@ class CardListRequestSecurityTest {
     class TheRenderingDisclosesNothingWhileTheWireCarriesEverything {
 
         @Test
-        @DisplayName("the rendering is exactly the ten retained values plus three placeholders")
-        void theRenderingIsExactlyTheTenRetainedValuesPlusThreePlaceholders() {
+        @DisplayName("the rendering is exactly the eleven retained values plus three placeholders")
+        void theRenderingIsExactlyTheElevenRetainedValuesPlusThreePlaceholders() {
             assertThat(populated()).hasToString("CardListRequest["
                     + "accountIdFilter=" + REDACTION_PLACEHOLDER_TEXT
                     + ", cardNumberFilter=" + REDACTION_PLACEHOLDER_TEXT
@@ -306,6 +312,7 @@ class CardListRequestSecurityTest {
                     + ", selection6= "
                     + ", selection7= "
                     + ", pageMetadata=" + REDACTION_PLACEHOLDER_TEXT
+                    + ", lastPageAlreadyShown=false"
                     + ", keyAction=" + KeyAction.PFK08
                     + ", navigationContext=" + NavigationContext.empty().withReEntry()
                     + "]");
@@ -365,7 +372,7 @@ class CardListRequestSecurityTest {
             CardListRequest second = new CardListRequest("00000000011", "9999888877776666",
                     DISPLAYED_PAGE_NUMBER, " ", " ", "S", " ", " ", " ", " ",
                     new PageMetadata.PageCursorRequest("OTHER", "DIFFERENT",
-                            PageMetadata.PagingDirection.BACKWARD),
+                            PageMetadata.PagingDirection.BACKWARD, null, false), false,
                     KeyAction.PFK08, NavigationContext.empty().withReEntry());
 
             assertThat(first).hasToString(second.toString());
@@ -376,7 +383,7 @@ class CardListRequestSecurityTest {
                 + "are indistinguishable in a diagnostic")
         void anAbsentWithheldValueStillRendersAsThePlaceholder() {
             CardListRequest sparse = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, false, null, null);
 
             assertThat(sparse.toString())
                     .contains("accountIdFilter=" + REDACTION_PLACEHOLDER_TEXT)
@@ -405,7 +412,7 @@ class CardListRequestSecurityTest {
                     "U", NavigationContext.ProgramContext.REENTER, "000000007", "GRACE", null,
                     "HOPPER", ACCOUNT_ID_FILTER, "Y", CARD_NUMBER_FILTER, null, null);
             CardListRequest request = new CardListRequest(ACCOUNT_ID_FILTER, CARD_NUMBER_FILTER, null,
-                    null, null, null, null, null, null, null, null, null, identifying);
+                    null, null, null, null, null, null, null, null, false, null, identifying);
 
             String rendered = request.toString();
 
@@ -420,7 +427,7 @@ class CardListRequestSecurityTest {
         @DisplayName("the rendering is safe when every component is absent")
         void theRenderingIsSafeWhenEveryComponentIsAbsent() {
             CardListRequest empty = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, false, null, null);
 
             assertThatCode(empty::toString).doesNotThrowAnyException();
         }
@@ -520,7 +527,7 @@ class CardListRequestSecurityTest {
                 + "a blank filter means browse from the beginning")
         void aBlankValueTransportsRatherThanBeingRejected(String blank) {
             CardListRequest request = new CardListRequest(blank, blank, blank, blank, blank, blank,
-                    blank, blank, blank, blank, null, null, null);
+                    blank, blank, blank, blank, null, false, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.accountIdFilter()).isEqualTo(blank);
@@ -532,7 +539,7 @@ class CardListRequestSecurityTest {
                 + "is the shape a blank browse screen transmits")
         void aSpaceFilledSubmissionDrawsNoViolation() {
             CardListRequest spaceFilled = new CardListRequest(" ".repeat(11), " ".repeat(16), "   ",
-                    " ", " ", " ", " ", " ", " ", " ", null, null, null);
+                    " ", " ", " ", " ", " ", " ", " ", null, false, null, null);
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
             assertThat(spaceFilled.cardNumberFilter()).hasSize(16).isBlank();
@@ -545,13 +552,13 @@ class CardListRequestSecurityTest {
         void eachOverWidthValueIsReportedExactlyOnce() {
             assertThatExactlyOneViolationOn("accountIdFilter",
                     new CardListRequest("1".repeat(12), null, null, null, null, null, null, null,
-                            null, null, null, null, null));
+                            null, null, null, false, null, null));
             assertThatExactlyOneViolationOn("cardNumberFilter",
                     new CardListRequest(null, "1".repeat(17), null, null, null, null, null, null,
-                            null, null, null, null, null));
+                            null, null, null, false, null, null));
             assertThatExactlyOneViolationOn("displayedPageNumber",
                     new CardListRequest(null, null, "1234", null, null, null, null, null, null, null,
-                            null, null, null));
+                            null, false, null, null));
         }
 
         @Test
@@ -563,7 +570,7 @@ class CardListRequestSecurityTest {
                 selections[index] = "SS";
                 CardListRequest request = new CardListRequest(null, null, null, selections[0],
                         selections[1], selections[2], selections[3], selections[4], selections[5],
-                        selections[6], null, null, null);
+                        selections[6], null, false, null, null);
 
                 assertThatExactlyOneViolationOn(SELECTION_COMPONENTS.get(index), request);
             }
@@ -612,9 +619,9 @@ class CardListRequestSecurityTest {
         void aViolationInsideTheEchoedPagingStateIsReported() {
             PageMetadata.PageCursorRequest overWidth = new PageMetadata.PageCursorRequest(null,
                     "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1),
-                    PageMetadata.PagingDirection.FORWARD);
+                    PageMetadata.PagingDirection.FORWARD, null, false);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, overWidth, null, null);
+                    null, null, null, overWidth, false, null, null);
 
             Set<ConstraintViolation<CardListRequest>> violations = violationsOf(request);
 
@@ -634,7 +641,8 @@ class CardListRequestSecurityTest {
                             .toList();
 
             assertThat(declared)
-                    .containsExactly("previousCursorKey", "nextCursorKey", "direction")
+                    .containsExactly("previousCursorKey", "nextCursorKey", "direction",
+                            "displayedPageNumber", "nextPageIndicated")
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("size"))
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("count"))
                     .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("limit"));
@@ -646,9 +654,9 @@ class CardListRequestSecurityTest {
         void aViolationInTheBackwardCursorIsReportedToo() {
             PageMetadata.PageCursorRequest overWidth = new PageMetadata.PageCursorRequest(
                     "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1), null,
-                    PageMetadata.PagingDirection.BACKWARD);
+                    PageMetadata.PagingDirection.BACKWARD, null, false);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, overWidth, null, null);
+                    null, null, null, overWidth, false, null, null);
 
             Set<ConstraintViolation<CardListRequest>> violations = violationsOf(request);
 
@@ -674,7 +682,7 @@ class CardListRequestSecurityTest {
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, null, overWidth);
+                    null, null, null, null, false, null, overWidth);
 
             Set<ConstraintViolation<CardListRequest>> violations = violationsOf(request);
 
@@ -689,12 +697,12 @@ class CardListRequestSecurityTest {
         void violationsFromBothNestedComponentsAreReportedTogether() {
             PageMetadata.PageCursorRequest badPage = new PageMetadata.PageCursorRequest(null,
                     "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1),
-                    PageMetadata.PagingDirection.FORWARD);
+                    PageMetadata.PagingDirection.FORWARD, null, false);
             NavigationContext badContext = new NavigationContext(null, "NINECHARS", null, null, null,
                     null, NavigationContext.ProgramContext.REENTER, null, null, null, null, null,
                     null, null, null, null);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, badPage, null, badContext);
+                    null, null, null, badPage, false, null, badContext);
 
             Set<ConstraintViolation<CardListRequest>> violations = violationsOf(request);
 
@@ -711,7 +719,7 @@ class CardListRequestSecurityTest {
                 + "neither")
         void bothAbsentNestedComponentsAreNotViolations() {
             CardListRequest request = new CardListRequest(ACCOUNT_ID_FILTER, null, null, null, null,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, false, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.pageMetadata()).isNull();
@@ -727,7 +735,7 @@ class CardListRequestSecurityTest {
         @DisplayName("leading zeros survive in both filters and the page label")
         void leadingZerosSurvive() {
             CardListRequest request = new CardListRequest("00000000011", "0000000000000001", "001",
-                    null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, false, null, null);
 
             assertThat(request.accountIdFilter()).isEqualTo("00000000011");
             assertThat(request.cardNumberFilter()).isEqualTo("0000000000000001");
@@ -739,7 +747,7 @@ class CardListRequestSecurityTest {
                 + "selection characters by value")
         void caseIsNeverFoldedOnASelection() {
             CardListRequest request = new CardListRequest(null, null, null, "s", "u", null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, false, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.selection1()).isEqualTo("s");
@@ -751,7 +759,7 @@ class CardListRequestSecurityTest {
                 + "rejection rather than the boundary refusing the submission")
         void anOutOfVocabularySelectionRoundTrips() {
             CardListRequest request = new CardListRequest(null, null, null, "X", null, null, null,
-                    null, null, null, null, null, null);
+                    null, null, null, null, false, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.selection1()).isEqualTo("X");
@@ -762,7 +770,7 @@ class CardListRequestSecurityTest {
                 + "program rather than to this boundary")
         void aNonNumericFilterRoundTrips() {
             CardListRequest request = new CardListRequest("ABCDEFGHIJK", "ZZZZ", null, null, null,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, false, null, null);
 
             assertThat(violationsOf(request)).isEmpty();
             assertThat(request.accountIdFilter()).isEqualTo("ABCDEFGHIJK");
@@ -777,7 +785,7 @@ class CardListRequestSecurityTest {
             CardListRequest same = populated();
             CardListRequest differentCardFilter = new CardListRequest(ACCOUNT_ID_FILTER,
                     "4532015112830367", DISPLAYED_PAGE_NUMBER, " ", " ", "S", " ", " ", " ", " ",
-                    populatedPage(), KeyAction.PFK08, NavigationContext.empty().withReEntry());
+                    populatedPage(), false, KeyAction.PFK08, NavigationContext.empty().withReEntry());
 
             assertThat(first).isEqualTo(same).hasSameHashCodeAs(same);
             assertThat(first).isNotEqualTo(differentCardFilter);

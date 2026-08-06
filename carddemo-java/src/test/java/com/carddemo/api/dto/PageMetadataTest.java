@@ -1921,24 +1921,67 @@ class PageMetadataTest {
     class InboundCursorRequestContract {
 
         @Test
-        @DisplayName("it declares exactly the two boundary keys and the direction, and declares no page "
-                + "size, no exhaustion flag and no display indicator")
-        void itDeclaresOnlyTheThreeCallerOwnedComponents() {
+        @DisplayName("it declares the two boundary keys, the direction and the two retained values the "
+                + "programs read back, and declares no page size and no derived exhaustion flag")
+        void itDeclaresOnlyTheCallerOwnedComponents() {
             List<String> declared =
                     Arrays.stream(PageMetadata.PageCursorRequest.class.getRecordComponents())
                             .map(RecordComponent::getName)
                             .toList();
 
             assertThat(declared)
-                    .containsExactly("previousCursorKey", "nextCursorKey", "direction")
-                    .hasSize(3);
+                    .containsExactly("previousCursorKey", "nextCursorKey", "direction",
+                            "displayedPageNumber", "nextPageIndicated")
+                    .hasSize(5);
             assertThat(declared)
-                    .as("the row count is the shape of a legacy screen and the two exhaustion flags are "
-                            + "outcomes the browse discovers, so none of the four is a caller's to send")
+                    .as("the row count is the shape of a legacy screen, and whether a page precedes this "
+                            + "one is derived from the retained page number rather than retained, so "
+                            + "neither is a caller's to send")
                     .doesNotContain("pageSize")
-                    .doesNotContain("hasMorePages")
-                    .doesNotContain("hasPreviousPages")
-                    .doesNotContain("displayedPageNumber");
+                    .doesNotContain("hasPreviousPages");
+        }
+
+        @Test
+        @DisplayName("the two retained values it does declare are the communication-area fields all three "
+                + "list programs read back, carried as text and a flag exactly as the fields are")
+        void itDeclaresTheTwoRetainedCommunicationAreaValues() {
+            final Map<String, Class<?>> byName = new LinkedHashMap<>();
+            for (RecordComponent component
+                    : PageMetadata.PageCursorRequest.class.getRecordComponents()) {
+                byName.put(component.getName(), component.getType());
+            }
+
+            // Text, so the leading zeros a fixed-width indicator carries survive the round trip; a
+            // numeric component would silently discard them.
+            assertThat(byName).containsEntry("displayedPageNumber", String.class);
+            assertThat(byName).containsEntry("nextPageIndicated", boolean.class);
+        }
+
+        @Test
+        @DisplayName("it reads a retained page number, a padded one and an unusable one without throwing, "
+                + "answering the zero a first entry carries when it cannot read one")
+        void itReadsTheRetainedPageNumberWithoutThrowing() {
+            assertThat(cursorRequestWithPageNumber("7").retainedPageNumber()).isEqualTo(7);
+            assertThat(cursorRequestWithPageNumber("  7  ").retainedPageNumber()).isEqualTo(7);
+            assertThat(cursorRequestWithPageNumber("00000042").retainedPageNumber()).isEqualTo(42);
+            assertThat(cursorRequestWithPageNumber(null).retainedPageNumber()).isZero();
+            assertThat(cursorRequestWithPageNumber("").retainedPageNumber()).isZero();
+            assertThat(cursorRequestWithPageNumber("   ").retainedPageNumber()).isZero();
+            // Neither of these can pass the component's own pattern, so reaching them means a direct
+            // construction bypassed bean validation; the reader still answers rather than throwing.
+            assertThat(cursorRequestWithPageNumber("1 2").retainedPageNumber()).isZero();
+            assertThat(cursorRequestWithPageNumber("123456789").retainedPageNumber()).isZero();
+        }
+
+        /**
+         * Builds an inbound paging request carrying only the retained page number under test.
+         *
+         * @param retained the page number as it would arrive on the wire
+         * @return the request
+         */
+        private static PageMetadata.PageCursorRequest cursorRequestWithPageNumber(
+                final String retained) {
+            return new PageMetadata.PageCursorRequest(null, null, null, retained, false);
         }
 
         @Test
@@ -1962,7 +2005,7 @@ class PageMetadataTest {
         void eachBoundaryKeyIsBoundedAtTheSharedCursorWidth() {
             String widest = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH);
             PageMetadata.PageCursorRequest atTheBound = new PageMetadata.PageCursorRequest(
-                    widest, widest, PageMetadata.PagingDirection.FORWARD);
+                    widest, widest, PageMetadata.PagingDirection.FORWARD, null, false);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(atTheBound))
@@ -1982,7 +2025,7 @@ class PageMetadataTest {
         void aKeyPastTheBoundIsReportedWithoutBeingShortened() {
             String tooWide = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1);
             PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
-                    tooWide, null, PageMetadata.PagingDirection.BACKWARD);
+                    tooWide, null, PageMetadata.PagingDirection.BACKWARD, null, false);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 Validator validator = factory.getValidator();
@@ -2005,13 +2048,13 @@ class PageMetadataTest {
         @DisplayName("construction guards nothing at all, because the direction is legitimately absent on "
                 + "the first entry to a list screen")
         void constructionGuardsNothingIncludingTheDirection() {
-            assertThatCode(() -> new PageMetadata.PageCursorRequest(null, null, null))
+            assertThatCode(() -> new PageMetadata.PageCursorRequest(null, null, null, null, false))
                     .as("the outbound shape requires a direction because it reports a browse that already "
                             + "happened; the inbound shape describes one that has not started")
                     .doesNotThrowAnyException();
 
             PageMetadata.PageCursorRequest empty =
-                    new PageMetadata.PageCursorRequest(null, null, null);
+                    new PageMetadata.PageCursorRequest(null, null, null, null, false);
 
             assertThat(empty.previousCursorKey()).isNull();
             assertThat(empty.nextCursorKey()).isNull();
@@ -2026,7 +2069,7 @@ class PageMetadataTest {
                 + "outbound shape, so nothing fires out of the legacy cascade's turn")
         void awkwardKeysCrossConstructionUntouched() {
             PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
-                    "", "** ?? //", PageMetadata.PagingDirection.FORWARD);
+                    "", "** ?? //", PageMetadata.PagingDirection.FORWARD, null, false);
 
             assertThat(request.previousCursorKey()).isEmpty();
             assertThat(request.nextCursorKey()).isEqualTo("** ?? //");
@@ -2037,15 +2080,15 @@ class PageMetadataTest {
                 + "hash code")
         void itIsAValue() {
             PageMetadata.PageCursorRequest first = new PageMetadata.PageCursorRequest(
-                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD, null, false);
             PageMetadata.PageCursorRequest second = new PageMetadata.PageCursorRequest(
-                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD, null, false);
 
             assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
             assertThat(first)
                     .isNotEqualTo(new PageMetadata.PageCursorRequest(
                             CARD_FIRST_CURSOR, CARD_LAST_CURSOR,
-                            PageMetadata.PagingDirection.FORWARD));
+                            PageMetadata.PagingDirection.FORWARD, null, false));
         }
 
         @Test
@@ -2053,7 +2096,7 @@ class PageMetadataTest {
                 + "key is the card number itself")
         void itsDiagnosticRenderingWithholdsBothBoundaryKeys() {
             PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
-                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD, null, false);
 
             String rendered = request.toString();
 
@@ -2074,32 +2117,48 @@ class PageMetadataTest {
                 + "fixed and reveals nothing about length or presence")
         void itsRenderingIsLengthAndPresenceIndependent() {
             String withKeys = new PageMetadata.PageCursorRequest(
-                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.FORWARD)
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.FORWARD, null, false)
                     .toString();
             String withoutKeys = new PageMetadata.PageCursorRequest(
-                    null, null, PageMetadata.PagingDirection.FORWARD).toString();
+                    null, null, PageMetadata.PagingDirection.FORWARD, null, false).toString();
 
             assertThat(withoutKeys)
-                    .as("an absent key renders identically to a present one, so nothing is inferable "
-                            + "from the rendering alone")
-                    .isEqualTo(withKeys)
-                    .doesNotContain("null");
+                    .as("an absent key renders identically to a present one, so nothing about either "
+                            + "regulated value is inferable from the rendering alone")
+                    .isEqualTo(withKeys);
+            // The claim is about the two cursor keys, which are the regulated components: each renders as
+            // the fixed placeholder whether it is present or absent, so neither its length nor its
+            // presence survives. It is deliberately not a blanket ban on the word "null" anywhere in the
+            // rendering - the retained page number is a page indicator rather than regulated data, and
+            // withholding it would make the rendering less useful for no protective gain.
+            assertThat(withKeys)
+                    .contains("previousCursorKey=***REDACTED***")
+                    .contains("nextCursorKey=***REDACTED***")
+                    .doesNotContain(CARD_FIRST_CURSOR)
+                    .doesNotContain(CARD_LAST_CURSOR);
+            assertThat(withoutKeys)
+                    .contains("previousCursorKey=***REDACTED***")
+                    .contains("nextCursorKey=***REDACTED***");
         }
 
         @Test
-        @DisplayName("on the wire it publishes exactly its three members and accepts a body that also "
-                + "carries the four server-owned ones, discarding them")
-        void onTheWireItPublishesThreeMembersAndDiscardsTheServerOwnedFour()
+        @DisplayName("on the wire it publishes exactly its own members and accepts a body that also "
+                + "carries the server-owned ones, discarding them")
+        void onTheWireItPublishesItsMembersAndDiscardsTheServerOwnedOnes()
                 throws JsonProcessingException {
             PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
-                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD);
+                    CARD_FIRST_CURSOR, CARD_LAST_CURSOR, PageMetadata.PagingDirection.BACKWARD, null, false);
 
             Map<String, Object> published =
                     WIRE_MAPPER.readValue(WIRE_MAPPER.writeValueAsString(request), WIRE_SHAPE);
 
-            assertThat(published)
-                    .containsOnlyKeys("previousCursorKey", "nextCursorKey", "direction");
+            // The page number is absent here and is therefore omitted; the retained flag is a primitive
+            // and is always written, which is what makes "absent reads as false" a written fact rather
+            // than an inference.
+            assertThat(published).containsOnlyKeys("previousCursorKey", "nextCursorKey", "direction",
+                    "nextPageIndicated");
             assertThat(published).containsEntry("direction", "BACKWARD");
+            assertThat(published).containsEntry("nextPageIndicated", false);
 
             String overreachingBody = "{\"previousCursorKey\":\"" + CARD_FIRST_CURSOR + "\","
                     + "\"nextCursorKey\":\"" + CARD_LAST_CURSOR + "\",\"direction\":\"FORWARD\","
@@ -2118,8 +2177,7 @@ class PageMetadataTest {
                     .doesNotContain("2147483647")
                     .doesNotContain("pageSize")
                     .doesNotContain("hasMorePages")
-                    .doesNotContain("hasPreviousPages")
-                    .doesNotContain("displayedPageNumber");
+                    .doesNotContain("hasPreviousPages");
         }
 
         @Test
@@ -2127,9 +2185,12 @@ class PageMetadataTest {
                 + "it binds without one")
         void anAbsentDirectionIsOmittedAndAcceptedBack() throws JsonProcessingException {
             String published = WIRE_MAPPER.writeValueAsString(
-                    new PageMetadata.PageCursorRequest(null, null, null));
+                    new PageMetadata.PageCursorRequest(null, null, null, null, false));
 
-            assertThat(published).isEqualTo("{}").doesNotContain("null");
+            // Not "{}": the retained flag is a primitive, so it is always written, and false is exactly
+            // what an absent flag means. Every nullable member is still omitted rather than published as
+            // null, which is the claim this test carries.
+            assertThat(published).isEqualTo("{\"nextPageIndicated\":false}").doesNotContain("null");
             assertThat(WIRE_MAPPER.readValue("{}", PageMetadata.PageCursorRequest.class).direction())
                     .isNull();
         }

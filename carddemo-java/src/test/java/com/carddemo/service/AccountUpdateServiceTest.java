@@ -39,6 +39,7 @@ import org.mockito.Mockito;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.dao.OptimisticLockingFailureException;
 
+import com.carddemo.api.AccountProtectedDataAdapter;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
@@ -174,7 +175,7 @@ class AccountUpdateServiceTest {
                 "50.00", CUSTOMER_ID, null, null, null, "1980", "02", "03", "700", "Aniya Von",
                 "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA",
                 "201", "555", "0100", null, "202", "555", "0101", "1234567890", "Y", key,
-                reEntered(), token);
+                reEntered(), token, false);
     }
 
     /** The same turn with one detail changed, so the edits run. */
@@ -184,7 +185,7 @@ class AccountUpdateServiceTest {
                 "50.00", CUSTOMER_ID, "123", "45", "6789", "1980", "02", "03", "700",
                 "Aniya Von", "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001",
                 "Springfield", "USA", "201", "555", "0100", null, "202", "555", "0101",
-                "1234567890", "Y", key, reEntered(), token);
+                "1234567890", "Y", key, reEntered(), token, false);
     }
 
     private String mintedToken() {
@@ -193,6 +194,153 @@ class AccountUpdateServiceTest {
 
     private static List<String> screenFieldIdsOf(final AccountUpdateOutcome response) {
         return response.fieldErrors().stream().map(ValidationException.FieldError::bmsFieldId).toList();
+    }
+
+    /** The national identifier the withholding fixtures store, sealed on the way into the row. */
+    private static final String STORED_SSN = "123456789";
+
+    /** The government-issued identifier the withholding fixtures store, sealed likewise. */
+    private static final String STORED_GOVERNMENT_ID = "G1234567";
+
+    /**
+     * A customer row carrying both regulated identifiers, so a withheld stand-in has something to restore.
+     *
+     * <p>The seeded fifty rows hold neither, which is why the ordinary fixture leaves both null; this one
+     * exists specifically to exercise the restoration, and both columns accept only envelopes.
+     */
+    private Customer customerWithRegulatedIdentifiers() {
+        final SensitiveFieldEncryptionService encryption =
+                new SensitiveFieldEncryptionService(BASE64_KEY);
+        return new Customer(CUSTOMER_ID, "Aniya Von", "Q", "Smith", "1 High Street", "Flat 2",
+                "Springfield", "NY", "USA", "10001", "(201)555-0100", "(202)555-0101",
+                encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, STORED_SSN),
+                encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                        STORED_GOVERNMENT_ID),
+                "1980-02-03", "1234567890", "Y", "700");
+    }
+
+    /** Seeds the three reads with a customer that carries both regulated identifiers. */
+    private void seedRecordsWithRegulatedIdentifiers() {
+        final Customer customer = customerWithRegulatedIdentifiers();
+        Mockito.when(this.crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
+                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
+        Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
+                .thenReturn(Optional.of(seededAccount()));
+        Mockito.when(this.customerRepository.findById(CUSTOMER_ID))
+                .thenReturn(Optional.of(customer));
+    }
+
+    /**
+     * A turn as a caller without the authority to see the regulated values echoes it back.
+     *
+     * <p>Every regulated component carries the stand-in the outbound gate composes - the withheld character
+     * repeated to the stored value's own width - except the final part of the national identifier, which
+     * the gate does not withhold. One unrelated value differs from the record, so the edits actually run.
+     *
+     * @param token the minted before-image proof
+     * @param withheld whether the caller is to be treated as one the values were withheld from
+     * @return the echoed turn
+     */
+    private AccountUpdateCommand withheldDetailTurn(final String token, final boolean withheld) {
+        return new AccountUpdateCommand(ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029",
+                "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
+                "50.00", CUSTOMER_ID, "***", "**", "6789", "****", "**", "**", "700",
+                "Aniya Von", "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001",
+                "Springfield", "USA", "201", "555", "0100", "********", "202", "555", "0101",
+                "**********", "Y", KeyAction.ENTER, reEntered(), token, withheld);
+    }
+
+    /** The five screen fields whose edits a withheld stand-in would otherwise fail. */
+    private static final List<String> REGULATED_SCREEN_FIELDS =
+            List.of("ACTSSN1", "ACTSSN2", "DOBYEAR", "DOBMON", "DOBDAY", "ACSEFTC");
+
+    /* ---------------------------------------------------------------------------------------- */
+
+    @Nested
+    @DisplayName("the regulated values a caller was not permitted to see")
+    class WithheldRegulatedValues {
+
+        @Test
+        @DisplayName("an ordinary operator can save an unrelated change, because the withheld stand-ins "
+                + "restore to the stored values instead of being edited as input")
+        void anOrdinaryOperatorCanSaveAnUnrelatedChange() {
+            // Without the restoration the mandatory edits at COACTUPC lines 1520 to 1556 reject the
+            // stand-ins and the turn never validates, which costs every ordinary operator the whole
+            // transaction - not just the fields they could not see.
+            seedRecordsWithRegulatedIdentifiers();
+            final Customer stored = customerWithRegulatedIdentifiers();
+            final String token = tokenService.mint(seededAccount(), stored);
+
+            final AccountUpdateOutcome response = service.handle(withheldDetailTurn(token, true));
+
+            assertThat(screenFieldIdsOf(response))
+                    .as("no regulated field may report, because none of them was supplied as input")
+                    .doesNotContainAnyElementsOf(REGULATED_SCREEN_FIELDS);
+            assertThat(response.error()).isFalse();
+            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION);
+        }
+
+        @Test
+        @DisplayName("the same stand-ins are edited as ordinary input when nothing was withheld, so an "
+                + "authorized operator's literal entry is never silently reinterpreted")
+        void theSameStandInsAreEditedWhenNothingWasWithheld() {
+            seedRecordsWithRegulatedIdentifiers();
+            final String token = tokenService.mint(seededAccount(), customerWithRegulatedIdentifiers());
+
+            final AccountUpdateOutcome response = service.handle(withheldDetailTurn(token, false));
+
+            assertThat(screenFieldIdsOf(response))
+                    .as("the stand-in is not a digit, so every regulated edit that requires digits fails")
+                    .containsAnyElementsOf(REGULATED_SCREEN_FIELDS);
+            assertThat(response.error()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a stand-in of the wrong width is edited as input, because the gate composes it at "
+                + "the stored value's own width and nothing else is its stand-in")
+        void aStandInOfTheWrongWidthIsEditedAsInput() {
+            seedRecordsWithRegulatedIdentifiers();
+            final String token = tokenService.mint(seededAccount(), customerWithRegulatedIdentifiers());
+            final AccountUpdateCommand tooShort = new AccountUpdateCommand(ACCOUNT_ID, "N", "2020",
+                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
+                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "***", "**", "6789",
+                    "**", "**", "**", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
+                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", "********",
+                    "202", "555", "0101", "**********", "Y", KeyAction.ENTER, reEntered(), token,
+                    true);
+
+            final AccountUpdateOutcome response = service.handle(tooShort);
+
+            assertThat(screenFieldIdsOf(response))
+                    .as("a two-character stand-in cannot have come from a four-character stored year")
+                    .contains("DOBYEAR");
+        }
+
+        @Test
+        @DisplayName("the character this transaction recognises coming back is the character the boundary "
+                + "gate composes going out, which is the agreement neither layer can import")
+        void theWithheldCharacterAgreesWithTheBoundaryGate() {
+            // The gate composes the stand-in and this transaction recognises it, and the constant cannot be
+            // shared: nothing in the service layer may depend upward on the boundary. A suite is the only
+            // place both are visible, so this is where the agreement is pinned - a change to either side
+            // alone fails here rather than silently disabling the restoration.
+            assertThat(String.valueOf(AccountUpdateService.WITHHELD_VALUE_CHARACTER))
+                    .isEqualTo(AccountProtectedDataAdapter.MASK_CHARACTER);
+        }
+
+        @Test
+        @DisplayName("a regulated value the record does not hold leaves the submitted stand-in alone, "
+                + "because there was nothing for a stand-in to be composed from")
+        void anAbsentStoredValueLeavesTheStandInAlone() {
+            // The fifty seeded rows hold neither identifier, and this is the shape they take.
+            seedRecords();
+            final AccountUpdateOutcome response =
+                    service.handle(withheldDetailTurn(mintedToken(), true));
+
+            assertThat(screenFieldIdsOf(response))
+                    .as("nothing is stored for the national identifier, so the stand-in is edited")
+                    .contains("ACTSSN1");
+        }
     }
 
     /* ---------------------------------------------------------------------------------------- */
@@ -208,7 +356,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, null, null);
+                    KeyAction.ENTER, null, null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -231,7 +379,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null);
+                    KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -247,7 +395,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null);
+                    KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -263,7 +411,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null);
+                    null, KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -296,7 +444,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null);
+                    null, KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -321,7 +469,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, CUSTOMER_ID, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, KeyAction.ENTER, reEntered(), mintedToken());
+                    null, null, KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final List<String> reported = screenFieldIdsOf(service.handle(request));
 
@@ -346,7 +494,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "999", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -371,7 +519,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, KeyAction.ENTER,
                     ScreenNavigationState.empty().withFirstEntry().reconciledWith("USER0001", null),
-                    mintedToken());
+                    mintedToken(), false);
 
             assertThat(service.handle(request).fieldErrors()).isEmpty();
         }
@@ -395,7 +543,7 @@ class AccountUpdateServiceTest {
                     "1980", "02", "03", "700", "Aniya Von", "%%% 12 !!", "Smith", "1 High Street",
                     "NY", "$$$ 99 ???", "10001", "Springfield", "USA", "201", "555", "0100", null,
                     "202", "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(),
-                    mintedToken());
+                    mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -417,7 +565,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", area, prefix, line, null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
             return service.handle(request);
         }
 
@@ -517,7 +665,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", score, "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
             return service.handle(request);
         }
 
@@ -569,7 +717,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "AA",
                     "Flat 2", "34001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -586,7 +734,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "99999", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -609,7 +757,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", name, "Q", "Smith", "1 High Street", "NY", "Flat 2",
                     "10001", "Springfield", "USA", "201", "555", "0100", null, "202", "555",
-                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             assertThat(screenFieldIdsOf(service.handle(request))).doesNotContain("ACSFNAM");
         }
@@ -623,7 +771,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Mary2", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -804,7 +952,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.PFK03, reEntered(), null);
+                    KeyAction.PFK03, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -822,7 +970,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null);
+                    KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome folded = service.handle(request, "DFHPF15");
 
@@ -836,7 +984,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null);
+                    KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request, "DFHNOSUCH");
 
@@ -866,7 +1014,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, reEntered(), null);
+                    null, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -897,7 +1045,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, ssn1, ssn2, ssn3,
                     dobYear, dobMonth, dobDay, "700", "Aniya Von", "Q", "Smith", "1 High Street",
                     "NY", "Flat 2", zip, "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", eft, priCardHolder, KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", eft, priCardHolder, KeyAction.ENTER, reEntered(), mintedToken(), false);
             return service.handle(request);
         }
 
@@ -1012,7 +1160,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
                     "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -1040,7 +1188,7 @@ class AccountUpdateServiceTest {
                     "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
                     "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "   ", "NY", "Flat 2",
                     "10001", "Springfield", "USA", "201", "555", "0100", null, "202", "555",
-                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken());
+                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -1060,7 +1208,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null);
+                    null, KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 
@@ -1084,7 +1232,7 @@ class AccountUpdateServiceTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null);
+                    null, KeyAction.ENTER, reEntered(), null, false);
 
             final AccountUpdateOutcome response = service.handle(request);
 

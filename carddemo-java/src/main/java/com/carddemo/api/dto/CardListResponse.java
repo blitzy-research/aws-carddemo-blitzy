@@ -229,7 +229,23 @@ import java.util.List;
  *     in a flag of its own and sets it independently of any message text, so the flag is a fact in
  *     its own right here too.
  * @param pageMetadata the browse cursors, direction and end-of-browse indicators. May be
- *     {@code null} on a path that established no browse position.
+ *     {@code null} on a path that established no browse position. Two of its components are retained
+ *     paging state the client echoes back on its next call - the displayed page number and the
+ *     more-pages flag - because the legacy program reads both back out of the communication area rather
+ *     than recomputing them.
+ * @param lastPageAlreadyShown the third retained paging value, {@code WS-CA-LAST-PAGE-DISPLAYED} at
+ *     lines 239 to 241 of {@code app/cbl/COCRDLIC.cbl}, published so the client can echo it. It records
+ *     whether the operator has already been told they are at the end of the data, which the message rule
+ *     at lines 905 to 916 reads to tell a first arrival at the end from a repeated request past it. It
+ *     sits here rather than on the shared paging contract because it is this screen's alone: neither
+ *     list screen that shares that contract declares an equivalent field.
+ * @param fieldErrors the state-bearing field-level detail in the order the turn accumulated it, which
+ *     is the order the operator saw the fields marked. Distinct from {@code selectionErrorFlags} and not
+ *     a duplicate of it: the flags are <em>positional</em>, so their index is the row, while these entries
+ *     are <em>stateful</em>, distinguishing a field that was not supplied from one supplied wrongly - the
+ *     decoration rule at lines 751 to 759 highlights both but marks only the first. Neither can express
+ *     the other, which is why the legacy keeps both and so does this contract. Defensively copied;
+ *     {@code null} becomes empty; never re-ordered.
  * @param focusScreenFieldId the identity of the map field the screen puts the operator's attention
  *     on - a field name such as the account filter or one of the selection cells, at most seven
  *     characters, which is the widest name the map declares. Identity only: no screen coordinate, no
@@ -259,6 +275,8 @@ public record CardListResponse(
         @Size(max = CardListResponse.ERROR_MESSAGE_LENGTH) String errorMessage,
         boolean generalError,
         PageMetadata pageMetadata,
+        boolean lastPageAlreadyShown,
+        List<ErrorResponse.FieldError> fieldErrors,
         @Size(max = CardListResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
@@ -285,7 +303,7 @@ public record CardListResponse(
      * is the ordinary case and stays absent, but one that exists and disagrees in length would either
      * attribute an error to the wrong row or attribute one to a row the page does not contain.</p>
      *
-     * @throws NullPointerException if either list contains a {@code null} element, which
+     * @throws NullPointerException if any list contains a {@code null} element, which
      *     {@link List#copyOf(java.util.Collection)} does not admit. Neither list has a meaningful
      *     null element: a row is either present or the list is shorter, and every position of the
      *     selection indicator is explicitly marked or explicitly unmarked, exactly as the legacy
@@ -297,6 +315,7 @@ public record CardListResponse(
         rows = (rows == null) ? List.of() : List.copyOf(rows);
         selectionErrorFlags =
                 (selectionErrorFlags == null) ? List.of() : List.copyOf(selectionErrorFlags);
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
         if (rows.size() > PageMetadata.CARD_LIST_PAGE_SIZE) {
             throw new IllegalArgumentException("rows may hold at most "
                     + PageMetadata.CARD_LIST_PAGE_SIZE + " entries, because that is how many row"
@@ -452,6 +471,13 @@ public record CardListResponse(
      * identifier beginning with a zero would come back changed. Values are carried exactly as
      * received, including surrounding spaces.</p>
      *
+     * @param screenSlot the 1-based row position this row occupies on the screen, between one and
+     *     {@link PageMetadata#CARD_LIST_PAGE_SIZE}. Published rather than left to the list order because
+     *     the two are not the same thing: the legacy backward browse fills its slots downward from the
+     *     last, so a partial backward page leaves the low slots empty and presents its rows at the bottom
+     *     of the screen, and the selection field a client sends back is addressed <em>by slot</em>. A
+     *     client that inferred the slot from the list position would, on exactly that page, mark an action
+     *     against a different card than the one the operator chose.
      * @param selection the action code echoed back for this row: {@code S} requests card detail and
      *     {@code U} requests card update, and at most one action is honoured across the whole page.
      *     Echoed as received - neither validated nor interpreted here. Blank on a row the operator
@@ -469,6 +495,7 @@ public record CardListResponse(
      *     through that type's non-throwing lookup.
      */
     public record CardListRow(
+            int screenSlot,
             @Size(max = CardListResponse.SELECTION_LENGTH) String selection,
             @Size(max = CardListResponse.ACCOUNT_NUMBER_LENGTH) String accountNumber,
             @Size(max = CardListResponse.CARD_NUMBER_LENGTH) String cardNumber,
@@ -501,7 +528,8 @@ public record CardListResponse(
         @Override
         public String toString() {
             return "CardListRow["
-                    + "selection=" + selection
+                    + "screenSlot=" + screenSlot
+                    + ", selection=" + selection
                     + ", accountNumber=" + REDACTION_PLACEHOLDER
                     + ", cardNumber=" + REDACTION_PLACEHOLDER
                     + ", cardStatus=" + cardStatus
@@ -569,6 +597,8 @@ public record CardListResponse(
                 + ", errorMessage=" + errorMessage
                 + ", generalError=" + generalError
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", lastPageAlreadyShown=" + lastPageAlreadyShown
+                + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext

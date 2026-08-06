@@ -151,7 +151,7 @@ class BillPaymentResponseRuleComplianceTest {
         return new BillPaymentResponse(
                 accountId, currentBalance, confirm, newTransactionId,
                 "CB00", "CardDemo", "07/19/22", "COBIL00C", "Bill Payment",
-                "10:30:00", errorMessage, paymentAccepted, generalError, focusScreenFieldId,
+                "10:30:00", errorMessage, paymentAccepted, generalError, List.of(), focusScreenFieldId,
                 "/api/menu/user", navigationContext);
     }
 
@@ -168,7 +168,7 @@ class BillPaymentResponseRuleComplianceTest {
         return new BillPaymentResponse(
                 accountId, currentBalance, null, null,
                 null, null, null, null, null,
-                null, errorMessage, false, false, null,
+                null, errorMessage, false, false, List.of(), null,
                 null, null);
     }
 
@@ -467,7 +467,7 @@ class BillPaymentResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         /**
-         * The response declares sixteen components, and the payment amount is not one of them.
+         * The response declares seventeen components, and the payment amount is not one of them.
          *
          * <p>{@code app/cbl/COBIL00C.cbl} pays the whole outstanding balance: the amount taken is the
          * balance the account carried, at line 198 and following, and the screen has no separate amount
@@ -477,9 +477,9 @@ class BillPaymentResponseRuleComplianceTest {
          * is exactly the kind of thing a client keeps reading for.
          */
         @Test
-        @DisplayName("the response declares sixteen components in screen order - the account block, the "
+        @DisplayName("the response declares seventeen components in screen order - the account block, the "
                 + "screen furniture and the routing block - and no separate payment amount")
-        void theResponseDeclaresSixteenComponentsInScreenOrder() {
+        void theResponseDeclaresSeventeenComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(
                     BillPaymentResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
@@ -487,8 +487,8 @@ class BillPaymentResponseRuleComplianceTest {
             assertThat(declared).containsExactly("accountId", "currentBalance",
                     "confirm", "newTransactionId", "transactionName", "title01", "currentDate",
                     "programName", "title02", "currentTime", "errorMessage", "paymentAccepted",
-                    "generalError", "focusScreenFieldId", "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(16);
+                    "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext");
+            assertThat(declared).hasSize(17);
             assertThat(declared).doesNotContain("paymentBalance");
         }
 
@@ -606,27 +606,27 @@ class BillPaymentResponseRuleComplianceTest {
         private BillPaymentResponse responseWith(final String componentName, final String value) {
             return switch (componentName) {
                 case "accountId" -> new BillPaymentResponse(value, null, null, null, null,
-                        null, null, null, null, null, null, false, false, null, null, null);
+                        null, null, null, null, null, null, false, false, List.of(), null, null, null);
                 case "confirm" -> new BillPaymentResponse(null, null, value, null, null,
-                        null, null, null, null, null, null, false, false, null, null, null);
+                        null, null, null, null, null, null, false, false, List.of(), null, null, null);
                 case "newTransactionId" -> new BillPaymentResponse(null, null, null, value, null,
-                        null, null, null, null, null, null, false, false, null, null, null);
+                        null, null, null, null, null, null, false, false, List.of(), null, null, null);
                 case "transactionName" -> new BillPaymentResponse(null, null, null, null, value,
-                        null, null, null, null, null, null, false, false, null, null, null);
+                        null, null, null, null, null, null, false, false, List.of(), null, null, null);
                 case "title01" -> new BillPaymentResponse(null, null, null, null, null,
-                        value, null, null, null, null, null, false, false, null, null, null);
+                        value, null, null, null, null, null, false, false, List.of(), null, null, null);
                 case "currentDate" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, value, null, null, null, null, false, false, null, null, null);
+                        null, value, null, null, null, null, false, false, List.of(), null, null, null);
                 case "programName" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, null, value, null, null, null, false, false, null, null, null);
+                        null, null, value, null, null, null, false, false, List.of(), null, null, null);
                 case "title02" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, null, null, value, null, null, false, false, null, null, null);
+                        null, null, null, value, null, null, false, false, List.of(), null, null, null);
                 case "currentTime" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, null, null, null, value, null, false, false, null, null, null);
+                        null, null, null, null, value, null, false, false, List.of(), null, null, null);
                 case "errorMessage" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, null, null, null, null, value, false, false, null, null, null);
+                        null, null, null, null, null, value, false, false, List.of(), null, null, null);
                 case "focusScreenFieldId" -> new BillPaymentResponse(null, null, null, null, null,
-                        null, null, null, null, null, null, false, false, value, null, null);
+                        null, null, null, null, null, null, false, false, List.of(), value, null, null);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
             };

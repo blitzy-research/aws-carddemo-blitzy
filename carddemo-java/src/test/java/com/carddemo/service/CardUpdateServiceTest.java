@@ -107,6 +107,15 @@ class CardUpdateServiceTest {
 
     private AbendService abendService;
 
+    /**
+     * The write primitive, held rather than inlined so a test can assert the rollback mark.
+     *
+     * <p>A failed rewrite leaves the transaction unable to continue, and the only observable evidence that
+     * the turn recognised that - rather than committing a half-written row - is the mark on this
+     * collaborator.
+     */
+    private RecordWriter recordWriter;
+
     private CardUpdateService service;
 
     private Logger serviceLogger;
@@ -117,9 +126,10 @@ class CardUpdateServiceTest {
     void setUp() {
         this.cardRepository = Mockito.mock(CardRepository.class);
         this.abendService = Mockito.mock(AbendService.class);
+        this.recordWriter = RecordWriterDoubles.passthrough();
         this.service = new CardUpdateService(this.cardRepository, this.abendService,
                 new MessageCatalogService(), new NavigationService(), new OnlineTransactionBoundary(),
-                RecordWriterDoubles.passthrough(),
+                this.recordWriter,
                 Clock.fixed(Instant.parse("2024-03-14T15:09:26Z"), ZoneOffset.UTC));
 
         this.capturedLog = new ListAppender<>();
@@ -444,24 +454,34 @@ class CardUpdateServiceTest {
     class WritePath {
 
         @Test
-        @DisplayName("(e) a row-version conflict raises the module's conflict exception and NEVER abends")
-        void versionConflictRaisesConflictAndNeverAbends() {
+        @DisplayName("(e) a row-version conflict is reported on the screen the operator is holding, is "
+                + "NOT raised past it, and NEVER abends")
+        void versionConflictIsReportedOnTheScreenAndNeverAbends() {
+            // COCRDUPC lines 1487 to 1490 answer any non-normal rewrite response with the single statement
+            // SET LOCKED-BUT-UPDATE-FAILED TO TRUE, after which the paragraph falls through its own exit
+            // and the turn composes a screen. A raised conflict would replace that screen - and the keyed
+            // changes on it - with a transport-level error the legacy has no way to produce.
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
             Mockito.when(CardUpdateServiceTest.this.cardRepository.saveAndFlush(Mockito.any()))
                     .thenThrow(new OptimisticLockingFailureException("row version disagreed"));
 
-            assertThatExceptionOfType(OptimisticLockConflictException.class)
-                    .isThrownBy(() -> CardUpdateServiceTest.this.service.processCardUpdate(
-                            confirmingTurn("DFHPF5", "MARY ANN", "N",
-                                    carriedImage(STORED_NAME_FOLDED))))
-                    .satisfies(raised -> {
-                        assertThat(raised.conflictKind()).isEqualTo(
-                                OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK);
-                        assertThat(raised.entityName()).isEqualTo("Card");
-                        assertThat(raised.getMessage()).isEqualTo("Update of record failed");
-                    });
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(confirmingTurn("DFHPF5", "MARY ANN", "N",
+                            carriedImage(STORED_NAME_FOLDED)));
 
+            assertThat(result.writeOutcome())
+                    .isEqualTo(CardUpdateService.WriteOutcome.UPDATE_FAILED_AFTER_LOCK);
+            assertThat(result.changeAction())
+                    .as("the state machine reads the outcome and settles on the failed-after-lock state, "
+                            + "which is what composes the notice")
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED);
+            assertThat(result.message())
+                    .isEqualTo(OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED);
+            assertThat(result.updateCommitted()).isFalse();
+
+            // The transaction cannot continue, so it is marked for rollback rather than committed.
+            Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 

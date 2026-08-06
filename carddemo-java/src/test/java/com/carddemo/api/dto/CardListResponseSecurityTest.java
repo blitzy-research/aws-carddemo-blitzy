@@ -95,7 +95,7 @@ class CardListResponseSecurityTest {
     }
 
     private static CardListRow row() {
-        return new CardListRow("S", ROW_ACCOUNT_NUMBER, ROW_CARD_NUMBER, "Y");
+        return new CardListRow(1,"S", ROW_ACCOUNT_NUMBER, ROW_CARD_NUMBER, "Y");
     }
 
     private static PageMetadata page() {
@@ -114,13 +114,13 @@ class CardListResponseSecurityTest {
                 // One flag per row and never a flag more: the indicator is positional, so a third
                 // flag beside two rows would name a row that is not on the page.
                 List.of(row(), row()), List.of(false, true),
-                "INFORMATION LINE", "ERROR LINE", true, page(), "CARDSID", "route/next", navigation);
+                "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", navigation);
     }
 
     private static CardListResponse empty() {
         return new CardListResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
-                null, null, null, null);
+                null, false, List.of(), null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -213,12 +213,12 @@ class CardListResponseSecurityTest {
                 + "cardinality renders identically, while the cardinality itself is retained on purpose "
                 + "because a count names no cardholder and a paging defect is diagnosed by it")
         void noRowContentIsRecoverable() {
-            CardListRow other = new CardListRow("U", "00000000099", "4111111111111111", "N");
+            CardListRow other = new CardListRow(1,"U", "00000000099", "4111111111111111", "N");
             CardListResponse differentCards = new CardListResponse(
                     "CCLI", "TITLE ONE", "07/19/22", "COCRDLIC", "TITLE TWO", "14:23:07",
                     "001", "00000000099", "4111111111111111",
                     List.of(other, other), List.of(false, true),
-                    "INFORMATION LINE", "ERROR LINE", true, page(), "CARDSID", "route/next", null);
+                    "INFORMATION LINE", "ERROR LINE", true, page(), false, List.of(), "CARDSID", "route/next", null);
 
             assertThat(differentCards.toString()).isEqualTo(populated().toString());
             assertThat(populated().toString()).contains("rowCount=2");
@@ -272,7 +272,7 @@ class CardListResponseSecurityTest {
         @Test
         @DisplayName("a row renders identically whether its regulated components held values or nothing")
         void aRowRendersIdenticallyWhetherPresentOrAbsent() {
-            CardListRow absent = new CardListRow("S", null, null, "Y");
+            CardListRow absent = new CardListRow(1,"S", null, null, "Y");
             assertThat(absent.toString()).isEqualTo(row().toString());
         }
     }

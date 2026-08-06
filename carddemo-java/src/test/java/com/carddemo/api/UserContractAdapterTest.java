@@ -22,8 +22,10 @@ import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.api.dto.UserRequest;
 import com.carddemo.api.dto.UserResponse;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BrowseWindow;
+import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.service.UserCommand;
 import com.carddemo.service.UserOutcome;
@@ -32,6 +34,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -57,12 +62,30 @@ class UserContractAdapterTest {
             "COUSR00C", "ADMIN001", "A", NavigationContext.ProgramContext.REENTER, "000000456",
             "ANN", "B", "SMITH", "00000000011", "Y", "4111111111111111", "CUSRLSTA", "COUSR00");
 
+    /**
+     * The identity the filter chain establishes for these turns, deliberately naming the same principal the
+     * echoed record names so the positional assertions compare the crossing rather than the reconciliation.
+     */
+    private static final Authentication IDENTITY = identityOf("ADMIN001", UserType.ADMIN);
+
     /** The adapter under test, over the real carrier seam it delegates to. */
     private UserContractAdapter adapter;
 
+    /**
+     * Builds an established identity carrying the single authority the chain grants for a user type.
+     *
+     * @param userId the principal name
+     * @param userType the type whose declared authority is granted
+     * @return an authenticated token the adapter can read identity from
+     */
+    private static Authentication identityOf(final String userId, final UserType userType) {
+        return new TestingAuthenticationToken(userId, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
+    }
+
     @BeforeEach
     void setUp() {
-        adapter = new UserContractAdapter(new ScreenStateAdapter());
+        adapter = new UserContractAdapter(new ScreenStateAdapter(new NavigationService()));
     }
 
     /** A request whose every text component carries a distinct, padding-bearing marker. */
@@ -75,9 +98,9 @@ class UserContractAdapterTest {
     /** Builds an outcome over the page, window and findings supplied. */
     private static UserOutcome outcome(final List<UserOutcome.UserRow> rows,
             final BrowseWindow window, final List<ValidationException.FieldError> findings) {
-        return new UserOutcome(rows, window, "ADMIN001", "GIVEN ", " FAMILY", "A", "CU00",
+        return new UserOutcome(rows, window, null, "ADMIN001", "GIVEN ", " FAMILY", "A", "CU00",
                 "TITLE ONE ", "07/19/22", "COUSR00C", " TITLE TWO", "23:12:33",
-                UserOutcome.MSG_LIST_AT_TOP, findings, false, true, "USRIDIN", "admin-user-list",
+                UserOutcome.MSG_LIST_AT_TOP, findings, false, true, false, "USRIDIN", "admin-user-list",
                 ScreenNavigationState.empty().withReEntry());
     }
 
@@ -96,9 +119,9 @@ class UserContractAdapterTest {
         @Test
         @DisplayName("refuses an absent request and an absent outcome, because neither is a reachable state")
         void refusesAnAbsentRequestOrOutcome() {
-            assertThatNullPointerException().isThrownBy(() -> adapter.toCommand(null))
+            assertThatNullPointerException().isThrownBy(() -> adapter.toCommand(null, IDENTITY))
                     .withMessageContaining("request");
-            assertThatNullPointerException().isThrownBy(() -> adapter.toResponse(null))
+            assertThatNullPointerException().isThrownBy(() -> adapter.toResponse(null, IDENTITY))
                     .withMessageContaining("outcome");
         }
     }
@@ -110,7 +133,7 @@ class UserContractAdapterTest {
         @Test
         @DisplayName("copies all eleven scalar components positionally, padding and blanks included")
         void copiesEveryScalarComponent() {
-            final UserCommand command = adapter.toCommand(request());
+            final UserCommand command = adapter.toCommand(request(), IDENTITY);
 
             assertThat(command.userId()).isEqualTo("ADMIN001");
             assertThat(command.searchUserId()).isEqualTo(" USER000");
@@ -130,7 +153,7 @@ class UserContractAdapterTest {
         @DisplayName("keeps the ten selection characters in row order, because a selection belongs to the "
                 + "row it was marked on")
         void keepsTheSelectionColumnPositional() {
-            assertThat(adapter.toCommand(request()).rowSelections())
+            assertThat(adapter.toCommand(request(), IDENTITY).rowSelections())
                     .containsExactly("", "U", "", "D", "", "", "", "", "", "");
         }
 
@@ -138,11 +161,24 @@ class UserContractAdapterTest {
         @DisplayName("carries the echoed communication area across as the service-owned state, all sixteen "
                 + "fields of it")
         void carriesTheCommunicationAreaAcross() {
-            assertThat(adapter.toCommand(request()).navigationContext())
+            assertThat(adapter.toCommand(request(), IDENTITY).navigationContext())
                     .isEqualTo(new ScreenNavigationState("CU00", "COADM01C", "CU00", "COUSR00C",
                             "ADMIN001", "A", ScreenNavigationState.ProgramContext.REENTER,
                             "000000456", "ANN", "B", "SMITH", "00000000011", "Y",
                             "4111111111111111", "CUSRLSTA", "COUSR00"));
+        }
+
+        @Test
+        @DisplayName("hands the authenticated identity to the screen rather than the echoed one, so an "
+                + "administrative route cannot be driven under a name the caller typed")
+        void handsTheAuthenticatedIdentityToTheScreen() {
+            final ScreenNavigationState carried =
+                    adapter.toCommand(request(), identityOf("ADMIN002", UserType.ADMIN))
+                            .navigationContext();
+
+            assertThat(carried.userId()).isEqualTo("ADMIN002");
+            assertThat(carried.userType()).isEqualTo(UserType.ADMIN.getCode());
+            assertThat(carried.lastMap()).isEqualTo("CUSRLSTA");
         }
 
         @Test
@@ -152,9 +188,13 @@ class UserContractAdapterTest {
             final UserRequest bare = new UserRequest(null, null, null, null, null, null, null, null,
                     null, null, null, null);
 
-            final UserCommand command = adapter.toCommand(bare);
+            final UserCommand command = adapter.toCommand(bare, IDENTITY);
 
-            assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty());
+            // Empty in every member the client could have echoed, and reconciled in the two it could
+            // not: an absent record still cannot leave the screen without the identity that is acting.
+            assertThat(command.navigationContext())
+                    .isEqualTo(ScreenNavigationState.empty()
+                            .reconciledWith("ADMIN001", UserType.ADMIN));
             assertThat(command.rowSelections()).isEmpty();
         }
     }
@@ -166,7 +206,7 @@ class UserContractAdapterTest {
         @Test
         @DisplayName("copies all fifteen scalar and control components positionally, padding included")
         void copiesEveryScalarComponent() {
-            final UserResponse response = adapter.toResponse(outcome(List.of(), null, List.of()));
+            final UserResponse response = adapter.toResponse(outcome(List.of(), null, List.of()), IDENTITY);
 
             assertThat(response.userId()).isEqualTo("ADMIN001");
             assertThat(response.firstName()).isEqualTo("GIVEN ");
@@ -195,7 +235,7 @@ class UserContractAdapterTest {
                     new UserOutcome.UserRow("", "USER0001", "GIVEN1", "FAMILY1", "U"));
 
             final List<UserResponse.UserRow> published =
-                    adapter.toResponse(outcome(descending, null, List.of())).rows();
+                    adapter.toResponse(outcome(descending, null, List.of()), IDENTITY).rows();
 
             assertThat(published).extracting(UserResponse.UserRow::userId)
                     .containsExactly("USER0007", "USER0004", "USER0001");
@@ -213,7 +253,7 @@ class UserContractAdapterTest {
                     "00000002");
 
             final PageMetadata published =
-                    adapter.toResponse(outcome(List.of(), window, List.of())).pageMetadata();
+                    adapter.toResponse(outcome(List.of(), window, List.of()), IDENTITY).pageMetadata();
 
             assertThat(published).isNotNull();
             assertThat(published.pageSize()).isEqualTo(3);
@@ -229,7 +269,7 @@ class UserContractAdapterTest {
         @DisplayName("an absent browse window becomes nothing on the wire, so a turn that presented no page "
                 + "does not publish an empty one")
         void anAbsentWindowBecomesNothing() {
-            assertThat(adapter.toResponse(outcome(List.of(), null, List.of())).pageMetadata()).isNull();
+            assertThat(adapter.toResponse(outcome(List.of(), null, List.of()), IDENTITY).pageMetadata()).isNull();
         }
 
         @Test
@@ -243,7 +283,7 @@ class UserContractAdapterTest {
                                     UserOutcome.MSG_ADD_USER_ID_EMPTY),
                             new ValidationException.FieldError("firstName", "FNAME",
                                     ValidationException.FieldState.INVALID,
-                                    UserOutcome.MSG_ADD_FIRST_NAME_EMPTY)))).fieldErrors();
+                                    UserOutcome.MSG_ADD_FIRST_NAME_EMPTY))), IDENTITY).fieldErrors();
 
             assertThat(translated).hasSize(2);
             assertThat(translated.get(0).fieldName()).isEqualTo("userId");
@@ -260,7 +300,7 @@ class UserContractAdapterTest {
         void substitutesTheEmptyStringForAnAbsentIdentity() {
             final List<ErrorResponse.FieldError> translated = adapter.toResponse(outcome(List.of(),
                     null, List.of(new ValidationException.FieldError(null, null,
-                            ValidationException.FieldState.INVALID, null)))).fieldErrors();
+                            ValidationException.FieldState.INVALID, null))), IDENTITY).fieldErrors();
 
             assertThat(translated).singleElement().satisfies(entry -> {
                 assertThat(entry.fieldName()).isEmpty();
@@ -272,9 +312,10 @@ class UserContractAdapterTest {
         @Test
         @DisplayName("carries the communication area back as the wire record")
         void carriesTheCommunicationAreaBack() {
-            assertThat(adapter.toResponse(outcome(List.of(), null, List.of())).navigationContext())
-                    .isEqualTo(new ScreenStateAdapter()
-                            .toNavigationContext(ScreenNavigationState.empty().withReEntry()));
+            assertThat(adapter.toResponse(outcome(List.of(), null, List.of()), IDENTITY).navigationContext())
+                    .isEqualTo(new ScreenStateAdapter(new NavigationService())
+                            .toNavigationContext(ScreenNavigationState.empty().withReEntry(),
+                                    IDENTITY));
         }
     }
 }

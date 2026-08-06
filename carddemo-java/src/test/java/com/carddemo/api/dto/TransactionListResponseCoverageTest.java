@@ -146,7 +146,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("TransactionListResponse :: response contract of legacy transaction CT00")
 class TransactionListResponseCoverageTest {
 
-    /** The sixteen components, in the order the record declares them. */
+    /** The nineteen components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "rows",
             "pageMetadata",
@@ -157,6 +157,9 @@ class TransactionListResponseCoverageTest {
             "displayedPageNumber",
             "message",
             "error",
+            "fieldErrors",
+            "selectedTransactionId",
+            "preserveDisplayedPage",
             "focusScreenFieldId",
             "title01",
             "title02",
@@ -165,11 +168,12 @@ class TransactionListResponseCoverageTest {
             "transactionName",
             "programName");
 
-    /** The ten components that carry a declared maximum length. */
+    /** The eleven components that carry a declared maximum length. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
             "transactionIdFilter",
             "displayedPageNumber",
             "message",
+            "selectedTransactionId",
             "focusScreenFieldId",
             "title01",
             "title02",
@@ -178,14 +182,28 @@ class TransactionListResponseCoverageTest {
             "transactionName",
             "programName");
 
-    /** The five components that carry no declared maximum length. */
+    /** The eight components that carry no declared maximum length. */
     private static final List<String> UNBOUNDED_COMPONENTS =
             List.of("rows", "pageMetadata", "continuation", "navigationContext", "nextRoute",
-                    "error");
+                    "error", "fieldErrors", "preserveDisplayedPage");
 
-    /** The five row components, in the order the nested record declares them. */
+    /**
+     * The three components written on every reply, however empty the turn was.
+     *
+     * <p>Each is unable to be absent for its own reason. The two flags are primitives, so neither has
+     * a null to omit. The field findings are normalised to an empty list by the canonical constructor,
+     * and the module omits nulls rather than empties, so an empty list crosses as {@code []}. That
+     * matters for the page instruction in particular: a reader has to be able to tell "this turn asks
+     * the operator's page to be retained" from "this reply says nothing about the page", and only a
+     * value that is always present can carry that distinction.</p>
+     */
+    private static final List<String> ALWAYS_WRITTEN_COMPONENTS =
+            List.of("error", "fieldErrors", "preserveDisplayedPage");
+
+    /** The six row components, in the order the nested record declares them. */
     private static final List<String> EXPECTED_ROW_COMPONENTS =
-            List.of("selection", "transactionId", "displayedDate", "description", "amount");
+            List.of("screenRow", "selection", "transactionId", "displayedDate", "description",
+                    "amount");
 
     /** The four row components that carry a declared maximum length. */
     private static final List<String> BOUNDED_ROW_COMPONENTS =
@@ -211,6 +229,14 @@ class TransactionListResponseCoverageTest {
 
     /** Search key echoed back into the identifier entry field: sixteen characters. */
     private static final String TRANSACTION_ID_FILTER = "0000000000000001";
+
+    /**
+     * Identifier of the row the operator selected, published so the next screen can be reached.
+     *
+     * <p>Deliberately different from the echoed search key above, so that a test asserting on one
+     * cannot pass by accidentally reading the other.</p>
+     */
+    private static final String SELECTED_TRANSACTION_ID = "0000000000000002";
 
     /** Page indicator the screen displays: eight alphanumeric characters. */
     private static final String PAGE_NUMBER = "PAGE0001";
@@ -333,7 +359,7 @@ class TransactionListResponseCoverageTest {
      */
     private static TransactionListResponse.TransactionRow rowCarrying(
             String component, String value) {
-        return new TransactionListResponse.TransactionRow(
+        return new TransactionListResponse.TransactionRow(1,
                 "selection".equals(component) ? value : null,
                 "transactionId".equals(component) ? value : null,
                 "displayedDate".equals(component) ? value : null,
@@ -348,7 +374,7 @@ class TransactionListResponseCoverageTest {
      * @return a populated row
      */
     private static TransactionListResponse.TransactionRow row(String transactionId) {
-        return new TransactionListResponse.TransactionRow(
+        return new TransactionListResponse.TransactionRow(1,
                 ROW_SELECTION, transactionId, ROW_DISPLAYED_DATE, ROW_DESCRIPTION, ROW_AMOUNT);
     }
 
@@ -394,13 +420,13 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse carrying(String component, String value) {
         return new TransactionListResponse(
                 List.of(),
-                null,
+                null, TransactionListRequest.ScreenContinuation.empty(),
                 null,
                 "nextRoute".equals(component) ? value : null,
                 "transactionIdFilter".equals(component) ? value : null,
                 "displayedPageNumber".equals(component) ? value : null,
                 "message".equals(component) ? value : null,
-                false,
+                false, List.of(), null, false,
                 "focusScreenFieldId".equals(component) ? value : null,
                 "title01".equals(component) ? value : null,
                 "title02".equals(component) ? value : null,
@@ -419,8 +445,8 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse withRows(
             List<TransactionListResponse.TransactionRow> rows) {
         return new TransactionListResponse(
-                rows, null, null, null, null, null, null, false, null, null, null, null, null, null,
-                null);
+                rows, null, null, null, null, null, null, null, false, List.of(), null, false,
+                null, null, null, null, null, null, null);
     }
 
     /**
@@ -432,7 +458,7 @@ class TransactionListResponseCoverageTest {
      */
     private static TransactionListResponse reporting(String message, boolean error) {
         return new TransactionListResponse(
-                List.of(), null, null, null, null, null, message, error, null, null, null, null,
+                List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null, message, error, List.of(), null, false, null, null, null, null,
                 null, null, null);
     }
 
@@ -444,13 +470,13 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse populatedPage() {
         return new TransactionListResponse(
                 threeAscendingRows(),
-                forwardPosition(),
+                forwardPosition(), TransactionListRequest.ScreenContinuation.empty(),
                 JsonContractSupport.populatedNavigation(),
                 NEXT_ROUTE,
                 TRANSACTION_ID_FILTER,
                 PAGE_NUMBER,
                 TransactionListResponse.MESSAGE_REACHED_BOTTOM,
-                false,
+                false, List.of(), SELECTED_TRANSACTION_ID, true,
                 FOCUS_FIELD_NAME,
                 SCREEN_TITLE_LINE_1,
                 SCREEN_TITLE_LINE_2,
@@ -470,13 +496,13 @@ class TransactionListResponseCoverageTest {
     private static TransactionListResponse singleRowPageWithoutNestedRecords() {
         return new TransactionListResponse(
                 List.of(row(ROW_TRANSACTION_ID_1)),
-                null,
+                null, TransactionListRequest.ScreenContinuation.empty(),
                 null,
                 NEXT_ROUTE,
                 TRANSACTION_ID_FILTER,
                 PAGE_NUMBER,
                 TransactionListResponse.MESSAGE_REACHED_BOTTOM,
-                false,
+                false, List.of(), null, false,
                 FOCUS_FIELD_NAME,
                 SCREEN_TITLE_LINE_1,
                 SCREEN_TITLE_LINE_2,
@@ -1358,7 +1384,7 @@ class TransactionListResponseCoverageTest {
         @DisplayName("leaves every row value exactly as supplied")
         void noRowValueIsAlteredOnTheWayThrough() {
             TransactionListResponse.TransactionRow supplied =
-                    new TransactionListResponse.TransactionRow(
+                    new TransactionListResponse.TransactionRow(1,
                             " ", "  0000000000001 ", " 22/01/01", " pos purchase  ", ROW_AMOUNT);
 
             TransactionListResponse.TransactionRow carried = withRows(List.of(supplied)).rows().
@@ -1418,7 +1444,7 @@ class TransactionListResponseCoverageTest {
             TransactionListResponse response =
                     withRows(
                             List.of(
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             ROW_SELECTION,
                                             ROW_TRANSACTION_ID_1,
                                             ROW_DISPLAYED_DATE,
@@ -1482,7 +1508,7 @@ class TransactionListResponseCoverageTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             null, null, null, null, new BigDecimal("1234567890.12")))
                     .withMessageContaining("must fit 9 integer digits")
                     .withMessageContaining("it needs 10")
@@ -1527,7 +1553,7 @@ class TransactionListResponseCoverageTest {
             TransactionListResponse.TransactionRow carried =
                     withRows(
                                     List.of(
-                                            new TransactionListResponse.TransactionRow(
+                                            new TransactionListResponse.TransactionRow(1,
                                                     null, null, null, null, supplied)))
                             .rows()
                             .get(0);
@@ -1557,7 +1583,7 @@ class TransactionListResponseCoverageTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             null, null, null, null, supplied))
                     .withMessageContaining("must carry scale 2")
                     .withMessageContaining("its scale is " + supplied.scale());
@@ -1571,10 +1597,10 @@ class TransactionListResponseCoverageTest {
         @DisplayName("distinguishes two amounts that differ only in value")
         void twoRowsDifferingOnlyInAmountScaleAreNotEqual() {
             TransactionListResponse.TransactionRow oneTwenty =
-                    new TransactionListResponse.TransactionRow(
+                    new TransactionListResponse.TransactionRow(1,
                             null, null, null, null, new BigDecimal("1.20"));
             TransactionListResponse.TransactionRow oneTwentyOne =
-                    new TransactionListResponse.TransactionRow(
+                    new TransactionListResponse.TransactionRow(1,
                             null, null, null, null, new BigDecimal("1.21"));
 
             assertThat(oneTwenty).isNotEqualTo(oneTwentyOne);
@@ -1587,7 +1613,7 @@ class TransactionListResponseCoverageTest {
             TransactionListResponse response =
                     withRows(
                             List.of(
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             ROW_SELECTION, ROW_TRANSACTION_ID_1, null, null, null)));
 
             assertThat(payloadOf(response)).doesNotContain("\"amount\"");
@@ -1680,16 +1706,31 @@ class TransactionListResponseCoverageTest {
             assertThat(payloadOf(withRows(List.of()))).contains("\"rows\":[]");
         }
 
-        /** An empty response carries only the two components that cannot be absent. */
+        /**
+         * An empty response carries only the components that cannot be absent.
+         *
+         * <p>The row list is one of them because the canonical constructor normalises a null to an
+         * empty list. The other three are the two primitive flags and the normalised finding list.
+         * Everything else - the paging metadata, the retained browse position, the routing block, the
+         * selected identifier and the whole header - is genuinely omitted rather than written as null,
+         * so a reader can tell a screen that carried no browse position from one that carried an empty
+         * position, and a turn that raised no field finding from a reply that does not speak about
+         * field findings at all.</p>
+         */
         @Test
-        @DisplayName("emits only the two components that cannot be absent when empty")
+        @DisplayName("emits only the four components that cannot be absent when empty")
         void anEmptyResponseCarriesOnlyTheComponentsThatCannotBeAbsent()
                 throws JsonProcessingException {
             JsonNode tree =
                     JsonContractSupport.declaredSettingsMapper()
                             .readTree(payloadOf(withRows(null)));
 
-            assertThat(tree.fieldNames()).toIterable().containsExactlyInAnyOrder("rows", "error");
+            final List<String> unavoidable = new java.util.ArrayList<>();
+            unavoidable.add("rows");
+            unavoidable.addAll(ALWAYS_WRITTEN_COMPONENTS);
+
+            assertThat(tree.fieldNames()).toIterable()
+                    .containsExactlyInAnyOrderElementsOf(unavoidable);
         }
 
         /** The rows are emitted in the order they are carried. */
@@ -1886,7 +1927,7 @@ class TransactionListResponseCoverageTest {
         void anEntirelyAbsentRowReportsNoViolation() {
             assertThat(
                             validator.validate(
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             null, null, null, null, null)))
                     .isEmpty();
         }
@@ -1905,10 +1946,10 @@ class TransactionListResponseCoverageTest {
         @DisplayName("does not measure the row amount")
         void theRowAmountIsNotMeasured() {
             TransactionListResponse.TransactionRow widest =
-                    new TransactionListResponse.TransactionRow(
+                    new TransactionListResponse.TransactionRow(1,
                             null, null, null, null, new BigDecimal("999999999.99"));
             TransactionListResponse.TransactionRow smallest =
-                    new TransactionListResponse.TransactionRow(
+                    new TransactionListResponse.TransactionRow(1,
                             null, null, null, null, new BigDecimal("-999999999.99"));
 
             assertThat(validator.validate(widest)).isEmpty();
@@ -1929,7 +1970,7 @@ class TransactionListResponseCoverageTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(
                             () ->
-                                    new TransactionListResponse.TransactionRow(
+                                    new TransactionListResponse.TransactionRow(1,
                                             null,
                                             null,
                                             null,
@@ -1953,9 +1994,10 @@ class TransactionListResponseCoverageTest {
     @DisplayName("Diagnostic rendering")
     class DiagnosticRendering {
 
-        /** The three components this type replaces with a fixed placeholder in its rendering. */
+        /** The five components this type replaces with a fixed placeholder in its rendering. */
         private static final List<String> WITHHELD_BY_THIS_TYPE =
-                List.of("rows", "pageMetadata", "continuation", "transactionIdFilter");
+                List.of("rows", "pageMetadata", "continuation", "transactionIdFilter",
+                        "selectedTransactionId");
 
         /** The three row components the nested row replaces with a fixed placeholder. */
         private static final List<String> WITHHELD_BY_THE_ROW =
@@ -1985,6 +2027,15 @@ class TransactionListResponseCoverageTest {
                             withheld,
                             PAGE_NUMBER,
                             TransactionListResponse.MESSAGE_REACHED_BOTTOM,
+                            "false",
+                            // The finding list renders in full, because a field name and an error
+                            // state disclose nothing an operator did not already see on the screen.
+                            "[]",
+                            // The selected identifier is withheld unconditionally, exactly as the
+                            // filter above it is: were the placeholder to appear only when a
+                            // selection had been made, its presence would itself report that the
+                            // operator had selected a row.
+                            withheld,
                             "false",
                             FOCUS_FIELD_NAME,
                             SCREEN_TITLE_LINE_1,
@@ -2030,19 +2081,23 @@ class TransactionListResponseCoverageTest {
         }
 
         /**
-         * Exactly three components of this type are withheld, and nothing outside those three is.
+         * Exactly five components of this type are withheld, and nothing outside those five is.
          *
          * <p>The rows are withheld whole rather than row by row, as a second line of defence behind
-         * each row's own rendering; the browse cursor is withheld whole because its own rendering
-         * discloses its paging state and this type must not become the path by which that surfaces
-         * beside the search key; and the echoed search key is withheld for the same reason the rows
-         * are - it is the identifier the operator was looking for. The screen furniture, the page
-         * indicator, the summary message, the error indicator and the nominated field are presentation
-         * state that identifies nobody, so they are retained: a diagnostic that withholds everything
-         * is one nobody can use.</p>
+         * each row's own rendering; the paging metadata and the browse cursor are withheld whole
+         * because their own renderings disclose the operator's paging state and this type must not
+         * become the path by which that surfaces beside the search key; the echoed search key is
+         * withheld for the same reason the rows are - it is the identifier the operator was looking
+         * for; and the selected identifier is withheld because it is the same kind of value as the
+         * search key, differing only in whether the operator typed it or picked it off a row.</p>
+         *
+         * <p>The screen furniture, the page indicator, the summary message, the two indicators and
+         * the field findings are presentation state that identifies nobody, so they are retained: a
+         * diagnostic that withholds everything is one nobody can use. The field findings in particular
+         * carry a field name and an error state, neither of which discloses a value.</p>
          */
         @Test
-        @DisplayName("withholds exactly three components of its own")
+        @DisplayName("withholds exactly five components of its own")
         void noComponentOfThisTypeIsWithheld() {
             String rendered = populatedPage().toString();
 
@@ -2168,7 +2223,7 @@ class TransactionListResponseCoverageTest {
                             "PAGE0002");
             TransactionListResponse response =
                     new TransactionListResponse(
-                            List.of(), position, null, null, null, null, null, false, null, null,
+                            List.of(), position, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null, null, false, List.of(), null, false, null, null,
                             null, null, null, null, null);
 
             String rendered = response.toString();

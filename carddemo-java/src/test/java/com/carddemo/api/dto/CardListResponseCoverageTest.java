@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  *
  * <h2>What is under test</h2>
  *
- * <p>The transport contract of the card-list page: the eighteen components in the order the screen
+ * <p>The transport contract of the card-list page: the twenty components in the order the screen
  * presents them, the thirteen declared widths, the four-component row and its four widths, the nine
  * screen texts, the two list normalisations the canonical constructor performs, the wire form under
  * the module's declared serialisation settings, and the value semantics of a page that orders nothing
@@ -142,11 +142,12 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 @DisplayName("CardListResponse :: card-list page contract of legacy transaction CCLI")
 class CardListResponseCoverageTest {
 
-    /** The eighteen components in declaration order. */
+    /** The twenty components in declaration order. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "displayedPageNumber", "accountFilter", "cardNumberFilter", "rows", "selectionErrorFlags",
-            "infoMessage", "errorMessage", "generalError", "pageMetadata", "focusScreenFieldId", "nextRoute",
+            "infoMessage", "errorMessage", "generalError", "pageMetadata", "lastPageAlreadyShown",
+            "fieldErrors", "focusScreenFieldId", "nextRoute",
             "navigationContext");
 
     /** The fifteen components that declare a width bound. */
@@ -155,8 +156,22 @@ class CardListResponseCoverageTest {
             "displayedPageNumber", "accountFilter", "cardNumberFilter", "infoMessage", "errorMessage",
             "focusScreenFieldId");
 
-    /** The four row components in declaration order. */
+    /**
+     * The five components that appear on the wire even when nothing was supplied for them: the two
+     * primitive indicators, which cannot be absent, and the three collections, which the canonical
+     * constructor normalises from {@code null} to an empty list so that a screen carrying no rows,
+     * no positional selection marks and no field errors is distinguishable from one whose lists were
+     * never established.
+     */
+    private static final List<String> ALWAYS_WRITTEN_COMPONENTS = List.of(
+            "rows", "selectionErrorFlags", "generalError", "lastPageAlreadyShown", "fieldErrors");
+
+    /** The five row components in declaration order. */
     private static final List<String> EXPECTED_ROW_COMPONENTS =
+            List.of("screenSlot", "selection", "accountNumber", "cardNumber", "cardStatus");
+
+    /** The four row components that are bounded text; the screen slot is a position, not a field. */
+    private static final List<String> EXPECTED_ROW_TEXT_COMPONENTS =
             List.of("selection", "accountNumber", "cardNumber", "cardStatus");
 
     /** Transaction name shown in the screen header. */
@@ -240,7 +255,7 @@ class CardListResponseCoverageTest {
      */
     private static CardListRow row(String selection, String accountNumber, String cardNumber,
             String cardStatus) {
-        return new CardListRow(selection, accountNumber, cardNumber, cardStatus);
+        return new CardListRow(1,selection, accountNumber, cardNumber, cardStatus);
     }
 
     /** @return three rows in the order a forward page presents them. */
@@ -279,7 +294,7 @@ class CardListResponseCoverageTest {
                 null, null,
                 "infoMessage".equals(component) ? value : null,
                 "errorMessage".equals(component) ? value : null,
-                false, null,
+                false, null, false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
                 null);
@@ -294,7 +309,7 @@ class CardListResponseCoverageTest {
      */
     private static CardListResponse withLists(List<CardListRow> rows, List<Boolean> flags) {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, rows,
-                flags, null, null, false, null, null, null, null);
+                flags, null, null, false, null, false, List.of(), null, null, null);
     }
 
     /**
@@ -307,7 +322,7 @@ class CardListResponseCoverageTest {
         return new CardListResponse(TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02,
                 CURRENT_TIME, DISPLAYED_PAGE_NUMBER, ACCOUNT_FILTER, CARD_FILTER, threeAscendingRows(),
                 List.of(false, false, false), CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
-                forwardFirstPage(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, navigation);
+                forwardFirstPage(), false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, navigation);
     }
 
     /**
@@ -320,7 +335,7 @@ class CardListResponseCoverageTest {
         return new CardListResponse(TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02,
                 CURRENT_TIME, DISPLAYED_PAGE_NUMBER, ACCOUNT_FILTER, CARD_FILTER, threeAscendingRows(),
                 List.of(false, false, false), CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
-                null, FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, null);
+                null, false, List.of(), FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, null);
     }
 
     /**
@@ -340,7 +355,7 @@ class CardListResponseCoverageTest {
     class DeclaredContract {
 
         @Test
-        @DisplayName("the eighteen components are declared in the order the screen presents them")
+        @DisplayName("the twenty components are declared in the order the screen presents them")
         void componentsAreDeclaredInScreenOrder() {
             List<String> declared = Arrays.stream(CardListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
@@ -448,7 +463,7 @@ class CardListResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("no member is declared beyond the eighteen accessors, so this type chooses no "
+        @DisplayName("no member is declared beyond the twenty accessors, so this type chooses no "
                 + "message and orders no row")
         void noMemberIsDeclaredBeyondTheAccessors() {
             List<String> instanceMethods = Arrays.stream(CardListResponse.class.getDeclaredMethods())
@@ -464,15 +479,19 @@ class CardListResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("the row declares four text components in map order, each bounded by the "
-                + "enclosing type's width")
-        void theRowDeclaresFourBoundedTextComponents() throws NoSuchFieldException {
+        @DisplayName("the row declares its screen slot and four text components in map order, each of "
+                + "the four bounded by the enclosing type's width")
+        void theRowDeclaresItsSlotAndFourBoundedTextComponents() throws NoSuchFieldException {
             List<String> declared = Arrays.stream(CardListRow.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
             assertThat(declared).containsExactlyElementsOf(EXPECTED_ROW_COMPONENTS);
-            for (String component : EXPECTED_ROW_COMPONENTS) {
+            assertThat(CardListRow.class.getDeclaredField("screenSlot").getType())
+                    .as("the slot is the screen position the row occupies, so it is a number rather "
+                            + "than one more fixed-width field")
+                    .isEqualTo(int.class);
+            for (String component : EXPECTED_ROW_TEXT_COMPONENTS) {
                 assertThat(CardListRow.class.getDeclaredField(component).getType())
                         .as("%s stays text so leading zeros and an unrecognised status character "
                                 + "both survive the round trip", component)
@@ -1161,16 +1180,17 @@ class CardListResponseCoverageTest {
         }
 
         @Test
-        @DisplayName("an absent member is omitted while the error indicator and the two lists are "
+        @DisplayName("an absent member is omitted while the two indicators and the three lists are "
                 + "always written")
         void absentMembersAreOmittedAndTheAlwaysPresentOnesAreWritten()
                 throws JsonProcessingException {
             JsonNode payload = payloadOf(withLists(null, null));
 
-            assertThat(payload.size()).isEqualTo(3);
+            assertThat(payload.size()).isEqualTo(ALWAYS_WRITTEN_COMPONENTS.size());
             assertThat(payload.get("generalError").asBoolean()).isFalse();
+            assertThat(payload.get("lastPageAlreadyShown").asBoolean()).isFalse();
             for (String component : EXPECTED_COMPONENTS) {
-                if (!List.of("generalError", "rows", "selectionErrorFlags").contains(component)) {
+                if (!ALWAYS_WRITTEN_COMPONENTS.contains(component)) {
                     assertThat(payload.has(component))
                             .as("%s is absent rather than written as null", component)
                             .isFalse();
@@ -1239,14 +1259,14 @@ class CardListResponseCoverageTest {
                 "accountNumber", "cardNumber");
 
         @Test
-        @DisplayName("the row rendering names all four components and withholds the account and the "
-                + "card, keeping the action code and the status visible")
+        @DisplayName("the row rendering names all five components and withholds the account and the "
+                + "card, keeping the slot, the action code and the status visible")
         void theRowRenderingIsExactlyTheGeneratedForm() {
             assertThat(row("S", "00000000011", "0000000000000001", "Y").toString())
                     .as("the row declares its own override, so the two identifiers it carries are "
-                            + "replaced while the two presentational values are not")
-                    .isEqualTo("CardListRow[selection=S, accountNumber=" + PLACEHOLDER + ", "
-                            + "cardNumber=" + PLACEHOLDER + ", cardStatus=Y]");
+                            + "replaced while the three presentational values are not")
+                    .isEqualTo("CardListRow[screenSlot=1, selection=S, accountNumber=" + PLACEHOLDER
+                            + ", cardNumber=" + PLACEHOLDER + ", cardStatus=Y]");
         }
 
         /**
@@ -1278,7 +1298,7 @@ class CardListResponseCoverageTest {
          * it, so the rendering still names {@code rows} under its declared name.</p>
          */
         @Test
-        @DisplayName("the page rendering names all eighteen components plus the row count, and "
+        @DisplayName("the page rendering names all twenty components plus the row count, and "
                 + "withholds exactly the two filters, the row list and the browse position")
         void thePageRenderingIsTheGeneratedOne() {
             String rendered = filledPage(null).toString();
@@ -1301,7 +1321,7 @@ class CardListResponseCoverageTest {
                     .filter(component -> rendered.contains(component + "=" + PLACEHOLDER))
                     .toList();
             assertThat(withheld)
-                    .as("the four regulated components are withheld and the other fourteen are not")
+                    .as("the four regulated components are withheld and the other sixteen are not")
                     .containsExactlyElementsOf(WITHHELD_BY_THIS_TYPE);
         }
 
@@ -1347,7 +1367,7 @@ class CardListResponseCoverageTest {
             PageMetadata position = PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE,
                     "PREVCURSORKEY7788", "NEXTCURSORKEY9911", true, true, "002");
             CardListResponse response = new CardListResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, position, null, null, null);
+                    null, null, null, null, null, null, false, position, false, List.of(), null, null, null);
 
             assertThat(response.toString())
                     .as("the paging record is substituted whole, so this type cannot become the "

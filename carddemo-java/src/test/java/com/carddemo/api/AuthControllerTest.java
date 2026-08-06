@@ -63,6 +63,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -243,7 +244,8 @@ class AuthControllerTest {
         }
 
         @Test
-        @DisplayName("one documented JSON POST serves both initial entry and submitted turns")
+        @DisplayName("both documented JSON operations are actually mapped: the POST that serves a "
+                + "submitted turn and the GET that serves first entry")
         void bothDocumentedJsonOperationsArePublished() {
             final List<Method> postHandlers = Arrays.stream(AuthController.class.getDeclaredMethods())
                     .filter(method -> method.getAnnotation(PostMapping.class) != null)
@@ -259,9 +261,37 @@ class AuthControllerTest {
                     .isNotNull();
             assertThat(postHandler.getAnnotation(ApiResponses.class)).isNotNull();
 
-            assertThat(Arrays.stream(AuthController.class.getDeclaredMethods())
-                    .filter(method -> method.getAnnotation(GetMapping.class) != null))
-                    .isEmpty();
+            // The first-entry operation carries a documented GET contract, so it has to carry the mapping
+            // that serves it. Documenting an operation the router does not publish is the same defect in
+            // the other direction: a client reads the contract, calls the method, and is answered 405.
+            final List<Method> getHandlers = Arrays.stream(AuthController.class.getDeclaredMethods())
+                    .filter(method -> method.getAnnotation(GetMapping.class) != null)
+                    .toList();
+
+            assertThat(getHandlers).hasSize(1);
+            final Method getHandler = getHandlers.get(0);
+            assertThat(getHandler.getName()).isEqualTo("initialEntry");
+            assertThat(getHandler.getParameterCount())
+                    .as("first entry takes nothing: it is the state before anything was keyed")
+                    .isZero();
+            assertThat(getHandler.getAnnotation(GetMapping.class).produces())
+                    .containsExactly(MediaType.APPLICATION_JSON_VALUE);
+            assertThat(getHandler.getAnnotation(Operation.class)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("the mapped first-entry GET answers the blank screen with no session, so the "
+                + "documented operation is reachable rather than only described")
+        void theMappedFirstEntryGetAnswersTheBlankScreen() throws Exception {
+            mockMvc.perform(get(AuthController.SIGN_ON_PATH))
+                    .andExpect(status().isOk())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION))
+                    .andExpect(jsonPath("$.message").doesNotExist())
+                    .andExpect(jsonPath("$.generalError").value(false))
+                    .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
+
+            verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -324,7 +354,7 @@ class AuthControllerTest {
 
             verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -332,7 +362,7 @@ class AuthControllerTest {
                 + "session in the header rather than in the body")
         void anAdmittedSignOnCarriesABearerHeader() throws Exception {
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())).thenReturn(ISSUED_TOKEN);
 
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -348,7 +378,7 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.message").doesNotExist())
                     .andExpect(jsonPath("$.generalError").value(false));
 
-            verify(sessionTokenIssuer).issue(ADMIN_USER_ID, UserType.ADMIN);
+            verify(sessionTokenIssuer).issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode());
             assertThat(controllerLogMessages())
                     .contains("Sign-on session issued: outcome=issued")
                     .noneMatch(message -> message.contains(ADMIN_USER_ID));
@@ -364,7 +394,7 @@ class AuthControllerTest {
             // proceed unauthenticated; and the answer must not describe the condition, because the subject
             // of a credential being minted is in it.
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN))
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .thenThrow(new IllegalStateException(
                             "The user-security record no longer carries the user type a session was "
                                     + "requested for; no session is issued"));
@@ -385,7 +415,7 @@ class AuthControllerTest {
                 + "components and none of them is a credential")
         void theSessionNeverAppearsInTheBody() throws Exception {
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())).thenReturn(ISSUED_TOKEN);
 
             final String rendered = mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -412,11 +442,34 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.message").value("Wrong Password. Try again ..."))
                     .andExpect(jsonPath("$.generalError").value(false))
                     .andExpect(jsonPath("$.focusScreenFieldId").value("PASSWD"))
+                    // The identifier is restated so the operator retypes only the credential, which is
+                    // what failed. It establishes nothing: the route and the state are both absent.
+                    .andExpect(jsonPath("$.userId").value(ADMIN_USER_ID))
                     .andExpect(jsonPath("$.nextRoute").doesNotExist())
                     .andExpect(jsonPath("$.navigationContext").doesNotExist());
 
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("a redisplayed screen restates the keyed identifier folded to upper case, on every "
+                + "rejected outcome, without establishing any state from it")
+        void aRedisplayedScreenRestatesTheKeyedIdentifier() throws Exception {
+            when(repository.findById(ADMIN_USER_ID)).thenReturn(Optional.empty());
+
+            // Keyed in lower case: the program folds both submitted values unconditionally before it does
+            // anything else, so the echo is the folded value and not the characters as transmitted.
+            mockMvc.perform(post(AuthController.SIGN_ON_PATH)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(ADMIN_USER_ID.toLowerCase(java.util.Locale.ROOT),
+                                    SEEDED_SECRET)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.userId").value(ADMIN_USER_ID))
+                    .andExpect(jsonPath("$.userType").doesNotExist())
+                    .andExpect(jsonPath("$.nextRoute").doesNotExist())
+                    .andExpect(jsonPath("$.navigationContext").doesNotExist())
+                    .andExpect(header().doesNotExist(HttpHeaders.AUTHORIZATION));
         }
 
         @Test
@@ -435,7 +488,7 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
 
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -455,7 +508,7 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.focusScreenFieldId").value("USERID"));
 
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -503,7 +556,7 @@ class AuthControllerTest {
                 + "one, so the role split is observable over HTTP")
         void anOrdinaryOperatorReachesTheMainMenu() throws Exception {
             givenStoredOperator("USER0001", "U");
-            when(sessionTokenIssuer.issue("USER0001", UserType.USER)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue("USER0001", UserType.USER, UserType.USER.getCode())).thenReturn(ISSUED_TOKEN);
 
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -519,7 +572,11 @@ class AuthControllerTest {
                 + "while the raw code remains in the screen contract")
         void anUndeclaredRoleUsesTheStandardBranch() throws Exception {
             givenStoredOperator("USER0001", "X");
-            when(sessionTokenIssuer.issue("USER0001", UserType.USER)).thenReturn(ISSUED_TOKEN);
+            // The stub names the RAW stored code, because that is what a session is minted with. Stubbing
+            // the resolved authority's code here instead is what the defect looked like: the issuer was
+            // handed a value the record does not carry, refused it, and turned a successful sign-on into a
+            // server failure.
+            when(sessionTokenIssuer.issue("USER0001", UserType.USER, "X")).thenReturn(ISSUED_TOKEN);
 
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -532,7 +589,9 @@ class AuthControllerTest {
                     .andExpect(jsonPath("$.userType").value("X"))
                     .andExpect(jsonPath("$.navigationContext.userType").value("X"));
 
-            verify(sessionTokenIssuer).issue("USER0001", UserType.USER);
+            // The two arguments are asserted apart: the standard authority is what the session permits and
+            // the undeclared code is what the record holds, and neither is derived from the other.
+            verify(sessionTokenIssuer).issue("USER0001", UserType.USER, "X");
         }
 
         @Test
@@ -540,7 +599,7 @@ class AuthControllerTest {
                 + "survives all the way to the wire")
         void aLowerCaseSubmissionIsAdmitted() throws Exception {
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())).thenReturn(ISSUED_TOKEN);
 
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)
@@ -572,7 +631,7 @@ class AuthControllerTest {
 
             verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
@@ -599,14 +658,14 @@ class AuthControllerTest {
 
             verify(repository, never()).findById(org.mockito.ArgumentMatchers.any());
             verify(sessionTokenIssuer, never()).issue(org.mockito.ArgumentMatchers.any(),
-                    org.mockito.ArgumentMatchers.any());
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         }
 
         @Test
         @DisplayName("session issuance logs only a fixed outcome and never the identifier or token")
         void sessionIssuanceLogContainsNoIdentityOrToken() throws Exception {
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())).thenReturn(ISSUED_TOKEN);
 
             final Logger logger = (Logger) LoggerFactory.getLogger(AuthController.class);
             final Level previousLevel = logger.getLevel();
@@ -636,7 +695,7 @@ class AuthControllerTest {
                 + "can be told from a rise in another")
         void eachTurnIsTimedAndTaggedByOutcome() throws Exception {
             givenStoredOperator(ADMIN_USER_ID, "A");
-            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN)).thenReturn(ISSUED_TOKEN);
+            when(sessionTokenIssuer.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())).thenReturn(ISSUED_TOKEN);
 
             mockMvc.perform(post(AuthController.SIGN_ON_PATH)
                             .contentType(MediaType.APPLICATION_JSON)

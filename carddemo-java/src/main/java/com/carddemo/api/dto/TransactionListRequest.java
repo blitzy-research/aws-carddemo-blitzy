@@ -485,7 +485,7 @@ public record TransactionListRequest(
                     String nextCursorKey,
             PageMetadata.PagingDirection direction,
             @Size(max = TransactionListRequest.DISPLAYED_PAGE_NUMBER_LENGTH)
-            @Pattern(regexp = "[0-9 ]*") String displayedPageNumber,
+            @Pattern(regexp = PageMetadata.RETAINED_PAGE_NUMBER_PATTERN) String displayedPageNumber,
             boolean nextPageAvailable,
             @Size(max = TransactionListRequest.ROW_COUNT)
                     List<@Size(max = TransactionListRequest.TRANSACTION_ID_FILTER_LENGTH)
@@ -506,15 +506,42 @@ public record TransactionListRequest(
         }
 
         public PageMetadata.PageCursorRequest pageCursor() {
-            return new PageMetadata.PageCursorRequest(previousCursorKey, nextCursorKey, direction);
+            return new PageMetadata.PageCursorRequest(previousCursorKey, nextCursorKey, direction,
+                    displayedPageNumber, nextPageAvailable);
         }
 
+        /**
+         * Reads the retained page indicator as a number, answering zero for anything that is not one.
+         *
+         * <p><strong>Total by construction, and that is the point.</strong> The indicator is a fixed-width
+         * screen item that a client echoes back, so it arrives with whatever padding its field carried, and
+         * the value the legacy program's own initialisation leaves in it is not a number at all. A parse
+         * that could throw would turn an echoed screen item into a server fault, which is a failure mode
+         * the legacy screen has no counterpart for: it reads the item, finds it unusable, and carries on
+         * from its own state. The declared pattern already refuses an internally spaced value at the
+         * boundary; this answers zero for every remaining shape - absent, empty, all spaces, or wider than
+         * a page indicator can be - so the two together make a fault unreachable rather than merely
+         * unlikely.
+         *
+         * @return the retained page number, or zero when the indicator carries none
+         */
         public int currentPageNumber() {
             if (displayedPageNumber == null) {
                 return 0;
             }
             final String numericImage = displayedPageNumber.strip();
-            return numericImage.isEmpty() ? 0 : Integer.parseInt(numericImage);
+            if (numericImage.isEmpty() || numericImage.length() > DISPLAYED_PAGE_NUMBER_LENGTH) {
+                return 0;
+            }
+            int accumulated = 0;
+            for (int index = 0; index < numericImage.length(); index++) {
+                final char digit = numericImage.charAt(index);
+                if (digit < '0' || digit > '9') {
+                    return 0;
+                }
+                accumulated = accumulated * 10 + (digit - '0');
+            }
+            return accumulated;
         }
 
         @Override

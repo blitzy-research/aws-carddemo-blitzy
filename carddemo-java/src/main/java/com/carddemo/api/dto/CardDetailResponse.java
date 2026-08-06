@@ -17,6 +17,7 @@
 package com.carddemo.api.dto;
 
 import jakarta.validation.constraints.Size;
+import java.util.List;
 
 /**
  * Immutable card-detail response &mdash; the REST-era form of the single-card display screen that
@@ -212,6 +213,16 @@ import jakarta.validation.constraints.Size;
  *     whether {@link #errorMessage()} is present, because the legacy flag and the legacy message are
  *     separate values that the program sets independently, and a caller that inferred one from the
  *     other would report an error for a screen carrying only an informational line.
+ * @param fieldErrors the field-level detail behind {@link #generalError()}, in the order the turn
+ *     accumulated it, which is the order the two filter fields are evaluated in. Each entry names the
+ *     field and its screen identifier and states which of the two error conditions it is in: a field the
+ *     operator left empty when the screen required one is reported as missing, and a field supplied with
+ *     a value the screen could not use is reported as invalid. The distinction is the legacy's own - the
+ *     program writes the decoration marker into a field it found <em>blank</em> at
+ *     {@code app/cbl/COCRDSLC.cbl} lines 543 and 549 while only recolouring one it found unusable - and a
+ *     single error flag with one message line cannot express it, which is why both are published.
+ *     Defensively copied; {@code null} becomes empty; never re-ordered, because the order is what the
+ *     operator saw.
  * @param focusScreenFieldId the identity of the screen field the client should place the cursor in, or
  *     {@code null} to leave placement to the client. Width
  *     {@link #FOCUS_SCREEN_FIELD_ID_LENGTH}. Only the two enterable fields are ever nominated, as
@@ -246,9 +257,26 @@ public record CardDetailResponse(
         @Size(max = CardDetailResponse.INFO_MESSAGE_LENGTH) String infoMessage,
         @Size(max = CardDetailResponse.ERROR_MESSAGE_LENGTH) String errorMessage,
         boolean generalError,
+        List<ErrorResponse.FieldError> fieldErrors,
         @Size(max = CardDetailResponse.FOCUS_SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
+
+    /**
+     * Canonical constructor. Replaces the field-error list with an immutable copy and leaves every other
+     * component exactly as supplied.
+     *
+     * <p>A {@code null} list becomes an empty immutable list, so the accessor never answers {@code null}
+     * and a caller need not distinguish "no findings" from "findings not reported". Nothing else happens
+     * here: no component is defaulted, re-ordered, trimmed or case folded, because on a fixed-width
+     * space-filled screen field the surrounding spaces are part of what was displayed.
+     *
+     * @throws NullPointerException if the field-error list contains a {@code null} element, which
+     *     {@link List#copyOf(java.util.Collection)} does not admit and which no finding could be
+     */
+    public CardDetailResponse {
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
+    }
 
     /**
      * Fixed stand-in emitted by {@link #toString()} in place of each regulated component.
@@ -676,6 +704,7 @@ public record CardDetailResponse(
                 + ", infoMessage=" + infoMessage
                 + ", errorMessage=" + errorMessage
                 + ", generalError=" + generalError
+                + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext

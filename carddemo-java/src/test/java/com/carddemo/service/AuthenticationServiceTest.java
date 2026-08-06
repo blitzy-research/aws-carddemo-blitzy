@@ -42,6 +42,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
@@ -663,27 +664,35 @@ class AuthenticationServiceTest {
             assertThatIllegalArgumentException()
                     .as("a turn that did not admit must name nothing")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.WRONG_PASSWORD, ADMIN_USER_ID, UserType.ADMIN,
-                            "A", NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
+                            AuthenticationService.Decision.WRONG_PASSWORD, ADMIN_USER_ID, ADMIN_USER_ID,
+                            UserType.ADMIN, "A", NavigationService.Route.ADMIN_MENU, false, null, null,
+                            null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must name the operator")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, null, UserType.ADMIN, "A",
-                            NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
+                            AuthenticationService.Decision.ADMITTED, null, ADMIN_USER_ID, UserType.ADMIN,
+                            "A", NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must nominate a destination")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, UserType.ADMIN, "A",
-                            null, false, null, null, null, null, null));
+                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, ADMIN_USER_ID,
+                            UserType.ADMIN, "A", null, false, null, null, null, null, null));
             assertThatNullPointerException()
                     .as("an admitted turn must name the resolved role")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, null, "A",
-                            NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
+                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, ADMIN_USER_ID, null,
+                            "A", NavigationService.Route.ADMIN_MENU, false, null, null, null, null, null));
+            assertThatNullPointerException()
+                    .as("an admitted turn must name the stored role code, which the session's own type "
+                            + "claim is reconciled against")
+                    .isThrownBy(() -> new AuthenticationService.SignOnScreen(
+                            AuthenticationService.Decision.ADMITTED, ADMIN_USER_ID, ADMIN_USER_ID,
+                            UserType.ADMIN, null, NavigationService.Route.ADMIN_MENU, false, null, null,
+                            null, null, null));
             assertThatNullPointerException()
                     .as("a decision is always required")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            null, null, null, null, null, false, null, null, null, null, null));
+                            null, null, null, null, null, null, false, null, null, null, null, null));
         }
 
         @Test
@@ -695,22 +704,30 @@ class AuthenticationServiceTest {
                     .as("an operator alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
                             AuthenticationService.Decision.USER_NOT_FOUND, ADMIN_USER_ID, null, null,
-                            null, true, null, null, null, null, null));
+                            null, null, true, null, null, null, null, null));
             assertThatIllegalArgumentException()
                     .as("a role alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.USER_NOT_FOUND, null, UserType.ADMIN, null,
-                            null, true, null, null, null, null, null));
+                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, UserType.ADMIN,
+                            null, null, true, null, null, null, null, null));
             assertThatIllegalArgumentException()
                     .as("a raw role code alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, "A", null,
+                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, null, "A", null,
                             true, null, null, null, null, null));
             assertThatIllegalArgumentException()
                     .as("a destination alone")
                     .isThrownBy(() -> new AuthenticationService.SignOnScreen(
-                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, null,
+                            AuthenticationService.Decision.USER_NOT_FOUND, null, null, null, null,
                             NavigationService.Route.USER_MENU, true, null, null, null, null, null));
+            // The display echo is deliberately OUTSIDE the rule: it is the client's own value handed
+            // back for redisplay, it establishes nothing, and forbidding it is what emptied the echo the
+            // response contract publishes on every rejected turn.
+            assertThatCode(() -> new AuthenticationService.SignOnScreen(
+                    AuthenticationService.Decision.USER_NOT_FOUND, null, ADMIN_USER_ID, null, null,
+                    null, true, null, null, null, null, null))
+                    .as("the display echo alone is permitted on a refused turn")
+                    .doesNotThrowAnyException();
         }
 
         @Test

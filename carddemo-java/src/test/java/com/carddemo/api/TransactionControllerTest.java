@@ -24,6 +24,7 @@ import com.carddemo.api.dto.TransactionListRequest;
 import com.carddemo.api.dto.TransactionListResponse;
 import com.carddemo.api.dto.TransactionViewResponse;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.BrowseWindow;
 import com.carddemo.service.NavigationService;
@@ -40,6 +41,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -83,6 +87,25 @@ class TransactionControllerTest {
     /** A stored origination timestamp in the layout's twenty-six character form. */
     private static final String ORIGIN_TS = "2022-07-19 14:23:07.123456";
 
+    /**
+     * The identity the filter chain establishes for these turns. Every one of the three routes is
+     * authenticated, so a turn always reaches the boundary with a principal, and it is that principal - not
+     * a field the caller echoed - that the carried state names.
+     */
+    private static final Authentication IDENTITY = identityOf("USER0001", UserType.USER);
+
+    /**
+     * Builds an established identity carrying the single authority the chain grants for a user type.
+     *
+     * @param userId the principal name
+     * @param userType the type whose declared authority is granted
+     * @return an authenticated token the boundary can read identity from
+     */
+    private static Authentication identityOf(final String userId, final UserType userType) {
+        return new TestingAuthenticationToken(userId, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
+    }
+
     private TransactionListService transactionListService;
 
     private TransactionViewService transactionViewService;
@@ -102,7 +125,7 @@ class TransactionControllerTest {
         transactionAddService = mock(TransactionAddService.class);
         // The real converter rather than a mock: it holds no state and performs a positional copy, so
         // stubbing it would measure the stub instead of the crossing.
-        screenStateAdapter = new ScreenStateAdapter();
+        screenStateAdapter = new ScreenStateAdapter(new NavigationService());
         meterRegistry = new SimpleMeterRegistry();
         controller = new TransactionController(transactionListService, transactionViewService,
                 transactionAddService, screenStateAdapter, meterRegistry);
@@ -142,6 +165,55 @@ class TransactionControllerTest {
     }
 
     /**
+     * Builds a list result carrying the supplied field findings and nothing else of note.
+     *
+     * @param fieldErrors the findings the turn raised, in the order it raised them
+     * @return the result
+     */
+    private static TransactionListService.TransactionListResult listResultWithFindings(
+            final List<ValidationException.FieldError> fieldErrors) {
+        return new TransactionListService.TransactionListResult(
+                NavigationService.Route.TRANSACTION_LIST, ScreenNavigationState.empty(), List.of(),
+                browseWindow(), "MESSAGE TEXT", fieldErrors, "TRNIDIN", true, true, false,
+                "FILTER ECHO", null, "TITLE ONE", "TITLE TWO", "07/19/22", "14:23:07", "CT00",
+                "COTRN00C");
+    }
+
+    /**
+     * Builds a list result carrying the supplied selection handoff and screen-erase instruction.
+     *
+     * @param rows the rows the turn presented
+     * @param selectedTransactionId the identifier the operator's selection resolved to, possibly
+     *     {@code null}
+     * @param eraseScreen whether the turn asks the next screen to be built from scratch
+     * @param route the route the turn resolved, possibly {@code null}
+     * @return the result
+     */
+    private static TransactionListService.TransactionListResult listResult(
+            final List<TransactionListService.TransactionListRow> rows,
+            final String selectedTransactionId, final boolean eraseScreen,
+            final NavigationService.Route route) {
+        return new TransactionListService.TransactionListResult(route, ScreenNavigationState.empty(),
+                rows, browseWindow(), "MESSAGE TEXT", List.of(), "TRNIDIN", false, false,
+                eraseScreen, "FILTER ECHO", selectedTransactionId, "TITLE ONE", "TITLE TWO",
+                "07/19/22", "14:23:07", "CT00", "COTRN00C");
+    }
+
+    /**
+     * Builds a view result carrying the supplied field findings.
+     *
+     * @param fieldErrors the findings the turn raised, in the order it raised them
+     * @return the result
+     */
+    private static TransactionViewService.TransactionViewResult viewResultWithFindings(
+            final List<ValidationException.FieldError> fieldErrors) {
+        return new TransactionViewService.TransactionViewResult(
+                NavigationService.Route.TRANSACTION_VIEW, ScreenNavigationState.empty(), "CT01",
+                "SEARCH ID", null, "MESSAGE TEXT", "TRNIDIN", true, true, false, fieldErrors,
+                viewHeader());
+    }
+
+    /**
      * Builds the browse window the list transaction assembles.
      *
      * @return the browse window
@@ -164,7 +236,7 @@ class TransactionControllerTest {
                 NavigationContext.empty(),
                 new com.carddemo.api.dto.PageMetadata.PageCursorRequest(
                         "PREV", "NEXT",
-                        com.carddemo.api.dto.PageMetadata.PagingDirection.FORWARD));
+                        com.carddemo.api.dto.PageMetadata.PagingDirection.FORWARD, "2", true));
     }
 
     /**
@@ -309,7 +381,7 @@ class TransactionControllerTest {
                             browseWindow()));
 
             controller.listTransactions(listRequest(KeyAction.PFK08, List.of("S", "")),
-                    List.of("ID-1", "ID-2"), 4, true);
+                    List.of("ID-1", "ID-2"), 4, true, IDENTITY);
 
             ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
                     ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
@@ -321,7 +393,8 @@ class TransactionControllerTest {
             assertThat(command.displayedTransactionIds()).containsExactly("ID-1", "ID-2");
             assertThat(command.currentPageNumber()).isEqualTo(4);
             assertThat(command.nextPageAvailable()).isTrue();
-            assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty());
+            assertThat(command.navigationContext()).isEqualTo(ScreenNavigationState.empty()
+                    .reconciledWith("USER0001", UserType.USER));
             assertThat(command.pageCursor().previousCursorKey()).isEqualTo("PREV");
             assertThat(command.pageCursor().nextCursorKey()).isEqualTo("NEXT");
         }
@@ -334,12 +407,207 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
                             browseWindow()));
 
-            controller.listTransactions(listRequest(null, List.of()), null, 0, false);
+            controller.listTransactions(listRequest(null, List.of()), null, 0, false, IDENTITY);
 
             ArgumentCaptor<TransactionListService.TransactionListCommand> captor =
                     ArgumentCaptor.forClass(TransactionListService.TransactionListCommand.class);
             verify(transactionListService).listTransactions(captor.capture());
             assertThat(captor.getValue().keyAction()).isEqualTo(KeyAction.CLEAR);
+        }
+    }
+
+    /**
+     * The four pieces of browse state the projection is obliged to publish rather than drop.
+     *
+     * <p>Each was previously computed by the turn and then discarded at this boundary, and each has a
+     * consequence an operator can see. The slot a row occupies decides which row a selector addresses,
+     * and the legacy screen fills a backward page from the bottom slot upward, so a slot cannot be
+     * inferred from a row's position in the published list. The resolved identifier is what the next
+     * screen is reached with. The erase instruction is what tells the next turn whether the operator's
+     * page survives a browse boundary. The findings are what distinguish a selector that was left
+     * blank from one that named something unusable.</p>
+     */
+    @Nested
+    @DisplayName("The list route publishes the browse state the turn settled")
+    class ListBrowseStateProjection {
+
+        /**
+         * A backward page fills the bottom slot first, and the published continuation has to say so.
+         *
+         * <p>Reproduces the fill order of {@code app/cbl/COTRN00C.cbl:L349}, where a backward browse
+         * writes into slot ten and works upward, so the first row read is the last row displayed. The
+         * continuation is a fixed ten-position list indexed by the slot each row occupies, which is why
+         * a row landing in slot ten appears in the tenth position even though it is the only row on the
+         * page. Deriving the list from the compacted row order instead would put that identifier in the
+         * first position, and the next turn's selector would then address the wrong record.</p>
+         */
+        @Test
+        @DisplayName("a backward page publishes each identifier in the slot its row occupies, not in "
+                + "the position it happens to hold in the row list")
+        void aBackwardPagePublishesEachIdentifierInItsOwnSlot() {
+            when(transactionListService.listTransactions(any())).thenReturn(listResult(
+                    List.of(listRow(10, "BOTTOM SLOT", ORIGIN_TS)), false,
+                    NavigationService.Route.TRANSACTION_LIST, browseWindow()));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.PFK07, List.of()), null, 0, false, IDENTITY);
+
+            assertThat(body.continuation().displayedTransactionIds())
+                    .as("ten positions, one per screen slot, whatever the page actually filled")
+                    .hasSize(10);
+            assertThat(body.continuation().displayedTransactionIds().get(9))
+                    .as("the row occupies slot ten, so its identifier is carried in position ten")
+                    .isEqualTo(TRANSACTION_ID);
+            assertThat(body.continuation().displayedTransactionIds().get(0))
+                    .as("slot one was never filled, so its position carries no identifier")
+                    .isEmpty();
+            assertThat(body.rows()).singleElement()
+                    .satisfies(row -> assertThat(row.screenRow()).isEqualTo(10));
+        }
+
+        /**
+         * A forward page fills from the top, which the same indexing has to render correctly too.
+         */
+        @Test
+        @DisplayName("a forward page carries its identifiers from the first slot upward, with the "
+                + "unfilled slots left empty")
+        void aForwardPageCarriesItsIdentifiersFromTheFirstSlot() {
+            when(transactionListService.listTransactions(any())).thenReturn(listResult(
+                    List.of(listRow(1, "FIRST SLOT", ORIGIN_TS),
+                            listRow(2, "SECOND SLOT", ORIGIN_TS)),
+                    false, NavigationService.Route.TRANSACTION_LIST, browseWindow()));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.PFK08, List.of()), null, 0, false, IDENTITY);
+
+            assertThat(body.continuation().displayedTransactionIds()).hasSize(10);
+            assertThat(body.continuation().displayedTransactionIds().get(0))
+                    .isEqualTo(TRANSACTION_ID);
+            assertThat(body.continuation().displayedTransactionIds().get(1))
+                    .isEqualTo(TRANSACTION_ID);
+            assertThat(body.continuation().displayedTransactionIds().subList(2, 10))
+                    .as("the eight slots the page did not fill carry nothing")
+                    .containsOnly("");
+            assertThat(body.rows()).extracting(
+                    TransactionListResponse.TransactionRow::screenRow).containsExactly(1, 2);
+        }
+
+        /**
+         * The identifier a selection resolved to is what the next screen is reached with.
+         *
+         * <p>Withholding it left the client with nothing to carry into the view screen but the row text
+         * it could see, so the handoff the legacy screen performs through its communication area had no
+         * counterpart here.</p>
+         */
+        @Test
+        @DisplayName("the identifier the selection resolved to is published, so the next screen can "
+                + "be reached with it")
+        void theResolvedSelectionIsPublished() {
+            when(transactionListService.listTransactions(any())).thenReturn(
+                    listResult(List.of(listRow(3, "SELECTED ROW", ORIGIN_TS)), TRANSACTION_ID, false,
+                            NavigationService.Route.TRANSACTION_VIEW));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.ENTER, List.of("", "", "S")), null, 0, false, IDENTITY);
+
+            assertThat(body.selectedTransactionId()).isEqualTo(TRANSACTION_ID);
+            assertThat(body.nextRoute())
+                    .isEqualTo(NavigationService.Route.TRANSACTION_VIEW.getRouteValue());
+        }
+
+        /**
+         * A turn that resolved no selection publishes no identifier, rather than an empty one.
+         */
+        @Test
+        @DisplayName("a turn that resolved no selection leaves the identifier absent")
+        void aTurnWithoutASelectionLeavesTheIdentifierAbsent() {
+            when(transactionListService.listTransactions(any())).thenReturn(
+                    listResult(List.of(listRow(1, "ROW", ORIGIN_TS)), null, false,
+                            NavigationService.Route.TRANSACTION_LIST));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
+
+            assertThat(body.selectedTransactionId()).isNull();
+        }
+
+        /**
+         * The browse boundary asks the operator's page to be retained rather than rebuilt.
+         *
+         * <p>The turn sets its erase instruction to no at the top and bottom of the browse, which is
+         * how the legacy screen keeps the displayed page indicator steady when the operator presses
+         * past the end. The published flag is the positive form of that instruction, so a false erase
+         * becomes a true retain.</p>
+         */
+        @Test
+        @DisplayName("a turn that asks for the page to be retained publishes the instruction, and a "
+                + "turn that asks for a rebuild publishes its converse")
+        void thePageRetentionInstructionIsPublished() {
+            when(transactionListService.listTransactions(any())).thenReturn(
+                    listResult(List.of(), null, false, NavigationService.Route.TRANSACTION_LIST));
+
+            assertThat(controller.listTransactions(listRequest(KeyAction.PFK07, List.of()), null, 0,
+                    false, IDENTITY).preserveDisplayedPage())
+                    .as("the turn did not ask for an erase, so the operator's page is retained")
+                    .isTrue();
+
+            when(transactionListService.listTransactions(any())).thenReturn(
+                    listResult(List.of(), null, true, NavigationService.Route.TRANSACTION_LIST));
+
+            assertThat(controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
+                    false, IDENTITY).preserveDisplayedPage())
+                    .as("the turn asked for an erase, so the page is rebuilt rather than retained")
+                    .isFalse();
+        }
+
+        /**
+         * Both field-error states cross the boundary, in the order the turn raised them.
+         *
+         * <p>A blank selector and an unusable one are different failures on the legacy screen - the
+         * first draws the marker, the second only changes colour - so one flag cannot carry both.</p>
+         */
+        @Test
+        @DisplayName("the selector and filter findings are published in order, each under its own "
+                + "state")
+        void theSelectorAndFilterFindingsArePublishedInOrder() {
+            when(transactionListService.listTransactions(any())).thenReturn(listResultWithFindings(
+                    List.of(
+                            new ValidationException.FieldError("transactionIdFilter", "TRNIDIN",
+                                    ValidationException.FieldState.MISSING,
+                                    "Tran ID must be entered"),
+                            new ValidationException.FieldError("rowSelector3", "SEL0003",
+                                    ValidationException.FieldState.INVALID,
+                                    "Invalid selection"))));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.ENTER, List.of("", "", "X")), null, 0, false, IDENTITY);
+
+            assertThat(body.fieldErrors()).hasSize(2);
+            assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("transactionIdFilter");
+            assertThat(body.fieldErrors().get(0).screenFieldId()).isEqualTo("TRNIDIN");
+            assertThat(body.fieldErrors().get(0).state())
+                    .isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(body.fieldErrors().get(0).message()).isEqualTo("Tran ID must be entered");
+            assertThat(body.fieldErrors().get(1).fieldName()).isEqualTo("rowSelector3");
+            assertThat(body.fieldErrors().get(1).screenFieldId()).isEqualTo("SEL0003");
+            assertThat(body.fieldErrors().get(1).state())
+                    .isEqualTo(ErrorResponse.FieldState.INVALID);
+        }
+
+        /**
+         * A turn that raised nothing publishes an empty list rather than no list.
+         */
+        @Test
+        @DisplayName("a turn that raised no finding publishes an empty list, not an absent one")
+        void aTurnWithoutFindingsPublishesAnEmptyList() {
+            when(transactionListService.listTransactions(any()))
+                    .thenReturn(listResult(List.of(), false, NavigationService.Route.TRANSACTION_LIST,
+                            browseWindow()));
+
+            TransactionListResponse body = controller.listTransactions(
+                    listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
+
+            assertThat(body.fieldErrors()).isNotNull().isEmpty();
         }
     }
 
@@ -357,7 +625,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.transactionName()).isEqualTo("CT00");
             assertThat(body.programName()).isEqualTo("COTRN00C");
@@ -384,7 +652,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.pageMetadata()).isNull();
             assertThat(body.displayedPageNumber()).isNull();
@@ -398,7 +666,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.nextRoute()).isNull();
         }
@@ -413,7 +681,7 @@ class TransactionControllerTest {
                     false, NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body = controller.listTransactions(
-                    listRequest(KeyAction.ENTER, List.of("S", "U")), null, 0, false);
+                    listRequest(KeyAction.ENTER, List.of("S", "U")), null, 0, false, IDENTITY);
 
             assertThat(body.rows()).hasSize(3);
             assertThat(body.rows().get(0).selection()).isEqualTo("S");
@@ -429,7 +697,7 @@ class TransactionControllerTest {
                     NavigationService.Route.TRANSACTION_LIST, browseWindow()));
 
             TransactionListResponse body =
-                    controller.listTransactions(listRequest(KeyAction.ENTER, null), null, 0, false);
+                    controller.listTransactions(listRequest(KeyAction.ENTER, null), null, 0, false, IDENTITY);
 
             assertThat(body.rows()).hasSize(1);
             assertThat(body.rows().get(0).selection()).isNull();
@@ -445,7 +713,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.rows().get(0).displayedDate()).isEqualTo("07/19/22").hasSize(8);
         }
@@ -459,7 +727,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.rows().get(0).displayedDate()).isNull();
             assertThat(body.rows().get(1).displayedDate()).isNull();
@@ -476,7 +744,7 @@ class TransactionControllerTest {
 
             TransactionListResponse body =
                     controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0,
-                            false);
+                            false, IDENTITY);
 
             assertThat(body.rows().get(0).description())
                     .hasSize(TransactionListResponse.DESCRIPTION_LENGTH);
@@ -490,10 +758,72 @@ class TransactionControllerTest {
                     .thenReturn(listResult(List.of(), true, NavigationService.Route.TRANSACTION_LIST,
                             browseWindow()));
 
-            controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0, false);
+            controller.listTransactions(listRequest(KeyAction.ENTER, List.of()), null, 0, false, IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.list.turn", "rejected",
                     NavigationService.Route.TRANSACTION_LIST.getRouteValue())).isEqualTo(1L);
+        }
+    }
+
+    /**
+     * The view screen has one input field, and that field has two distinct failure states.
+     *
+     * <p>The legacy screen writes a marker beside a search key that was left blank and only changes the
+     * colour of one that was supplied and cannot be used. A single whole-screen flag cannot report which
+     * of the two happened, so the projection publishes the field-level detail behind it.</p>
+     */
+    @Nested
+    @DisplayName("The view route publishes its field findings")
+    class ViewFieldFindings {
+
+        @Test
+        @DisplayName("a search key that was left blank is published as missing")
+        void aBlankSearchKeyIsPublishedAsMissing() {
+            when(transactionViewService.viewTransaction(any())).thenReturn(viewResultWithFindings(
+                    List.of(new ValidationException.FieldError("transactionId", "TRNIDIN",
+                            ValidationException.FieldState.MISSING,
+                            "Tran ID can NOT be empty..."))));
+
+            TransactionViewResponse body = controller.viewTransaction(null, null, KeyAction.ENTER,
+                    NavigationContext.empty(), IDENTITY);
+
+            assertThat(body.fieldErrors()).singleElement().satisfies(finding -> {
+                assertThat(finding.fieldName()).isEqualTo("transactionId");
+                assertThat(finding.screenFieldId()).isEqualTo("TRNIDIN");
+                assertThat(finding.state()).isEqualTo(ErrorResponse.FieldState.MISSING);
+                assertThat(finding.message()).isEqualTo("Tran ID can NOT be empty...");
+            });
+        }
+
+        @Test
+        @DisplayName("a search key that was supplied and cannot be used is published as invalid, "
+                + "which is a different state from missing")
+        void anUnusableSearchKeyIsPublishedAsInvalid() {
+            when(transactionViewService.viewTransaction(any())).thenReturn(viewResultWithFindings(
+                    List.of(new ValidationException.FieldError("transactionId", "TRNIDIN",
+                            ValidationException.FieldState.INVALID,
+                            "Transaction ID NOT found..."))));
+
+            TransactionViewResponse body = controller.viewTransaction("9999999999999999", null,
+                    KeyAction.ENTER, NavigationContext.empty(), IDENTITY);
+
+            assertThat(body.fieldErrors()).singleElement().satisfies(finding -> {
+                assertThat(finding.state()).isEqualTo(ErrorResponse.FieldState.INVALID);
+                assertThat(finding.state()).isNotEqualTo(ErrorResponse.FieldState.MISSING);
+            });
+        }
+
+        @Test
+        @DisplayName("a turn that raised no finding publishes an empty list, not an absent one")
+        void aTurnWithoutFindingsPublishesAnEmptyList() {
+            when(transactionViewService.viewTransaction(any())).thenReturn(
+                    viewResult(viewProjection("PURCHASE", "MERCHANT", "CITY", ORIGIN_TS), false,
+                            viewHeader(), NavigationService.Route.TRANSACTION_VIEW));
+
+            TransactionViewResponse body = controller.viewTransaction(TRANSACTION_ID, null,
+                    KeyAction.ENTER, NavigationContext.empty(), IDENTITY);
+
+            assertThat(body.fieldErrors()).isNotNull().isEmpty();
         }
     }
 
@@ -509,7 +839,7 @@ class TransactionControllerTest {
                             viewHeader(), NavigationService.Route.TRANSACTION_VIEW));
 
             controller.viewTransaction(TRANSACTION_ID, "SELECTED", KeyAction.PFK05,
-                    NavigationContext.empty());
+                    NavigationContext.empty(), IDENTITY);
 
             ArgumentCaptor<TransactionViewService.TransactionViewInput> captor =
                     ArgumentCaptor.forClass(TransactionViewService.TransactionViewInput.class);
@@ -518,7 +848,8 @@ class TransactionControllerTest {
             assertThat(input.transactionIdInput()).isEqualTo(TRANSACTION_ID);
             assertThat(input.selectedTransactionId()).isEqualTo("SELECTED");
             assertThat(input.keyAction()).isEqualTo(KeyAction.PFK05);
-            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty());
+            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty()
+                    .reconciledWith("USER0001", UserType.USER));
         }
 
         @Test
@@ -529,7 +860,7 @@ class TransactionControllerTest {
                             viewHeader(), NavigationService.Route.TRANSACTION_VIEW));
 
             TransactionViewResponse body =
-                    controller.viewTransaction(TRANSACTION_ID, null, null, null);
+                    controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY);
 
             assertThat(body.transactionName()).isEqualTo("CT01");
             assertThat(body.programName()).isEqualTo("COTRN01C");
@@ -563,7 +894,7 @@ class TransactionControllerTest {
                             NavigationService.Route.TRANSACTION_VIEW));
 
             TransactionViewResponse body =
-                    controller.viewTransaction(TRANSACTION_ID, null, null, null);
+                    controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY);
 
             assertThat(body.transactionId()).isNull();
             assertThat(body.cardNumber()).isNull();
@@ -583,7 +914,7 @@ class TransactionControllerTest {
                             null, NavigationService.Route.TRANSACTION_LIST));
 
             TransactionViewResponse body =
-                    controller.viewTransaction(TRANSACTION_ID, null, null, null);
+                    controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY);
 
             assertThat(body.transactionName()).isNull();
             assertThat(body.programName()).isNull();
@@ -602,7 +933,7 @@ class TransactionControllerTest {
                     viewHeader(), NavigationService.Route.TRANSACTION_VIEW));
 
             TransactionViewResponse body =
-                    controller.viewTransaction(TRANSACTION_ID, null, null, null);
+                    controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY);
 
             assertThat(body.description()).hasSize(60);
             assertThat(body.merchantName()).hasSize(30);
@@ -618,7 +949,7 @@ class TransactionControllerTest {
                     viewResult(viewProjection("PURCHASE", "MERCHANT", "CITY", ORIGIN_TS), false,
                             viewHeader(), null));
 
-            assertThat(controller.viewTransaction(TRANSACTION_ID, null, null, null).nextRoute())
+            assertThat(controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY).nextRoute())
                     .isNull();
         }
 
@@ -629,7 +960,7 @@ class TransactionControllerTest {
                     viewResult(viewProjection("PURCHASE", "MERCHANT", "CITY", ORIGIN_TS), false,
                             viewHeader(), NavigationService.Route.TRANSACTION_VIEW));
 
-            controller.viewTransaction(TRANSACTION_ID, null, null, null);
+            controller.viewTransaction(TRANSACTION_ID, null, null, null, IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.view.turn", "accepted",
                     NavigationService.Route.TRANSACTION_VIEW.getRouteValue())).isEqualTo(1L);
@@ -646,7 +977,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(writtenRecord(), false, List.of()));
 
-            controller.addTransaction(addRequest(), "SELECTED");
+            controller.addTransaction(addRequest(), "SELECTED", IDENTITY);
 
             ArgumentCaptor<TransactionAddService.TransactionAddScreenInput> captor =
                     ArgumentCaptor.forClass(TransactionAddService.TransactionAddScreenInput.class);
@@ -668,7 +999,8 @@ class TransactionControllerTest {
             assertThat(input.confirm()).isEqualTo("Y");
             assertThat(input.selectedTransaction()).isEqualTo("SELECTED");
             assertThat(input.keyAction()).isEqualTo(KeyAction.ENTER);
-            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty());
+            assertThat(input.navigationContext()).isEqualTo(ScreenNavigationState.empty()
+                    .reconciledWith("USER0001", UserType.USER));
         }
 
         @Test
@@ -678,7 +1010,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(writtenRecord(), false, List.of()));
 
-            TransactionAddResponse body = controller.addTransaction(addRequest(), null);
+            TransactionAddResponse body = controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(body.newTransactionId()).isEqualTo(TRANSACTION_ID);
             assertThat(body.amount()).isEqualByComparingTo("123.45");
@@ -704,7 +1036,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(null, false, List.of()));
 
-            TransactionAddResponse body = controller.addTransaction(addRequest(), null);
+            TransactionAddResponse body = controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(body.newTransactionId()).isNull();
             assertThat(body.amount()).isNull();
@@ -721,7 +1053,7 @@ class TransactionControllerTest {
                             new ValidationException.FieldError("amount", "TRNAMT",
                                     ValidationException.FieldState.INVALID, "not numeric"))));
 
-            TransactionAddResponse body = controller.addTransaction(addRequest(), null);
+            TransactionAddResponse body = controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(body.fieldErrors()).hasSize(2);
             assertThat(body.fieldErrors().get(0).fieldName()).isEqualTo("accountId");
@@ -740,7 +1072,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(writtenRecord(), false, List.of()));
 
-            controller.addTransaction(addRequest(), null);
+            controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.add.turn", "added",
                     NavigationService.Route.TRANSACTION_ADD.getRouteValue())).isEqualTo(1L);
@@ -753,7 +1085,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(null, false, List.of()));
 
-            controller.addTransaction(addRequest(), null);
+            controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.add.turn", "unconfirmed",
                     NavigationService.Route.TRANSACTION_ADD.getRouteValue())).isEqualTo(1L);
@@ -765,7 +1097,7 @@ class TransactionControllerTest {
             when(transactionAddService.processTransactionAdd(any()))
                     .thenReturn(addResult(writtenRecord(), true, List.of()));
 
-            controller.addTransaction(addRequest(), null);
+            controller.addTransaction(addRequest(), null, IDENTITY);
 
             assertThat(timed("carddemo.online.transaction.add.turn", "rejected",
                     NavigationService.Route.TRANSACTION_ADD.getRouteValue())).isEqualTo(1L);

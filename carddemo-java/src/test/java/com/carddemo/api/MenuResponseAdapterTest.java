@@ -25,6 +25,7 @@ import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.ConversationState;
 import com.carddemo.service.MenuService;
+import com.carddemo.service.NavigationService;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -80,7 +81,7 @@ final class MenuResponseAdapterTest {
     /** Sets up the adapter with the real navigation-record conversion. */
     @BeforeEach
     void setUp() {
-        subject = new MenuResponseAdapter(new ConversationStateAdapter());
+        subject = new MenuResponseAdapter(new ConversationStateAdapter(new NavigationService()));
     }
 
     /**

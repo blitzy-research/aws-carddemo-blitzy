@@ -19,6 +19,7 @@ package com.carddemo.api.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Immutable response contract for the CardDemo online bill-payment transaction, which pays an
@@ -343,6 +344,18 @@ public record BillPaymentResponse(
         @Size(max = 78) String errorMessage,
         boolean paymentAccepted,
         boolean generalError,
+
+        /* The field-level detail behind the flag above, in the order the turn established it. Never
+         * null; empty when the turn faulted nothing.
+         *
+         * Two states rather than one, because the legacy screen distinguishes a field the operator left
+         * blank from one that was supplied and failed its edit: the first is highlighted AND marked with
+         * an asterisk, the second is only highlighted. This screen raises both kinds on both of its
+         * inputs - an account number can be absent or non-numeric or unknown, and a confirmation can be
+         * absent or carry something other than the two accepted answers - and the whole-screen flag
+         * beside this list can say only that one of them happened, not which, and not on which field. */
+        List<ErrorResponse.FieldError> fieldErrors,
+
         @Size(max = 7) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
@@ -372,6 +385,12 @@ public record BillPaymentResponse(
      */
     public BillPaymentResponse {
         requireRecordShape(currentBalance);
+        // An absent list becomes an empty one, and a supplied one is copied into an unmodifiable view.
+        // Because the module omits nulls and writes empties, this is what lets an empty list publish as
+        // [] so a reader can tell "this turn faulted no field" from "this reply says nothing about
+        // fields". This is a normalisation of an aggregate's absence, not of any value it carries: no
+        // entry is reordered, merged, de-duplicated or rewritten.
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
     }
 
     /**
@@ -695,6 +714,7 @@ public record BillPaymentResponse(
                 + ", errorMessage=" + errorMessage
                 + ", paymentAccepted=" + paymentAccepted
                 + ", generalError=" + generalError
+                + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + REDACTION_PLACEHOLDER

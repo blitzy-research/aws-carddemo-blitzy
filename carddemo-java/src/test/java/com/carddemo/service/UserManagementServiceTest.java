@@ -694,9 +694,23 @@ class UserManagementServiceTest {
             assertThat(repository.rows.get("SPACEUSR").getSecUsrLname()).isEqualTo("O BRIEN");
         }
 
+        /**
+         * Five empty items report as one, because the legacy cascade stops at its first true clause.
+         *
+         * <p>{@code EVALUATE TRUE} at {@code app/cbl/COUSR01C.cbl} L116-L151 evaluates its clauses in
+         * order and executes only the first whose condition holds. Each clause raises the flag, moves
+         * its own text, moves -1 to its own field's length and performs the send, so a submission with
+         * every item empty produces exactly one text, one cursor position and one decorated field - the
+         * given name, because that clause is first.
+         *
+         * <p>An earlier revision of this test asserted five entries, which is a screen the legacy cannot
+         * produce: it would decorate four fields the operator was never told about and would have to
+         * choose which of five texts to show on the single message line.</p>
+         */
         @Test
-        @DisplayName("the first empty item owns the summary and the cursor, while every empty item is flagged")
-        void reportsTheFirstErrorAndFlagsThemAll() {
+        @DisplayName("the first empty item is the only one reported, and it owns the summary and the "
+                + "cursor")
+        void reportsOnlyTheFirstEmptyItem() {
             final UserOutcome response = serviceFor(new FakeRepository())
                     .addUser(recordRequest("", "", "", "", "", KeyAction.ENTER));
 
@@ -704,10 +718,47 @@ class UserManagementServiceTest {
             assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_FIRST_NAME);
             assertThat(response.generalError()).isTrue();
             assertThat(response.actionSucceeded()).isFalse();
-            assertThat(response.fieldErrors()).hasSize(5)
-                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
-            assertThat(response.fieldErrors().stream().map(ValidationException.FieldError::field))
-                    .containsExactly("firstName", "lastName", "userId", "password", "userType");
+            assertThat(response.fieldErrors())
+                    .as("one clause fired, so one field is decorated")
+                    .singleElement()
+                    .satisfies(error -> {
+                        assertThat(error.field()).isEqualTo("firstName");
+                        assertThat(error.bmsFieldId()).isEqualTo(FIELD_FIRST_NAME);
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
+                        assertThat(error.message()).isEqualTo(MSG_FIRST_NAME_EMPTY);
+                    });
+        }
+
+        /**
+         * Each later clause becomes reachable only once every earlier one is satisfied.
+         *
+         * <p>This is the positive counterpart of the test above: it walks the cascade one clause at a
+         * time, supplying every earlier item so that exactly one clause can fire, and checks that the
+         * single entry names the field that clause owns. Together the two pin the cascade's shape -
+         * first-match selection and one entry per submission - rather than merely its first case.</p>
+         */
+        @Test
+        @DisplayName("each clause in turn is the single reported item once the earlier ones are "
+                + "supplied")
+        void eachClauseInTurnIsTheSingleReportedItem() {
+            final String credential = throwawayCredential();
+
+            assertThat(serviceFor(new FakeRepository())
+                    .addUser(recordRequest("A1", "GIVEN", "", credential, "U", KeyAction.ENTER))
+                    .fieldErrors()).singleElement()
+                    .satisfies(error -> assertThat(error.field()).isEqualTo("lastName"));
+            assertThat(serviceFor(new FakeRepository())
+                    .addUser(recordRequest("", "GIVEN", "FAMILY", credential, "U", KeyAction.ENTER))
+                    .fieldErrors()).singleElement()
+                    .satisfies(error -> assertThat(error.field()).isEqualTo("userId"));
+            assertThat(serviceFor(new FakeRepository())
+                    .addUser(recordRequest("A2", "GIVEN", "FAMILY", "", "U", KeyAction.ENTER))
+                    .fieldErrors()).singleElement()
+                    .satisfies(error -> assertThat(error.field()).isEqualTo("password"));
+            assertThat(serviceFor(new FakeRepository())
+                    .addUser(recordRequest("A3", "GIVEN", "FAMILY", credential, "", KeyAction.ENTER))
+                    .fieldErrors()).singleElement()
+                    .satisfies(error -> assertThat(error.field()).isEqualTo("userType"));
         }
 
         @Test
@@ -1317,6 +1368,87 @@ class UserManagementServiceTest {
                     .isEqualTo(MSG_LIST_ALREADY_AT_BOTTOM);
         }
 
+        /**
+         * Both boundary refusals ask the operator's page to be kept rather than rebuilt.
+         *
+         * <p>The two arms clear {@code SEND-ERASE-NO} - already at the top at
+         * {@code app/cbl/COUSR00C.cbl} L250-L254 and already at the bottom at L272-L276 - and both
+         * release the browse and return no rows, so the legacy overwrites the screen in place and the
+         * ten rows the operator was looking at remain. The outcome now says so, which is what stops a
+         * client blanking a page the legacy keeps: without the instruction, this reply is byte for byte
+         * indistinguishable from an empty page.</p>
+         */
+        @Test
+        @DisplayName("both boundary refusals ask for the displayed page to be retained, and return no "
+                + "rows, so the instruction is the only thing telling them apart from an empty page")
+        void bothBoundaryRefusalsRetainTheDisplayedPage() {
+            final FakeRepository repository = repositoryOf(25);
+
+            final UserOutcome atTop = serviceFor(repository).listUsers(
+                    listRequest(KeyAction.PFK07, null, "USER0001", "USER0010", List.of()));
+            final UserOutcome atBottom = serviceFor(repository).listUsers(
+                    listRequest(KeyAction.PFK08, null, "USER0021", "USER0025", List.of()));
+
+            assertThat(atTop.preserveDisplayedPage()).isTrue();
+            assertThat(atTop.rows()).isEmpty();
+            assertThat(atBottom.preserveDisplayedPage()).isTrue();
+            assertThat(atBottom.rows()).isEmpty();
+        }
+
+        /**
+         * Every other arm rebuilds, so the instruction distinguishes rather than merely being present.
+         */
+        @Test
+        @DisplayName("a turn that fills a page asks for a rebuild, not a retention")
+        void aTurnThatFillsAPageAsksForARebuild() {
+            final UserOutcome filled = serviceFor(repositoryOf(25)).listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            assertThat(filled.rows()).hasSize(SCREEN_ROWS);
+            assertThat(filled.preserveDisplayedPage())
+                    .as("rows were returned, so the client replaces what it is showing")
+                    .isFalse();
+        }
+
+        /**
+         * A genuine page move also rebuilds, which is the case most easily confused with a refusal.
+         */
+        @Test
+        @DisplayName("a backward key that actually moves a page rebuilds, unlike one refused at the top")
+        void aBackwardKeyThatMovesAPageRebuilds() {
+            final FakeRepository repository = repositoryOf(25);
+            final UserManagementService service = serviceFor(repository);
+            final UserOutcome secondPage = service.listUsers(
+                    listRequest(KeyAction.PFK08, null, "USER0001", "USER0010", List.of()));
+
+            final UserOutcome movedBack = service.listUsers(listRequest(KeyAction.PFK07, null,
+                    secondPage.pageMetadata().previousCursorKey(),
+                    secondPage.pageMetadata().nextCursorKey(), List.of()));
+
+            assertThat(movedBack.rows()).isNotEmpty();
+            assertThat(movedBack.preserveDisplayedPage()).isFalse();
+        }
+
+        /**
+         * The three single-record screens have one always-erasing send, so none of them ever retains.
+         */
+        @Test
+        @DisplayName("the single-record screens never ask for a retention, because their one send verb "
+                + "always erases")
+        void theSingleRecordScreensNeverRetain() {
+            final FakeRepository repository = repositoryOf(3);
+
+            assertThat(serviceFor(repository)
+                    .addUser(recordRequest("", "", "", "", "", KeyAction.ENTER))
+                    .preserveDisplayedPage()).isFalse();
+            assertThat(serviceFor(repository)
+                    .updateUser(recordRequest("", "", "", null, "", KeyAction.PFK05))
+                    .preserveDisplayedPage()).isFalse();
+            assertThat(serviceFor(repository)
+                    .deleteUser(recordRequest("   ", null, null, null, null, KeyAction.ENTER))
+                    .preserveDisplayedPage()).isFalse();
+        }
+
         @Test
         @DisplayName("positioning is greater-or-equal, so a key that matches nothing lands on the next")
         void positionsGreaterOrEqual() {
@@ -1382,23 +1514,21 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("the update marker dispatches to the update screen with the marked row's identifier")
         void dispatchesTheUpdateMarker() {
-            final UserOutcome response = serviceFor(repositoryOf(25))
-                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
-                            selectionAt(3, "U")));
+            final UserOutcome response =
+                    submitSelection(repositoryOf(25), null, selectionAt(3, "U"));
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_UPDATE);
             assertThat(response.userId()).isEqualTo("USER0003");
         }
 
         @Test
-        @DisplayName("a lower-case delete marker dispatches to the delete screen")
+        @DisplayName("a lower-case delete marker on the last row dispatches to the delete screen")
         void dispatchesTheLowerCaseDeleteMarker() {
-            final UserOutcome response = serviceFor(repositoryOf(25))
-                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0011", "USER0020",
-                            selectionAt(SCREEN_ROWS, "d")));
+            final UserOutcome response =
+                    submitSelection(repositoryOf(25), null, selectionAt(SCREEN_ROWS, "d"));
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_DELETE);
-            assertThat(response.userId()).isEqualTo("USER0020");
+            assertThat(response.userId()).isEqualTo("USER0010");
         }
 
         @ParameterizedTest
@@ -1424,9 +1554,7 @@ class UserManagementServiceTest {
             selections.set(1, "U");
             selections.set(5, "D");
 
-            final UserOutcome response = serviceFor(repositoryOf(25))
-                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
-                            selections));
+            final UserOutcome response = submitSelection(repositoryOf(25), null, selections);
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_UPDATE);
             assertThat(response.userId()).isEqualTo("USER0002");
@@ -1438,9 +1566,7 @@ class UserManagementServiceTest {
             final List<String> selections = new ArrayList<>(Collections.nCopies(SCREEN_ROWS, ""));
             selections.set(6, "U");
 
-            final UserOutcome response = serviceFor(repositoryOf(25))
-                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
-                            selections));
+            final UserOutcome response = submitSelection(repositoryOf(25), null, selections);
 
             assertThat(response.userId()).isEqualTo("USER0007");
         }
@@ -1448,9 +1574,8 @@ class UserManagementServiceTest {
         @Test
         @DisplayName("an unrecognised marker reports the invalid-selection text and rebuilds the page")
         void rejectsAnUnrecognisedMarker() {
-            final UserOutcome response = serviceFor(repositoryOf(25))
-                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
-                            selectionAt(1, "X")));
+            final UserOutcome response =
+                    submitSelection(repositoryOf(25), null, selectionAt(1, "X"));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_INVALID_SELECTION);
             assertThat(response.generalError())
@@ -1708,20 +1833,52 @@ class UserManagementServiceTest {
             assertThat(response.nextRoute()).isNull();
         }
 
+        /**
+         * The save key reports one empty item, not every empty item.
+         *
+         * <p>{@code EVALUATE TRUE} at {@code app/cbl/COUSR02C.cbl} L177-L212 stops at its first true
+         * clause exactly as the add screen's does, and the identifier is the first clause here rather
+         * than the given name. So a submission with four items blank reports the identifier alone.
+         *
+         * <p>The absent credential is deliberately passed as {@code null} rather than as spaces: on this
+         * screen an absent item means unchanged and only a supplied-but-empty one is a fault, so a null
+         * cannot fire its clause at all and would not fire it even if it were reached.</p>
+         */
         @Test
-        @DisplayName("the save key reports every empty item, with the first as the summary")
-        void reportsEveryEmptyItemOnTheSaveKey() {
+        @DisplayName("the save key reports only the first empty item, which is the identifier")
+        void reportsOnlyTheFirstEmptyItemOnTheSaveKey() {
             final UserOutcome response = serviceFor(repositoryOf(3))
                     .updateUser(recordRequest("  ", "  ", "  ", null, "  ", KeyAction.PFK05));
 
             assertThat(response.message()).isEqualTo(MSG_USER_ID_EMPTY);
             assertThat(response.generalError()).isTrue();
-            assertThat(response.fieldErrors())
-                    .extracting(ValidationException.FieldError::message)
-                    .containsExactly(MSG_USER_ID_EMPTY, MSG_FIRST_NAME_EMPTY, MSG_LAST_NAME_EMPTY,
-                            MSG_USER_TYPE_EMPTY);
-            assertThat(response.fieldErrors())
-                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(error -> {
+                        assertThat(error.message()).isEqualTo(MSG_USER_ID_EMPTY);
+                        assertThat(error.state())
+                                .isEqualTo(ValidationException.FieldState.MISSING);
+                    });
+        }
+
+        /**
+         * A supplied-but-empty credential is a fault, and it is reported alone once the earlier clauses
+         * are satisfied.
+         */
+        @Test
+        @DisplayName("a supplied but empty credential is the single reported item once the identifier "
+                + "and the names are given")
+        void aSuppliedButEmptyCredentialIsTheSingleReportedItem() {
+            final UserOutcome response = serviceFor(repositoryOf(3))
+                    .updateUser(recordRequest("USER0001", "GIVEN", "FAMILY", "  ", "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(error -> {
+                        assertThat(error.field()).isEqualTo("password");
+                        assertThat(error.state())
+                                .isEqualTo(ValidationException.FieldState.MISSING);
+                    });
         }
 
         @Test
@@ -1737,14 +1894,92 @@ class UserManagementServiceTest {
             assertThat(repository.rows).hasSize(3);
         }
 
+        /**
+         * The snapshot alone resolves the selection, so the cursor echoes are not needed for it.
+         *
+         * <p>The two cursor keys position a browse for paging; the marked row is resolved from the sealed
+         * snapshot and from nothing else. Passing neither cursor demonstrates that: the selection still
+         * resolves, which it could not do if the identifier were being recovered by re-reading the page
+         * the cursors describe.</p>
+         */
         @Test
-        @DisplayName("the page token resolves a selection even when cursor echoes are absent")
+        @DisplayName("the page token alone resolves a selection, with neither cursor echoed")
         void resolvesASelectionWithNoEchoedAnchor() {
-            final UserOutcome response = serviceFor(repositoryOf(12))
-                    .listUsers(listRequest(KeyAction.ENTER, null, null, null, selectionAt(2, "U")));
+            final FakeRepository repository = repositoryOf(12);
+            final UserManagementService service = serviceFor(repository);
+            final UserOutcome displayed = service.listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            final UserOutcome response = service.listUsers(listRequest(KeyAction.ENTER, null,
+                    null, null, selectionAt(2, "U"), displayed.rowSnapshotToken()));
 
             assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_UPDATE);
             assertThat(response.userId()).isEqualTo("USER0002");
+        }
+
+        /**
+         * A marked row with no snapshot is refused rather than resolved by re-reading the page.
+         *
+         * <p>This is the closure of the selection race. The marker names a <em>position</em> on the page
+         * the operator is looking at, and any insert or delete at or before that page's anchor shifts
+         * every later row by one. Recovering the identifier by re-reading would therefore return whoever
+         * now stands in the marked position, and the turn would open the update or delete screen against
+         * them - and a delete is not recoverable.
+         *
+         * <p>So an absent snapshot takes the same arm an unopenable one takes: no dispatch, the page is
+         * rebuilt, and the operator marks again against rows this server has just published. A client
+         * that echoes the token it was given never sees this.</p>
+         */
+        @Test
+        @DisplayName("a marked row with no page snapshot is refused and never dispatches")
+        void refusesASelectionCarryingNoPageSnapshot() {
+            final UserOutcome response = serviceFor(repositoryOf(12))
+                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
+                            selectionAt(2, "U")));
+
+            assertThat(response.nextRoute())
+                    .as("no dispatch: the marked position could not be resolved safely")
+                    .isNull();
+            assertThat(response.userId())
+                    .as("no identifier was resolved, so none is carried to a next screen")
+                    .isNotEqualTo("USER0002");
+            assertThat(response.generalError())
+                    .as("the operator is told the selection could not be resolved")
+                    .isTrue();
+            assertThat(response.message())
+                    .as("and told it through the same text a tampered snapshot produces, because the "
+                            + "two are the same failure: a marked row this server cannot vouch for")
+                    .isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+        }
+
+        /**
+         * The refusal covers a blank token as well as a missing one, since neither seals anything.
+         */
+        @ParameterizedTest(name = "a snapshot of [{0}] is refused")
+        @ValueSource(strings = {"", " ", "   "})
+        @DisplayName("a blank page snapshot is refused on the same terms as an absent one")
+        void refusesABlankPageSnapshot(final String blankToken) {
+            final UserOutcome response = serviceFor(repositoryOf(12))
+                    .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", "USER0010",
+                            selectionAt(2, "U"), blankToken));
+
+            assertThat(response.nextRoute()).isNull();
+        }
+
+        /**
+         * A turn that marks nothing needs no snapshot, so requiring one must not break ordinary paging.
+         */
+        @Test
+        @DisplayName("a turn that marks no row needs no snapshot and pages normally")
+        void aTurnMarkingNoRowNeedsNoSnapshot() {
+            final UserOutcome response = serviceFor(repositoryOf(25))
+                    .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            assertThat(response.rows()).hasSize(SCREEN_ROWS);
+            assertThat(response.generalError()).isFalse();
+            assertThat(response.rowSnapshotToken())
+                    .as("and the page it returns carries the snapshot a later selection will need")
+                    .isNotBlank();
         }
 
         @Test

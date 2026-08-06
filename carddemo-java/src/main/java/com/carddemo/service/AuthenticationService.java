@@ -183,9 +183,9 @@ public final class AuthenticationService {
     public SignOnScreen initialEntry() {
         LOG.debug("Sign-on screen initialized: rule=empty-communication-area");
         final ScreenHeader header = screenHeader();
-        return new SignOnScreen(Decision.INITIAL_ENTRY, null, null, null, null, false, FIELD_USER_ID,
-                messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
-                header.currentDate(), header.currentTime());
+        return new SignOnScreen(Decision.INITIAL_ENTRY, null, null, null, null, null, false,
+                FIELD_USER_ID, messageCatalogService.screenTitle01(),
+                messageCatalogService.screenTitle02(), header.currentDate(), header.currentTime());
     }
 
     /**
@@ -232,17 +232,21 @@ public final class AuthenticationService {
         final String foldedUserId = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedUserId));
         final String foldedPassword = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedPassword));
 
+        // The echo is the folded value at the map's own fixed width, which is what the legacy field held
+        // for redisplay and what every rejected turn below carries back. It is computed once, before the
+        // cascade, so the two prompt paths and the three credential-store paths all echo the same value.
+        final String displayUserId =
+                CobolStringUtils.leftJustifySpaceFill(foldedUserId, USER_ID_WIDTH);
+
         if (isBlank(foldedUserId)) {
             LOG.debug("Sign-on rejected: rule=identifier-required");
-            return rejection(Decision.USER_ID_MISSING, true, FIELD_USER_ID);
+            return rejection(Decision.USER_ID_MISSING, displayUserId, true, FIELD_USER_ID);
         }
         if (isBlank(foldedPassword)) {
             LOG.debug("Sign-on rejected: rule=secret-required");
-            return rejection(Decision.PASSWORD_MISSING, true, FIELD_PASSWORD);
+            return rejection(Decision.PASSWORD_MISSING, displayUserId, true, FIELD_PASSWORD);
         }
-        return verifyCredential(
-                CobolStringUtils.leftJustifySpaceFill(foldedUserId, USER_ID_WIDTH),
-                foldedPassword);
+        return verifyCredential(displayUserId, foldedPassword);
     }
 
     /**
@@ -267,18 +271,18 @@ public final class AuthenticationService {
         } catch (final DataAccessException storeFailure) {
             LOG.warn("Sign-on rejected: rule=credential-store-unavailable failureChain={}",
                     FailureDiagnostics.failureChainOf(storeFailure));
-            return rejection(Decision.UNABLE_TO_VERIFY, true, FIELD_USER_ID);
+            return rejection(Decision.UNABLE_TO_VERIFY, userId, true, FIELD_USER_ID);
         }
         if (stored.isEmpty()) {
             LOG.info("Sign-on rejected: rule=identifier-not-on-file");
-            return rejection(Decision.USER_NOT_FOUND, true, FIELD_USER_ID);
+            return rejection(Decision.USER_NOT_FOUND, userId, true, FIELD_USER_ID);
         }
 
         final UserSecurity record = stored.orElseThrow();
         if (!credentialDigestService.matches(password, record.credentialDigest())) {
             // Line 240: this branch composes a message and leaves the error flag lowered.
             LOG.info("Sign-on rejected: rule=secret-does-not-match");
-            return rejection(Decision.WRONG_PASSWORD, false, FIELD_PASSWORD);
+            return rejection(Decision.WRONG_PASSWORD, userId, false, FIELD_PASSWORD);
         }
 
         final String rawUserTypeCode = record.getSecUsrType();
@@ -288,8 +292,8 @@ public final class AuthenticationService {
         final ScreenHeader header = screenHeader();
         LOG.info("Sign-on admitted: outcome=admitted userType={} route={}",
                 rawUserTypeCode, route.getRouteValue());
-        return new SignOnScreen(Decision.ADMITTED, userId, authorityUserType, rawUserTypeCode, route,
-                false, null, messageCatalogService.screenTitle01(),
+        return new SignOnScreen(Decision.ADMITTED, userId, userId, authorityUserType, rawUserTypeCode,
+                route, false, null, messageCatalogService.screenTitle01(),
                 messageCatalogService.screenTitle02(), header.currentDate(), header.currentTime());
     }
 
@@ -330,7 +334,7 @@ public final class AuthenticationService {
      */
     private SignOnScreen terminalTurn(final Decision decision, final boolean errorFlag) {
         final ScreenHeader header = screenHeader();
-        return new SignOnScreen(decision, null, null, null, null, errorFlag, null,
+        return new SignOnScreen(decision, null, null, null, null, null, errorFlag, null,
                 messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
                 header.currentDate(), header.currentTime());
     }
@@ -338,23 +342,28 @@ public final class AuthenticationService {
     /**
      * Assembles a rejected turn, which redisplays the screen with the cursor on one field.
      *
-     * <p>No identifier is carried back even when one was supplied and found. The legacy program leaves the
-     * operator's entry in the map for redisplay, but carrying it in the result would place a supplied
-     * identifier in a response the boundary may render before the operator is authenticated, and nothing
-     * in the contract needs it: the client still holds what it sent.
+     * <p>The keyed identifier <em>is</em> carried back, as the map's safe output echo and nothing more.
+     * The legacy program leaves the operator's entry in the map for redisplay, and seven of the nine
+     * outcomes redisplay this screen, so a client that cannot restate the identifier cannot reproduce
+     * them and the operator retypes a value that was never in question - the credential is what failed.
+     * The echo is placed in the turn's display component rather than in its authenticated-identity
+     * component, so no session can be minted from it: it is the client's own value handed straight back,
+     * folded exactly as the program folds it, and nothing reads it to make a decision.
      *
      * @param decision the decision reached
+     * @param displayUserId the folded identifier to echo for redisplay
      * @param errorFlag whether the program raised its error flag
      * @param focusScreenFieldId the field the cursor returns to
      * @return the screen
      */
     private SignOnScreen rejection(final Decision decision,
+                                   final String displayUserId,
                                    final boolean errorFlag,
                                    final String focusScreenFieldId) {
         final ScreenHeader header = screenHeader();
-        return new SignOnScreen(decision, null, null, null, null, errorFlag, focusScreenFieldId,
-                messageCatalogService.screenTitle01(), messageCatalogService.screenTitle02(),
-                header.currentDate(), header.currentTime());
+        return new SignOnScreen(decision, null, displayUserId, null, null, null, errorFlag,
+                focusScreenFieldId, messageCatalogService.screenTitle01(),
+                messageCatalogService.screenTitle02(), header.currentDate(), header.currentTime());
     }
 
     /**
@@ -462,8 +471,24 @@ public final class AuthenticationService {
     /**
      * One turn of the sign-on screen, owned by this package rather than by the transport.
      *
+     * <p><strong>Two identifier components, and they are not interchangeable.</strong> {@code userId} is
+     * the <em>authenticated</em> identity: it is present only on an admitted turn and it is what the
+     * boundary mints a session for. {@code displayUserId} is the map's safe output echo: the folded
+     * identifier the operator keyed, carried back so a redisplayed screen can restate it, and present on
+     * every submitted turn including the rejected ones. Carrying one component for both purposes is what
+     * produced the defect this pair closes - the authenticated-identity rule correctly forbade a value on
+     * a rejected turn, and in doing so it emptied the echo the response contract publishes, so a
+     * wrong-credential redisplay lost an identifier that was never in question.
+     *
+     * <p>The echo is safe to carry because it asserts nothing. It is the value the client itself just
+     * sent, folded exactly as the program folds it, and no decision anywhere reads it: the boundary mints
+     * a session from {@code userId} and {@code userType}, and neither of those is present unless the
+     * credential verified.
+     *
      * @param decision the decision the program reached
-     * @param userId the folded identifier, present only when the operator was admitted
+     * @param userId the authenticated identifier, present only when the operator was admitted
+     * @param displayUserId the folded identifier the operator keyed, echoed for redisplay on every
+     *     submitted turn and absent on a turn that received no keyed values at all
      * @param userType the effective security authority, present only when the operator was admitted
      * @param userTypeCode the raw one-character code read from the credential record
      * @param route the destination, present only when the operator was admitted
@@ -476,6 +501,7 @@ public final class AuthenticationService {
      */
     public record SignOnScreen(Decision decision,
                                String userId,
+                               String displayUserId,
                                UserType userType,
                                String userTypeCode,
                                NavigationService.Route route,
@@ -489,17 +515,26 @@ public final class AuthenticationService {
         /**
          * Rejects an internally inconsistent turn.
          *
-         * <p>Only an admitted turn may name an operator, an effective role, a raw role code or a destination,
-         * and an admitted turn must name the operator, effective role and destination. The raw code may be
-         * absent because the legacy alternative treats every non-administrator value the same. Asserting
-         * the invariant here means the boundary can rely on the pairing when it decides whether to issue a
-         * session.
+         * <p>Only an admitted turn may name an authenticated operator, an effective role, a raw role code
+         * or a destination, and an admitted turn must name all four. The raw code is required because the
+         * column it is read from is declared not-null, and because the boundary needs it to mint a session
+         * whose type claim can be reconciled against the record - a session minted from the effective role
+         * alone cannot be, for a record carrying a code the estate never declared.
+         *
+         * <p>{@code displayUserId} is deliberately outside this rule: it is an echo of what the client
+         * sent rather than an assertion about who the operator is, so it is permitted on any turn and
+         * required on none. Asserting the remainder here means the boundary can rely on the pairing when
+         * it decides whether to issue a session.
          */
         public SignOnScreen {
             Objects.requireNonNull(decision, "decision must not be null");
             if (decision.isAdmitted()) {
                 Objects.requireNonNull(userId, "an admitted turn must name the operator");
                 Objects.requireNonNull(userType, "an admitted turn must name the resolved role");
+                Objects.requireNonNull(userTypeCode,
+                        "an admitted turn must name the stored role code, which the credential record "
+                                + "always carries, because a session's type claim is reconciled against "
+                                + "that code rather than against the resolved role");
                 Objects.requireNonNull(route, "an admitted turn must nominate a destination");
             } else if (userId != null || userType != null || userTypeCode != null || route != null) {
                 throw new IllegalArgumentException(

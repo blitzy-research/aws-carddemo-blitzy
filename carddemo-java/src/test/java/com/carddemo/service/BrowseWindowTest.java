@@ -176,6 +176,9 @@ final class BrowseWindowTest {
                             .map(RecordComponent::getName)
                             .toList();
 
+            // The service-owned cursor request is unchanged by the wire-side widening: the two retained
+            // values the wire now carries are read by the boundary and passed to the screen as its own
+            // input components, so this carrier still holds only what a browse needs to resume.
             assertThat(declared)
                     .containsExactly("previousCursorKey", "nextCursorKey", "direction");
         }

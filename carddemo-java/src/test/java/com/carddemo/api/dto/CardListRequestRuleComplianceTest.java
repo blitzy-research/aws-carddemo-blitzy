@@ -113,7 +113,7 @@ class CardListRequestRuleComplianceTest {
         return new CardListRequest("00000000011", "4111111111111111", "001", selections[0],
                 selections[1], selections[2], selections[3], selections[4], selections[5],
                 selections[6], new PageMetadata.PageCursorRequest(null, "next",
-                        PageMetadata.PagingDirection.FORWARD), KeyAction.ENTER,
+                        PageMetadata.PagingDirection.FORWARD, null, false), false, KeyAction.ENTER,
                 NavigationContext.empty());
     }
 
@@ -168,17 +168,17 @@ class CardListRequestRuleComplianceTest {
     class TheDeclaredShape {
 
         @Test
-        @DisplayName("the request declares thirteen components, the three filters, seven rows and three "
+        @DisplayName("the request declares fourteen components, the three filters, seven rows and four "
                 + "control components")
-        void theRequestDeclaresThirteenComponents() {
+        void theRequestDeclaresFourteenComponents() {
             final List<String> declared = Arrays.stream(CardListRequest.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("accountIdFilter", "cardNumberFilter",
                     "displayedPageNumber", "selection1", "selection2", "selection3", "selection4",
-                    "selection5", "selection6", "selection7", "pageMetadata", "keyAction",
-                    "navigationContext");
-            assertThat(declared).hasSize(13);
+                    "selection5", "selection6", "selection7", "pageMetadata", "lastPageAlreadyShown",
+                    "keyAction", "navigationContext");
+            assertThat(declared).hasSize(14);
         }
 
         @Test
@@ -341,7 +341,7 @@ class CardListRequestRuleComplianceTest {
             final CardListRequest request = new CardListRequest(null, null, "001", null, null, null,
                     null, null, null, null, new PageMetadata.PageCursorRequest(
                             "4111111111111111", "4222222222222222",
-                            PageMetadata.PagingDirection.BACKWARD), KeyAction.PFK08,
+                            PageMetadata.PagingDirection.BACKWARD, null, false), false, KeyAction.PFK08,
                     NavigationContext.empty());
 
             assertThat(request.toString()).doesNotContain("4111111111111111");
@@ -356,7 +356,7 @@ class CardListRequestRuleComplianceTest {
             // that the count measures this record's own redactions rather than the sum of two records'.
             final String rendered = new CardListRequest("00000000011", "4111111111111111", "001",
                     "S", null, null, null, null, null, null, new PageMetadata.PageCursorRequest(
-                            null, "next", PageMetadata.PagingDirection.FORWARD),
+                            null, "next", PageMetadata.PagingDirection.FORWARD, null, false), false,
                     KeyAction.ENTER, null).toString();
 
             assertThat(rendered).contains("accountIdFilter=***REDACTED***");
@@ -394,7 +394,7 @@ class CardListRequestRuleComplianceTest {
                 + "rendering never reveals whether a filter was supplied")
         void anAbsentFilterStillRendersAsThePlaceholder() {
             final CardListRequest request = new CardListRequest(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, false, null, null);
 
             assertThat(request.toString()).contains("accountIdFilter=***REDACTED***");
             assertThat(request.toString()).contains("cardNumberFilter=***REDACTED***");
@@ -464,7 +464,7 @@ class CardListRequestRuleComplianceTest {
                 + "nothing about presence and an empty list screen is a legitimate first entry")
         void anEmptyRequestPassesValidation() {
             final CardListRequest empty = new CardListRequest(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, false, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -491,7 +491,7 @@ class CardListRequestRuleComplianceTest {
             final CardListRequest overBound = new CardListRequest(
                     "0".repeat(CardListRequest.ACCOUNT_ID_FILTER_LENGTH + 1),
                     "4".repeat(CardListRequest.CARD_NUMBER_FILTER_LENGTH + 1), null, null, null,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, false, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))
@@ -584,7 +584,7 @@ class CardListRequestRuleComplianceTest {
                             original.cardNumberFilter(), null, original.selection1(),
                             original.selection2(), original.selection3(), original.selection4(),
                             original.selection5(), original.selection6(), original.selection7(),
-                            original.pageMetadata(), original.keyAction(),
+                            original.pageMetadata(), false, original.keyAction(),
                             original.navigationContext()));
             assertThat(restored.selectionsInRowOrder())
                     .containsExactly(null, "U", null, null, "S", null, null);

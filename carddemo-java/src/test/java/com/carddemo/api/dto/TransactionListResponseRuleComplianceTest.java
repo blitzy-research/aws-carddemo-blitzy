@@ -148,8 +148,8 @@ class TransactionListResponseRuleComplianceTest {
             final String displayedPageNumber,
             final String message, final boolean error, final String focusScreenFieldId) {
         return new TransactionListResponse(
-                rows, pageMetadata, navigationContext, "/api/menu/user", transactionIdFilter,
-                displayedPageNumber, message, error, focusScreenFieldId, "CardDemo",
+                rows, pageMetadata, TransactionListRequest.ScreenContinuation.empty(), navigationContext, "/api/menu/user", transactionIdFilter,
+                displayedPageNumber, message, error, List.of(), null, false, focusScreenFieldId, "CardDemo",
                 "List Transactions", "07/19/22", "10:30:00", "CT00", "COTRN00C");
     }
 
@@ -162,8 +162,8 @@ class TransactionListResponseRuleComplianceTest {
     private static TransactionListResponse aResponseWithRows(
             final List<TransactionListResponse.TransactionRow> rows) {
         return new TransactionListResponse(
-                rows, null, null, null, null,
-                null, null, false, null, null,
+                rows, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                null, null, false, List.of(), null, false, null, null,
                 null, null, null, null, null);
     }
 
@@ -177,7 +177,7 @@ class TransactionListResponseRuleComplianceTest {
      */
     private static TransactionListResponse.TransactionRow aRow(final String selection,
             final String transactionId, final String amount) {
-        return new TransactionListResponse.TransactionRow(selection, transactionId, "07/19/22",
+        return new TransactionListResponse.TransactionRow(1,selection, transactionId, "07/19/22",
                 "POS PURCHASE", new BigDecimal(amount));
     }
 
@@ -492,16 +492,36 @@ class TransactionListResponseRuleComplianceTest {
     class TheNestedTransactionRow {
 
         @Test
-        @DisplayName("the row declares five components, the selection marker, the identifier, the "
-                + "displayed date, the truncated description and the amount")
-        void theRowDeclaresFiveComponents() {
+        @DisplayName("the row declares six components, the screen slot it occupies, the selection "
+                + "marker, the identifier, the displayed date, the truncated description and the "
+                + "amount")
+        void theRowDeclaresSixComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListResponse.TransactionRow.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
-            assertThat(declared).containsExactly("selection", "transactionId", "displayedDate",
-                    "description", "amount");
-            assertThat(declared).hasSize(5);
+            assertThat(declared).containsExactly("screenRow", "selection", "transactionId",
+                    "displayedDate", "description", "amount");
+            assertThat(declared).hasSize(6);
+        }
+
+        /**
+         * The slot the row occupies is declared first, ahead of anything the operator can see.
+         *
+         * <p>The legacy screen addresses a selection by the position the row occupies rather than by
+         * the value it displays, and a backward page fills its slots from the bottom upward, so a
+         * row's slot is not derivable from its position in the published list. Declaring the slot
+         * first states that it is the row's identity on the map rather than one more display
+         * column.</p>
+         */
+        @Test
+        @DisplayName("the screen slot is declared ahead of every displayed value")
+        void theScreenSlotIsDeclaredFirst() {
+            final List<String> declared = Arrays.stream(
+                    TransactionListResponse.TransactionRow.class.getRecordComponents())
+                    .map(RecordComponent::getName).toList();
+
+            assertThat(declared).first().isEqualTo("screenRow");
         }
 
         @Test
@@ -550,10 +570,10 @@ class TransactionListResponseRuleComplianceTest {
         void aRowAcceptsItsWidthsAndRejectsOneMore() {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(
-                        new TransactionListResponse.TransactionRow("X", "X".repeat(16),
+                        new TransactionListResponse.TransactionRow(1,"X", "X".repeat(16),
                                 "X".repeat(8), "X".repeat(26), new BigDecimal("0.00")))).isEmpty();
                 assertThat(factory.getValidator().validate(
-                        new TransactionListResponse.TransactionRow("XX", "X".repeat(17),
+                        new TransactionListResponse.TransactionRow(1,"XX", "X".repeat(17),
                                 "X".repeat(9), "X".repeat(27), new BigDecimal("0.00")))).hasSize(4);
             }
         }
@@ -563,7 +583,7 @@ class TransactionListResponseRuleComplianceTest {
                 + "blank screen row is carried")
         void aWhollyAbsentRowIsConstructibleAndValid() {
             final TransactionListResponse.TransactionRow blank =
-                    new TransactionListResponse.TransactionRow(null, null, null, null, null);
+                    new TransactionListResponse.TransactionRow(1,null, null, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(blank)).isEmpty();
@@ -643,7 +663,7 @@ class TransactionListResponseRuleComplianceTest {
                 + "placeholder rather than betraying its absence")
         void theRowWithholdingIsUnconditional() {
             final TransactionListResponse.TransactionRow blank =
-                    new TransactionListResponse.TransactionRow(null, null, null, null, null);
+                    new TransactionListResponse.TransactionRow(1,null, null, null, null, null);
 
             assertThat(blank.toString())
                     .contains("transactionId=" + REDACTION_PLACEHOLDER)
@@ -659,33 +679,42 @@ class TransactionListResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares sixteen components, the row block, the routing block, the "
-                + "filter and page number, the message pair and the screen furniture")
-        void theResponseDeclaresFifteenComponents() {
+        @DisplayName("the response declares nineteen components, the row block, the routing block, "
+                + "the filter and page number, the message trio, the selection handoff, the page "
+                + "instruction and the screen furniture")
+        void theResponseDeclaresNineteenComponents() {
             final List<String> declared = Arrays.stream(
                     TransactionListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("rows", "pageMetadata", "continuation",
                     "navigationContext", "nextRoute", "transactionIdFilter",
-                    "displayedPageNumber", "message", "error", "focusScreenFieldId", "title01",
-                    "title02", "currentDate", "currentTime", "transactionName", "programName");
-            assertThat(declared).hasSize(16);
+                    "displayedPageNumber", "message", "error", "fieldErrors",
+                    "selectedTransactionId", "preserveDisplayedPage", "focusScreenFieldId",
+                    "title01", "title02", "currentDate", "currentTime", "transactionName",
+                    "programName");
+            assertThat(declared).hasSize(19);
         }
 
         @Test
-        @DisplayName("exactly ten components carry a declared upper bound, and the five that do not "
-                + "are the row list, the cursor, the conversation state, the route and the flag")
-        void exactlyTenComponentsCarryAnUpperBound() {
+        @DisplayName("exactly eleven components carry a declared upper bound, and the eight that do "
+                + "not are the row list, the paging metadata, the cursor, the conversation state, the "
+                + "route, the two indicators and the field findings")
+        void exactlyElevenComponentsCarryAnUpperBound() {
             final List<String> bounded = Arrays.stream(
                     TransactionListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .filter(name -> declaresAnUpperBound(TransactionListResponse.class, name))
                     .toList();
 
-            assertThat(bounded).hasSize(10);
-            assertThat(bounded).doesNotContain("rows", "pageMetadata", "navigationContext",
-                    "nextRoute", "error");
+            assertThat(bounded).hasSize(11);
+            assertThat(bounded)
+                    .as("the selected identifier is a transaction key and is bounded by that key's "
+                            + "width, exactly as the echoed filter beside it is")
+                    .contains("selectedTransactionId");
+            assertThat(bounded).doesNotContain("rows", "pageMetadata", "continuation",
+                    "navigationContext", "nextRoute", "error", "fieldErrors",
+                    "preserveDisplayedPage");
         }
 
         @Test
@@ -755,7 +784,7 @@ class TransactionListResponseRuleComplianceTest {
                 + "on it, so an over-long row surfaces only when the row is validated in its own right")
         void theRowListIsNotCascadedInto() {
             final TransactionListResponse.TransactionRow overLong =
-                    new TransactionListResponse.TransactionRow("XX", null, null, null, null);
+                    new TransactionListResponse.TransactionRow(1,"XX", null, null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(aResponseWithRows(List.of(overLong))))
@@ -774,28 +803,28 @@ class TransactionListResponseRuleComplianceTest {
         private TransactionListResponse responseWith(final String componentName,
                 final String value) {
             return switch (componentName) {
-                case "transactionIdFilter" -> new TransactionListResponse(null, null, null, null,
-                        value, null, null, false, null, null, null, null, null, null, null);
-                case "displayedPageNumber" -> new TransactionListResponse(null, null, null, null,
+                case "transactionIdFilter" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null,
+                        value, null, null, false, List.of(), null, false, null, null, null, null, null, null, null);
+                case "displayedPageNumber" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null,
                         null,
-                        value, null, false, null, null, null, null, null, null, null);
-                case "message" -> new TransactionListResponse(null, null, null, null, null, null,
-                        value, false, null, null, null, null, null, null, null);
-                case "focusScreenFieldId" -> new TransactionListResponse(null, null, null, null,
+                        value, null, false, List.of(), null, false, null, null, null, null, null, null, null);
+                case "message" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null, null,
+                        value, false, List.of(), null, false, null, null, null, null, null, null, null);
+                case "focusScreenFieldId" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null,
                         null,
-                        null, null, false, value, null, null, null, null, null, null);
-                case "title01" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, value, null, null, null, null, null);
-                case "title02" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, null, value, null, null, null, null);
-                case "currentDate" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, null, null, value, null, null, null);
-                case "currentTime" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, null, null, null, value, null, null);
-                case "transactionName" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, null, null, null, null, value, null);
-                case "programName" -> new TransactionListResponse(null, null, null, null, null,
-                        null, null, false, null, null, null, null, null, null, value);
+                        null, null, false, List.of(), null, false, value, null, null, null, null, null, null);
+                case "title01" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, value, null, null, null, null, null);
+                case "title02" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, null, value, null, null, null, null);
+                case "currentDate" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, null, null, value, null, null, null);
+                case "currentTime" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, null, null, null, value, null, null);
+                case "transactionName" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, null, null, null, null, value, null);
+                case "programName" -> new TransactionListResponse(null, null, TransactionListRequest.ScreenContinuation.empty(), null, null, null,
+                        null, null, false, List.of(), null, false, null, null, null, null, null, null, value);
                 default -> throw new IllegalArgumentException(
                         "no bounded component named " + componentName);
             };

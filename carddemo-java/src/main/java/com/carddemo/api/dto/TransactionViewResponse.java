@@ -19,6 +19,7 @@ package com.carddemo.api.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Immutable response contract for the transaction-view screen &mdash; the REST-era form of legacy
@@ -145,9 +146,13 @@ import java.math.BigDecimal;
  * {@code boolean} carried in its own right and never inferred from the message being present: the
  * program keeps a dedicated error flag and tests it independently of the message text, a blank
  * message alongside a raised flag is a state it can reach, and a client that inferred one from the
- * other would be reading the wrong signal. Per-field error decoration is not part of this screen:
- * this is a display response with a single input field, and {@link ErrorResponse} is the module's
- * error body wherever per-field states are needed.
+ * other would be reading the wrong signal. The per-field detail behind that flag <em>is</em> part of
+ * this contract, in {@link #fieldErrors()}: the screen has one input field but that field has two
+ * distinct failure states, and the program marks them differently - the marker beside a key that was
+ * left blank, only a colour change on one that was supplied and cannot be used - so a client that saw
+ * the flag alone could not tell an operator which of the two to fix. The entries reuse
+ * {@link ErrorResponse.FieldError}, the module's own two-state carrier, so a finding reported through a
+ * returned screen and the same finding reported through a raised error reach a client in one shape.
  *
  * <p><strong>Nothing diagnostic leaks into this contract.</strong> When the read fails for a reason
  * other than an absent record, the program writes the raw response and reason codes to the operator
@@ -324,6 +329,14 @@ public record TransactionViewResponse(
         @Size(max = 10) String merchantZip,
         @Size(max = 78) String errorMessage,
         boolean generalError,
+
+        /* The field-level detail behind the flag above, in the order the turn established it. Never
+         * null; empty when the turn raised nothing. Two states rather than one, because the legacy
+         * screen distinguishes a search key that was left blank from one that was supplied and cannot be
+         * used - it writes the marker beside the first and only changes the colour of the second - and a
+         * single flag cannot say which of the two happened. */
+        List<ErrorResponse.FieldError> fieldErrors,
+
         @Size(max = TransactionViewResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
@@ -374,6 +387,7 @@ public record TransactionViewResponse(
      *     {@link #AMOUNT_SCALE} or needs more than {@link #AMOUNT_INTEGER_DIGITS} integer digits
      */
     public TransactionViewResponse {
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
         requireRecordShape(amount);
     }
 
@@ -499,6 +513,7 @@ public record TransactionViewResponse(
                 + ", merchantZip=" + REDACTION_PLACEHOLDER
                 + ", errorMessage=" + errorMessage
                 + ", generalError=" + generalError
+                + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext

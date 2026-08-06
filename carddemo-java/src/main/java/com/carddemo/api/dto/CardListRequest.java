@@ -246,14 +246,24 @@ import java.util.List;
  * @param selection7 action code marked on screen row seven - map field {@code CRDSEL7}, width 1,
  *        staged into the seventh and last slot at line 978. Same semantics as row one.
  * @param pageMetadata the paging state the previous turn handed back, reproducing the program's own
- *        paging area declared at lines 229 to 248 and returned at lines 609 to 612. Supplies the
- *        browse key to restart from and the direction asked for, and <em>only</em> those: the page
- *        size, the two availability flags and the displayed page number are server conclusions and
- *        are not accepted from a caller, which is why the inbound shape is
- *        {@link PageMetadata.PageCursorRequest} rather than the full {@link PageMetadata}. Validated
- *        transitively, so the browse-key widths it declares are actually evaluated. {@code null} on a
- *        first entry into the screen, where the legacy initialises the area instead. Its browse keys
- *        embed a card number, so it is excluded from {@link #toString()}.
+ *        paging area declared at lines 229 to 248 and returned at lines 609 to 612. Supplies the two
+ *        browse keys to restart from, the direction asked for, and the two retained values the program
+ *        reads back rather than recomputes - the page number of {@code WS-CA-SCREEN-NUM} at line 237 and
+ *        the next-page flag of {@code WS-CA-NEXT-PAGE-IND} at line 242. It does <em>not</em> supply the
+ *        page size or whether a page precedes this one, both of which are server conclusions, which is
+ *        why the inbound shape is {@link PageMetadata.PageCursorRequest} rather than the full
+ *        {@link PageMetadata}. Validated transitively, so the widths and the page-number form it declares
+ *        are actually evaluated. {@code null} on a first entry into the screen, where the legacy
+ *        initialises the area instead. Its browse keys embed a card number, so it is excluded from
+ *        {@link #toString()}.
+ * @param lastPageAlreadyShown the third retained paging value, {@code WS-CA-LAST-PAGE-DISPLAYED} at
+ *        lines 239 to 241, echoed from the previous response. It has no home on the shared paging
+ *        contract because it is this screen's alone - neither list program that shares that contract
+ *        declares an equivalent - and it cannot be derived from this request, because what it records is
+ *        whether the operator has <em>already been told</em> they are at the end of the data. The message
+ *        rule at lines 905 to 916 reads it to tell a first arrival at the end from a repeated request
+ *        past it, so without it that rule collapses to one of its two arms. Absent reads as
+ *        {@code false}, which is what a first entry carries.
  * @param keyAction the attention key the operator pressed, which decides direction and exit.
  *        {@code null} when the key mapped to nothing, mirroring a translation that has 28 ordered
  *        clauses and no catch-all and therefore leaves the previously held value untouched. No
@@ -276,6 +286,7 @@ public record CardListRequest(
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection6,
         @Size(max = CardListRequest.SELECTION_LENGTH) String selection7,
         @Valid PageMetadata.PageCursorRequest pageMetadata,
+        boolean lastPageAlreadyShown,
         KeyAction keyAction,
         @Valid NavigationContext navigationContext) {
 
@@ -420,6 +431,7 @@ public record CardListRequest(
                 + ", selection6=" + selection6
                 + ", selection7=" + selection7
                 + ", pageMetadata=" + REDACTION_PLACEHOLDER
+                + ", lastPageAlreadyShown=" + lastPageAlreadyShown
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
                 + "]";

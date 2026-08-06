@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
- * The service-owned user-administration outcome: nineteen components and the four screens' own texts.
+ * The service-owned user-administration outcome: twenty-one components and the four screens' own texts.
  *
  * <p>Two cardinality refusals carry the weight here. A page longer than the screen has rows corresponds to
  * slots that do not exist, and a page longer than the accompanying browse window declares would contradict
@@ -50,9 +50,9 @@ class UserOutcomeTest {
     /** Builds an outcome over the page, window and findings supplied. */
     private static UserOutcome outcomeWith(final List<UserOutcome.UserRow> rows,
             final BrowseWindow window, final List<ValidationException.FieldError> fieldErrors) {
-        return new UserOutcome(rows, window, "ADMIN001", "GIVEN", "FAMILY", "A", "CU00", "TITLE ONE",
+        return new UserOutcome(rows, window, null, "ADMIN001", "GIVEN", "FAMILY", "A", "CU00", "TITLE ONE",
                 "07/19/22", "COUSR00C", "TITLE TWO", "23:12:33", UserOutcome.MSG_LIST_AT_TOP,
-                fieldErrors, false, false, "USRIDIN", "admin-user-list",
+                fieldErrors, false, false, false, "USRIDIN", "admin-user-list",
                 ScreenNavigationState.empty());
     }
 
@@ -61,10 +61,10 @@ class UserOutcomeTest {
     final class TheDeclaredShape {
 
         @Test
-        @DisplayName("declares exactly nineteen components, because the adapter copies out of it "
+        @DisplayName("declares exactly twenty-one components, because the adapter copies out of it "
                 + "positionally")
-        void declaresExactlyNineteenComponents() {
-            assertThat(UserOutcome.class.getRecordComponents()).hasSize(20);
+        void declaresExactlyTwentyOneComponents() {
+            assertThat(UserOutcome.class.getRecordComponents()).hasSize(21);
         }
 
         @Test

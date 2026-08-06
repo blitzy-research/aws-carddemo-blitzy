@@ -19,12 +19,14 @@ package com.carddemo.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.ReportRequest;
 import com.carddemo.api.dto.ReportResponse;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.domain.enums.ReportPeriod;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.ConversationState;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
@@ -98,7 +100,7 @@ final class ReportContractAdapterTest {
     /** Sets up the adapter with the real navigation-record conversion. */
     @BeforeEach
     void setUp() {
-        subject = new ReportContractAdapter(new ConversationStateAdapter());
+        subject = new ReportContractAdapter(new ConversationStateAdapter(new NavigationService()));
     }
 
     /**
@@ -336,6 +338,137 @@ final class ReportContractAdapterTest {
     // ----------------------------------------------------------------------------------------
     // Outbound: read from the result, recomputed nowhere
     // ----------------------------------------------------------------------------------------
+
+    /**
+     * The per-field detail the turn computed crosses this boundary rather than being dropped here.
+     *
+     * <p>The service records one entry per faulted field, in the order it edited them, and distinguishes
+     * a field the operator never marked from one that was marked and cannot be used. That distinction is
+     * what the legacy screen draws with an asterisk beside the first kind and only a colour change on the
+     * second, so a response carrying the whole-screen flag alone leaves a client able to say that
+     * something is wrong and unable to say what or where.</p>
+     */
+    @Nested
+    @DisplayName("the outbound conversion publishes the per-field detail the turn computed")
+    final class TheOutboundConversionPublishesFieldDetail {
+
+        /**
+         * Builds a turn result carrying the supplied field findings and nothing else of note.
+         *
+         * @param fieldErrors the findings the turn raised, in the order it raised them
+         * @return the result
+         */
+        private static ReportRequestService.ReportRequestResult faulting(
+                final List<ValidationException.FieldError> fieldErrors) {
+            return new ReportRequestService.ReportRequestResult(
+                    NavigationService.Route.REPORT_REQUEST,
+                    new ConversationState("CR00", "CORPT00C", "CR00", "CORPT00C",
+                            ConversationState.EntryMode.RE_ENTRY),
+                    "CR00", null, null, null, null, 0, false,
+                    "Please select a report type", false, "MONTHLY", true, fieldErrors,
+                    new ReportRequestService.ScreenHeader("CardDemo", "Report Request", "CR00",
+                            "CORPT00C", "07/19/22", "14:30:00", null),
+                    new ReportRequestService.ScreenFields(null, null, null, null, null, null, null,
+                            null, null, null));
+        }
+
+        @Test
+        @DisplayName("both states cross under their own names, in the order the turn raised them")
+        void bothStatesCrossInOrder() {
+            final ReportResponse response = subject.toResponse(faulting(List.of(
+                    new ValidationException.FieldError("reportType",
+                            ReportResponse.FIELD_MONTHLY_SELECTION,
+                            ValidationException.FieldState.MISSING,
+                            "Please select a report type"),
+                    new ValidationException.FieldError("startDay", ReportResponse.FIELD_START_DAY,
+                            ValidationException.FieldState.INVALID,
+                            "Start date day is not valid"))),
+                    echoedContext(), AUTHENTICATED_USER_ID, UserType.ADMIN);
+
+            assertThat(response.fieldErrors()).hasSize(2);
+            assertThat(response.fieldErrors().get(0).fieldName()).isEqualTo("reportType");
+            assertThat(response.fieldErrors().get(0).screenFieldId())
+                    .isEqualTo(ReportResponse.FIELD_MONTHLY_SELECTION);
+            assertThat(response.fieldErrors().get(0).state())
+                    .isEqualTo(ErrorResponse.FieldState.MISSING);
+            assertThat(response.fieldErrors().get(0).message())
+                    .isEqualTo("Please select a report type");
+            assertThat(response.fieldErrors().get(1).fieldName()).isEqualTo("startDay");
+            assertThat(response.fieldErrors().get(1).screenFieldId())
+                    .isEqualTo(ReportResponse.FIELD_START_DAY);
+            assertThat(response.fieldErrors().get(1).state())
+                    .isEqualTo(ErrorResponse.FieldState.INVALID);
+        }
+
+        /**
+         * The two states stay distinguishable, which is the whole reason the list exists.
+         */
+        @Test
+        @DisplayName("a field that was never marked and one that was marked wrongly publish as "
+                + "different states")
+        void theTwoStatesRemainDistinguishable() {
+            final ReportResponse missing = subject.toResponse(faulting(List.of(
+                    new ValidationException.FieldError("reportType",
+                            ReportResponse.FIELD_MONTHLY_SELECTION,
+                            ValidationException.FieldState.MISSING, "text"))),
+                    echoedContext(), AUTHENTICATED_USER_ID, UserType.ADMIN);
+            final ReportResponse invalid = subject.toResponse(faulting(List.of(
+                    new ValidationException.FieldError("confirm", ReportResponse.FIELD_CONFIRM,
+                            ValidationException.FieldState.INVALID, "text"))),
+                    echoedContext(), AUTHENTICATED_USER_ID, UserType.ADMIN);
+
+            assertThat(missing.fieldErrors().getFirst().state())
+                    .isEqualTo(ErrorResponse.FieldState.MISSING)
+                    .isNotEqualTo(invalid.fieldErrors().getFirst().state());
+        }
+
+        @Test
+        @DisplayName("all six date parts publish under their own map identifiers, so a client can "
+                + "highlight the exact part that failed")
+        void everyDatePartPublishesUnderItsOwnIdentifier() {
+            final List<String> identifiers = List.of(ReportResponse.FIELD_START_MONTH,
+                    ReportResponse.FIELD_START_DAY, ReportResponse.FIELD_START_YEAR,
+                    ReportResponse.FIELD_END_MONTH, ReportResponse.FIELD_END_DAY,
+                    ReportResponse.FIELD_END_YEAR);
+            final List<ValidationException.FieldError> raised = identifiers.stream()
+                    .map(identifier -> new ValidationException.FieldError(identifier, identifier,
+                            ValidationException.FieldState.INVALID, "not valid"))
+                    .toList();
+
+            final ReportResponse response = subject.toResponse(faulting(raised), echoedContext(),
+                    AUTHENTICATED_USER_ID, UserType.ADMIN);
+
+            assertThat(response.fieldErrors())
+                    .extracting(ErrorResponse.FieldError::screenFieldId)
+                    .containsExactlyElementsOf(identifiers);
+        }
+
+        @Test
+        @DisplayName("a turn that faulted nothing publishes an empty list, not an absent one")
+        void aCleanTurnPublishesAnEmptyList() {
+            final ReportResponse response = subject.toResponse(resultOf(), echoedContext(),
+                    AUTHENTICATED_USER_ID, UserType.ADMIN);
+
+            assertThat(response.fieldErrors()).isNotNull().isEmpty();
+        }
+
+        /**
+         * The adapter is a mapping and does not decide which fields are at fault.
+         */
+        @Test
+        @DisplayName("the adapter neither composes nor filters the detail, so an entry with no text "
+                + "crosses with no text")
+        void theAdapterNeitherComposesNorFilters() {
+            final ReportResponse response = subject.toResponse(faulting(List.of(
+                    new ValidationException.FieldError("reportType",
+                            ReportResponse.FIELD_MONTHLY_SELECTION,
+                            ValidationException.FieldState.MISSING, null))),
+                    echoedContext(), AUTHENTICATED_USER_ID, UserType.ADMIN);
+
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(finding -> assertThat(finding.message()).isNull());
+        }
+    }
 
     @Nested
     @DisplayName("the outbound conversion reads the turn result and recomputes nothing")

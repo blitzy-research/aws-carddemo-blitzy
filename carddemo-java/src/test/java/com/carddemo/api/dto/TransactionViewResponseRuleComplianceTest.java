@@ -143,7 +143,7 @@ class TransactionViewResponseRuleComplianceTest {
                 "10:30:00", TRANSACTION_ID, TRANSACTION_ID, CARD_NUMBER, "01",
                 "0005", "POS TERM", "POS PURCHASE - GROCERY", amount, "2022-07-19",
                 "2022-07-19", "123456789", "MERCHANT NAME", "SEATTLE", "98101",
-                errorMessage, generalError, "TRNIDIN", "/api/transactions", NavigationContext.empty());
+                errorMessage, generalError, List.of(), "TRNIDIN", "/api/transactions", NavigationContext.empty());
     }
 
     /**
@@ -162,7 +162,7 @@ class TransactionViewResponseRuleComplianceTest {
                 null, searchTransactionId, transactionId, null, null,
                 null, null, null, amount, null,
                 null, null, null, null, null,
-                errorMessage, false, null, null, null);
+                errorMessage, false, List.of(), null, null, null);
     }
 
     /**
@@ -260,9 +260,10 @@ class TransactionViewResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty-five components in screen order, the furniture, the "
-                + "two identifiers, the transaction body, the merchant block and the routing block")
-        void theResponseDeclaresTwentyFiveComponentsInScreenOrder() {
+        @DisplayName("the response declares twenty-six components in screen order, the furniture, the "
+                + "two identifiers, the transaction body, the merchant block, the two-state field "
+                + "findings and the routing block")
+        void theResponseDeclaresTwentySixComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(
                     TransactionViewResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
@@ -272,8 +273,28 @@ class TransactionViewResponseRuleComplianceTest {
                     "transactionId", "cardNumber", "typeCode", "categoryCode", "source",
                     "description", "amount", "originationDate", "processingDate", "merchantId",
                     "merchantName", "merchantCity", "merchantZip", "errorMessage", "generalError",
-                    "focusScreenFieldId", "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(25);
+                    "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext");
+            assertThat(declared).hasSize(26);
+        }
+
+        /**
+         * The field findings sit immediately behind the flag they explain.
+         *
+         * <p>Position is contractual rather than incidental. The flag says only that the screen is
+         * reporting a failure; the list behind it says which field failed and in which of the two ways
+         * the legacy screen distinguishes. Publishing the detail anywhere other than directly behind
+         * the summary it refines would let a reader take the flag as the whole story.</p>
+         */
+        @Test
+        @DisplayName("the field findings are declared immediately behind the whole-screen flag they "
+                + "refine")
+        void theFieldFindingsFollowTheFlagTheyRefine() {
+            final List<String> declared = Arrays.stream(
+                    TransactionViewResponse.class.getRecordComponents())
+                    .map(RecordComponent::getName).toList();
+
+            assertThat(declared.indexOf("fieldErrors"))
+                    .isEqualTo(declared.indexOf("generalError") + 1);
         }
 
         /**
@@ -282,14 +303,16 @@ class TransactionViewResponseRuleComplianceTest {
          * <p>Every component that is rendered into a fixed-width item on the map carries that item's
          * width, and the focus field identifier is one of them: it names a map item and a map item name
          * is itself seven characters, so the bound is the identifier's own width rather than the width
-         * of anything the operator typed. The four that carry no width bound carry a different kind of
+         * of anything the operator typed. The five that carry no width bound carry a different kind of
          * constraint instead - the amount is bounded by digits and scale, the flag by being a
-         * primitive, the route by being a Java routing constant rather than a screen field, and the
-         * conversation state by the constraints its own type declares.</p>
+         * primitive, the field findings by the bounds their own element type declares, the route by
+         * being a Java routing constant rather than a screen field, and the conversation state by the
+         * constraints its own type declares.</p>
          */
         @Test
-        @DisplayName("exactly twenty-one components carry a declared upper bound, and the four that do "
-                + "not are the amount, the flag, the route and the conversation state")
+        @DisplayName("exactly twenty-one components carry a declared upper bound, and the five that do "
+                + "not are the amount, the flag, the field findings, the route and the conversation "
+                + "state")
         void exactlyTwentyOneComponentsCarryAnUpperBound() {
             final List<String> bounded = Arrays.stream(
                     TransactionViewResponse.class.getRecordComponents())
@@ -298,7 +321,7 @@ class TransactionViewResponseRuleComplianceTest {
 
             assertThat(bounded).hasSize(21);
             assertThat(bounded).contains("focusScreenFieldId");
-            assertThat(bounded).doesNotContain("amount", "generalError", "nextRoute",
+            assertThat(bounded).doesNotContain("amount", "generalError", "fieldErrors", "nextRoute",
                     "navigationContext");
         }
 
@@ -496,7 +519,7 @@ class TransactionViewResponseRuleComplianceTest {
                     valueFor("merchantCity", componentName, value),
                     valueFor("merchantZip", componentName, value),
                     valueFor("errorMessage", componentName, value),
-                    false, valueFor("focusScreenFieldId", componentName, value), null, null);
+                    false, List.of(), valueFor("focusScreenFieldId", componentName, value), null, null);
         }
 
         /**

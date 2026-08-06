@@ -119,7 +119,7 @@ class CardDetailResponseRuleComplianceTest {
     private static CardDetailResponse aFoundCardResponse() {
         return new CardDetailResponse("CCDL", "AWS Mainframe Modernization", "01/15/22", "COCRDSLC",
                 "CardDemo", "10:30:00", ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC", "Y", "12", "2025",
-                CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false,
+                CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false, List.of(),
                 CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID, "card-detail",
                 NavigationContext.empty());
     }
@@ -132,7 +132,7 @@ class CardDetailResponseRuleComplianceTest {
      */
     private static CardDetailResponse aFailureResponse(final String errorMessage) {
         return new CardDetailResponse("CCDL", null, null, "COCRDSLC", null, null, null, null, null,
-                null, null, null, null, errorMessage, true,
+                null, null, null, null, errorMessage, true, List.of(),
                 CardDetailResponse.SCREEN_FIELD_CARD_NUMBER, "card-detail",
                 NavigationContext.empty());
     }
@@ -379,8 +379,8 @@ class CardDetailResponseRuleComplianceTest {
     class TheDeclaredShape {
 
         @Test
-        @DisplayName("the response declares eighteen components in screen order")
-        void theResponseDeclaresEighteenComponents() {
+        @DisplayName("the response declares nineteen components in screen order")
+        void theResponseDeclaresNineteenComponents() {
             final List<String> declared =
                     Arrays.stream(CardDetailResponse.class.getRecordComponents())
                             .map(RecordComponent::getName).toList();
@@ -388,9 +388,9 @@ class CardDetailResponseRuleComplianceTest {
             assertThat(declared).containsExactly("transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "accountId",
                     "cardNumber", "embossedName", "cardActiveStatus", "expiryMonth", "expiryYear",
-                    "infoMessage", "errorMessage", "generalError", "focusScreenFieldId", "nextRoute",
-                    "navigationContext");
-            assertThat(declared).hasSize(18);
+                    "infoMessage", "errorMessage", "generalError", "fieldErrors",
+                    "focusScreenFieldId", "nextRoute", "navigationContext");
+            assertThat(declared).hasSize(19);
         }
 
         @Test
@@ -500,7 +500,7 @@ class CardDetailResponseRuleComplianceTest {
                 + "trip validation on the very message the legacy always sends")
         void eachPaddedLiteralFitsTheFieldThatCarriesIt(final String message) {
             final CardDetailResponse response = new CardDetailResponse(null, null, null, null, null,
-                    null, null, null, null, null, null, null, message, null, false, null, null,
+                    null, null, null, null, null, null, null, message, null, false, List.of(), null, null,
                     null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -515,7 +515,7 @@ class CardDetailResponseRuleComplianceTest {
                 + "entry to the screen is rendered from")
         void anEmptyResponsePassesValidation() {
             final CardDetailResponse empty = new CardDetailResponse(null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, false, null, null, null);
+                    null, null, null, null, null, null, null, null, null, false, List.of(), null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -527,7 +527,7 @@ class CardDetailResponseRuleComplianceTest {
         void aCardNumberOneDigitOverItsWidthIsReported() {
             final CardDetailResponse overBound = new CardDetailResponse(null, null, null, null, null,
                     null, null, "4".repeat(CardDetailResponse.CARD_NUMBER_LENGTH + 1), null, null,
-                    null, null, null, null, false, null, null, null);
+                    null, null, null, null, false, List.of(), null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))
@@ -542,7 +542,7 @@ class CardDetailResponseRuleComplianceTest {
         void anInformationMessageOverItsNarrowerFieldIsReported() {
             final CardDetailResponse overBound = new CardDetailResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null,
-                    "X".repeat(CardDetailResponse.INFO_MESSAGE_LENGTH + 1), null, false, null, null,
+                    "X".repeat(CardDetailResponse.INFO_MESSAGE_LENGTH + 1), null, false, List.of(), null, null,
                     null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -581,10 +581,10 @@ class CardDetailResponseRuleComplianceTest {
         void twoResponsesDifferingOnlyInPaddingAreNotEqual() {
             final CardDetailResponse padded = new CardDetailResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null,
-                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false, null, null, null);
+                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT, null, false, List.of(), null, null, null);
             final CardDetailResponse trimmed = new CardDetailResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null,
-                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT.strip(), null, false, null, null,
+                    CardDetailResponse.MSG_FOUND_CARDS_FOR_ACCOUNT.strip(), null, false, List.of(), null, null,
                     null);
 
             assertThat(padded).isNotEqualTo(trimmed);
@@ -664,7 +664,7 @@ class CardDetailResponseRuleComplianceTest {
                     .doesNotContain(CARD_NUMBER);
             final CardDetailResponse withoutNestedState = new CardDetailResponse("CCDL",
                     "AWS Mainframe Modernization", "01/15/22", "COCRDSLC", "CardDemo", "10:30:00",
-                    ACCOUNT_ID, CARD_NUMBER, "JOHN SMITH", "Y", "12", "2025", null, null, false,
+                    ACCOUNT_ID, CARD_NUMBER, "JOHN SMITH", "Y", "12", "2025", null, null, false, List.of(),
                     null, "card-detail", null);
             assertThat(withoutNestedState.toString()
                     .split(java.util.regex.Pattern.quote(REDACTION_PLACEHOLDER), -1))
@@ -690,7 +690,7 @@ class CardDetailResponseRuleComplianceTest {
                 + "placeholder rather than betraying its absence")
         void theWithholdingIsUnconditional() {
             final CardDetailResponse empty = new CardDetailResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, false, null, null, null);
+                    null, null, null, null, null, null, null, null, false, List.of(), null, null, null);
 
             assertThat(empty.toString())
                     .contains("cardNumber=" + REDACTION_PLACEHOLDER)

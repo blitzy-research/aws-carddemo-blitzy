@@ -71,10 +71,6 @@ import jakarta.validation.constraints.Size;
  *        form, or {@code null}
  * @param reportEndDate the inclusive upper bound of the same window, or {@code null}
  * @param fileProbeMode the symbolic name of the file the probe job should read, or {@code null}
- * @param transactionBackupCurrentGeneration the logical name of the transaction-backup generation the
- *        combine job reads first, or {@code null}
- * @param synthesizedTransactionCurrentGeneration the logical name of the synthesized-transaction
- *        generation the combine job reads second, or {@code null}
  * @since 1.0.0
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
@@ -106,20 +102,7 @@ public record BatchJobLaunchRequest(
                 + "belong to the probe job configuration and are checked by the job's own validator.")
         @Size(max = BatchJobLaunchRequest.SYMBOLIC_NAME_WIDTH)
         @Pattern(regexp = BatchJobLaunchRequest.SYMBOLIC_NAME)
-        String fileProbeMode,
-
-        @Schema(description = "Logical name of the transaction-backup generation to read first. A name "
-                + "only: it is resolved beneath the server-configured staging root, and no scheme, path "
-                + "separator or traversal segment may appear in it.")
-        @Size(max = BatchJobLaunchRequest.DATASET_NAME_WIDTH)
-        @Pattern(regexp = BatchJobLaunchRequest.DATASET_NAME)
-        String transactionBackupCurrentGeneration,
-
-        @Schema(description = "Logical name of the synthesized-transaction generation to read second, "
-                + "resolved the same way and under the same restrictions.")
-        @Size(max = BatchJobLaunchRequest.DATASET_NAME_WIDTH)
-        @Pattern(regexp = BatchJobLaunchRequest.DATASET_NAME)
-        String synthesizedTransactionCurrentGeneration) {
+        String fileProbeMode) {
 
     /**
      * Width of the interest run's parameter value: ten characters, the declared width of the field the
@@ -136,12 +119,6 @@ public record BatchJobLaunchRequest(
      */
     public static final int SYMBOLIC_NAME_WIDTH = 32;
 
-    /**
-     * Width bound on a logical dataset name. A name, never a location, so this bounds an identifier
-     * rather than a path.
-     */
-    public static final int DATASET_NAME_WIDTH = 128;
-
     /** Digits and nothing else. */
     public static final String DIGITS_ONLY = "^[0-9]*$";
 
@@ -154,20 +131,9 @@ public record BatchJobLaunchRequest(
     /** Letters and digits, which is what every symbolic launch value in this module is made of. */
     public static final String SYMBOLIC_NAME = "^[A-Za-z0-9]*$";
 
-    /**
-     * A logical dataset name: letters, digits, dot, hyphen and underscore.
-     *
-     * <p>The exclusions are the point. No colon means no URI scheme, so a name cannot become
-     * {@code file:}, {@code http:} or {@code classpath:}. No solidus and no backslash means no path
-     * segment. A dot is admitted because dataset names carry qualifiers, but a name consisting only of
-     * dots cannot pass the launch operation's own traversal check, so {@code ..} cannot be assembled
-     * into a parent reference.
-     */
-    public static final String DATASET_NAME = "^[A-Za-z0-9._-]*$";
-
     /** The empty request: the launch of a job that declares no parameter. */
     private static final BatchJobLaunchRequest EMPTY =
-            new BatchJobLaunchRequest(null, null, null, null, null, null);
+            new BatchJobLaunchRequest(null, null, null, null);
 
     /**
      * The request a launch that carried no body at all is read as.

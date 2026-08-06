@@ -17,10 +17,12 @@
 package com.carddemo.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.ConversationState;
+import com.carddemo.service.NavigationService;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.RecordComponent;
@@ -92,8 +94,9 @@ import org.junit.jupiter.params.provider.EnumSource;
  * state - and the legacy screens have no message for the condition, so inventing a rejection would be a
  * behaviour the estate does not have.
  *
- * <p>A pure unit test: no Spring context, no connection, no container. The adapter holds no field and
- * is constructed directly.
+ * <p>A pure unit test: no Spring context, no connection, no container. The adapter holds one injected
+ * collaborator - the navigation authority it screens an echoed program nomination against - and no per-turn
+ * state, so it is constructed directly over the real authority.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
@@ -127,7 +130,7 @@ final class ConversationStateAdapterTest {
     /** Constructs a fresh adapter for each test, since it holds no state to reset. */
     @BeforeEach
     void setUp() {
-        subject = new ConversationStateAdapter();
+        subject = new ConversationStateAdapter(new NavigationService());
     }
 
     /**
@@ -150,6 +153,75 @@ final class ConversationStateAdapterTest {
     // ----------------------------------------------------------------------------------------
     // Inbound: the eleven echoed members are dropped, not passed along
     // ----------------------------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("inbound, an echoed routing nomination is screened against the destination vocabulary")
+    final class InboundTheNominationsAreScreened {
+
+        @Test
+        @DisplayName("a nomination the estate declares crosses unchanged, so every reachable legacy value "
+                + "still reaches the navigation authority as the region would have supplied it")
+        void aDeclaredNominationCrossesUnchanged() {
+            final ConversationState carried = subject.toConversationState(fullyEchoed());
+
+            assertThat(carried.fromProgram()).isEqualTo("COBIL00C");
+            assertThat(carried.toProgram()).isEqualTo("COMEN01C");
+        }
+
+        @Test
+        @DisplayName("a nomination that names no destination is carried as nothing, so an invented program "
+                + "name becomes the legacy's own empty-field case instead of a terminal failure on an "
+                + "authenticated route")
+        void anUnresolvableNominationIsCarriedAsNothing() {
+            final NavigationContext invented = new NavigationContext("CB00", "NOTAPGM1", "CM00",
+                    "ALSONOPE", ECHOED_USER_ID, UserType.USER.getCode(),
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null,
+                    null, null, null);
+
+            final ConversationState carried = subject.toConversationState(invented);
+
+            assertThat(carried.fromProgram()).isNull();
+            assertThat(carried.toProgram()).isNull();
+            // The turn is still a turn: the routing members the authority does not resolve by name, and the
+            // entry gate, both survive.
+            assertThat(carried.fromTransactionId()).isEqualTo("CB00");
+            assertThat(carried.toTransactionId()).isEqualTo("CM00");
+            assertThat(carried.reEntry()).isTrue();
+        }
+
+        @Test
+        @DisplayName("a screened nomination resolves to the calling screen's own default rather than "
+                + "abending, which is what the blank field already means")
+        void aScreenedNominationFallsBackToTheCallerDefault() {
+            final NavigationContext invented = new NavigationContext(null, "NOTAPGM1", null,
+                    "ALSONOPE", ECHOED_USER_ID, UserType.USER.getCode(),
+                    NavigationContext.ProgramContext.REENTER, null, null, null, null, null, null,
+                    null, null, null);
+            final ConversationState carried = subject.toConversationState(invented);
+
+            final NavigationService authority = new NavigationService();
+            assertThat(authority.resolveBackNavigation(carried, NavigationService.Route.USER_MENU))
+                    .isEqualTo(NavigationService.Route.USER_MENU);
+            assertThat(authority.resolveNominatedDestination(carried,
+                    NavigationService.Route.USER_MENU))
+                    .isEqualTo(NavigationService.Route.USER_MENU);
+        }
+
+        @Test
+        @DisplayName("a blank nomination is left exactly as received, because a blank field is significant: "
+                + "it is what makes the calling screen's default apply")
+        void aBlankNominationIsLeftAsReceived() {
+            final NavigationContext blanked = new NavigationContext(null, "        ", null, "",
+                    ECHOED_USER_ID, UserType.USER.getCode(),
+                    NavigationContext.ProgramContext.ENTER, null, null, null, null, null, null, null,
+                    null, null);
+
+            final ConversationState carried = subject.toConversationState(blanked);
+
+            assertThat(carried.fromProgram()).isEqualTo("        ");
+            assertThat(carried.toProgram()).isEmpty();
+        }
+    }
 
     @Nested
     @DisplayName("inbound, the eleven echoed members are dropped rather than handed to a service")
@@ -599,9 +671,9 @@ final class ConversationStateAdapterTest {
          *
          * <p>It is the one place the sixteen-field wire record and the service-owned carrier of the same
          * shape are converted into one another, so it reads all eleven echoed members and writes all
-         * eleven back. It decides nothing from any of them: it holds no field, resolves no route, applies
-         * no validation and - deliberately - performs no identity reconciliation, because the ten screen
-         * services echo what they were given exactly as their legacy programs did.
+         * eleven back. It decides nothing from any of them: it carries them through unread, and the two it
+         * does not carry through - the identity pair - it replaces with the authenticated principal's own
+         * rather than acting on what the client claimed.
          */
         private static final String SCREEN_STATE_ADAPTER_FILE_NAME = "ScreenStateAdapter.java";
 
@@ -1119,11 +1191,37 @@ final class ConversationStateAdapterTest {
     final class TheAdapterIsAStatelessBoundary {
 
         @Test
-        @DisplayName("declares no field, so the singleton is safe for unsynchronised concurrent use")
-        void declaresNoField() {
-            assertThat(ConversationStateAdapter.class.getDeclaredFields())
-                    .as("a field here would make the boundary conversion stateful")
-                    .isEmpty();
+        @DisplayName("declares nothing but its own final collaborator, so the singleton is still safe for "
+                + "unsynchronised concurrent use")
+        void declaresOnlyItsFinalCollaborator() {
+            for (final java.lang.reflect.Field field
+                    : ConversationStateAdapter.class.getDeclaredFields()) {
+                if (field.isSynthetic() || java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                    continue;
+                }
+                // Screening a nomination needs the destination vocabulary, so the boundary now holds one
+                // collaborator. What would make the conversion stateful is per-turn state, and a private
+                // final collaborator cannot be reassigned by a turn.
+                assertThat(java.lang.reflect.Modifier.isPrivate(field.getModifiers()))
+                        .as("field %s must be private", field.getName())
+                        .isTrue();
+                assertThat(java.lang.reflect.Modifier.isFinal(field.getModifiers()))
+                        .as("field %s must be final, so no turn can reassign it", field.getName())
+                        .isTrue();
+                assertThat(field.getType())
+                        .as("field %s must be an injected collaborator, not carried state",
+                                field.getName())
+                        .isEqualTo(NavigationService.class);
+            }
+        }
+
+        @Test
+        @DisplayName("refuses an absent navigation authority, because a boundary that cannot screen a "
+                + "nomination would pass an invented one straight through to an abend")
+        void refusesAnAbsentNavigationAuthority() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new ConversationStateAdapter(null))
+                    .withMessageContaining("navigationService");
         }
 
         @Test

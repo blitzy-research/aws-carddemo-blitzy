@@ -28,11 +28,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
-import java.util.Collection;
 import java.util.Objects;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -191,16 +189,6 @@ public final class MenuController {
 
     /** Tag value for a turn that raises before it can compose a menu screen. */
     private static final String OUTCOME_FAILED = "FAILED";
-
-    /**
-     * Prefix the framework's default authority naming puts in front of a role.
-     *
-     * <p>The chain grants one authority per credential, spelled as this prefix followed by the name of
-     * the user type the credential carries. Reading the type back out is the inverse of that single
-     * mapping and nothing more; it is not an access decision, and the chain has already made every
-     * access decision by the time a handler here runs.
-     */
-    private static final String ROLE_AUTHORITY_PREFIX = "ROLE_";
 
     /** The two menu transactions. */
     private final MenuService menuService;
@@ -402,7 +390,7 @@ public final class MenuController {
      * @return the identifier, or {@code null} when no identity is established
      */
     private static String signedOnUserId(final Authentication authentication) {
-        return (authentication == null) ? null : authentication.getName();
+        return ScreenStateAdapter.authenticatedUserId(authentication);
     }
 
     /**
@@ -415,31 +403,19 @@ public final class MenuController {
      * echoed value - and because the response adapter reconciles the published navigation record
      * against it.
      *
-     * <p>Resolution is the inverse of the single mapping the chain applies when it grants the
-     * authority: the framework's role prefix followed by the name of the user type. An identity
-     * carrying neither declared authority yields {@code null}, which the service treats as no type at
-     * all rather than as a type it must guess, exactly as the legacy program treated an unrecognised
-     * type code.
+     * <p>Delegated to the one reader every authenticated screen route uses, rather than resolved again
+     * here. Resolution is the inverse of the single mapping the chain applies when it grants the
+     * authority, so two independent copies of it could drift apart and leave one route reading a type
+     * another route would not - which is precisely the divergence a single authenticated boundary exists
+     * to prevent. An identity carrying neither declared authority yields {@code null}, which the service
+     * treats as no type at all rather than as a type it must guess, exactly as the legacy program treated
+     * an unrecognised type code.
      *
      * @param authentication the established identity, which may be {@code null} on a route the chain
      *                       does not authenticate
      * @return the user type the granted authority names, or {@code null} when none does
      */
     private static UserType signedOnUserType(final Authentication authentication) {
-        if (authentication == null) {
-            return null;
-        }
-        final Collection<? extends GrantedAuthority> granted = authentication.getAuthorities();
-        if (granted == null) {
-            return null;
-        }
-        for (final GrantedAuthority authority : granted) {
-            for (final UserType candidate : UserType.values()) {
-                if ((ROLE_AUTHORITY_PREFIX + candidate.name()).equals(authority.getAuthority())) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
+        return ScreenStateAdapter.authenticatedUserType(authentication);
     }
 }

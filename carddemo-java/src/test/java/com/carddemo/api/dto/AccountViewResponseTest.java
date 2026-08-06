@@ -85,7 +85,7 @@ class AccountViewResponseTest {
             "firstName", "middleName", "lastName", "addressLine1", "stateCode", "addressLine2",
             "zipCode", "city", "countryCode", "phoneNumber1", "governmentIssuedId", "phoneNumber2",
             "eftAccountId", "primaryCardHolderIndicator", "infoMessage", "errorMessage",
-            "inputError", "focusScreenFieldId", "nextRoute", "navigationContext");
+            "inputError", "fieldErrors", "focusScreenFieldId", "nextRoute", "navigationContext");
 
     private static final String TRANSACTION_NAME = "CAVW";
 
@@ -219,7 +219,7 @@ class AccountViewResponseTest {
                 PHONE_NUMBER_1, GOVERNMENT_ISSUED_ID, PHONE_NUMBER_2, EFT_ACCOUNT_ID,
                 PRIMARY_CARD_HOLDER_INDICATOR,
                 INFO_MESSAGE, ERROR_MESSAGE,
-                true, focusScreenFieldId, nextRoute, navigationContext);
+                true, List.of(), focusScreenFieldId, nextRoute, navigationContext);
     }
 
     private static AccountViewResponse populated() {
@@ -232,7 +232,7 @@ class AccountViewResponseTest {
         return new AccountViewResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, false, null,
+                null, null, null, null, null, null, null, null, null, null, null, false, List.of(), null,
                 null, null);
     }
 
@@ -247,7 +247,7 @@ class AccountViewResponseTest {
                 currentCycleDebit,
                 null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
-                false, null, null, null);
+                false, List.of(), null, null, null);
     }
 
     private static AccountViewResponse withAccountId(String accountId) {
@@ -734,7 +734,7 @@ class AccountViewResponseTest {
             AccountViewResponse response = new AccountViewResponse(
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, longer, null,
-                    null, null, null, null, null, null, null, null, null, null, null, false, null,
+                    null, null, null, null, null, null, null, null, null, null, null, false, List.of(), null,
                     null, null);
 
             assertThat(response.addressLine1()).isEqualTo(longer).hasSize(longer.length());
@@ -780,7 +780,7 @@ class AccountViewResponseTest {
                     null, null, null, null, null, null, null, null, impossible, null, impossible,
                     null, blank, null, null, null, null, null, null, impossible, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, false, null, null, null);
+                    null, null, false, List.of(), null, null, null);
             JsonNode payload = payloadOf(response);
 
             assertThat(response.openDate()).isEqualTo(impossible);
@@ -1203,14 +1203,14 @@ class AccountViewResponseTest {
         }
 
         @Test
-        @DisplayName("serialises exactly the thirty-seven map items and the four control components")
+        @DisplayName("serialises exactly the thirty-seven map items and the five control components")
         void serialisesExactlyTheDeclaredComponents() throws JsonProcessingException {
             Set<String> keys = keysOf(payloadOf(populated()));
 
             assertThat(keys)
                     .describedAs("the payload's own property set, in payload order")
                     .containsExactlyElementsOf(COMPONENTS_IN_MAP_ORDER)
-                    .hasSize(41);
+                    .hasSize(42);
             assertThat(keys)
                     .doesNotContain("accountIdL", "accountIdF", "accountIdA", "accountIdC",
                             "accountIdP", "accountIdH", "accountIdV", "filler", "row", "column",
@@ -1224,8 +1224,12 @@ class AccountViewResponseTest {
         void omitsAnAbsentPropertyRatherThanWritingNull() throws JsonProcessingException {
             String payload = moduleEquivalentMapper().writeValueAsString(allAbsent());
 
-            assertThat(keysOf(payloadOf(allAbsent()))).containsExactly("inputError");
-            assertThat(payload).isEqualTo("{\"inputError\":false}").doesNotContain("null");
+            assertThat(keysOf(payloadOf(allAbsent())))
+                    .describedAs("the primitive indicator and the normalised finding list are the two "
+                            + "components that have no absent state")
+                    .containsExactly("inputError", "fieldErrors");
+            assertThat(payload).isEqualTo("{\"inputError\":false,\"fieldErrors\":[]}")
+                    .doesNotContain("null");
         }
 
         @Test

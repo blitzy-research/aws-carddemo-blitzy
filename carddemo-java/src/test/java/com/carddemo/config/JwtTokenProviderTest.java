@@ -183,7 +183,7 @@ class JwtTokenProviderTest {
      */
     private static final Set<String> PERMITTED_CLAIM_NAMES =
             Set.of("iss", "sub", "iat", "exp", JwtTokenProvider.ROLE_CLAIM,
-                    JwtTokenProvider.SECURITY_STATE_CLAIM);
+                    JwtTokenProvider.AUTHORITY_CLAIM, JwtTokenProvider.SECURITY_STATE_CLAIM);
 
     /**
      * Claim names that would carry a field of the legacy communication area other than the two signed
@@ -432,7 +432,7 @@ class JwtTokenProviderTest {
         void refusesAnAbsentIdentifier() {
             final JwtTokenProvider provider = provider();
 
-            assertThatNullPointerException().isThrownBy(() -> provider.issue(null, UserType.USER));
+            assertThatNullPointerException().isThrownBy(() -> provider.issue(null, UserType.USER, UserType.USER.getCode()));
         }
 
         @Test
@@ -440,13 +440,14 @@ class JwtTokenProviderTest {
         void refusesAnAbsentUserType() {
             final JwtTokenProvider provider = provider();
 
-            assertThatNullPointerException().isThrownBy(() -> provider.issue(ADMINISTRATOR_ID, null));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> provider.issue(ADMINISTRATOR_ID, null, UserType.ADMIN.getCode()));
         }
 
         @Test
         @DisplayName("produces the three-segment compact form with a signature actually present")
         void producesASignedCompactForm() {
-            final String token = provider().issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             final String[] segments = segmentsOf(token);
 
@@ -467,7 +468,7 @@ class JwtTokenProviderTest {
         void roundTripsAnAdministrator() {
             final JwtTokenProvider provider = provider();
 
-            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(ADMINISTRATOR_ID);
@@ -479,7 +480,7 @@ class JwtTokenProviderTest {
         void roundTripsAStandardUser() {
             final JwtTokenProvider provider = provider();
 
-            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER))
+            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode()))
                     .orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(STANDARD_USER_ID);
@@ -494,7 +495,7 @@ class JwtTokenProviderTest {
             final UserType seededType = UserType.fromCode(typeCode).orElseThrow();
             final JwtTokenProvider provider = providerHolding(seededId, seededType);
 
-            final Jwt verified = provider.verify(provider.issue(seededId, seededType)).orElseThrow();
+            final Jwt verified = provider.verify(provider.issue(seededId, seededType, seededType.getCode())).orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(seededId);
             assertThat(provider.userTypeOf(verified)).contains(seededType);
@@ -506,7 +507,7 @@ class JwtTokenProviderTest {
         void roundTripsEveryDeclaredUserType(final UserType userType) {
             final JwtTokenProvider provider = providerHolding(ADMINISTRATOR_ID, userType);
 
-            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, userType)).orElseThrow();
+            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, userType, userType.getCode())).orElseThrow();
 
             assertThat(provider.userTypeOf(verified)).contains(userType);
             assertThat(verified.getClaimAsString(JwtTokenProvider.ROLE_CLAIM))
@@ -522,7 +523,7 @@ class JwtTokenProviderTest {
             final String paddedToFullWidth = "USER1   ";
             final JwtTokenProvider provider = providerHolding(paddedToFullWidth, UserType.USER);
 
-            final Jwt verified = provider.verify(provider.issue(paddedToFullWidth, UserType.USER))
+            final Jwt verified = provider.verify(provider.issue(paddedToFullWidth, UserType.USER, UserType.USER.getCode()))
                     .orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(paddedToFullWidth);
@@ -537,7 +538,7 @@ class JwtTokenProviderTest {
             final String leadingZeros = "00000001";
             final JwtTokenProvider provider = providerHolding(leadingZeros, UserType.USER);
 
-            final Jwt verified = provider.verify(provider.issue(leadingZeros, UserType.USER)).orElseThrow();
+            final Jwt verified = provider.verify(provider.issue(leadingZeros, UserType.USER, UserType.USER.getCode())).orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(leadingZeros);
         }
@@ -549,7 +550,7 @@ class JwtTokenProviderTest {
             // (app/cbl/COSGN00C.cbl L132-L136), so the value reaching this provider is already folded.
             final JwtTokenProvider provider = provider();
 
-            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(ADMINISTRATOR_ID);
@@ -566,7 +567,7 @@ class JwtTokenProviderTest {
             final String asSupplied = "admin001";
             final JwtTokenProvider provider = providerHolding(asSupplied, UserType.ADMIN);
 
-            final Jwt verified = provider.verify(provider.issue(asSupplied, UserType.ADMIN)).orElseThrow();
+            final Jwt verified = provider.verify(provider.issue(asSupplied, UserType.ADMIN, UserType.ADMIN.getCode())).orElseThrow();
 
             assertThat(verified.getSubject()).isEqualTo(asSupplied);
         }
@@ -578,7 +579,7 @@ class JwtTokenProviderTest {
             // The legacy split at app/cbl/COSGN00C.cbl L230-L240 tests the administrator condition once and
             // its alternative is unconditional: there is no second test and no third branch to fail into.
             final JwtTokenProvider provider = provider();
-            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER))
+            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode()))
                     .orElseThrow();
 
             assertThatCode(() -> provider.userTypeOf(verified)).doesNotThrowAnyException();
@@ -591,7 +592,7 @@ class JwtTokenProviderTest {
         void claimsTheConfiguredIssuer() {
             final JwtTokenProvider provider = provider();
 
-            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER))
+            final Jwt verified = provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode()))
                     .orElseThrow();
 
             // Read as text deliberately: the framework's typed issuer accessor expects a locator, and this
@@ -606,7 +607,7 @@ class JwtTokenProviderTest {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
             final JwtTokenProvider provider = providerFor(properties, ISSUED_AT);
 
-            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+            final Jwt verified = provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .orElseThrow();
 
             assertThat(provider.tokenLifetime()).isEqualTo(properties.expiration());
@@ -635,7 +636,7 @@ class JwtTokenProviderTest {
         @DisplayName("is exactly the two signed facts and the registered claims about the token itself")
         void isExactlyTheTwoSignedFactsAndTheRegisteredClaims() throws JsonProcessingException {
             final Map<String, Object> payload =
-                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN));
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertThat(payload.keySet())
                     .as("an unexpected claim is either a disclosure or an unannounced contract change")
@@ -646,7 +647,7 @@ class JwtTokenProviderTest {
         @DisplayName("carries the signed-on identifier as its subject and nowhere else")
         void carriesTheIdentifierAsItsSubject() throws JsonProcessingException {
             final Map<String, Object> payload =
-                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN));
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertThat(payload).containsEntry("sub", ADMINISTRATOR_ID);
         }
@@ -656,7 +657,7 @@ class JwtTokenProviderTest {
         @DisplayName("carries the raw one-character legacy type code as its role claim")
         void carriesTheRawTypeCodeAsItsRoleClaim(final UserType userType) throws JsonProcessingException {
             final Map<String, Object> payload = payloadOf(
-                    providerHolding(STANDARD_USER_ID, userType).issue(STANDARD_USER_ID, userType));
+                    providerHolding(STANDARD_USER_ID, userType).issue(STANDARD_USER_ID, userType, userType.getCode()));
 
             assertThat(payload).containsEntry(JwtTokenProvider.ROLE_CLAIM, userType.getCode());
             assertThat(String.valueOf(payload.get(JwtTokenProvider.ROLE_CLAIM)))
@@ -677,7 +678,7 @@ class JwtTokenProviderTest {
         void statesItsWindowAsRegisteredNumericClaims() throws JsonProcessingException {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
             final Map<String, Object> payload = payloadOf(
-                    providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN));
+                    providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             final Object issuedAtClaim = payload.get("iat");
             final Object expiresAtClaim = payload.get("exp");
@@ -697,7 +698,7 @@ class JwtTokenProviderTest {
         @DisplayName("carries none of the communication-area fields that belong to the context record")
         void carriesNoneOfTheCommareaFields(final UserType userType) throws JsonProcessingException {
             final Map<String, Object> payload = payloadOf(
-                    providerHolding(ADMINISTRATOR_ID, userType).issue(ADMINISTRATOR_ID, userType));
+                    providerHolding(ADMINISTRATOR_ID, userType).issue(ADMINISTRATOR_ID, userType, userType.getCode()));
 
             assertCarriesNoneOf(payload, FORBIDDEN_COMMAREA_CLAIM_NAMES,
                     "the navigation fields and the customer, account and card selections of the 160-byte "
@@ -710,7 +711,7 @@ class JwtTokenProviderTest {
                 + "the next call")
         void carriesNoRouteOrSelection() throws JsonProcessingException {
             final Map<String, Object> payload =
-                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN));
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertCarriesNoneOf(payload, FORBIDDEN_ROUTING_CLAIM_NAMES,
                     "there is no server-side forwarding in this module, so a route is a declarative "
@@ -722,7 +723,7 @@ class JwtTokenProviderTest {
         void carriesNoProtectedValue() throws JsonProcessingException {
             final String material = freshSigningMaterial();
             final String token = providerAt(material, ISSUER, ISSUED_AT)
-                    .issue(ADMINISTRATOR_ID, UserType.ADMIN);
+                    .issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
             final Map<String, Object> payload = payloadOf(token);
 
             assertCarriesNoneOf(payload, FORBIDDEN_PROTECTED_CLAIM_NAMES,
@@ -759,7 +760,7 @@ class JwtTokenProviderTest {
                 + "attack signing exists to defeat")
         void refusesAlteredClaims() throws JsonProcessingException {
             final JwtTokenProvider provider = provider();
-            final String token = provider.issue(STANDARD_USER_ID, UserType.USER);
+            final String token = provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
             final String[] segments = segmentsOf(token);
 
             // Promote a standard user to the administrative type and re-attach the original signature.
@@ -779,7 +780,7 @@ class JwtTokenProviderTest {
         @DisplayName("is refused when its signature segment was altered")
         void refusesAnAlteredSignature() {
             final JwtTokenProvider provider = provider();
-            final String[] segments = segmentsOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN));
+            final String[] segments = segmentsOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
             final String signature = segments[2];
             final char replacement = signature.charAt(0) == 'A' ? 'B' : 'A';
             final String altered = replacement + signature.substring(1);
@@ -801,7 +802,7 @@ class JwtTokenProviderTest {
                     .isFalse();
 
             final String foreign = providerAt(otherMaterial, ISSUER, ISSUED_AT)
-                    .issue(ADMINISTRATOR_ID, UserType.ADMIN);
+                    .issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             assertThat(providerAt(material, ISSUER, ISSUED_AT).verify(foreign))
                     .as("a perfectly valid signature under the wrong material is not a valid token")
@@ -814,7 +815,7 @@ class JwtTokenProviderTest {
             final String material = freshSigningMaterial();
 
             final String elsewhere = providerAt(material, "some-other-service", ISSUED_AT)
-                    .issue(ADMINISTRATOR_ID, UserType.ADMIN);
+                    .issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             assertThat(providerAt(material, ISSUER, ISSUED_AT).verify(elsewhere)).isEmpty();
         }
@@ -824,7 +825,7 @@ class JwtTokenProviderTest {
                 + "an empty signature segment behind")
         void refusesATokenDeclaringNoAlgorithm() {
             final JwtTokenProvider provider = provider();
-            final String token = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
             final String[] segments = segmentsOf(token);
             final String unsignedHeader = encodeSegment("{\"alg\":\"none\"}");
 
@@ -847,7 +848,7 @@ class JwtTokenProviderTest {
                 + "the algorithm is never taken from the token being checked")
         void refusesATokenDeclaringAnotherAlgorithm() {
             final JwtTokenProvider provider = provider();
-            final String token = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
             final String[] segments = segmentsOf(token);
 
             // Control, for the same reason: only the header differs below.
@@ -949,7 +950,7 @@ class JwtTokenProviderTest {
         void isOpenThroughoutTheLifetime() {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
             final Duration validity = properties.expiration();
-            final String token = providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             final JwtTokenProvider midway = providerFor(properties, ISSUED_AT.plus(validity.dividedBy(2)));
 
@@ -963,7 +964,7 @@ class JwtTokenProviderTest {
         @DisplayName("is still open at the instant it closes")
         void isStillOpenAtTheClosingInstant() {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
-            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER);
+            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
 
             final JwtTokenProvider atClose =
                     providerFor(properties, ISSUED_AT.plus(properties.expiration()));
@@ -976,7 +977,7 @@ class JwtTokenProviderTest {
                 + "tolerance for disagreeing clocks that the production class leaves it")
         void admitsATokenMarginallyBeyondTheClosingInstant() {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
-            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER);
+            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
 
             final JwtTokenProvider justBeyond =
                     providerFor(properties, ISSUED_AT.plus(properties.expiration()).plusSeconds(1));
@@ -992,7 +993,7 @@ class JwtTokenProviderTest {
         void isClosedOnceTheLifetimeAndToleranceHaveElapsed() {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
             final Duration validity = properties.expiration();
-            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER);
+            final String token = providerFor(properties, ISSUED_AT).issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
 
             // One further whole lifetime beyond the closing instant, so the refusal is the expiry itself
             // rather than a borderline reading of it.
@@ -1013,7 +1014,7 @@ class JwtTokenProviderTest {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
             final Duration validity = properties.expiration();
 
-            final String token = providerFor(properties, longPast).issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = providerFor(properties, longPast).issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             assertThat(providerFor(properties, longPast).verify(token))
                     .as("the supplied clock decides the window, so a token minted long ago is usable at "
@@ -1144,17 +1145,22 @@ class JwtTokenProviderTest {
     class ReadingTheUserType {
 
         /**
-         * Builds a verified-shaped claim set carrying a chosen role claim, or none at all.
+         * Builds a verified-shaped claim set carrying a chosen authority claim, or none at all.
          *
-         * @param roleClaim value for the role claim, or {@code null} to omit the claim entirely
-         * @return claims carrying that role and nothing else of interest
+         * <p>The <em>authority</em> claim is the one the reader consults, and it is a different fact from
+         * the role claim beside it: the role claim carries whatever code the record holds, while this one
+         * carries the authority that code was resolved to and can only ever be one of the two the estate
+         * declares. The reader is therefore exercised on the claim it actually reads.</p>
+         *
+         * @param authorityClaim value for the authority claim, or {@code null} to omit the claim entirely
+         * @return claims carrying that authority and nothing else of interest
          */
-        private Jwt claimsCarryingRole(final String roleClaim) {
+        private Jwt claimsCarryingRole(final String authorityClaim) {
             final Jwt.Builder builder = Jwt.withTokenValue("compact-form-not-parsed-by-this-reader")
                     .header("alg", "HS256")
                     .subject(ADMINISTRATOR_ID);
-            if (roleClaim != null) {
-                builder.claim(JwtTokenProvider.ROLE_CLAIM, roleClaim);
+            if (authorityClaim != null) {
+                builder.claim(JwtTokenProvider.AUTHORITY_CLAIM, authorityClaim);
             }
             return builder.build();
         }
@@ -1266,8 +1272,8 @@ class JwtTokenProviderTest {
         void mintsTheSameFactsForTheSameInputs() throws JsonProcessingException {
             final JwtTokenProvider provider = provider();
 
-            final Map<String, Object> first = payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN));
-            final Map<String, Object> second = payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN));
+            final Map<String, Object> first = payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
+            final Map<String, Object> second = payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertThat(second.get("sub")).isEqualTo(first.get("sub")).isEqualTo(ADMINISTRATOR_ID);
             assertThat(second.get(JwtTokenProvider.ROLE_CLAIM))
@@ -1280,7 +1286,7 @@ class JwtTokenProviderTest {
                 + "register of the tokens it issued")
         void verifiesATokenItNeverMinted() {
             final JwtProperties properties = propertiesWith(freshSigningMaterial());
-            final String token = providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String token = providerFor(properties, ISSUED_AT).issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
 
             final JwtTokenProvider neverMintedIt = providerFor(properties, ISSUED_AT);
 
@@ -1295,10 +1301,10 @@ class JwtTokenProviderTest {
         void isReusableWithoutStateLeakingBetweenCalls() {
             final JwtTokenProvider provider = provider();
 
-            final String forAdministrator = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN);
+            final String forAdministrator = provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode());
             assertThat(provider.verify(forAdministrator)).isPresent();
 
-            final String forStandardUser = provider.issue(STANDARD_USER_ID, UserType.USER);
+            final String forStandardUser = provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
             final Jwt standardUser = provider.verify(forStandardUser).orElseThrow();
             assertThat(standardUser.getSubject()).isEqualTo(STANDARD_USER_ID);
             assertThat(provider.userTypeOf(standardUser)).contains(UserType.USER);
@@ -1333,7 +1339,7 @@ class JwtTokenProviderTest {
         @DisplayName("is present, and is the fingerprint the record reader derives for that record")
         void isTheFingerprintTheRecordReaderDerives() throws JsonProcessingException {
             final Map<String, Object> payload =
-                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN));
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertThat(String.valueOf(payload.get(JwtTokenProvider.SECURITY_STATE_CLAIM)))
                     .isEqualTo(stateService().currentStateOf(ADMINISTRATOR_ID)
@@ -1355,7 +1361,7 @@ class JwtTokenProviderTest {
             final String digest = InMemoryCredentialMaster.nextDigest();
             CREDENTIAL_MASTER.with(STANDARD_USER_ID, UserType.USER.getCode(), digest);
 
-            final String token = provider().issue(STANDARD_USER_ID, UserType.USER);
+            final String token = provider().issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode());
             final String fingerprint =
                     String.valueOf(payloadOf(token).get(JwtTokenProvider.SECURITY_STATE_CLAIM));
 
@@ -1372,7 +1378,7 @@ class JwtTokenProviderTest {
         @DisplayName("carries the identifier in no readable form, even though it is an input to it")
         void carriesTheIdentifierInNoReadableForm() throws JsonProcessingException {
             final String fingerprint = String.valueOf(payloadOf(
-                    provider().issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                    provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
 
             // The raw type code is deliberately NOT asserted absent: it is a single character, and any
@@ -1394,10 +1400,10 @@ class JwtTokenProviderTest {
                 + "record")
         void differsBetweenTwoIdentities() throws JsonProcessingException {
             final String forAdministrator = String.valueOf(
-                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN))
+                    payloadOf(provider().issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                             .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
             final String forStandardUser = String.valueOf(
-                    payloadOf(provider().issue(STANDARD_USER_ID, UserType.USER))
+                    payloadOf(provider().issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode()))
                             .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
 
             assertThat(forAdministrator).isNotEqualTo(forStandardUser);
@@ -1409,9 +1415,9 @@ class JwtTokenProviderTest {
         void isUnchangedWhileTheRecordStandsStill() throws JsonProcessingException {
             final JwtTokenProvider provider = provider();
 
-            final String first = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+            final String first = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
-            final String second = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN))
+            final String second = String.valueOf(payloadOf(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode()))
                     .get(JwtTokenProvider.SECURITY_STATE_CLAIM));
 
             assertThat(second)
@@ -1427,7 +1433,7 @@ class JwtTokenProviderTest {
             final JwtTokenProvider provider = provider();
             CREDENTIAL_MASTER.without(ADMINISTRATOR_ID);
 
-            assertThat(catchThrowable(() -> provider.issue(ADMINISTRATOR_ID, UserType.ADMIN)))
+            assertThat(catchThrowable(() -> provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode())))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("no session is issued");
         }
@@ -1439,7 +1445,7 @@ class JwtTokenProviderTest {
             final JwtTokenProvider provider = provider();
 
             final Throwable thrown =
-                    catchThrowable(() -> provider.issue(STANDARD_USER_ID, UserType.ADMIN));
+                    catchThrowable(() -> provider.issue(STANDARD_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode()));
 
             assertThat(thrown)
                     .isInstanceOf(IllegalStateException.class)
@@ -1447,6 +1453,49 @@ class JwtTokenProviderTest {
             assertThat(String.valueOf(thrown.getMessage()))
                     .as("the subject of a credential being minted does not belong in a message")
                     .doesNotContain(STANDARD_USER_ID);
+        }
+
+        @Test
+        @DisplayName("mints for a stored code the estate never declared, carrying that code as the role "
+                + "claim and the standard authority beside it, because the legacy route split admits "
+                + "every non-administrator value unconditionally")
+        void mintsForAnUndeclaredStoredCode() throws JsonProcessingException {
+            // The record holds a code no level-88 declares. The sign-on program tests the administrator
+            // condition once and its alternative is unconditional, so this operator signs on and reaches
+            // the main menu. Refusing to mint here - which requiring the stored code to equal the resolved
+            // authority's code did - turned that successful sign-on into a server failure.
+            CREDENTIAL_MASTER.with(STANDARD_USER_ID, "X");
+            final JwtTokenProvider provider = provider();
+
+            final String token = provider.issue(STANDARD_USER_ID, UserType.USER, "X");
+
+            final Map<String, Object> payload = payloadOf(token);
+            assertThat(payload)
+                    .as("the role claim is the record's own code, which is what a currency check compares")
+                    .containsEntry(JwtTokenProvider.ROLE_CLAIM, "X");
+            assertThat(payload)
+                    .as("the authority claim is what the code resolved to, which is what a decision reads")
+                    .containsEntry(JwtTokenProvider.AUTHORITY_CLAIM, UserType.USER.getCode());
+
+            final Jwt verified = provider.verify(token).orElseThrow();
+            assertThat(provider.userTypeOf(verified))
+                    .as("standard authority, never administrative and never nothing")
+                    .contains(UserType.USER);
+            assertThat(provider.namesCurrentState(verified))
+                    .as("the token still describes the record it was minted from")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("refuses to mint when the stored code has changed to another undeclared code, so the "
+                + "tolerance of an undeclared code is not a hole in the currency check")
+        void refusesToMintWhenTheUndeclaredCodeHasChanged() {
+            CREDENTIAL_MASTER.with(STANDARD_USER_ID, "Y");
+            final JwtTokenProvider provider = provider();
+
+            assertThat(catchThrowable(() -> provider.issue(STANDARD_USER_ID, UserType.USER, "X")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("no session is issued");
         }
     }
 
@@ -1470,7 +1519,7 @@ class JwtTokenProviderTest {
          */
         private Jwt administratorToken() {
             final JwtTokenProvider provider = provider();
-            return provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN)).orElseThrow();
+            return provider.verify(provider.issue(ADMINISTRATOR_ID, UserType.ADMIN, UserType.ADMIN.getCode())).orElseThrow();
         }
 
         @Test
@@ -1508,7 +1557,7 @@ class JwtTokenProviderTest {
         void noLongerNamesItOnceTheOperatorIsPromoted() {
             final JwtTokenProvider provider = provider();
             final Jwt verified =
-                    provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER)).orElseThrow();
+                    provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER, UserType.USER.getCode())).orElseThrow();
 
             CREDENTIAL_MASTER.withUserType(STANDARD_USER_ID, UserType.ADMIN.getCode());
 
@@ -1560,10 +1609,13 @@ class JwtTokenProviderTest {
         void doesNotNameItWhenTheRoleClaimDisagreesWithTheRecord() {
             final String currentFingerprint =
                     stateService().currentStateOf(ADMINISTRATOR_ID).orElseThrow().fingerprint();
+            // Both type claims are supplied and agree with each other, so the internal-consistency check
+            // passes and what is actually exercised is the comparison against the RECORD.
             final Jwt overclaiming = Jwt.withTokenValue("compact-form-not-parsed-here")
                     .header("alg", "HS256")
                     .subject(ADMINISTRATOR_ID)
                     .claim(JwtTokenProvider.ROLE_CLAIM, UserType.USER.getCode())
+                    .claim(JwtTokenProvider.AUTHORITY_CLAIM, UserType.USER.getCode())
                     .claim(JwtTokenProvider.SECURITY_STATE_CLAIM, currentFingerprint)
                     .issuedAt(ISSUED_AT)
                     .expiresAt(ISSUED_AT.plus(FIXTURE_LIFETIME))
@@ -1573,6 +1625,41 @@ class JwtTokenProviderTest {
                     .as("the fingerprint proves what the record said, not what the token claimed; the "
                             + "type-code comparison is what ties the two together")
                     .isFalse();
+        }
+
+        @Test
+        @DisplayName("does not name it when the token's two type claims disagree with each other, so an "
+                + "undeclared stored code can never be paired with the administrative authority")
+        void doesNotNameItWhenTheTwoTypeClaimsDisagree() {
+            CREDENTIAL_MASTER.with(STANDARD_USER_ID, "X");
+            final String currentFingerprint =
+                    stateService().currentStateOf(STANDARD_USER_ID).orElseThrow().fingerprint();
+            // The stored code is genuine and the fingerprint reconciles, so both of the record-facing
+            // requirements would pass. The authority claim is the escalation: an undeclared code resolves
+            // to the standard authority under the legacy split and to nothing else.
+            final Jwt escalating = Jwt.withTokenValue("compact-form-not-parsed-here")
+                    .header("alg", "HS256")
+                    .subject(STANDARD_USER_ID)
+                    .claim(JwtTokenProvider.ROLE_CLAIM, "X")
+                    .claim(JwtTokenProvider.AUTHORITY_CLAIM, UserType.ADMIN.getCode())
+                    .claim(JwtTokenProvider.SECURITY_STATE_CLAIM, currentFingerprint)
+                    .issuedAt(ISSUED_AT)
+                    .expiresAt(ISSUED_AT.plus(FIXTURE_LIFETIME))
+                    .build();
+
+            assertThat(provider().namesCurrentState(escalating)).isFalse();
+        }
+
+        @Test
+        @DisplayName("names it for a stored code the estate never declared, so tolerating such a code does "
+                + "not cost the operator a usable session")
+        void namesItForAnUndeclaredStoredCode() {
+            CREDENTIAL_MASTER.with(STANDARD_USER_ID, "X");
+            final JwtTokenProvider provider = provider();
+            final Jwt verified =
+                    provider.verify(provider.issue(STANDARD_USER_ID, UserType.USER, "X")).orElseThrow();
+
+            assertThat(provider.namesCurrentState(verified)).isTrue();
         }
 
         @Test

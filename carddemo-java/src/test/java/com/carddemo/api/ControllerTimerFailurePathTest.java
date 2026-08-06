@@ -35,11 +35,14 @@ import com.carddemo.api.dto.UserRequest;
 import com.carddemo.service.AccountUpdateService;
 import com.carddemo.service.AccountViewService;
 import com.carddemo.service.BillPaymentService;
+import com.carddemo.service.CardConcurrencyTokenService;
 import com.carddemo.service.CardDetailService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.MenuService;
+import com.carddemo.service.NavigationService;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.TransactionAddService;
 import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
@@ -47,6 +50,8 @@ import com.carddemo.service.UserManagementService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.validation.Validation;
+import jakarta.validation.ValidatorFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -62,13 +67,19 @@ import org.junit.jupiter.api.Test;
 @DisplayName("custom controller timers retain unexpected failures")
 class ControllerTimerFailurePathTest {
 
+    /**
+     * The one non-production fixture key, declared identically by {@code application-local.yml} and both
+     * {@code application-test.yml} files: Base64 of exactly thirty-two bytes.
+     */
+    private static final String FIELD_ENCRYPTION_KEY = "Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=";
+
     @Test
     @DisplayName("account view and update failures are timed")
     void accountFailuresAreTimed() {
         final MeterRegistry registry = new SimpleMeterRegistry();
         final AccountViewService view = mock(AccountViewService.class);
         final AccountUpdateService update = mock(AccountUpdateService.class);
-        final ScreenStateAdapter screenStateAdapter = new ScreenStateAdapter();
+        final ScreenStateAdapter screenStateAdapter = new ScreenStateAdapter(new NavigationService());
         final AccountController controller = new AccountController(view, update,
                 mock(AccountProtectedDataAdapter.class), screenStateAdapter,
                 new AccountUpdateContractAdapter(screenStateAdapter), registry);
@@ -77,7 +88,7 @@ class ControllerTimerFailurePathTest {
         when(view.viewAccount(nullable(String.class), any(), any())).thenThrow(failure);
         when(update.handle(any(), nullable(String.class))).thenThrow(failure);
 
-        assertThatThrownBy(() -> controller.viewAccount(null, null, null)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.viewAccount(null, null, null, null)).isSameAs(failure);
         assertThat(timer(registry, "carddemo.online.account.view.turn",
                 "presentation", "UNRESOLVED", "outcome", "failed").count()).isEqualTo(1L);
 
@@ -94,7 +105,7 @@ class ControllerTimerFailurePathTest {
         final MeterRegistry registry = new SimpleMeterRegistry();
         final UserManagementService service = mock(UserManagementService.class);
         final AdminUserController controller = new AdminUserController(service,
-                new UserContractAdapter(new ScreenStateAdapter()), registry);
+                new UserContractAdapter(new ScreenStateAdapter(new NavigationService())), registry);
         final UserRequest request = mock(UserRequest.class);
         final RuntimeException failure = failure();
 
@@ -103,10 +114,10 @@ class ControllerTimerFailurePathTest {
         when(service.updateUser(any())).thenThrow(failure);
         when(service.deleteUser(any())).thenThrow(failure);
 
-        assertThatThrownBy(() -> controller.listUsers(request)).isSameAs(failure);
-        assertThatThrownBy(() -> controller.addUser(request)).isSameAs(failure);
-        assertThatThrownBy(() -> controller.updateUser(request)).isSameAs(failure);
-        assertThatThrownBy(() -> controller.deleteUser(request)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.listUsers(request, null)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.addUser(request, null)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.updateUser(request, null)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.deleteUser(request, null)).isSameAs(failure);
 
         assertFailed(registry, "carddemo.online.userlist.turn");
         assertFailed(registry, "carddemo.online.useradd.turn");
@@ -120,11 +131,11 @@ class ControllerTimerFailurePathTest {
         final MeterRegistry registry = new SimpleMeterRegistry();
         final BillPaymentService service = mock(BillPaymentService.class);
         final BillPaymentController controller =
-                new BillPaymentController(service, new ScreenStateAdapter(), registry);
+                new BillPaymentController(service, new ScreenStateAdapter(new NavigationService()), registry);
         final RuntimeException failure = failure();
         when(service.processBillPayment(any())).thenThrow(failure);
 
-        assertThatThrownBy(() -> controller.payBill(mock(BillPaymentRequest.class)))
+        assertThatThrownBy(() -> controller.payBill(mock(BillPaymentRequest.class), null))
                 .isSameAs(failure);
 
         assertThat(timer(registry, "carddemo.online.billpayment.turn",
@@ -140,20 +151,28 @@ class ControllerTimerFailurePathTest {
         final CardListService list = mock(CardListService.class);
         final CardDetailService detail = mock(CardDetailService.class);
         final CardUpdateService update = mock(CardUpdateService.class);
-        final CardController controller =
-                new CardController(list, detail, update, new ScreenStateAdapter(), registry);
         final RuntimeException failure = failure();
 
         when(list.processCardList(any())).thenThrow(failure);
         when(detail.processCardDetail(any())).thenThrow(failure);
         when(update.processCardUpdate(any())).thenThrow(failure);
 
-        assertThatThrownBy(() -> controller.listCards(mock(CardListRequest.class)))
-                .isSameAs(failure);
-        assertThatThrownBy(() -> controller.viewCardDetail(null, null, null, null))
-                .isSameAs(failure);
-        assertThatThrownBy(() -> controller.updateCard(mock(CardUpdateRequest.class)))
-                .isSameAs(failure);
+        try (ValidatorFactory validatorFactory = Validation.buildDefaultValidatorFactory()) {
+            final CardController controller = new CardController(list, detail, update,
+                    new ScreenStateAdapter(new NavigationService()),
+                    new CardConcurrencyTokenService(
+                            new SensitiveFieldEncryptionService(FIELD_ENCRYPTION_KEY)),
+                    validatorFactory.getValidator(), registry);
+
+            assertThatThrownBy(() -> controller.listCards(mock(CardListRequest.class), null))
+                    .isSameAs(failure);
+            assertThatThrownBy(() -> controller.viewCardDetail(null, null, null, null, null))
+                    .isSameAs(failure);
+            // The update turn opens its conversation state first; an absent token is the genuine first
+            // turn, so the stubbed screen is still reached and its failure still propagates.
+            assertThatThrownBy(() -> controller.updateCard(mock(CardUpdateRequest.class), null))
+                    .isSameAs(failure);
+        }
 
         assertFailed(registry, "carddemo.online.cardlist.turn");
         assertFailed(registry, "carddemo.online.carddetail.turn");
@@ -165,7 +184,7 @@ class ControllerTimerFailurePathTest {
     void menuFailuresAreTimed() {
         final MeterRegistry registry = new SimpleMeterRegistry();
         final MenuService service = mock(MenuService.class);
-        final ConversationStateAdapter stateAdapter = new ConversationStateAdapter();
+        final ConversationStateAdapter stateAdapter = new ConversationStateAdapter(new NavigationService());
         final MenuController controller = new MenuController(service, stateAdapter,
                 mock(MenuResponseAdapter.class), registry);
         final RuntimeException failure = failure();
@@ -190,7 +209,7 @@ class ControllerTimerFailurePathTest {
         final MeterRegistry registry = new SimpleMeterRegistry();
         final ReportRequestService service = mock(ReportRequestService.class);
         final ReportController controller = new ReportController(service,
-                new ReportContractAdapter(new ConversationStateAdapter()), registry);
+                new ReportContractAdapter(new ConversationStateAdapter(new NavigationService())), registry);
         final RuntimeException failure = failure();
         when(service.processReportRequest(any(), nullable(String.class))).thenThrow(failure);
 
@@ -209,7 +228,7 @@ class ControllerTimerFailurePathTest {
         final TransactionViewService view = mock(TransactionViewService.class);
         final TransactionAddService add = mock(TransactionAddService.class);
         final TransactionController controller =
-                new TransactionController(list, view, add, new ScreenStateAdapter(), registry);
+                new TransactionController(list, view, add, new ScreenStateAdapter(new NavigationService()), registry);
         final RuntimeException failure = failure();
 
         when(list.listTransactions(any())).thenThrow(failure);
@@ -217,11 +236,11 @@ class ControllerTimerFailurePathTest {
         when(add.processTransactionAdd(any())).thenThrow(failure);
 
         assertThatThrownBy(() -> controller.listTransactions(
-                mock(TransactionListRequest.class), null, 0, false)).isSameAs(failure);
-        assertThatThrownBy(() -> controller.viewTransaction(null, null, null, null))
+                mock(TransactionListRequest.class), null, 0, false, null)).isSameAs(failure);
+        assertThatThrownBy(() -> controller.viewTransaction(null, null, null, null, null))
                 .isSameAs(failure);
         assertThatThrownBy(() -> controller.addTransaction(
-                mock(TransactionAddRequest.class), null)).isSameAs(failure);
+                mock(TransactionAddRequest.class), null, null)).isSameAs(failure);
 
         assertFailedWithNoRoute(registry, "carddemo.online.transaction.list.turn");
         assertFailedWithNoRoute(registry, "carddemo.online.transaction.view.turn");

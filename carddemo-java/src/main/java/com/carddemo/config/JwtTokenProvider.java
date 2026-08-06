@@ -62,9 +62,11 @@ import org.springframework.stereotype.Component;
  * is the only place in the module that produces or checks that signature.
  *
  * <p><strong>The split: exactly two facts are signed, and the whole remainder is echoed by the
- * client.</strong> That area carried five groups, and only two of its fields are security facts. A
- * third claim accompanies them which is not a fact of that area at all but a fingerprint of the record
- * those two facts were read from - see the revocation section below:
+ * client.</strong> That area carried five groups, and only two of its fields are security facts. Two
+ * further claims accompany them which are not fields of that area at all: a fingerprint of the record
+ * those two facts were read from - see the revocation section below - and {@link #AUTHORITY_CLAIM}, the
+ * authority the sign-on route split resolved the stored type code to, which is carried apart from the
+ * code itself because the two genuinely differ for a record holding a code the estate never declared:
  *
  * <ul>
  *   <li>{@code CDEMO-USER-ID}, {@code PIC X(08)} at {@code app/cpy/COCOM01Y.cpy} L25, becomes the
@@ -209,6 +211,29 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * contract change rather than a rename.</p>
      */
     public static final String SECURITY_STATE_CLAIM = "authstate";
+
+    /**
+     * Claim name under which a token carries the authority resolved from its user type.
+     *
+     * <p><strong>Why the resolved authority is a separate claim from {@link #ROLE_CLAIM}.</strong> The
+     * two are different facts and are false of each other for a genuine class of record. The role claim
+     * carries the stored type code exactly as the user-security record holds it, because that is what
+     * {@link #namesCurrentState(Jwt)} has to compare the record against - a claim carrying anything else
+     * could never reconcile. The authority claim carries the type the legacy route split <em>resolved</em>
+     * that code to, and the legacy split tests one condition with an unconditional alternative: every
+     * stored code that is not the administrator letter reaches the standard authority, including a code
+     * the estate never declared. For such a record the stored code and the resolved authority differ, so
+     * one claim cannot carry both without either refusing an operator the legacy admitted or asserting an
+     * entitlement the record does not support.
+     *
+     * <p>The authority claim is the one an authorization decision reads, and it can only ever hold one of
+     * the two declared codes - a claim holding anything else grants nothing at all rather than falling
+     * back to the lesser authority, because a token whose entitlement cannot be read is a token whose
+     * entitlement is unknown. The stored code, meanwhile, is free to be any byte the record holds.
+     * Reading the two apart is what closes the defect where an operator whose stored code was neither
+     * declared letter signed on successfully and was then refused a session.</p>
+     */
+    public static final String AUTHORITY_CLAIM = "authority";
 
     /**
      * Logger. Receives the category of a verification failure and nothing else: never a token, never a
@@ -358,34 +383,48 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      *
      * <p><strong>Two conditions are re-checked here even though the caller has already established
      * them.</strong> The record is read anyway, because the fingerprint can only come from it, so
-     * checking it costs nothing beyond the read. A record that has disappeared, and a record whose type
-     * code no longer matches the type being minted, both mean the record changed underneath the
+     * checking it costs nothing beyond the read. A record that has disappeared, and a record whose
+     * stored type code is no longer the code being minted, both mean the record changed underneath the
      * sign-on that is about to be answered; a session must not be issued in either case, and refusing
      * is the only answer that cannot be mistaken for success. Both are raised rather than returned
-     * because both are unreachable through the delivered sign-on path - it resolves the type from this
-     * same record, in the same request, and admits nobody whose type does not resolve - so reaching
-     * either means a concurrent administrative change or a caller that invented its arguments.</p>
+     * because both are unreachable through the delivered sign-on path - it reads the code from this
+     * same record, in the same request - so reaching either means a concurrent administrative change or
+     * a caller that invented its arguments.</p>
+     *
+     * <p><strong>What is deliberately not checked: that the stored code equals the resolved authority's
+     * own code.</strong> That check used to be here and it was a defect. The legacy route split tests
+     * the administrator letter once and its alternative is unconditional, so a record carrying any other
+     * value - including one the estate never declared - signs on successfully and resolves to the
+     * standard authority. For such a record the stored code and the standard authority's code are
+     * different strings, and requiring them to match refused a session to an operator the sign-on had
+     * just admitted, which surfaced as a server failure on a successful sign-on. The two facts are now
+     * carried in two claims and each is checked against what it is actually a fact about: the stored code
+     * against the record, and the resolved authority against the two codes the estate declares.</p>
      *
      * @param userId   the signed-on user identifier, already upper-cased by the sign-on path as the
      *                 legacy program upper-cases it, and placed in the subject claim verbatim at the
      *                 fixed width of the user record's key - it is neither trimmed, re-cased nor parsed
-     * @param userType the signed-on user's type, whose raw one-character code becomes the role claim and
-     *                 which decides the authority a verified token grants
+     * @param userType the authority the sign-on resolved the stored code to, which decides what a
+     *                 verified token is permitted to do
+     * @param userTypeCode the stored one-character type code exactly as the record holds it, which
+     *                 becomes the role claim and is what a later currency check compares the record
+     *                 against
      * @return the compact serialized token
      * @throws IllegalStateException if no user-security record carries that identifier, or if the record
      *                               carries a different type code from the one being minted
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if any argument is {@code null}
      */
     @Override
-    public String issue(final String userId, final UserType userType) {
+    public String issue(final String userId, final UserType userType, final String userTypeCode) {
         Objects.requireNonNull(userId, "userId must not be null");
         Objects.requireNonNull(userType, "userType must not be null");
+        Objects.requireNonNull(userTypeCode, "userTypeCode must not be null");
 
         final SignOnStateService.SignOnState state = this.signOnStateService.currentStateOf(userId)
                 .orElseThrow(() -> new IllegalStateException(
                         "No user-security record carries the identifier a session was requested for; "
                                 + "no session is issued"));
-        if (!userType.getCode().equals(state.userTypeCode())) {
+        if (!userTypeCode.equals(state.userTypeCode())) {
             // The identifier is deliberately absent from the message: it is the subject of a credential
             // being minted, and this text can reach a log or an error surface.
             throw new IllegalStateException(
@@ -399,7 +438,8 @@ public class JwtTokenProvider implements SessionTokenIssuer {
                 .subject(userId)
                 .issuedAt(issuedAt)
                 .expiresAt(issuedAt.plus(this.expiration))
-                .claim(ROLE_CLAIM, userType.getCode())
+                .claim(ROLE_CLAIM, userTypeCode)
+                .claim(AUTHORITY_CLAIM, userType.getCode())
                 .claim(SECURITY_STATE_CLAIM, state.fingerprint())
                 .build();
 
@@ -438,12 +478,19 @@ public class JwtTokenProvider implements SessionTokenIssuer {
     /**
      * Reads the user type a verified token carries.
      *
-     * <p>The claim holds the raw legacy user-type code, so it is resolved through the same lookup the
-     * source record's values resolve through. A token carrying no role claim, or one carrying a code the
-     * estate does not declare, yields an empty result and therefore grants no authority - it does not
-     * fall back to the lesser of the two types, because a token whose type cannot be read is a token
-     * whose entitlement is unknown. Resolution never throws, matching the sign-on program's tolerance of
-     * an unexpected code at {@code app/cbl/COSGN00C.cbl} L230-L240.</p>
+     * <p><strong>Read from {@link #AUTHORITY_CLAIM} and not from {@link #ROLE_CLAIM}.</strong> The role
+     * claim carries the record's stored code, which for a record the estate never declared is a value no
+     * lookup can resolve; the authority claim carries the type the sign-on route split already resolved
+     * that code to, and the minting side puts one of the two declared codes there and nothing else. So
+     * this method asks the claim that is a fact about entitlement rather than the claim that is a fact
+     * about the record, which is what lets an operator whose stored code is neither declared letter hold
+     * a usable session with the standard authority - exactly the outcome the unconditional alternative at
+     * {@code app/cbl/COSGN00C.cbl} L230-L240 produces.</p>
+     *
+     * <p>A token carrying no authority claim, or one carrying a code the estate does not declare, yields
+     * an empty result and therefore grants no authority - it does not fall back to the lesser of the two
+     * types, because a token whose entitlement cannot be read is a token whose entitlement is unknown.
+     * Resolution never throws.</p>
      *
      * @param jwt a token already verified by {@link #verify(String)}
      * @return the user type the token carries, or empty when it carries none this estate declares
@@ -451,7 +498,7 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      */
     public Optional<UserType> userTypeOf(final Jwt jwt) {
         Objects.requireNonNull(jwt, "jwt must not be null");
-        return UserType.fromCode(jwt.getClaimAsString(ROLE_CLAIM));
+        return UserType.fromCode(jwt.getClaimAsString(AUTHORITY_CLAIM));
     }
 
     /**
@@ -470,14 +517,49 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * what is covered. Like {@link #verify(String)}, it never reports which of the requirements failed
      * - the caller's next action is identical in every case.</p>
      *
+     * <p><strong>A fourth requirement, on the token's own two type claims.</strong> A token carries the
+     * record's stored code and, separately, the authority that code was resolved to. Those two are
+     * consistent by construction on the minting path, which reads both from one record in one request -
+     * but consistency that is only guaranteed by construction is not guaranteed at all once the value is
+     * outside the process, so it is re-established here rather than assumed. The authority claim must be
+     * the authority the stored code resolves to under the legacy route split: the administrator letter
+     * resolves to the administrative authority and every other value resolves to the standard one. A
+     * token whose two claims disagree establishes nothing, which means a stored code the estate never
+     * declared can never be paired with the administrative authority.</p>
+     *
      * @param jwt a token already verified by {@link #verify(String)}
      * @return {@code true} only when the record still exists and still matches the token's claims
      * @throws NullPointerException if {@code jwt} is {@code null}
      */
     public boolean namesCurrentState(final Jwt jwt) {
         Objects.requireNonNull(jwt, "jwt must not be null");
+        final String storedTypeCode = jwt.getClaimAsString(ROLE_CLAIM);
+        if (!authorityClaimResolvesFrom(jwt, storedTypeCode)) {
+            LOG.debug("Refusing a presented bearer token; its type claims disagree with each other");
+            return false;
+        }
         return this.signOnStateService.stillNames(jwt.getSubject(),
-                jwt.getClaimAsString(ROLE_CLAIM), jwt.getClaimAsString(SECURITY_STATE_CLAIM));
+                storedTypeCode, jwt.getClaimAsString(SECURITY_STATE_CLAIM));
+    }
+
+    /**
+     * Reports whether the token's authority claim is the authority its stored type code resolves to.
+     *
+     * <p>The resolution is the legacy route split and nothing more: the administrator code reaches the
+     * administrative type and every other value, declared or not, reaches the standard type. An absent
+     * stored code resolves to nothing at all rather than to the standard type, because a token that names
+     * no record field cannot be reconciled with a record and is refused a step later in any case.</p>
+     *
+     * @param jwt a verified token
+     * @param storedTypeCode the stored type code the token claims, possibly {@code null}
+     * @return {@code true} only when both claims are present and agree
+     */
+    private static boolean authorityClaimResolvesFrom(final Jwt jwt, final String storedTypeCode) {
+        if (storedTypeCode == null) {
+            return false;
+        }
+        final UserType resolved = UserType.fromCode(storedTypeCode).orElse(UserType.USER);
+        return resolved.getCode().equals(jwt.getClaimAsString(AUTHORITY_CLAIM));
     }
 
     /**

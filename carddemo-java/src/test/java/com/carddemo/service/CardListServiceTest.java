@@ -23,7 +23,11 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -92,11 +96,29 @@ final class CardListServiceTest {
 
     private CardListService service;
 
+    /**
+     * The instant the header is stamped from, fixed so the two assembled header fields are exact values
+     * rather than a moving target. The same instant the card-detail screen's own tests use, because the two
+     * screens translate the same header paragraph and a divergence between them would be invisible if each
+     * chose its own reading.
+     */
+    private static final Instant FIXED_INSTANT = Instant.parse("2024-03-09T14:25:36Z");
+
+    /** The header date that instant produces, as {@code MM/DD/YY}. */
+    private static final String EXPECTED_HEADER_DATE = "03/09/24";
+
+    /** The header time that instant produces, as {@code HH:MM:SS}. */
+    private static final String EXPECTED_HEADER_TIME = "14:25:36";
+
+    /** Width of each catalogue screen title, {@code PIC X(40)}. */
+    private static final int FORTY_CHARACTER_FIELD = 40;
+
     @BeforeEach
     void constructService() {
         this.cardRepository = Mockito.mock(CardRepository.class);
         this.service = new CardListService(this.cardRepository, new MessageCatalogService(),
-                new NavigationService(), new AbendService());
+                new NavigationService(), new AbendService(),
+                Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
     }
 
     // ==============================================================================================
@@ -204,16 +226,23 @@ final class CardListServiceTest {
             final MessageCatalogService catalog = new MessageCatalogService();
             final NavigationService navigation = new NavigationService();
             final AbendService abend = new AbendService();
+            final Clock headerClock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
             assertThatNullPointerException()
-                    .isThrownBy(() -> new CardListService(null, catalog, navigation, abend));
+                    .isThrownBy(() -> new CardListService(null, catalog, navigation, abend,
+                            headerClock));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new CardListService(cardRepository, null, navigation, abend));
+                    .isThrownBy(() -> new CardListService(cardRepository, null, navigation, abend,
+                            headerClock));
             assertThatNullPointerException()
-                    .isThrownBy(() -> new CardListService(cardRepository, catalog, null, abend));
+                    .isThrownBy(() -> new CardListService(cardRepository, catalog, null, abend,
+                            headerClock));
             assertThatNullPointerException()
                     .isThrownBy(() -> new CardListService(
-                            cardRepository, catalog, navigation, null));
+                            cardRepository, catalog, navigation, null, headerClock));
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new CardListService(
+                            cardRepository, catalog, navigation, abend, null));
         }
 
         @Test
@@ -352,6 +381,81 @@ final class CardListServiceTest {
 
             assertThat(result.errorMessage()).isEqualTo("NO MORE PAGES TO DISPLAY");
         }
+
+        @Test
+        @DisplayName("a forward press raises the echoed page number rather than restarting from one, so "
+                + "the third page is reported as the third")
+        void aForwardPressRaisesTheEchoedPageNumber() {
+            seedCards(PAGE_SIZE * 3);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    new CardListService.CardListScreenInput(
+                            "DFHPF8",
+                            workArea(null, null),
+                            null,
+                            new BrowseWindow.CursorRequest(
+                                    cardRow(1).getCardNum(), cardRow(PAGE_SIZE).getCardNum(),
+                                    BrowseWindow.PagingDirection.FORWARD),
+                            2,
+                            false,
+                            true,
+                            reSubmission()));
+
+            assertThat(result.pageMetadata().displayedPageNumber())
+                    .as("the program holds the page number in its communication area and raises it on "
+                            + "a page-down; a boundary that supplied a constant first page would make "
+                            + "every forward press report page two")
+                    .isEqualTo("3");
+        }
+
+        @Test
+        @DisplayName("a backward press lowers the echoed page number, which is the same retained value "
+                + "read in the other direction")
+        void aBackwardPressLowersTheEchoedPageNumber() {
+            seedCards(PAGE_SIZE * 3);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    new CardListService.CardListScreenInput(
+                            "DFHPF7",
+                            workArea(null, null),
+                            null,
+                            new BrowseWindow.CursorRequest(
+                                    cardRow(PAGE_SIZE + 1).getCardNum(),
+                                    cardRow(PAGE_SIZE * 2).getCardNum(),
+                                    BrowseWindow.PagingDirection.FORWARD),
+                            3,
+                            false,
+                            true,
+                            reSubmission()));
+
+            assertThat(result.pageMetadata().displayedPageNumber()).isEqualTo("2");
+        }
+
+        @Test
+        @DisplayName("the retained end-of-data state is answered back, so the next turn can echo the "
+                + "value this turn settled on")
+        void theRetainedEndOfDataStateIsAnsweredBack() {
+            seedCards(PAGE_SIZE);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    new CardListService.CardListScreenInput(
+                            "DFHPF8",
+                            workArea(null, null),
+                            null,
+                            new BrowseWindow.CursorRequest(
+                                    null, cardRow(PAGE_SIZE).getCardNum(),
+                                    BrowseWindow.PagingDirection.FORWARD),
+                            1,
+                            false,
+                            false,
+                            reSubmission()));
+
+            assertThat(result.lastPageAlreadyShown())
+                    .as("a page-down that finds nothing beyond the page on the screen is what sets the "
+                            + "retained flag, and the turn has to answer it back for the next one to "
+                            + "distinguish an exhausted browse from an unexplored one")
+                    .isTrue();
+        }
     }
 
     // ==============================================================================================
@@ -455,6 +559,42 @@ final class CardListServiceTest {
             assertThat(result.errorMessage()).isEqualTo("INVALID ACTION CODE");
             assertThat(result.selectionErrorFlags().get(3)).isTrue();
             assertThat(result.selectionErrorFlags().get(0)).isFalse();
+        }
+
+        @Test
+        @DisplayName("the faulted row is reported as a state-bearing field finding naming its own screen "
+                + "field, so a response layer can decorate exactly the selector the operator typed into")
+        void theFaultedRowIsReportedAsAFieldFinding() {
+            seedCards(PAGE_SIZE);
+
+            final CardListService.CardListResult result = service.processCardList(
+                    turn("DFHENTER", selectionAt(4, "X"), reSubmission()));
+
+            assertThat(result.fieldErrors()).hasSize(1);
+            final ValidationException.FieldError finding = result.fieldErrors().get(0);
+            assertThat(finding.field()).isEqualTo("selection4");
+            assertThat(finding.bmsFieldId()).isEqualTo("CRDSEL4");
+            assertThat(finding.state())
+                    .as("a character was supplied and is unusable, which the legacy signals by colouring "
+                            + "the field rather than by writing the blank-field marker")
+                    .isEqualTo(ValidationException.FieldState.INVALID);
+            assertThat(finding.message()).isEqualTo("INVALID ACTION CODE");
+        }
+
+        @Test
+        @DisplayName("both faulted rows are reported as findings in slot order, so the ordered contract "
+                + "carries the same pair the positional indicator does")
+        void bothFaultedRowsAreReportedInSlotOrder() {
+            seedCards(PAGE_SIZE);
+            final List<String> twoActions = selectionAt(1, "S");
+            twoActions.set(4, "U");
+
+            final CardListService.CardListResult result =
+                    service.processCardList(turn("DFHENTER", twoActions, reSubmission()));
+
+            assertThat(result.fieldErrors())
+                    .extracting(ValidationException.FieldError::field)
+                    .containsExactly("selection1", "selection5");
         }
 
         @Test

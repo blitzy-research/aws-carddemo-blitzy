@@ -127,14 +127,19 @@ class CardListResponseTest {
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "displayedPageNumber", "accountFilter", "cardNumberFilter", "rows",
             "selectionErrorFlags", "infoMessage", "errorMessage", "generalError", "pageMetadata",
-            "focusScreenFieldId", "nextRoute", "navigationContext");
+            "lastPageAlreadyShown", "fieldErrors", "focusScreenFieldId", "nextRoute",
+            "navigationContext");
 
     /**
-     * The four keys one row carries, in declaration order, and deliberately no fifth. The excluded
+     * The five keys one row carries, in declaration order, and deliberately no sixth. The excluded
      * map item would have appeared in this payload had the production type modelled it.
+     *
+     * <p>The screen slot is the first of the five and is not one of the map's own items: it is the row
+     * position the legacy program addresses its selection field by, which the compacted row list cannot
+     * express on a partial backward page.
      */
     private static final List<String> ROW_PAYLOAD_KEYS_IN_MAP_ORDER =
-            List.of("selection", "accountNumber", "cardNumber", "cardStatus");
+            List.of("screenSlot", "selection", "accountNumber", "cardNumber", "cardStatus");
 
     /**
      * The nine operator messages the screen renders, exactly as the program builds them.
@@ -190,7 +195,7 @@ class CardListResponseTest {
     private static final String PAGE_INDICATOR = "001";
 
     private static CardListResponse.CardListRow row(int ordinal) {
-        return new CardListResponse.CardListRow(
+        return new CardListResponse.CardListRow(1,
                 "S", "0000000002" + ordinal, "422222222222222" + ordinal, "Y");
     }
 
@@ -228,7 +233,7 @@ class CardListResponseTest {
         return new CardListResponse("CCLI", "AWS Mainframe Modernization", "08/02/26", "COCRDLIC",
                 "CardDemo", "14:30:00", PAGE_INDICATOR, ACCOUNT_FILTER, CARD_FILTER, rows,
                 selectionErrorFlags, CardListResponse.MSG_ROW_ACTION_PROMPT,
-                CardListResponse.MSG_NO_MORE_RECORDS, true, paging(), "CRDSID", "/api/cards",
+                CardListResponse.MSG_NO_MORE_RECORDS, true, paging(), false, List.of(), "CRDSID", "/api/cards",
                 navigation());
     }
 
@@ -240,7 +245,7 @@ class CardListResponseTest {
     /** A response with every nullable component absent and no rows. */
     private static CardListResponse allAbsent() {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, false, null, null, null, null);
+                null, null, null, false, null, false, List.of(), null, null, null);
     }
 
     /**
@@ -252,7 +257,7 @@ class CardListResponseTest {
      */
     private static CardListResponse carrying(String message) {
         return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, message, true, null, null, null, null);
+                null, null, message, true, null, false, List.of(), null, null, null);
     }
 
     /**
@@ -295,25 +300,27 @@ class CardListResponseTest {
             ACCOUNT_FILTER, CARD_FILTER, ROW_ACCOUNT, ROW_CARD, PREVIOUS_KEY, NEXT_KEY);
 
     @Nested
-    @DisplayName("one row carries exactly four items and no fifth")
+    @DisplayName("one row carries its screen slot and exactly four items, and no fifth item")
     class RowShape {
 
         @Test
-        @DisplayName("publishes exactly the four map items, in the order the map declares them")
-        void publishesExactlyFourItems() throws JsonProcessingException {
-            JsonNode payload = payloadOf(new CardListResponse.CardListRow(
+        @DisplayName("publishes its screen slot and exactly the four map items, in the order the map "
+                + "declares them")
+        void publishesItsSlotAndExactlyFourItems() throws JsonProcessingException {
+            JsonNode payload = payloadOf(new CardListResponse.CardListRow(1,
                     "S", ROW_ACCOUNT, ROW_CARD, "Y"));
 
             assertThat(keysOf(payload))
-                    .as("a row is the echoed action code, the account, the card and the status")
+                    .as("a row is the slot it occupies plus the echoed action code, the account, the "
+                            + "card and the status")
                     .containsExactlyElementsOf(ROW_PAYLOAD_KEYS_IN_MAP_ORDER)
-                    .hasSize(4);
+                    .hasSize(5);
         }
 
         @Test
-        @DisplayName("publishes no item beyond those four, so the excluded map item stays excluded")
-        void publishesNoFifthItem() throws JsonProcessingException {
-            JsonNode payload = payloadOf(new CardListResponse.CardListRow(
+        @DisplayName("publishes no item beyond those five, so the excluded map item stays excluded")
+        void publishesNoSixthItem() throws JsonProcessingException {
+            JsonNode payload = payloadOf(new CardListResponse.CardListRow(1,
                     "S", ROW_ACCOUNT, ROW_CARD, "Y"));
 
             assertThat(payload.size())
@@ -329,7 +336,7 @@ class CardListResponseTest {
         @DisplayName("carries the status as the raw one-character code rather than as the enumeration")
         void carriesTheStatusAsRawText() throws JsonProcessingException {
             CardListResponse.CardListRow unmapped =
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Q");
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Q");
 
             assertThat(unmapped.cardStatus())
                     .as("a code outside the known pair flows through untouched, as it does in the"
@@ -345,7 +352,7 @@ class CardListResponseTest {
         @DisplayName("reads every item back exactly as supplied, at its full map width")
         void readsEveryItemBackUnaltered() {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("U", ROW_ACCOUNT, ROW_CARD, "N");
+                    new CardListResponse.CardListRow(1,"U", ROW_ACCOUNT, ROW_CARD, "N");
 
             assertThat(subject.selection()).isEqualTo("U");
             assertThat(subject.accountNumber())
@@ -363,11 +370,11 @@ class CardListResponseTest {
         @DisplayName("compares by value and renders through the overridden representation")
         void comparesByValue() {
             CardListResponse.CardListRow one =
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y");
             CardListResponse.CardListRow same =
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y");
             CardListResponse.CardListRow other =
-                    new CardListResponse.CardListRow("U", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"U", ROW_ACCOUNT, ROW_CARD, "Y");
 
             assertThat(one).isEqualTo(same).hasSameHashCodeAs(same).isNotEqualTo(other);
             assertThat(one.toString()).startsWith("CardListRow[").endsWith("]");
@@ -375,7 +382,7 @@ class CardListResponseTest {
     }
 
     @Nested
-    @DisplayName("the response carries exactly the eighteen map components")
+    @DisplayName("the response carries exactly the twenty published components")
     class ResponseShape {
 
         @Test
@@ -383,7 +390,7 @@ class CardListResponseTest {
         void publishesExactlyTheMapComponents() throws JsonProcessingException {
             assertThat(keysOf(payloadOf(fullPage())))
                     .containsExactlyElementsOf(PAYLOAD_KEYS_IN_MAP_ORDER)
-                    .hasSize(18);
+                    .hasSize(20);
         }
 
         @Test
@@ -637,8 +644,8 @@ class CardListResponseTest {
         @DisplayName("carries the indicator as data and tallies, rewrites and interprets nothing")
         void carriesTheIndicatorAsData() throws JsonProcessingException {
             List<CardListResponse.CardListRow> bothActedOn = List.of(
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y"),
-                    new CardListResponse.CardListRow("U", ROW_ACCOUNT, ROW_CARD, "Y"));
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y"),
+                    new CardListResponse.CardListRow(1,"U", ROW_ACCOUNT, ROW_CARD, "Y"));
 
             CardListResponse subject = fullyPopulated(bothActedOn, List.of(true, true));
 
@@ -912,7 +919,7 @@ class CardListResponseTest {
         @DisplayName("a page indicator at this screen's three characters survives untrimmed")
         void aThreeCharacterPageIndicatorSurvivesUntrimmed() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    "1  ", null, null, null, null, null, null, false, null, null, null, null);
+                    "1  ", null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
 
             assertThat(subject.displayedPageNumber())
                     .as("three characters here, never widened to the eight the transaction-list"
@@ -927,7 +934,7 @@ class CardListResponseTest {
         void anOverLongValueIsReportedAndNeverShortened() {
             String tooWide = "X".repeat(CardListResponse.DISPLAYED_PAGE_NUMBER_LENGTH + 1);
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    tooWide, null, null, null, null, null, null, false, null, null, null, null);
+                    tooWide, null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
 
             assertThat(subject.displayedPageNumber())
                     .as("a bound measures and reports; it does not alter, clamp or truncate")
@@ -949,7 +956,7 @@ class CardListResponseTest {
             String time = "14:30:0 ";
 
             CardListResponse subject = new CardListResponse(transaction, title, date, program,
-                    title, time, null, null, null, null, null, null, null, false, null, "CRDSID",
+                    title, time, null, null, null, null, null, null, null, false, null, false, List.of(), "CRDSID",
                     null, null);
 
             assertThat(subject.transactionName()).isEqualTo(transaction).hasSize(4);
@@ -974,7 +981,7 @@ class CardListResponseTest {
         @DisplayName("an account identifier opening with zeros comes back with them intact")
         void anAccountIdentifierKeepsItsLeadingZeros() throws JsonProcessingException {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("S", "00000000001", ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"S", "00000000001", ROW_CARD, "Y");
 
             assertThat(subject.accountNumber())
                     .as("a numeric type would discard them and eleven digits opening with a zero"
@@ -992,7 +999,7 @@ class CardListResponseTest {
         @DisplayName("a card number opening with zeros comes back with them intact")
         void aCardNumberKeepsItsLeadingZeros() throws JsonProcessingException {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, "0000000000000001", "Y");
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, "0000000000000001", "Y");
 
             assertThat(subject.cardNumber())
                     .isEqualTo("0000000000000001")
@@ -1005,7 +1012,7 @@ class CardListResponseTest {
         @DisplayName("both echoed filters keep their leading zeros too")
         void bothEchoedFiltersKeepTheirLeadingZeros() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    null, "00000000011", "0000000000000009", null, null, null, null, false, null,
+                    null, "00000000011", "0000000000000009", null, null, null, null, false, null, false, List.of(),
                     null, null, null);
             JsonNode payload = payloadOf(subject);
 
@@ -1019,7 +1026,7 @@ class CardListResponseTest {
         @DisplayName("a card number crosses in full, neither obscured nor shortened")
         void aCardNumberCrossesInFull() throws JsonProcessingException {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y");
 
             assertThat(payloadOf(subject).get("cardNumber").asText())
                     .as("the legacy screen displays it in full and applies no field-level"
@@ -1038,9 +1045,9 @@ class CardListResponseTest {
         @Test
         @DisplayName("the detail and update codes are echoed exactly as received")
         void theDetailAndUpdateCodesAreEchoedExactly() {
-            assertThat(new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y").selection())
+            assertThat(new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y").selection())
                     .isEqualTo("S");
-            assertThat(new CardListResponse.CardListRow("U", ROW_ACCOUNT, ROW_CARD, "Y").selection())
+            assertThat(new CardListResponse.CardListRow(1,"U", ROW_ACCOUNT, ROW_CARD, "Y").selection())
                     .isEqualTo("U");
         }
 
@@ -1048,7 +1055,7 @@ class CardListResponseTest {
         @DisplayName("a lower-case code is echoed as sent and is neither folded nor substituted")
         void aLowerCaseCodeIsEchoedAsSent() throws JsonProcessingException {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("s", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"s", ROW_ACCOUNT, ROW_CARD, "Y");
 
             assertThat(subject.selection())
                     .as("interpreting the code belongs to the service that reproduces the program;"
@@ -1062,9 +1069,9 @@ class CardListResponseTest {
         @DisplayName("a blank and an absent code are distinct and both survive")
         void aBlankAndAnAbsentCodeAreDistinct() throws JsonProcessingException {
             CardListResponse.CardListRow blank =
-                    new CardListResponse.CardListRow(" ", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1," ", ROW_ACCOUNT, ROW_CARD, "Y");
             CardListResponse.CardListRow untouched =
-                    new CardListResponse.CardListRow(null, ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,null, ROW_ACCOUNT, ROW_CARD, "Y");
 
             assertThat(blank.selection()).isEqualTo(" ");
             assertThat(payloadOf(blank).get("selection").asText()).isEqualTo(" ");
@@ -1072,14 +1079,14 @@ class CardListResponseTest {
             assertThat(keysOf(payloadOf(untouched)))
                     .as("an absent code is omitted rather than rendered as a blank")
                     .doesNotContain("selection")
-                    .hasSize(3);
+                    .hasSize(4);
         }
 
         @Test
         @DisplayName("an empty code survives as an empty value rather than becoming absent")
         void anEmptyCodeSurvivesAsEmpty() {
             CardListResponse.CardListRow subject =
-                    new CardListResponse.CardListRow("", ROW_ACCOUNT, ROW_CARD, "Y");
+                    new CardListResponse.CardListRow(1,"", ROW_ACCOUNT, ROW_CARD, "Y");
 
             assertThat(subject.selection()).isNotNull();
             assertThat(subject.selection()).isEmpty();
@@ -1159,7 +1166,7 @@ class CardListResponseTest {
             Optional<CardStatus> active =
                     CardStatus.fromCode(row(1).cardStatus());
             Optional<CardStatus> unmapped = CardStatus.fromCode(
-                    new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Q").cardStatus());
+                    new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Q").cardStatus());
 
             assertThat(active).contains(CardStatus.Y);
             assertThat(active.map(CardStatus::isActive).orElse(false)).isTrue();
@@ -1218,7 +1225,7 @@ class CardListResponseTest {
                     PREVIOUS_KEY, NEXT_KEY, false, true, "002");
 
             CardListResponse subject = new CardListResponse("CCLI", null, null, null, null, null,
-                    "002", null, null, asPresented, null, null, null, false, backward, null, null,
+                    "002", null, null, asPresented, null, null, null, false, backward, false, List.of(), null, null,
                     null);
 
             assertThat(subject.rows()).containsExactly(row(5), row(6), row(7));
@@ -1292,7 +1299,7 @@ class CardListResponseTest {
         @DisplayName("the wholly empty state is carried as readily as a populated one")
         void theWhollyEmptyStateIsCarried() throws JsonProcessingException {
             CardListResponse subject = new CardListResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, false, null, null, null,
+                    null, null, null, null, null, null, null, false, null, false, List.of(), null, null,
                     NavigationContext.empty());
 
             assertThat(subject.navigationContext()).isEqualTo(NavigationContext.empty());
@@ -1342,7 +1349,7 @@ class CardListResponseTest {
 
         private CardListResponse carryingRoute(String route) {
             return new CardListResponse(null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, false, null, null, route, null);
+                    null, null, null, false, null, false, List.of(), null, route, null);
         }
     }
 
@@ -1369,7 +1376,7 @@ class CardListResponseTest {
         void aWhollyAbsentRowRaisesNoViolation() {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator()
-                        .validate(new CardListResponse.CardListRow(null, null, null, null)))
+                        .validate(new CardListResponse.CardListRow(1,null, null, null, null)))
                         .isEmpty();
             }
         }
@@ -1388,7 +1395,7 @@ class CardListResponseTest {
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 Validator validator = factory.getValidator();
 
-                assertThat(validator.validate(new CardListResponse.CardListRow(
+                assertThat(validator.validate(new CardListResponse.CardListRow(1,
                         "!", ROW_ACCOUNT, ROW_CARD, "?")))
                         .as("no pattern, digit, minimum or maximum constraint fires on a value the"
                                 + " legacy accepted; only an over-long value is ever reported")
@@ -1401,7 +1408,7 @@ class CardListResponseTest {
         @Test
         @DisplayName("only an over-long value is reported, and the value itself stays untouched")
         void onlyAnOverLongValueIsReported() {
-            CardListResponse.CardListRow tooWide = new CardListResponse.CardListRow(
+            CardListResponse.CardListRow tooWide = new CardListResponse.CardListRow(1,
                     "SU", ROW_ACCOUNT + "9", ROW_CARD + "9", "YN");
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
@@ -1424,9 +1431,10 @@ class CardListResponseTest {
             JsonNode payload = payloadOf(allAbsent());
 
             assertThat(keysOf(payload))
-                    .as("the two collections are present because an absent one became empty, and"
-                            + " the error flag is present because it is never absent")
-                    .containsExactly("rows", "selectionErrorFlags", "generalError");
+                    .as("the three collections are present because an absent one became empty, and the "
+                            + "two flags are present because a primitive is never absent")
+                    .containsExactly("rows", "selectionErrorFlags", "generalError",
+                            "lastPageAlreadyShown", "fieldErrors");
             assertThat(payload.get("rows").isEmpty()).isTrue();
             assertThat(payload.get("selectionErrorFlags").isEmpty()).isTrue();
             assertThat(payload.get("generalError").asBoolean()).isFalse();
@@ -1556,7 +1564,7 @@ class CardListResponseTest {
         @Test
         @DisplayName("the row rendering withholds both identifiers and keeps the two codes")
         void theRowRenderingWithholdsBothIdentifiers() {
-            String rendered = new CardListResponse.CardListRow("S", ROW_ACCOUNT, ROW_CARD, "Y")
+            String rendered = new CardListResponse.CardListRow(1,"S", ROW_ACCOUNT, ROW_CARD, "Y")
                     .toString();
 
             assertThat(rendered)
@@ -1607,7 +1615,7 @@ class CardListResponseTest {
                     PAGE_INDICATOR, "00000000099", CARD_FILTER,
                     rows(PageMetadata.CARD_LIST_PAGE_SIZE), List.of(),
                     CardListResponse.MSG_ROW_ACTION_PROMPT, CardListResponse.MSG_NO_MORE_RECORDS,
-                    true, paging(), "CRDSID", "/api/cards", navigation());
+                    true, paging(), false, List.of(), "CRDSID", "/api/cards", navigation());
 
             assertThat(one.toString()).isEqualTo(differsOnlyInAWithheldValue.toString());
             assertThat(one)

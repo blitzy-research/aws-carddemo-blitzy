@@ -16,11 +16,15 @@
  */
 package com.carddemo.api;
 
+import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.api.dto.ReportRequest;
 import com.carddemo.api.dto.ReportResponse;
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.service.ReportRequestService;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
 
@@ -161,8 +165,49 @@ public final class ReportContractAdapter {
                 result.submissionAccepted(),
                 result.message(),
                 result.errorFlag(),
+                toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 result.route().getRouteValue(),
                 outboundContext);
+    }
+
+    /**
+     * Translates the per-field detail of a turn into the response contract's own field-error vocabulary.
+     *
+     * <p>Both vocabularies distinguish the same two legacy states - a field that was not supplied from
+     * one supplied wrongly - so the mapping is one to one and total. The switch is exhaustive over the
+     * carrier's two constants with no default arm, so adding a third state to either enumeration stops
+     * the build here rather than silently degrading a response, and arrow form means no arm can fall
+     * through into the next.
+     *
+     * <p>Order is preserved. The entries arrive in the order the service checked the fields - which for
+     * this screen is the report-type evaluation first, then the six date parts in the order the map
+     * declares them, then the confirmation - and that order is what tells a client which failure came
+     * first and where to place the cursor. Nothing is reordered, merged, de-duplicated or filtered, and
+     * no text is composed: a per-field explanation crosses exactly as the service supplied it, including
+     * its absence.
+     *
+     * <p>The two identifying components are read as the empty string when absent, because the response
+     * contract requires both: an entry a client cannot locate on the screen is worse than no entry, and
+     * refusing the whole response over a missing label would hide the populated summary message the
+     * operator needs.
+     *
+     * @param fieldErrors the turn's per-field detail, never {@code null} as the outcome normalises it
+     * @return the translated detail in the same order, never {@code null}
+     */
+    private static List<ErrorResponse.FieldError> toResponseFieldErrors(
+            final List<ValidationException.FieldError> fieldErrors) {
+        final List<ErrorResponse.FieldError> translated = new ArrayList<>(fieldErrors.size());
+        for (final ValidationException.FieldError fieldError : fieldErrors) {
+            translated.add(new ErrorResponse.FieldError(
+                    Objects.requireNonNullElse(fieldError.field(), ""),
+                    Objects.requireNonNullElse(fieldError.bmsFieldId(), ""),
+                    switch (fieldError.state()) {
+                        case MISSING -> ErrorResponse.FieldState.MISSING;
+                        case INVALID -> ErrorResponse.FieldState.INVALID;
+                    },
+                    fieldError.message()));
+        }
+        return translated;
     }
 }

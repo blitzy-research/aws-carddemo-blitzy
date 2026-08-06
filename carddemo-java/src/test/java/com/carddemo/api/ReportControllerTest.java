@@ -136,7 +136,7 @@ class ReportControllerTest {
         reportRequestService = mock(ReportRequestService.class);
         meterRegistry = new SimpleMeterRegistry();
         controller = new ReportController(reportRequestService,
-                new ReportContractAdapter(new ConversationStateAdapter()), meterRegistry);
+                new ReportContractAdapter(new ConversationStateAdapter(new NavigationService())), meterRegistry);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -326,7 +326,7 @@ class ReportControllerTest {
         @DisplayName("every collaborator is required, so a part-wired controller cannot be constructed")
         void everyCollaboratorIsRequired() {
             final ReportContractAdapter adapter =
-                    new ReportContractAdapter(new ConversationStateAdapter());
+                    new ReportContractAdapter(new ConversationStateAdapter(new NavigationService()));
 
             assertThatNullPointerException().isThrownBy(() ->
                     new ReportController(null, adapter, meterRegistry));

@@ -121,10 +121,10 @@ class UserResponseRuleComplianceTest {
             final List<ErrorResponse.FieldError> fieldErrors,
             final NavigationContext navigationContext) {
         return new UserResponse(
-                rows, pageMetadata, USER_ID, "FIRSTNAME", "LASTNAME",
+                rows, pageMetadata, null, USER_ID, "FIRSTNAME", "LASTNAME",
                 "A", "CU01", "List Users", "08/02/26", "COUSR01C",
                 "CardDemo", "14:30:00", message, fieldErrors, false,
-                true, "USRIDIN", "/api/admin/users", navigationContext);
+                true, false, "USRIDIN", "/api/admin/users", navigationContext);
     }
 
     /**
@@ -137,10 +137,10 @@ class UserResponseRuleComplianceTest {
     private static UserResponse aSparseResponse(final List<UserResponse.UserRow> rows,
             final List<ErrorResponse.FieldError> fieldErrors) {
         return new UserResponse(
-                rows, null, null, null, null,
+                rows, null, null, null, null, null,
                 null, null, null, null, null,
                 null, null, null, fieldErrors, false,
-                false, null, null, null);
+                false, false, null, null, null);
     }
 
     /**
@@ -756,16 +756,17 @@ class UserResponseRuleComplianceTest {
 
         @Test
         @DisplayName("the response declares twenty components including the protected page snapshot")
-        void theResponseDeclaresNineteenComponents() {
+        void theResponseDeclaresTwentyOneComponents() {
             final List<String> declared = Arrays.stream(UserResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("rows", "pageMetadata", "rowSnapshotToken", "userId",
                     "firstName", "lastName", "userType", "transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "message",
-                    "fieldErrors", "generalError", "actionSucceeded", "focusScreenFieldId",
+                    "fieldErrors", "generalError", "actionSucceeded", "preserveDisplayedPage",
+                    "focusScreenFieldId",
                     "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(20);
+            assertThat(declared).hasSize(21);
         }
 
         @Test
@@ -900,8 +901,8 @@ class UserResponseRuleComplianceTest {
             assertThat(declaresAnUpperBound(UserResponse.class, "nextRoute")).isFalse();
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
-                assertThat(factory.getValidator().validate(new UserResponse(null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, false, false,
+                assertThat(factory.getValidator().validate(new UserResponse(null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null, null, false, false, false,
                         null, "/".repeat(200), null))).isEmpty();
             }
         }
@@ -915,7 +916,7 @@ class UserResponseRuleComplianceTest {
          */
         private UserResponse responseWith(final String componentName, final String value) {
             return new UserResponse(
-                    null, null,
+                    null, null, null,
                     valueFor("userId", componentName, value),
                     valueFor("firstName", componentName, value),
                     valueFor("lastName", componentName, value),
@@ -927,7 +928,7 @@ class UserResponseRuleComplianceTest {
                     valueFor("title02", componentName, value),
                     valueFor("currentTime", componentName, value),
                     valueFor("message", componentName, value),
-                    null, false, false,
+                    null, false, false, false,
                     valueFor("focusScreenFieldId", componentName, value),
                     null, null);
         }
@@ -966,10 +967,10 @@ class UserResponseRuleComplianceTest {
         @DisplayName("a difference in the outcome flag alone makes two responses unequal, so a "
                 + "succeeded update is never mistaken for a redisplayed one")
         void aDifferenceInTheOutcomeFlagMakesTwoResponsesUnequal() {
-            final UserResponse succeeded = new UserResponse(null, null, USER_ID, null, null, null,
-                    null, null, null, null, null, null, null, null, false, true, null, null, null);
-            final UserResponse redisplayed = new UserResponse(null, null, USER_ID, null, null, null,
-                    null, null, null, null, null, null, null, null, false, false, null, null, null);
+            final UserResponse succeeded = new UserResponse(null, null, null, USER_ID, null, null, null,
+                    null, null, null, null, null, null, null, null, false, true, false, null, null, null);
+            final UserResponse redisplayed = new UserResponse(null, null, null, USER_ID, null, null, null,
+                    null, null, null, null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(succeeded).isNotEqualTo(redisplayed);
         }

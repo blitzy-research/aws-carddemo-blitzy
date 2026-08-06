@@ -97,6 +97,12 @@ import com.carddemo.domain.enums.KeyAction;
  * @param navigationContext the echoed communication area, or {@code null} when the turn echoed none
  * @param concurrencyToken the echoed before-image proof, or {@code null} when the turn presents nothing
  *     to confirm
+ * @param protectedValuesWithheld whether the regulated components were withheld from the caller when the
+ *     screen this submission echoes was composed. Set by the boundary from the caller's own authority and
+ *     never from anything the caller typed. It is what makes the withheld stand-in a <em>server-minted</em>
+ *     sentinel rather than an ordinary value: on a turn where nothing was withheld, a submitted run of
+ *     asterisks is exactly what it looks like and is edited accordingly, so an authorized operator's
+ *     literal entry is never silently reinterpreted
  * @since 1.0.0
  */
 public record AccountUpdateCommand(
@@ -145,7 +151,8 @@ public record AccountUpdateCommand(
         String primaryCardHolderIndicator,
         KeyAction keyAction,
         ScreenNavigationState navigationContext,
-        String concurrencyToken) {
+        String concurrencyToken,
+        boolean protectedValuesWithheld) {
 
     /** Fixed stand-in this command's rendering uses in place of every value. */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";

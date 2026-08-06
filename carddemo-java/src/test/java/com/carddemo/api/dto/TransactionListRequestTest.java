@@ -152,7 +152,21 @@ class TransactionListRequestTest {
     }
 
     private static PageMetadata.PageCursorRequest cursor(PageMetadata.PagingDirection direction) {
-        return new PageMetadata.PageCursorRequest(FIRST_ROW_KEY, LAST_ROW_KEY, direction);
+        return cursor(direction, null, false);
+    }
+
+    /**
+     * Builds an inbound paging request over the two fixture boundary keys and the retained values named.
+     *
+     * @param direction the way the browse should walk
+     * @param retainedPageNumber the retained page number the continuation carried, possibly null
+     * @param nextPageIndicated the retained further-pages flag the continuation carried
+     * @return the request
+     */
+    private static PageMetadata.PageCursorRequest cursor(PageMetadata.PagingDirection direction,
+            String retainedPageNumber, boolean nextPageIndicated) {
+        return new PageMetadata.PageCursorRequest(FIRST_ROW_KEY, LAST_ROW_KEY, direction,
+                retainedPageNumber, nextPageIndicated);
     }
 
     private static List<String> everyRowUnmarked() {
@@ -542,20 +556,26 @@ class TransactionListRequestTest {
     @DisplayName("the paging state is carried, never re-implemented")
     class PagingStateIsCarried {
         @Test
-        @DisplayName("the inbound shape carries two boundary keys and a direction, and nothing else")
-        void theInboundShapeCarriesTwoKeysAndADirection() throws JsonProcessingException {
+        @DisplayName("the inbound shape carries two boundary keys, a direction and the two retained "
+                + "communication-area values, and nothing else")
+        void theInboundShapeCarriesTwoKeysADirectionAndTheRetainedValues()
+                throws JsonProcessingException {
             ObjectMapper mapper = moduleEquivalentMapper();
 
             JsonNode inbound = mapper.readTree(mapper.writeValueAsString(
-                    cursor(PageMetadata.PagingDirection.FORWARD)));
+                    cursor(PageMetadata.PagingDirection.FORWARD, "00000003", true)));
 
             assertThat(inbound.size())
-                    .as("three properties and no fourth: a client is entitled to choose where to"
-                            + " resume and which way to walk, and nothing further")
-                    .isEqualTo(3);
+                    .as("five properties and no sixth: a client is entitled to choose where to resume "
+                            + "and which way to walk, and to echo back the two values its own program "
+                            + "reads out of the communication area rather than recomputing, and nothing "
+                            + "further")
+                    .isEqualTo(5);
             assertThat(inbound.has("previousCursorKey")).isTrue();
             assertThat(inbound.has("nextCursorKey")).isTrue();
             assertThat(inbound.has("direction")).isTrue();
+            assertThat(inbound.has("displayedPageNumber")).isTrue();
+            assertThat(inbound.has("nextPageIndicated")).isTrue();
         }
 
         @Test
@@ -578,8 +598,9 @@ class TransactionListRequestTest {
             assertThat(inboundTree.has("pageSize"))
                     .as("the row count is screen shape, so a submission may not state it")
                     .isFalse();
-            assertThat(inboundTree.has("displayedPageNumber"))
-                    .as("the indicator is written to the screen and never read back from it")
+            assertThat(inboundTree.has("hasPreviousPages"))
+                    .as("whether a page precedes this one is derived from the retained page number "
+                            + "rather than retained, so a submission may not state it")
                     .isFalse();
         }
 
@@ -591,8 +612,10 @@ class TransactionListRequestTest {
             TransactionListRequest roundTripped = mapper.readValue(
                     mapper.writeValueAsString(populated()), TransactionListRequest.class);
 
+            // The retained page number crosses onto the paging carrier, which is the whole point of
+            // carrying it: the screen reads it back rather than restarting at page one.
             assertThat(roundTripped.pageMetadata()).isEqualTo(
-                    cursor(PageMetadata.PagingDirection.FORWARD));
+                    cursor(PageMetadata.PagingDirection.FORWARD, INDICATOR_AT_FULL_WIDTH, false));
             assertThat(roundTripped.pageMetadata().previousCursorKey())
                     .as("the browse repositions on the key verbatim, so a single altered byte would"
                             + " change which rows the screen lists")
@@ -632,7 +655,7 @@ class TransactionListRequestTest {
         @DisplayName("a direction may be absent inbound, because a first entry is not a paging action")
         void aDirectionMayBeAbsentInbound() {
             PageMetadata.PageCursorRequest firstEntry =
-                    new PageMetadata.PageCursorRequest(null, null, null);
+                    new PageMetadata.PageCursorRequest(null, null, null, null, false);
             TransactionListRequest request = withCursor(firstEntry);
 
             assertThat(violationsOf(request)).isEmpty();
@@ -649,11 +672,11 @@ class TransactionListRequestTest {
             String widest = "x".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH);
 
             assertThat(violationsOf(withCursor(new PageMetadata.PageCursorRequest(
-                    widest, null, PageMetadata.PagingDirection.BACKWARD))))
+                    widest, null, PageMetadata.PagingDirection.BACKWARD, null, false))))
                     .as("the widest key any of the three browses retains is still a valid key")
                     .isEmpty();
             assertThat(soleViolationPathOf(withCursor(new PageMetadata.PageCursorRequest(
-                    widest + "x", null, PageMetadata.PagingDirection.FORWARD))))
+                    widest + "x", null, PageMetadata.PagingDirection.FORWARD, null, false))))
                     .as("without the cascade this width would be declared and never evaluated, and an"
                             + " arbitrarily wide echoed key would reach a query unmeasured")
                     .isEqualTo("continuation.previousCursorKey");
@@ -878,7 +901,7 @@ class TransactionListRequestTest {
                     new NavigationContext(UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED,
                             null, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED, UNMARKED,
                             UNMARKED, UNMARKED, UNMARKED),
-                    new PageMetadata.PageCursorRequest(UNMARKED, UNMARKED, null));
+                    new PageMetadata.PageCursorRequest(UNMARKED, UNMARKED, null, null, false));
 
             assertThat(violationsOf(allBlank))
                     .as("a fixed-width screen submits blanks for every field the operator left alone")
@@ -1144,7 +1167,8 @@ class TransactionListRequestTest {
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(request.navigationContext()).isEqualTo(navigation());
             assertThat(request.pageMetadata())
-                    .isEqualTo(cursor(PageMetadata.PagingDirection.FORWARD));
+                    .isEqualTo(cursor(PageMetadata.PagingDirection.FORWARD, INDICATOR_AT_FULL_WIDTH,
+                            false));
             assertThat(request.pageMetadata().previousCursorKey()).isEqualTo(FIRST_ROW_KEY);
         }
     }

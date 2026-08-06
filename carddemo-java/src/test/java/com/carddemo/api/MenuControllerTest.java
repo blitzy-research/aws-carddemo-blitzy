@@ -142,7 +142,7 @@ class MenuControllerTest {
                                                  final MeterRegistry registry) {
         final MenuService menuService = new MenuService(new NavigationService(),
                 new MessageCatalogService(), catalog, FIXED_CLOCK);
-        final ConversationStateAdapter conversationStateAdapter = new ConversationStateAdapter();
+        final ConversationStateAdapter conversationStateAdapter = new ConversationStateAdapter(new NavigationService());
         return new MenuController(menuService, conversationStateAdapter,
                 new MenuResponseAdapter(conversationStateAdapter), registry);
     }
@@ -365,7 +365,7 @@ class MenuControllerTest {
         void everyCollaboratorIsRequired() {
             final MenuService menuService = new MenuService(new NavigationService(),
                     new MessageCatalogService(), new MenuOptionCatalog(), FIXED_CLOCK);
-            final ConversationStateAdapter stateAdapter = new ConversationStateAdapter();
+            final ConversationStateAdapter stateAdapter = new ConversationStateAdapter(new NavigationService());
             final MenuResponseAdapter responseAdapter = new MenuResponseAdapter(stateAdapter);
 
             assertThatNullPointerException().isThrownBy(() ->

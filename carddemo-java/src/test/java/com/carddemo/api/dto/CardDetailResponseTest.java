@@ -162,8 +162,8 @@ class CardDetailResponseTest {
     private static final List<String> PUBLISHED_KEYS_IN_MAP_ORDER = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "accountId", "cardNumber", "embossedName", "cardActiveStatus", "expiryMonth",
-            "expiryYear", "infoMessage", "errorMessage", "generalError", "focusScreenFieldId",
-            "nextRoute", "navigationContext");
+            "expiryYear", "infoMessage", "errorMessage", "generalError", "fieldErrors",
+            "focusScreenFieldId", "nextRoute", "navigationContext");
 
     /**
      * Keys that must never appear. The first six are the expiry-day family the update map adds and this
@@ -212,7 +212,7 @@ class CardDetailResponseTest {
 
     // ------------------------------------------------------------------------------------------------
     // Construction helpers. Each names the group of components it populates and leaves every other
-    // component absent, so a failing assertion points at one group rather than at an eighteen-argument
+    // component absent, so a failing assertion points at one group rather than at a nineteen-argument
     // call. All of them use the record's canonical constructor, so every instance below is built the way
     // a caller builds one: nothing is generated, and nothing is read out of the type's declaration.
     // ------------------------------------------------------------------------------------------------
@@ -220,12 +220,12 @@ class CardDetailResponseTest {
     /** A response with nothing populated, which is a real state: the screen prompting for input. */
     private static CardDetailResponse empty() {
         return new CardDetailResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, null, null, null);
+                null, null, null, null, false, List.of(), null, null, null);
     }
 
     /** A response whose every text component is present but empty. */
     private static CardDetailResponse blankFilled() {
-        return new CardDetailResponse("", "", "", "", "", "", "", "", "", "", "", "", "", "", false,
+        return new CardDetailResponse("", "", "", "", "", "", "", "", "", "", "", "", "", "", false, List.of(),
                 "", "", null);
     }
 
@@ -233,7 +233,7 @@ class CardDetailResponseTest {
     private static CardDetailResponse card(String accountId, String cardNumber, String embossedName,
             String cardActiveStatus, String expiryMonth, String expiryYear) {
         return new CardDetailResponse(null, null, null, null, null, null, accountId, cardNumber,
-                embossedName, cardActiveStatus, expiryMonth, expiryYear, null, null, false, null,
+                embossedName, cardActiveStatus, expiryMonth, expiryYear, null, null, false, List.of(), null,
                 null, null);
     }
 
@@ -241,7 +241,7 @@ class CardDetailResponseTest {
     private static CardDetailResponse furniture(String transactionName, String title01,
             String currentDate, String programName, String title02, String currentTime) {
         return new CardDetailResponse(transactionName, title01, currentDate, programName, title02,
-                currentTime, null, null, null, null, null, null, null, null, false, null, null,
+                currentTime, null, null, null, null, null, null, null, null, false, List.of(), null, null,
                 null);
     }
 
@@ -249,21 +249,21 @@ class CardDetailResponseTest {
     private static CardDetailResponse messages(String infoMessage, String errorMessage,
             boolean generalError) {
         return new CardDetailResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, infoMessage, errorMessage, generalError, null, null, null);
+                null, null, infoMessage, errorMessage, generalError, List.of(), null, null, null);
     }
 
     /** A response carrying only the focus hint, the next route and the echoed navigation state. */
     private static CardDetailResponse routing(String focusScreenFieldId, String nextRoute,
             NavigationContext navigationContext) {
         return new CardDetailResponse(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, focusScreenFieldId, nextRoute, navigationContext);
+                null, null, null, null, false, List.of(), focusScreenFieldId, nextRoute, navigationContext);
     }
 
     /** A fully populated response, used where every component must be present at once. */
     private static CardDetailResponse populated() {
         return new CardDetailResponse("CCDL", "AWS Mainframe Modernization", "08/02/26", "COCRDSLC",
                 "CardDemo", "14:30:00", ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y", EXPIRY_MONTH,
-                EXPIRY_YEAR, INFO_MESSAGE_AT_FULL_WIDTH, ERROR_MESSAGE_AT_FULL_WIDTH, true,
+                EXPIRY_YEAR, INFO_MESSAGE_AT_FULL_WIDTH, ERROR_MESSAGE_AT_FULL_WIDTH, true, List.of(),
                 CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID, "/api/cards/detail", navigation());
     }
 
@@ -359,12 +359,12 @@ class CardDetailResponseTest {
     class PublishedContract {
 
         @Test
-        @DisplayName("publishes exactly eighteen keys, in the order the symbolic map declares its fields")
-        void publishesExactlyEighteenKeysInMapOrder() throws JsonProcessingException {
+        @DisplayName("publishes exactly nineteen keys, in the order the symbolic map declares its fields")
+        void publishesExactlyNineteenKeysInMapOrder() throws JsonProcessingException {
             assertThat(keysOf(payloadOf(populated())))
                     .as("a record publishes exactly its components, so the payload is the inventory")
                     .containsExactlyElementsOf(PUBLISHED_KEYS_IN_MAP_ORDER)
-                    .hasSize(18);
+                    .hasSize(19);
         }
 
         @Test
@@ -1593,10 +1593,12 @@ class CardDetailResponseTest {
         }
 
         @Test
-        @DisplayName("the error indicator is a primitive, so it is always answered")
-        void theErrorIndicatorIsAlwaysAnswered() throws JsonProcessingException {
+        @DisplayName("the error indicator is a primitive and the finding list defaults to empty, so "
+                + "both are always answered")
+        void theErrorIndicatorAndTheFindingListAreAlwaysAnswered() throws JsonProcessingException {
             assertThat(empty().generalError()).isFalse();
-            assertThat(keysOf(payloadOf(empty()))).containsExactly("generalError");
+            assertThat(empty().fieldErrors()).isEmpty();
+            assertThat(keysOf(payloadOf(empty()))).containsExactly("generalError", "fieldErrors");
         }
 
         @Test
@@ -1605,8 +1607,9 @@ class CardDetailResponseTest {
             JsonNode payload = payloadOf(empty());
 
             assertThat(payload.size())
-                    .as("only the primitive indicator remains when nothing else is populated")
-                    .isEqualTo(1);
+                    .as("only the primitive indicator and the empty finding list remain when nothing "
+                            + "else is populated")
+                    .isEqualTo(2);
             assertThat(payload.has("cardNumber")).isFalse();
             assertThat(payload.has("accountId")).isFalse();
             assertThat(payload.has("navigationContext")).isFalse();
@@ -1641,7 +1644,7 @@ class CardDetailResponseTest {
 
             assertThat(keysOf(payloadOf(bound)))
                     .doesNotContain("expiryDay", "fkeys")
-                    .containsExactly("accountId", "generalError");
+                    .containsExactly("accountId", "generalError", "fieldErrors");
         }
 
         @Test
@@ -1707,7 +1710,7 @@ class CardDetailResponseTest {
             return new CardDetailResponse("CCDL", "AWS Mainframe Modernization", "08/02/26",
                     "COCRDSLC", "CardDemo", "14:30:00", ACCOUNT_ID, CARD_NUMBER, EMBOSSED_NAME, "Y",
                     EXPIRY_MONTH, EXPIRY_YEAR, INFO_MESSAGE_AT_FULL_WIDTH,
-                    ERROR_MESSAGE_AT_FULL_WIDTH, true, CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID,
+                    ERROR_MESSAGE_AT_FULL_WIDTH, true, List.of(), CardDetailResponse.SCREEN_FIELD_ACCOUNT_ID,
                     "/api/cards/detail", null);
         }
 

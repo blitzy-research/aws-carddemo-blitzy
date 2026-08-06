@@ -25,6 +25,7 @@ import com.carddemo.service.UserOutcome;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
 /**
@@ -97,10 +98,13 @@ public final class UserContractAdapter {
      * carry-over.
      *
      * @param request the transmitted screen; must not be {@code null}
+     * @param authentication the identity the filter chain established, which the echoed navigation
+     *                       state is reconciled against so the transaction reads the authenticated
+     *                       administrator rather than the one the caller typed
      * @return the command the transaction reads, never {@code null}
      * @throws NullPointerException if the request is {@code null}
      */
-    public UserCommand toCommand(final UserRequest request) {
+    public UserCommand toCommand(final UserRequest request, final Authentication authentication) {
         Objects.requireNonNull(request, "request must not be null");
         return new UserCommand(
                 request.userId(),
@@ -115,7 +119,7 @@ public final class UserContractAdapter {
                 request.lastUserIdOnPage(),
                 request.rowSnapshotToken(),
                 request.keyAction(),
-                this.screenStateAdapter.toNavigationState(request.navigationContext()));
+                this.screenStateAdapter.toNavigationState(request.navigationContext(), authentication));
     }
 
     /**
@@ -127,10 +131,12 @@ public final class UserContractAdapter {
      * translated in the order the cascade reported them.
      *
      * @param outcome the settled turn; must not be {@code null}
+     * @param authentication the identity the filter chain established, which the echoed navigation state
+     *                       is reconciled against on the way out as well as on the way in
      * @return the published response, never {@code null}
      * @throws NullPointerException if the outcome is {@code null}
      */
-    public UserResponse toResponse(final UserOutcome outcome) {
+    public UserResponse toResponse(final UserOutcome outcome, final Authentication authentication) {
         Objects.requireNonNull(outcome, "outcome must not be null");
         return new UserResponse(
                 toResponseRows(outcome.rows()),
@@ -150,9 +156,10 @@ public final class UserContractAdapter {
                 toResponseFieldErrors(outcome.fieldErrors()),
                 outcome.generalError(),
                 outcome.actionSucceeded(),
+                outcome.preserveDisplayedPage(),
                 outcome.focusScreenFieldId(),
                 outcome.nextRoute(),
-                this.screenStateAdapter.toNavigationContext(outcome.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(outcome.navigationContext(), authentication));
     }
 
     /**

@@ -272,7 +272,7 @@ class TransactionListResponseTest {
      * @return a row with every component populated
      */
     private static TransactionListResponse.TransactionRow row(String transactionId, BigDecimal amount) {
-        return new TransactionListResponse.TransactionRow(
+        return new TransactionListResponse.TransactionRow(1,
                 SELECTION, transactionId, ROW_DATE, DESCRIPTION, amount);
     }
 
@@ -315,19 +315,21 @@ class TransactionListResponseTest {
      *
      * @param rows    the rows to carry, in presentation order
      * @param message the summary message to carry
-     * @return a response with all fifteen components populated
+     * @return a response with all nineteen components populated
      */
     private static TransactionListResponse response(
             List<TransactionListResponse.TransactionRow> rows, String message) {
-        return new TransactionListResponse(rows, forwardPaging(), navigation(), NEXT_ROUTE,
-                TRANSACTION_ID_LOWER, PAGE_INDICATOR, message, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
+        return new TransactionListResponse(rows, forwardPaging(),
+                TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                TRANSACTION_ID_LOWER, PAGE_INDICATOR, message, false, List.of(), TRANSACTION_ID,
+                true, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
                 CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
     }
 
     /**
      * Builds a fully populated single-row response reporting the top-of-browse condition.
      *
-     * @return a one-row response with all fifteen components populated
+     * @return a one-row response with all nineteen components populated
      */
     private static TransactionListResponse populatedResponse() {
         return response(List.of(row(TRANSACTION_ID, AMOUNT)), TransactionListResponse.MESSAGE_AT_TOP);
@@ -339,8 +341,8 @@ class TransactionListResponseTest {
      * @return a response with a null in every reference position
      */
     private static TransactionListResponse emptyResponse() {
-        return new TransactionListResponse(null, null, null, null, null, null, null, false, null, null,
-                null, null, null, null, null);
+        return new TransactionListResponse(null, null, null, null, null, null, null, null, false,
+                List.of(), null, false, null, null, null, null, null, null, null);
     }
 
     /**
@@ -449,28 +451,30 @@ class TransactionListResponseTest {
     // =============================================================================================
 
     /**
-     * A row family of this screen presents four values and echoes back a fifth. Those five, and
-     * nothing else, are what the nested row type carries: the generated per-family name suffixes, the
+     * A row family of this screen presents four values, echoes back a fifth, and occupies a numbered
+     * slot on the map. Those six, and nothing else, are what the nested row type carries: the generated per-family name suffixes, the
      * generated length, flag and attribute items, and the terminal-area filler are all screen plumbing
      * with no counterpart in a REST contract.
      */
     @Nested
-    @DisplayName("the nested row carries the four display columns and the echoed selection")
+    @DisplayName("the nested row carries its screen slot, the four display columns and the echoed "
+            + "selection")
     class NestedRowShape {
 
         @Test
-        @DisplayName("publishes exactly those five values and no sixth, and no filler")
-        void publishesExactlyFiveValues() throws JsonProcessingException {
+        @DisplayName("publishes exactly those six values and no seventh, and no filler")
+        void publishesExactlySixValues() throws JsonProcessingException {
             TransactionListResponse.TransactionRow subject = row(TRANSACTION_ID, AMOUNT);
 
             assertThat(published(subject)).containsOnlyKeys(
-                    "selection", "transactionId", "displayedDate", "description", "amount");
+                    "screenRow", "selection", "transactionId", "displayedDate", "description",
+                    "amount");
         }
 
         @Test
         @DisplayName("returns every one of the five through its own accessor")
         void returnsEveryValueThroughItsAccessor() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION, AMOUNT);
 
             assertThat(subject.selection()).isEqualTo(SELECTION);
@@ -483,7 +487,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("carries each value at its own width, byte for byte")
         void carriesEachValueAtItsOwnWidth() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION, AMOUNT);
 
             assertThat(subject.selection()).hasSize(TransactionListResponse.SELECTION_LENGTH);
@@ -495,7 +499,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("leaves trailing spaces in place, because padding on a fixed-width field is the value")
         void leavesTrailingSpacesInPlace() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION_SPACE_PADDED, AMOUNT);
 
             assertThat(subject.description())
@@ -507,7 +511,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("pads no short value up to its declared width")
         void padsNoShortValueUp() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, "42", "07/19", "COFFEE", AMOUNT);
 
             assertThat(subject.transactionId()).isEqualTo("42").hasSize(2);
@@ -518,7 +522,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("folds no case, so a lower-case selection stays lower case")
         void foldsNoCase() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION_LOWER_CASE, TRANSACTION_ID, ROW_DATE, DESCRIPTION, AMOUNT);
 
             assertThat(subject.selection()).isEqualTo(SELECTION_LOWER_CASE).isNotEqualTo(SELECTION);
@@ -540,7 +544,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("carries the row date as opaque text, including one that is entirely blank")
         void carriesTheRowDateAsOpaqueText() throws JsonProcessingException {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE_ALL_SPACES, DESCRIPTION, AMOUNT);
 
             String opaque = subject.displayedDate();
@@ -557,10 +561,10 @@ class TransactionListResponseTest {
         @DisplayName("tolerates an absent value in every one of the five positions")
         void toleratesAnAbsentValueEverywhere() {
             assertThatNoException().isThrownBy(
-                    () -> new TransactionListResponse.TransactionRow(null, null, null, null, null));
+                    () -> new TransactionListResponse.TransactionRow(1,null, null, null, null, null));
 
             TransactionListResponse.TransactionRow blank =
-                    new TransactionListResponse.TransactionRow(null, null, null, null, null);
+                    new TransactionListResponse.TransactionRow(1,null, null, null, null, null);
             assertThat(blank.selection()).isNull();
             assertThat(blank.transactionId()).isNull();
             assertThat(blank.displayedDate()).isNull();
@@ -607,7 +611,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("accepts a description of exactly twenty-six characters without complaint")
         void acceptsADescriptionAtTwentySix() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION, AMOUNT);
 
             assertThat(DESCRIPTION).hasSize(TransactionListResponse.DESCRIPTION_LENGTH);
@@ -617,7 +621,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports a twenty-seventh character, so the bound is this screen's and not the view's")
         void reportsATwentySeventhCharacter() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION_TOO_LONG, AMOUNT);
 
             assertThat(DESCRIPTION_TOO_LONG).hasSize(TransactionListResponse.DESCRIPTION_LENGTH + 1);
@@ -636,7 +640,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports a ninth date character, so eight is a bound and not a coincidence")
         void reportsANinthDateCharacter() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE_TOO_LONG, DESCRIPTION, AMOUNT);
 
             assertThat(ROW_DATE_TOO_LONG).hasSize(TransactionListResponse.DISPLAYED_DATE_LENGTH + 1);
@@ -647,7 +651,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports a seventeenth identifier character, holding the identifier at sixteen")
         void reportsASeventeenthIdentifierCharacter() {
-            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(
+            TransactionListResponse.TransactionRow subject = new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID_TOO_LONG, ROW_DATE, DESCRIPTION, AMOUNT);
 
             assertThat(violationsOf(subject)).isNotEmpty().allSatisfy(violation ->
@@ -702,8 +706,8 @@ class TransactionListResponseTest {
 
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> new TransactionListResponse(rows(rowsCarried),
-                            narrowerThanThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
-                            PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
+                            narrowerThanThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER,
+                            PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO,
                             CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME))
                     .withMessageContaining(String.valueOf(declaredPageSize))
                     .withMessageContaining(String.valueOf(rowsCarried));
@@ -717,16 +721,16 @@ class TransactionListResponseTest {
                     NEXT_CURSOR_KEY, true, false, PAGE_INDICATOR);
 
             TransactionListResponse response = new TransactionListResponse(rows(declaredPageSize),
-                    matchingThePage, navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
-                    null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME,
+                    matchingThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
+                    null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME,
                     TRANSACTION_NAME, PROGRAM_NAME);
 
             assertThat(response.rows()).hasSize(declaredPageSize);
 
             // A short page is still a valid page: the final page of a browse is routinely shorter than
             // the page size, so only exceeding the declared size is a defect.
-            assertThat(new TransactionListResponse(rows(1), matchingThePage, navigation(), NEXT_ROUTE,
-                            TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE,
+            assertThat(new TransactionListResponse(rows(1), matchingThePage, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                            TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                             TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME)
                     .rows())
                     .hasSize(1);
@@ -736,8 +740,8 @@ class TransactionListResponseTest {
         @DisplayName("applies no metadata comparison when no paging metadata travels with the page")
         void appliesNoMetadataComparisonWhenNoPagingMetadataTravels() {
             TransactionListResponse response = new TransactionListResponse(
-                    rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, navigation(), NEXT_ROUTE,
-                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, FOCUS_FIELD, TITLE_ONE,
+                    rows(PageMetadata.TRANSACTION_LIST_PAGE_SIZE), null, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, null, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
 
             assertThat(response.pageMetadata()).isNull();
@@ -878,13 +882,13 @@ class TransactionListResponseTest {
         @DisplayName("carries either direction through the response unchanged")
         void carriesEitherDirectionThroughTheResponse() {
             TransactionListResponse walkedForward = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), navigation(), NEXT_ROUTE,
-                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
             TransactionListResponse walkedBackward = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), backwardPaging(), navigation(), NEXT_ROUTE,
-                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), backwardPaging(), TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
 
@@ -902,9 +906,9 @@ class TransactionListResponseTest {
             TransactionListResponse.TransactionRow firstOfAll = row(TRANSACTION_ID_ONE, AMOUNT);
             List<TransactionListResponse.TransactionRow> descending = List.of(last, middle, firstOfAll);
 
-            TransactionListResponse subject = new TransactionListResponse(descending, backwardPaging(),
+            TransactionListResponse subject = new TransactionListResponse(descending, backwardPaging(), TransactionListRequest.ScreenContinuation.empty(),
                     navigation(), NEXT_ROUTE, TRANSACTION_ID_LOWER, PAGE_INDICATOR,
-                    TransactionListResponse.MESSAGE_REACHED_TOP, false, FOCUS_FIELD, TITLE_ONE,
+                    TransactionListResponse.MESSAGE_REACHED_TOP, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
 
             assertThat(subject.rows()).containsExactlyElementsOf(descending);
@@ -1170,7 +1174,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("accepts an absent amount, because a row the browse never filled carries none")
         void acceptsAnAbsentAmount() {
-            assertThat(new TransactionListResponse.TransactionRow(
+            assertThat(new TransactionListResponse.TransactionRow(1,
                     SELECTION, TRANSACTION_ID, ROW_DATE, DESCRIPTION, null).amount()).isNull();
         }
 
@@ -1278,8 +1282,8 @@ class TransactionListResponseTest {
             PageMetadata supplied = forwardPaging();
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), supplied, navigation(), NEXT_ROUTE,
-                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), supplied, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
 
@@ -1351,9 +1355,9 @@ class TransactionListResponseTest {
                     PREVIOUS_CURSOR_KEY, null, false, true, PAGE_INDICATOR);
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), exhausted, navigation(), NEXT_ROUTE,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), exhausted, TransactionListRequest.ScreenContinuation.empty(), navigation(), NEXT_ROUTE,
                     TRANSACTION_ID_LOWER, PAGE_INDICATOR,
-                    TransactionListResponse.MESSAGE_REACHED_BOTTOM, false, FOCUS_FIELD, TITLE_ONE,
+                    TransactionListResponse.MESSAGE_REACHED_BOTTOM, false, List.of(), null, false, FOCUS_FIELD, TITLE_ONE,
                     TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME, PROGRAM_NAME);
 
             assertThat(subject.pageMetadata().hasMorePages()).isFalse();
@@ -1395,8 +1399,8 @@ class TransactionListResponseTest {
             NavigationContext supplied = navigation();
 
             TransactionListResponse subject = new TransactionListResponse(
-                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), supplied, NEXT_ROUTE,
-                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false,
+                    List.of(row(TRANSACTION_ID, AMOUNT)), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), supplied, NEXT_ROUTE,
+                    TRANSACTION_ID_LOWER, PAGE_INDICATOR, TransactionListResponse.MESSAGE_AT_TOP, false, List.of(), null, false,
                     FOCUS_FIELD, TITLE_ONE, TITLE_TWO, CURRENT_DATE, CURRENT_TIME, TRANSACTION_NAME,
                     PROGRAM_NAME);
 
@@ -1432,7 +1436,7 @@ class TransactionListResponseTest {
             assertThat(emptyResponse().navigationContext()).isNull();
 
             TransactionListResponse withEmpty = new TransactionListResponse(
-                    List.of(), forwardPaging(), NavigationContext.empty(), null, null, null, null, false,
+                    List.of(), forwardPaging(), TransactionListRequest.ScreenContinuation.empty(), NavigationContext.empty(), null, null, null, null, false, List.of(), null, false,
                     null, null, null, null, null, null, null);
 
             assertThat(withEmpty.navigationContext()).isEqualTo(NavigationContext.empty());
@@ -1543,7 +1547,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports nothing at all for a row with every component absent")
         void reportsNothingForAnEntirelyAbsentRow() {
-            assertThat(violationsOf(new TransactionListResponse.TransactionRow(
+            assertThat(violationsOf(new TransactionListResponse.TransactionRow(1,
                     null, null, null, null, null))).isEmpty();
         }
 
@@ -1556,7 +1560,7 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports nothing for a blank row, because a blank line is an ordinary screen state")
         void reportsNothingForABlankRow() {
-            assertThat(violationsOf(new TransactionListResponse.TransactionRow(
+            assertThat(violationsOf(new TransactionListResponse.TransactionRow(1,
                     " ", "                ", ROW_DATE_ALL_SPACES, DESCRIPTION_SPACE_PADDED,
                     AMOUNT_ZERO))).isEmpty();
         }
@@ -1570,8 +1574,8 @@ class TransactionListResponseTest {
         @Test
         @DisplayName("reports nothing for an empty string, because no blankness constraint applies")
         void reportsNothingForAnEmptyString() {
-            TransactionListResponse subject = new TransactionListResponse(List.of(), null, null, "", "",
-                    "", "", false, "", "", "", "", "", "", "");
+            TransactionListResponse subject = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, "", "",
+                    "", "", false, List.of(), null, false, "", "", "", "", "", "", "");
 
             assertThat(violationsOf(subject)).isEmpty();
         }
@@ -1604,11 +1608,12 @@ class TransactionListResponseTest {
     class SerializedForm {
 
         @Test
-        @DisplayName("publishes exactly the sixteen components the contract declares")
-        void publishesExactlyFifteenComponents() throws JsonProcessingException {
+        @DisplayName("publishes exactly the nineteen components the contract declares")
+        void publishesExactlyNineteenComponents() throws JsonProcessingException {
             assertThat(published(populatedResponse())).containsOnlyKeys("rows", "pageMetadata",
                     "continuation", "navigationContext", "nextRoute", "transactionIdFilter",
-                    "displayedPageNumber", "message", "error", "focusScreenFieldId", "title01",
+                    "displayedPageNumber", "message", "error", "fieldErrors", "selectedTransactionId",
+                    "preserveDisplayedPage", "focusScreenFieldId", "title01",
                     "title02", "currentDate", "currentTime", "transactionName", "programName");
         }
 
@@ -1652,11 +1657,16 @@ class TransactionListResponseTest {
         void omitsEveryAbsentValue() throws JsonProcessingException {
             Map<String, Object> body = published(emptyResponse());
 
-            assertThat(body).doesNotContainKeys("pageMetadata", "navigationContext", "nextRoute",
-                    "transactionIdFilter", "displayedPageNumber", "message", "focusScreenFieldId",
+            assertThat(body).doesNotContainKeys("pageMetadata", "continuation", "navigationContext",
+                    "nextRoute", "transactionIdFilter", "displayedPageNumber", "message",
+                    "selectedTransactionId", "focusScreenFieldId",
                     "title01", "title02", "currentDate", "currentTime", "transactionName",
                     "programName");
-            assertThat(body).containsOnlyKeys("rows", "error");
+            // The row list, the two primitive indicators and the normalised finding list have no
+            // absent state: the first and last are normalised away from null by the canonical
+            // constructor, and a primitive never was null to begin with.
+            assertThat(body).containsOnlyKeys("rows", "error", "fieldErrors",
+                    "preserveDisplayedPage");
             assertThat(MAPPER.writeValueAsString(emptyResponse())).doesNotContain("null");
         }
 
@@ -1665,8 +1675,8 @@ class TransactionListResponseTest {
         void alwaysPublishesTheErrorIndicator() throws JsonProcessingException {
             assertThat(published(emptyResponse())).containsEntry("error", Boolean.FALSE);
 
-            TransactionListResponse failing = new TransactionListResponse(List.of(), null, null, null,
-                    null, null, TransactionListResponse.MESSAGE_INVALID_SELECTION, true, null, null,
+            TransactionListResponse failing = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null, null,
+                    null, null, TransactionListResponse.MESSAGE_INVALID_SELECTION, true, List.of(), null, false, null, null,
                     null, null, null, null, null);
 
             assertThat(published(failing)).containsEntry("error", Boolean.TRUE);
@@ -1746,8 +1756,8 @@ class TransactionListResponseTest {
         void carriesAValueThatIsNotARouteAtAll() {
             String notARoute = "  not a route at all  ";
 
-            TransactionListResponse subject = new TransactionListResponse(List.of(), null, null,
-                    notARoute, null, null, null, false, null, null, null, null, null, null, null);
+            TransactionListResponse subject = new TransactionListResponse(List.of(), null, TransactionListRequest.ScreenContinuation.empty(), null,
+                    notARoute, null, null, null, false, List.of(), null, false, null, null, null, null, null, null, null);
 
             assertThat(subject.nextRoute()).isEqualTo(notARoute);
         }

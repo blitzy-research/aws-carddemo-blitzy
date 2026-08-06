@@ -28,6 +28,7 @@ import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.api.dto.ScreenWorkArea;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.service.CardConcurrencyTokenService;
 import com.carddemo.service.CardDetailService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
@@ -39,16 +40,21 @@ import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Valid;
+import jakarta.validation.Validator;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -248,14 +254,14 @@ public class CardController {
     private static final String ABSENT_ATTENTION_KEY_IDENTIFIER = "";
 
     /**
-     * Page number supplied to the card-list service when the caller has carried no paging conclusion.
+     * Page number supplied to the card-list service when the caller carried no paging state at all.
      *
-     * <p>The request contract does not accept a page number, an end-of-browse indicator or a
-     * further-pages indicator, because all three are conclusions the browse reaches rather than facts a
-     * caller may assert. This is the same first-page value the service applies on its own no-carried-
-     * state path, so supplying it asserts nothing the service would not have assumed anyway.
+     * <p>Zero rather than one, and it is the service's own initial value rather than a choice made here:
+     * {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl:L237} starts at zero and the program's test
+     * at line 1177 looks for that zero before raising the number to one. Supplying one here would skip
+     * that test and assert a page the browse had not yet walked to.
      */
-    private static final int FIRST_PAGE_NUMBER = 1;
+    private static final int NO_RETAINED_PAGE_NUMBER = 0;
 
     /** Empty text used where a response component requires a value the source may leave absent. */
     private static final String EMPTY = "";
@@ -297,6 +303,34 @@ public class CardController {
      */
     private final ScreenStateAdapter screenStateAdapter;
 
+    /**
+     * Seals and opens the update screen's conversation state.
+     *
+     * <p>The card-update screen is a state machine whose state lived in the CICS communication area -
+     * server-held storage the terminal could not reach. Nothing equivalent exists here, so the state has
+     * to cross the wire, and a state that crosses the wire has to be authenticated: a client that could
+     * name its own change action would be able to present itself as already past the validate-and-confirm
+     * stages and reach the rewrite at {@code app/cbl/COCRDUPC.cbl:L1461-L1474} without ever having had a
+     * change validated, and a client that could name its own carried image would be able to choose the
+     * before-image the change comparison at line 1498 runs against. This collaborator is what makes both
+     * impossible: it seals the settled state and the fetched image into one opaque token on the way out
+     * and refuses anything but its own token on the way back in.
+     */
+    private final CardConcurrencyTokenService cardConcurrencyTokenService;
+
+    /**
+     * Evaluates the constraint group that only the confirming submission is subject to.
+     *
+     * <p>The framework's own {@code @Valid} evaluates the default group and nothing else, so a constraint
+     * scoped to a group is inert until some caller names that group. One constraint on the update contract
+     * is scoped that way - the account identifier must be <em>absent</em> on the turn that writes, because
+     * the legacy screen has it protected in that state and the write takes the owning account from the
+     * carried image rather than from the map - and the turn it applies to is not knowable from the body
+     * alone: it is knowable only from the verified conversation state. Hence a second, explicit evaluation
+     * here rather than a second annotation there.
+     */
+    private final Validator validator;
+
     /** Registry the three turn timers are registered against. */
     private final MeterRegistry meterRegistry;
 
@@ -310,12 +344,16 @@ public class CardController {
      * @param cardDetailService the card-detail screen
      * @param cardUpdateService the card-update screen
      * @param screenStateAdapter the converter between the wire screen carriers and the service-owned ones
+     * @param cardConcurrencyTokenService the sealer and opener of the update screen's conversation state
+     * @param validator the evaluator of the confirming submission's own constraint group
      * @param meterRegistry the metrics registry the turn timers are registered against
      */
     public CardController(final CardListService cardListService,
                           final CardDetailService cardDetailService,
                           final CardUpdateService cardUpdateService,
                           final ScreenStateAdapter screenStateAdapter,
+                          final CardConcurrencyTokenService cardConcurrencyTokenService,
+                          final Validator validator,
                           final MeterRegistry meterRegistry) {
         this.cardListService = Objects.requireNonNull(cardListService,
                 "cardListService must not be null");
@@ -325,6 +363,9 @@ public class CardController {
                 "cardUpdateService must not be null");
         this.screenStateAdapter = Objects.requireNonNull(screenStateAdapter,
                 "screenStateAdapter must not be null");
+        this.cardConcurrencyTokenService = Objects.requireNonNull(cardConcurrencyTokenService,
+                "cardConcurrencyTokenService must not be null");
+        this.validator = Objects.requireNonNull(validator, "validator must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
     }
 
@@ -377,7 +418,8 @@ public class CardController {
         @ApiResponse(responseCode = "403",
                 description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<CardListResponse> listCards(
-            @Valid @RequestBody final CardListRequest request) {
+            @Valid @RequestBody final CardListRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
@@ -386,13 +428,14 @@ public class CardController {
                     this.screenStateAdapter.toInputState(screenWorkAreaOf(request)),
                     request.selectionsInRowOrder(),
                     this.screenStateAdapter.toCursorRequest(request.pageMetadata()),
-                    FIRST_PAGE_NUMBER,
-                    false,
-                    false,
-                    this.screenStateAdapter.toNavigationState(request.navigationContext()));
+                    retainedPageNumber(request.pageMetadata()),
+                    request.lastPageAlreadyShown(),
+                    retainedNextPageFlag(request.pageMetadata()),
+                    this.screenStateAdapter.toNavigationState(request.navigationContext(),
+                            authentication));
 
             final CardListService.CardListResult result = this.cardListService.processCardList(input);
-            final CardListResponse response = toListResponse(request, result);
+            final CardListResponse response = toListResponse(request, result, authentication);
 
             outcome = outcomeOf(result.route());
             LOG.debug("Card-list turn complete: route={} rows={} error={}",
@@ -447,10 +490,11 @@ public class CardController {
         @ApiResponse(responseCode = "200",
                 description = "The turn completed and carries the card details when one was found.")})
     public ResponseEntity<CardDetailResponse> viewCardDetail(
-            @Valid @RequestBody(required = false) final CardDetailRequest request) {
+            @Valid @RequestBody(required = false) final CardDetailRequest request,
+            final Authentication authentication) {
         final CardDetailRequest bounded = request == null ? CardDetailRequest.empty() : request;
         return viewCardDetail(bounded.accountIdFilter(), bounded.cardNumberFilter(),
-                bounded.keyAction(), bounded.navigationContext());
+                bounded.keyAction(), bounded.navigationContext(), authentication);
     }
 
     @Operation(summary = "View one card's details",
@@ -475,7 +519,8 @@ public class CardController {
             @RequestParam(name = "accountIdFilter", required = false) final String accountIdFilter,
             @RequestParam(name = "cardNumberFilter", required = false) final String cardNumberFilter,
             @RequestParam(name = "keyAction", required = false) final KeyAction keyAction,
-            @Valid @ModelAttribute final NavigationContext navigationContext) {
+            @Valid @ModelAttribute final NavigationContext navigationContext,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
@@ -484,11 +529,12 @@ public class CardController {
                             accountIdFilter,
                             cardNumberFilter,
                             terminalIdentifierFor(keyAction),
-                            this.screenStateAdapter.toNavigationState(navigationContext));
+                            this.screenStateAdapter.toNavigationState(navigationContext,
+                                    authentication));
 
             final CardDetailService.CardDetailResult result =
                     this.cardDetailService.processCardDetail(input);
-            final CardDetailResponse response = toDetailResponse(result);
+            final CardDetailResponse response = toDetailResponse(result, authentication);
 
             outcome = outcomeOf(result.route());
             LOG.debug("Card-detail turn complete: route={} cardPresented={} error={}",
@@ -515,22 +561,36 @@ public class CardController {
      * independently replayable and what stops a second, server-held copy of the screen's position from
      * existing at all.
      *
+     * <p><strong>The state that travels is authenticated, not trusted.</strong> It travels sealed, in the
+     * one opaque token this contract carries, and is opened here before the turn begins. Three things
+     * follow from the opened state and from nothing a client typed. The change action the service is given
+     * is the one the previous turn settled on, so a client cannot present itself as already past the
+     * validate-and-confirm stages and reach the rewrite at {@code app/cbl/COCRDUPC.cbl:L1461-L1474}
+     * without a change ever having been validated. The carried image the service is given is the one the
+     * previous turn fetched, so a client cannot choose the before-image that the change comparison at line
+     * 1498 runs against - which is the comparison that decides whether the record moved underneath the
+     * operator. And the constraint group that applies is chosen from that verified action rather than from
+     * the body, because the body cannot say truthfully which state it is in.
+     *
+     * <p>An absent token is the genuine first turn and is not an error: the legacy reaches the same state
+     * through a zero-length communication area at line 388. A present token that cannot be authenticated
+     * is refused, rather than being treated as a first turn - treating it as one would let a client
+     * discard a state it did not like by corrupting a byte of it.
+     *
      * <p>Two values are protected carry-through rather than input and are treated as such here. The
      * expiry day is hidden and unwritable on every state of the legacy screen, so the request contract
-     * declines to bind it and the service supplies the stored value; the response publishes it so the
-     * round trip survives. The account identifier is protected once a card has been fetched, and the
-     * request contract requires its absence on the one turn that writes. Neither gets an editing surface
-     * here.
-     *
-     * <p>The sealed proof of the record as it stood when the screen was presented is echoed back
-     * untouched. This boundary does not mint it, does not open it, does not compare it and does not log
-     * it - it cannot, because doing any of those needs the loaded card record, which belongs to the
-     * service tier.
+     * declines to bind it and this boundary supplies it from the verified carried image - the same value
+     * the legacy terminal transmitted back, because the send paragraph writes the fetched day into that
+     * protected field at line 1123. The account identifier is protected once a card has been fetched, and
+     * the confirming submission's own constraint group requires its absence. Neither gets an editing
+     * surface here.
      *
      * @param request the transmitted screen: the two business keys, the three editable values, the
-     *        attention key, the echoed navigation state and the sealed proof
+     *        attention key, the echoed navigation state and the sealed conversation state
+     * @param authentication the established principal, whose identity replaces any the client echoed
      * @return the screen the turn produces, carrying the values to redisplay, the screen message, any
-     *         field-level error state and the route the client calls next
+     *         field-level error state, the newly sealed conversation state and the route the client calls
+     *         next
      */
     @PostMapping(path = CARD_UPDATE_PATH,
             consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -553,12 +613,29 @@ public class CardController {
                         + "screen field, or supplied a value the confirming turn protects."),
         @ApiResponse(responseCode = "401", description = "No authenticated caller."),
         @ApiResponse(responseCode = "403",
-                description = "The authenticated principal is not an approved online-data operator.")})
+                description = "The authenticated principal is not an approved online-data operator."),
+        @ApiResponse(responseCode = "409",
+                description = "The echoed conversation state was not the one this server sealed. Not a "
+                        + "legacy screen outcome: the legacy held this state in server storage the "
+                        + "terminal could not reach, so there is no screen to reproduce. A write that "
+                        + "fails because the record moved is reported on the 200 screen instead, which "
+                        + "is what the legacy does.")})
     public ResponseEntity<CardUpdateResponse> updateCard(
-            @Valid @RequestBody final CardUpdateRequest request) {
+            @Valid @RequestBody final CardUpdateRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
+            // The conversation state is opened before anything else, because everything after this depends
+            // on it: which state machine arm the turn may reach, which before-image the change comparison
+            // runs against, which constraint group applies, and what the protected expiry day holds. An
+            // absent token opens as the genuine first turn; a present one that cannot be authenticated is
+            // refused rather than downgraded to a first turn, because downgrading would let a client
+            // discard a state it did not like.
+            final CardConcurrencyTokenService.Continuation continuation =
+                    this.cardConcurrencyTokenService.openContinuation(request.concurrencyToken());
+            enforceConfirmingSubmissionContract(request, continuation);
+
             final CardUpdateService.CardUpdateScreenInput input =
                     new CardUpdateService.CardUpdateScreenInput(
                             request.accountId(),
@@ -567,15 +644,17 @@ public class CardController {
                             request.activeStatus(),
                             request.expiryMonth(),
                             request.expiryYear(),
-                            request.expiryDay(),
+                            continuation.carriedImage().expiryDay(),
                             terminalIdentifierFor(request.keyAction()),
-                            carriedUpdateState(request.navigationContext()),
-                            null,
-                            null);
+                            carriedUpdateState(request.navigationContext(), authentication),
+                            continuation.changeAction(),
+                            continuation.carriedImage());
 
             final CardUpdateService.CardUpdateResult result =
                     this.cardUpdateService.processCardUpdate(input);
-            final CardUpdateResponse response = toUpdateResponse(request, result);
+            final CardUpdateResponse response = toUpdateResponse(request, result, authentication,
+                    this.cardConcurrencyTokenService.sealContinuation(
+                            result.changeAction(), result.carriedImage()));
 
             outcome = outcomeOf(result.route());
             LOG.debug("Card-update turn complete: route={} committed={} error={} fieldErrors={}",
@@ -631,10 +710,14 @@ public class CardController {
      * reset raises and with it the fetch the screen performs on entry.
      *
      * @param context the record the client echoed, which may be {@code null}
+     * @param authentication the established identity the echoed state is reconciled against
      * @return the service-owned state, or {@code null} when the client echoed no record at all
      */
-    private ScreenNavigationState carriedUpdateState(final NavigationContext context) {
-        return (context == null) ? null : this.screenStateAdapter.toNavigationState(context);
+    private ScreenNavigationState carriedUpdateState(final NavigationContext context,
+                                                     final Authentication authentication) {
+        return (context == null)
+                ? null
+                : this.screenStateAdapter.toNavigationState(context, authentication);
     }
 
     /**
@@ -685,11 +768,13 @@ public class CardController {
     /**
      * Projects a settled card-list turn onto the published contract.
      *
-     * <p>The heading is the one place this screen differs from the other two: its turn returns no heading
-     * at all, so the transaction and program identifiers come from this class's constants, being fixed
-     * facts about the screen, and the two title lines and the two clock readings are left absent rather
-     * than invented. The module omits absent properties from the serialized form, so a client sees them
-     * missing rather than blank.
+     * <p>The heading is taken whole from the turn and nothing in it is invented here. The legacy screen
+     * builds all six values in one paragraph - {@code 1100-SCREEN-INIT} at
+     * {@code app/cbl/COCRDLIC.cbl:L642-L674} moves the two title lines and the two literal identifiers,
+     * then formats the date and the time from a single clock reading - so the turn that reads the clock
+     * owns the whole heading. Sourcing any part of it from constants at this boundary would give the two
+     * clock values a different reading than the rest of the turn, and leaving them absent would drop
+     * output the legacy screen unconditionally produces.
      *
      * <p>The rows are published in the order the service settled them and are neither re-ordered,
      * re-sorted nor padded. For a backward browse that order is the one the legacy screen presented after
@@ -705,15 +790,16 @@ public class CardController {
      * @return the published screen, never {@code null}
      */
     private CardListResponse toListResponse(final CardListRequest request,
-            final CardListService.CardListResult result) {
+            final CardListService.CardListResult result, final Authentication authentication) {
         final PageMetadata paging = this.screenStateAdapter.toPageMetadata(result.pageMetadata());
+        final CardListService.ScreenHeader header = result.header();
         return new CardListResponse(
-                TRANSACTION_CARD_LIST,
-                null,
-                null,
-                PROGRAM_CARD_LIST,
-                null,
-                null,
+                header.transactionName(),
+                header.title01(),
+                header.currentDate(),
+                header.programName(),
+                header.title02(),
+                header.currentTime(),
                 (paging == null) ? null : paging.displayedPageNumber(),
                 request.accountIdFilter(),
                 request.cardNumberFilter(),
@@ -723,9 +809,11 @@ public class CardController {
                 result.errorMessage(),
                 result.errorFlag(),
                 paging,
+                result.lastPageAlreadyShown(),
+                toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 routeValueOf(result.route()),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
     }
 
     /**
@@ -734,9 +822,15 @@ public class CardController {
      * <p>Component for component, with no transformation of any kind: the account identifier and the card
      * number are carried at full width because a shortened business key identifies nothing, and the
      * status code is carried raw because the legacy takes it straight from the record and a code outside
-     * the known pair must flow through untouched rather than being rejected or absorbed. The row's screen
-     * slot is not published - it is positional information the list order already carries - and no
-     * attribute, colour or coordinate exists to publish.
+     * the known pair must flow through untouched rather than being rejected or absorbed. No attribute,
+     * colour or coordinate exists to publish.
+     *
+     * <p>The row's screen slot <em>is</em> published, because the list order does not carry it. The
+     * backward browse fills the screen's slots downward from the last, so a partial backward page leaves
+     * the low slots empty and presents its rows at the bottom; the settled list holds only the populated
+     * rows, so on that page the list position and the slot differ. The selection field a client sends back
+     * is addressed by slot, so a client that inferred the slot from the position would mark its action
+     * against a different card than the operator chose.
      *
      * @param rows the settled rows in presentation order
      * @return the published rows, unmodifiable and in the same order
@@ -746,6 +840,7 @@ public class CardController {
         final List<CardListResponse.CardListRow> projected = new ArrayList<>(rows.size());
         for (final CardListService.CardListRow row : rows) {
             projected.add(new CardListResponse.CardListRow(
+                    row.screenSlot(),
                     row.selection(),
                     row.accountId(),
                     row.cardNumber(),
@@ -787,7 +882,7 @@ public class CardController {
      * @return the published screen, never {@code null}
      */
     private CardDetailResponse toDetailResponse(
-            final CardDetailService.CardDetailResult result) {
+            final CardDetailService.CardDetailResult result, final Authentication authentication) {
         final CardDetailService.ScreenHeader header = result.header();
         final CardDetailService.ScreenFields screen = result.screen();
         return new CardDetailResponse(
@@ -806,9 +901,10 @@ public class CardController {
                 screen.infoMessage(),
                 screen.errorMessage(),
                 result.errorFlag(),
+                toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 routeValueOf(result.route()),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
     }
 
     /**
@@ -828,7 +924,8 @@ public class CardController {
      * @return the published screen, never {@code null}
      */
     private CardUpdateResponse toUpdateResponse(final CardUpdateRequest request,
-            final CardUpdateService.CardUpdateResult result) {
+            final CardUpdateService.CardUpdateResult result, final Authentication authentication,
+            final String sealedContinuation) {
         final CardUpdateService.ScreenHeader header = result.header();
         final CardUpdateService.ScreenFields screen = result.screen();
         return new CardUpdateResponse(
@@ -851,8 +948,47 @@ public class CardController {
                 toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 routeValueOf(result.route()),
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()),
-                request.concurrencyToken());
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication),
+                sealedContinuation);
+    }
+
+    /**
+     * Evaluates the constraint group that only the confirming submission is subject to.
+     *
+     * <p>The confirming submission is the single combination the legacy screen writes from: the state
+     * machine standing at changes-accepted-not-yet-confirmed with the save key pressed, which is clause
+     * five of the dispatch at {@code app/cbl/COCRDUPC.cbl:L988-L1001}. In that state the attribute branch
+     * at line 1193 leaves the account identifier and the card number protected, so the terminal offered the
+     * operator nothing to type into them, and the rewrite at lines 1461 to 1474 takes the owning account
+     * from the carried work area rather than from the map.
+     *
+     * <p>Which is why the group cannot be evaluated by the framework's {@code @Valid}: that evaluates the
+     * default group, and the turn this group describes is not identifiable from the body. It is
+     * identifiable only from the <em>verified</em> conversation state, so the state is opened first and the
+     * group is evaluated here, against the action the previous turn settled on rather than against
+     * anything a client asserted about its own position.
+     *
+     * <p>A violation is raised rather than absorbed into a screen. It is not a state the legacy screen can
+     * reach - the terminal physically could not transmit a protected field - so there is no legacy outcome
+     * to reproduce, and the honest answer is that the submission could not have come from this screen.
+     *
+     * @param request the transmitted screen
+     * @param continuation the opened, authenticated conversation state
+     * @throws ConstraintViolationException if the confirming submission supplied a value that state
+     *                                      protects
+     */
+    private void enforceConfirmingSubmissionContract(final CardUpdateRequest request,
+            final CardConcurrencyTokenService.Continuation continuation) {
+        if (!continuation.changeAction().changesOkNotConfirmed()
+                || request.keyAction() != KeyAction.PFK05) {
+            return;
+        }
+        final Set<ConstraintViolation<CardUpdateRequest>> violations =
+                this.validator.validate(request, CardUpdateRequest.ConfirmSave.class);
+        if (!violations.isEmpty()) {
+            LOG.debug("Confirming card-update submission refused: violationCount={}", violations.size());
+            throw new ConstraintViolationException(violations);
+        }
     }
 
     /**
@@ -878,6 +1014,37 @@ public class CardController {
                     fieldError.message()));
         }
         return Collections.unmodifiableList(projected);
+    }
+
+    /**
+     * Reads the retained page number out of the paging state the caller echoed.
+     *
+     * <p>Read rather than reset. {@code WS-CA-SCREEN-NUM} is a communication-area field that the program
+     * hands back on return and reads on the next turn, incrementing it at
+     * {@code app/cbl/COCRDLIC.cbl:L1556} and decrementing it at line 1567 rather than recomputing it, so a
+     * boundary that supplied a constant here would put every turn back on page one and would make the
+     * displayed indicator disagree with the page the browse actually walked to.
+     *
+     * @param carried the paging state the caller echoed, which is {@code null} on a first entry
+     * @return the retained page number, or zero when the caller carried none
+     */
+    private static int retainedPageNumber(final PageMetadata.PageCursorRequest carried) {
+        return (carried == null) ? NO_RETAINED_PAGE_NUMBER : carried.retainedPageNumber();
+    }
+
+    /**
+     * Reads the retained further-pages flag out of the paging state the caller echoed.
+     *
+     * <p>Read for the same reason: {@code WS-CA-NEXT-PAGE-IND} is a communication-area field, and the
+     * forward-paging arm at {@code app/cbl/COCRDLIC.cbl:L486} tests it <em>before</em> the browse
+     * recomputes it. A boundary that supplied a cleared flag would make the forward key refuse to advance
+     * on the one turn the operator pressed it.
+     *
+     * @param carried the paging state the caller echoed, which is {@code null} on a first entry
+     * @return the retained flag, or {@code false} when the caller carried none
+     */
+    private static boolean retainedNextPageFlag(final PageMetadata.PageCursorRequest carried) {
+        return carried != null && carried.nextPageIndicated();
     }
 
     /**

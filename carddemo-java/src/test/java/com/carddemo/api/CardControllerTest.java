@@ -19,8 +19,11 @@ package com.carddemo.api;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.PageMetadata;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.domain.Card;
 import com.carddemo.service.BrowseWindow;
+import com.carddemo.service.CardConcurrencyTokenService;
 import com.carddemo.service.CardDetailService;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
@@ -28,17 +31,26 @@ import com.carddemo.service.FieldErrorMarks;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenInputState;
 import com.carddemo.service.ScreenNavigationState;
+import com.carddemo.service.SensitiveFieldEncryptionService;
+import com.jayway.jsonpath.JsonPath;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.validation.Validation;
+import jakarta.validation.Validator;
+import jakarta.validation.ValidatorFactory;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -49,7 +61,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -86,6 +100,49 @@ class CardControllerTest {
     private static final String UPDATE_ROUTE = CardController.CARDS_BASE_PATH
             + CardController.CARD_UPDATE_PATH;
 
+    /**
+     * The first catalogue title the card-list turn stamps into its header, at the catalogue's own width.
+     *
+     * <p>Distinct, recognisable values rather than realistic ones, because what these assertions guard is
+     * that the boundary publishes what the turn stamped: a header component published from a constant of
+     * this class, or left absent, would pass an assertion written against a realistic string.
+     */
+    private static final String SCREEN_TITLE_01 = "STAMPED-TITLE-ONE";
+
+    /** The second catalogue title the card-list turn stamps into its header. */
+    private static final String SCREEN_TITLE_02 = "STAMPED-TITLE-TWO";
+
+    /** The header date the card-list turn stamps, as {@code MM/DD/YY}. */
+    private static final String HEADER_DATE = "03/09/24";
+
+    /** The header time the card-list turn stamps, as {@code HH:MM:SS}. */
+    private static final String HEADER_TIME = "14:25:36";
+
+    /**
+     * The one non-production fixture key, declared identically by {@code application-local.yml} and both
+     * {@code application-test.yml} files: Base64 of exactly thirty-two bytes.
+     */
+    private static final String FIELD_ENCRYPTION_KEY = "Y2FyZGRlbW8tbm9ucHJvZC1maXh0dXJlLWtleSEhISE=";
+
+    /**
+     * The real sealer over the real cipher, shared because the key is a constant.
+     *
+     * <p>Real rather than stubbed on purpose. The conversation token exists so that a state a client did
+     * not receive from this server cannot be opened, and a stub told to return a state would evidence
+     * nothing about that. Sealing a fixture here and letting the boundary open it is the only way a suite
+     * can show the round trip actually holds.
+     */
+    private static final CardConcurrencyTokenService TOKEN_SERVICE = new CardConcurrencyTokenService(
+            new SensitiveFieldEncryptionService(FIELD_ENCRYPTION_KEY));
+
+    /** The protected expiry day the fetched image carries; never bindable from the wire. */
+    private static final String CARRIED_EXPIRY_DAY = "31";
+
+    /** The image a turn that has fetched the card carries forward, day included. */
+    private static final CardUpdateService.CarriedCardImage CARRIED_IMAGE =
+            new CardUpdateService.CarriedCardImage("00000000011", "0000000000000001", "123",
+                    "MARY ANN", "2027", "07", CARRIED_EXPIRY_DAY, "Y");
+
     /** The card-list screen, stubbed. */
     private CardListService cardListService;
 
@@ -98,6 +155,12 @@ class CardControllerTest {
     /** The converter between the wire screen carriers and the service-owned ones. */
     private ScreenStateAdapter screenStateAdapter;
 
+    /** The factory behind {@link #validator}, closed after each test so no provider resource leaks. */
+    private ValidatorFactory validatorFactory;
+
+    /** The real constraint evaluator, so the confirming submission's group is genuinely evaluated. */
+    private Validator validator;
+
     /** Registry the turn timers register against. */
     private MeterRegistry meterRegistry;
 
@@ -107,6 +170,22 @@ class CardControllerTest {
     /** The boundary driven through the servlet contract. */
     private MockMvc mockMvc;
 
+    /**
+     * Builds an established identity carrying the single authority the chain grants for a user type.
+     *
+     * <p>Supplied as the request principal rather than through a security filter, because these routes are
+     * exercised standalone: the framework resolves an {@code Authentication} parameter from the request's own
+     * user principal, so the boundary sees exactly what the chain would have handed it.
+     *
+     * @param userId the principal name
+     * @param userType the type whose declared authority is granted
+     * @return an authenticated token the boundary can read identity from
+     */
+    private static Authentication identityOf(final String userId, final UserType userType) {
+        return new TestingAuthenticationToken(userId, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
+    }
+
     @BeforeEach
     void setUp() {
         cardListService = mock(CardListService.class);
@@ -114,13 +193,23 @@ class CardControllerTest {
         cardUpdateService = mock(CardUpdateService.class);
         // The real converter rather than a mock: it holds no state and performs a positional copy, so
         // stubbing it would measure the stub instead of the crossing.
-        screenStateAdapter = new ScreenStateAdapter();
+        screenStateAdapter = new ScreenStateAdapter(new NavigationService());
+        // The real sealer over the real cipher, not a mock. The whole point of the conversation token is
+        // that a state a client did not receive from this server cannot be opened, and a stubbed sealer
+        // would return whatever the stub was told to and would evidence nothing about that.
+        validatorFactory = Validation.buildDefaultValidatorFactory();
+        validator = validatorFactory.getValidator();
         meterRegistry = new SimpleMeterRegistry();
         controller = new CardController(cardListService, cardDetailService, cardUpdateService,
-                screenStateAdapter, meterRegistry);
+                screenStateAdapter, TOKEN_SERVICE, validator, meterRegistry);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
+    }
+
+    @AfterEach
+    void tearDown() {
+        validatorFactory.close();
     }
 
     // ==================================================================================================
@@ -135,15 +224,26 @@ class CardControllerTest {
         @DisplayName("refuses every absent collaborator, so a half-built boundary cannot exist")
         void refusesAnAbsentCollaborator() {
             assertThatNullPointerException().isThrownBy(() -> new CardController(null,
-                    cardDetailService, cardUpdateService, screenStateAdapter, meterRegistry));
+                    cardDetailService, cardUpdateService, screenStateAdapter,
+                    TOKEN_SERVICE, validator, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    null, cardUpdateService, screenStateAdapter, meterRegistry));
+                    null, cardUpdateService, screenStateAdapter,
+                    TOKEN_SERVICE, validator, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    cardDetailService, null, screenStateAdapter, meterRegistry));
+                    cardDetailService, null, screenStateAdapter,
+                    TOKEN_SERVICE, validator, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    cardDetailService, cardUpdateService, null, meterRegistry));
+                    cardDetailService, cardUpdateService, null,
+                    TOKEN_SERVICE, validator, meterRegistry));
             assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
-                    cardDetailService, cardUpdateService, screenStateAdapter, null));
+                    cardDetailService, cardUpdateService, screenStateAdapter,
+                    null, validator, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
+                    cardDetailService, cardUpdateService, screenStateAdapter,
+                    TOKEN_SERVICE, null, meterRegistry));
+            assertThatNullPointerException().isThrownBy(() -> new CardController(cardListService,
+                    cardDetailService, cardUpdateService, screenStateAdapter,
+                    TOKEN_SERVICE, validator, null));
         }
 
         @Test
@@ -244,18 +344,42 @@ class CardControllerTest {
         }
 
         @Test
-        @DisplayName("publishes no screen heading the turn did not produce, rather than inventing one")
-        void publishesNoFabricatedHeading() throws Exception {
+        @DisplayName("publishes the heading the turn stamped rather than inventing one or omitting it, "
+                + "because the whole of that legacy paragraph's output belongs to the turn")
+        void publishesTheStampedHeading() throws Exception {
             when(cardListService.processCardList(any())).thenReturn(listResult(rowsFrom(1), false));
 
+            // Each expected value is the one the stubbed turn stamped, so a component the boundary
+            // fabricated from its own constants, or left absent, fails here.
             mockMvc.perform(post(LIST_ROUTE)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(listBody(null, null, "ENTER")))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.title01").doesNotExist())
-                    .andExpect(jsonPath("$.title02").doesNotExist())
-                    .andExpect(jsonPath("$.currentDate").doesNotExist())
-                    .andExpect(jsonPath("$.currentTime").doesNotExist());
+                    .andExpect(jsonPath("$.title01").value(SCREEN_TITLE_01))
+                    .andExpect(jsonPath("$.title02").value(SCREEN_TITLE_02))
+                    .andExpect(jsonPath("$.currentDate").value(HEADER_DATE))
+                    .andExpect(jsonPath("$.currentTime").value(HEADER_TIME))
+                    .andExpect(jsonPath("$.transactionName").value("CCLI"))
+                    .andExpect(jsonPath("$.programName").value("COCRDLIC"));
+        }
+
+        @Test
+        @DisplayName("publishes every row's screen slot, so a selector addresses the row the operator saw "
+                + "rather than the position it happened to occupy in the list")
+        void publishesEveryRowScreenSlot() throws Exception {
+            // Slots five, six and seven populated and one to four empty is the shape a partial backward
+            // page leaves, and it is the shape on which a position-derived slot would be wrong.
+            when(cardListService.processCardList(any()))
+                    .thenReturn(listResult(rowsFrom(5, 6, 7), false));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(listBody(null, null, "PFK07")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.rows.length()").value(3))
+                    .andExpect(jsonPath("$.rows[0].screenSlot").value(5))
+                    .andExpect(jsonPath("$.rows[1].screenSlot").value(6))
+                    .andExpect(jsonPath("$.rows[2].screenSlot").value(7));
         }
 
         @Test
@@ -289,7 +413,8 @@ class CardControllerTest {
 
         @Test
         @DisplayName("stages both filters and the resolved key into the work area exactly as "
-                + "transmitted, and supplies the paging conclusions as the first-page neutral")
+                + "transmitted, and reads the retained paging state as the program's own first-entry "
+                + "values when the caller carried none")
         void stagesTheTransmittedValuesWithoutAlteringThem() throws Exception {
             when(cardListService.processCardList(any())).thenReturn(listResult(List.of(), false));
 
@@ -304,10 +429,131 @@ class CardControllerTest {
             assertThat(workArea.cardNumber()).isEqualTo("0000000000000009");
             assertThat(workArea.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(workArea.nextProgram()).isNull();
-            assertThat(captured.currentPageNumber()).isEqualTo(1);
+            // Zero, not one: WS-CA-SCREEN-NUM starts at zero and the program's own test raises it to one,
+            // so asserting one here would skip that test.
+            assertThat(captured.currentPageNumber()).isZero();
             assertThat(captured.lastPageAlreadyShown()).isFalse();
             assertThat(captured.nextPageIndicated()).isFalse();
             assertThat(captured.selections()).hasSize(BrowseWindow.CARD_LIST_PAGE_SIZE);
+        }
+
+        @Test
+        @DisplayName("reads the retained page number and both retained flags back out of what the caller "
+                + "echoed, because the program carries all three in its communication area rather than "
+                + "recomputing them")
+        void readsTheRetainedPagingStateBack() throws Exception {
+            when(cardListService.processCardList(any())).thenReturn(listResult(List.of(), false));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"keyAction":"PFK08",
+                                     "lastPageAlreadyShown":true,
+                                     "pageMetadata":{"previousCursorKey":"0000000000000001",
+                                                     "nextCursorKey":"0000000000000007",
+                                                     "direction":"FORWARD",
+                                                     "displayedPageNumber":"3",
+                                                     "nextPageIndicated":true}}"""))
+                    .andExpect(status().isOk());
+
+            final CardListService.CardListScreenInput captured = capturedListInput();
+            assertThat(captured.currentPageNumber()).isEqualTo(3);
+            assertThat(captured.lastPageAlreadyShown()).isTrue();
+            assertThat(captured.nextPageIndicated()).isTrue();
+        }
+
+        @Test
+        @DisplayName("reads a padded retained page number as the number it displays, because a "
+                + "fixed-width indicator arrives with the padding its field carries")
+        void readsAPaddedRetainedPageNumber() throws Exception {
+            when(cardListService.processCardList(any())).thenReturn(listResult(List.of(), false));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"keyAction":"PFK08",
+                                     "pageMetadata":{"direction":"FORWARD",
+                                                     "displayedPageNumber":"  4  "}}"""))
+                    .andExpect(status().isOk());
+
+            assertThat(capturedListInput().currentPageNumber()).isEqualTo(4);
+        }
+
+        @Test
+        @DisplayName("reads an all-blank retained page number as the zero a first entry carries, so an "
+                + "echoed indicator can never fail a turn")
+        void readsABlankRetainedPageNumberAsZero() throws Exception {
+            when(cardListService.processCardList(any())).thenReturn(listResult(List.of(), false));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"keyAction":"PFK08",
+                                     "pageMetadata":{"direction":"FORWARD",
+                                                     "displayedPageNumber":"     "}}"""))
+                    .andExpect(status().isOk());
+
+            assertThat(capturedListInput().currentPageNumber()).isZero();
+        }
+
+        @Test
+        @DisplayName("projects the turn's field findings onto the two-state error contract, in order "
+                + "and keeping an unsupplied filter distinct from an unusable one")
+        void projectsTheListFieldFindings() throws Exception {
+            when(cardListService.processCardList(any())).thenReturn(listResult(List.of(), false, false,
+                    List.of(
+                            new ValidationException.FieldError("accountIdFilter", "ACCTSID",
+                                    ValidationException.FieldState.MISSING,
+                                    "Account number not provided"),
+                            new ValidationException.FieldError("cardNumberFilter", "CARDSID",
+                                    ValidationException.FieldState.INVALID,
+                                    "Card number must be a 16 digit number"))));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(listBody(null, "ABC", "ENTER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(2))
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("accountIdFilter"))
+                    .andExpect(jsonPath("$.fieldErrors[0].screenFieldId").value("ACCTSID"))
+                    .andExpect(jsonPath("$.fieldErrors[0].state")
+                            .value(ErrorResponse.FieldState.MISSING.name()))
+                    .andExpect(jsonPath("$.fieldErrors[0].message")
+                            .value("Account number not provided"))
+                    .andExpect(jsonPath("$.fieldErrors[1].fieldName").value("cardNumberFilter"))
+                    .andExpect(jsonPath("$.fieldErrors[1].screenFieldId").value("CARDSID"))
+                    .andExpect(jsonPath("$.fieldErrors[1].state")
+                            .value(ErrorResponse.FieldState.INVALID.name()))
+                    .andExpect(jsonPath("$.fieldErrors[1].message")
+                            .value("Card number must be a 16 digit number"));
+        }
+
+        @Test
+        @DisplayName("publishes an empty finding list when the turn reported none, so a clean page is "
+                + "distinguishable from a page whose findings were never established")
+        void publishesAnEmptyListFindingListWhenTheTurnReportedNone() throws Exception {
+            when(cardListService.processCardList(any())).thenReturn(listResult(rowsFrom(1), false));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(listBody("00000000011", null, "ENTER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(0));
+        }
+
+        @Test
+        @DisplayName("publishes the retained end-of-data flag so the next turn can echo it, which is the "
+                + "one retained paging value the paging state cannot express")
+        void publishesTheRetainedEndOfDataFlag() throws Exception {
+            when(cardListService.processCardList(any()))
+                    .thenReturn(listResult(List.of(), false, true));
+
+            mockMvc.perform(post(LIST_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(listBody(null, null, "PFK08")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.lastPageAlreadyShown").value(true));
         }
 
         @Test
@@ -405,6 +651,54 @@ class CardControllerTest {
                     .andExpect(jsonPath("$.nextRoute").value("card-detail"));
 
             verify(cardDetailService, times(1)).processCardDetail(any());
+        }
+
+        @Test
+        @DisplayName("projects the turn's field findings onto the two-state error contract, in order "
+                + "and keeping an unsupplied key distinct from an unusable one")
+        void projectsTheDetailFieldFindings() throws Exception {
+            // The legacy screen distinguishes the two states with two different devices - it writes a
+            // star beside a key that was left blank and only colours one that was supplied but is
+            // unusable - so a single boolean per field could not carry both.
+            when(cardDetailService.processCardDetail(any())).thenReturn(detailResult(List.of(
+                    new ValidationException.FieldError("accountIdFilter", "ACCTSID",
+                            ValidationException.FieldState.MISSING,
+                            "Account number not provided"),
+                    new ValidationException.FieldError("cardNumberFilter", "CARDSID",
+                            ValidationException.FieldState.INVALID,
+                            "Card number must be a 16 digit number"))));
+
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody(null, "ABC", "ENTER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(2))
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("accountIdFilter"))
+                    .andExpect(jsonPath("$.fieldErrors[0].screenFieldId").value("ACCTSID"))
+                    .andExpect(jsonPath("$.fieldErrors[0].state")
+                            .value(ErrorResponse.FieldState.MISSING.name()))
+                    .andExpect(jsonPath("$.fieldErrors[0].message")
+                            .value("Account number not provided"))
+                    .andExpect(jsonPath("$.fieldErrors[1].fieldName").value("cardNumberFilter"))
+                    .andExpect(jsonPath("$.fieldErrors[1].screenFieldId").value("CARDSID"))
+                    .andExpect(jsonPath("$.fieldErrors[1].state")
+                            .value(ErrorResponse.FieldState.INVALID.name()))
+                    .andExpect(jsonPath("$.fieldErrors[1].message")
+                            .value("Card number must be a 16 digit number"));
+        }
+
+        @Test
+        @DisplayName("publishes an empty finding list when the turn reported none, so a clean screen is "
+                + "distinguishable from a screen whose findings were never established")
+        void publishesAnEmptyFindingListWhenTheTurnReportedNone() throws Exception {
+            when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
+
+            mockMvc.perform(post(DETAIL_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody("00000000011", "0000000000000001", "ENTER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.fieldErrors").isArray())
+                    .andExpect(jsonPath("$.fieldErrors.length()").value(0));
         }
 
         @Test
@@ -535,15 +829,166 @@ class CardControllerTest {
         }
 
         @Test
-        @DisplayName("echoes the sealed proof back unchanged so the confirming turn can present it")
-        void echoesTheSealedProofUnchanged() throws Exception {
+        @DisplayName("seals the state the turn settled on rather than echoing back the state it was given, "
+                + "because echoing would leave the conversation unable to advance")
+        void sealsTheSettledStateRatherThanEchoingTheGivenOne() throws Exception {
+            final String presented = TOKEN_SERVICE.sealContinuation(
+                    CardUpdateService.ChangeAction.SHOW_DETAILS, CARRIED_IMAGE);
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            final String published = JsonPath.read(mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("PFK05", presented)))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString(), "$.concurrencyToken");
+
+            assertThat(published)
+                    .as("a boundary that echoed the presented token would freeze the state machine at "
+                            + "whatever state the client last held")
+                    .isNotEqualTo(presented);
+            assertThat(TOKEN_SERVICE.openContinuation(published).changeAction())
+                    .as("the published token names the state this turn settled on")
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE);
+        }
+
+        @Test
+        @DisplayName("hands the service the state the previous turn sealed, so the machine can advance past "
+                + "the not-fetched state a client cannot be trusted to name")
+        void handsTheServiceTheSealedState() throws Exception {
             when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
 
             mockMvc.perform(post(UPDATE_ROUTE)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(updateBody("PFK05")))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.concurrencyToken").value("sealed-proof-as-presented"));
+                            .content(updateBody("ENTER",
+                                    TOKEN_SERVICE.sealContinuation(
+                                            CardUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED,
+                                            CARRIED_IMAGE))))
+                    .andExpect(status().isOk());
+
+            final CardUpdateService.CardUpdateScreenInput captured = capturedUpdateInput();
+            assertThat(captured.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            assertThat(captured.carriedImage()).isEqualTo(CARRIED_IMAGE);
+        }
+
+        @Test
+        @DisplayName("supplies the protected expiry day from the sealed image, because the contract "
+                + "declines to bind it and the change comparison reads it")
+        void suppliesTheProtectedExpiryDayFromTheSealedImage() throws Exception {
+            // COCRDUPC line 1123 writes the fetched day back into the protected field before sending, so
+            // the terminal always transmitted it back and the comparison at lines 680 to 681 read a real
+            // value. The wire cannot carry it here, so the boundary has to restore it from the sealed
+            // image; leaving it null makes every comparison see a change and assembles "2027-07-null".
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("ENTER")))
+                    .andExpect(status().isOk());
+
+            assertThat(capturedUpdateInput().expiryDay()).isEqualTo(CARRIED_EXPIRY_DAY);
+        }
+
+        @Test
+        @DisplayName("opens an absent sealed state as the genuine first turn, which is the zero-length "
+                + "communication area the legacy answers at line 388")
+        void opensAnAbsentSealedStateAsAFirstTurn() throws Exception {
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("ENTER", null)))
+                    .andExpect(status().isOk());
+
+            final CardUpdateService.CardUpdateScreenInput captured = capturedUpdateInput();
+            assertThat(captured.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
+            assertThat(captured.carriedImage())
+                    .isEqualTo(CardUpdateService.CarriedCardImage.empty());
+            assertThat(captured.expiryDay())
+                    .as("a first turn has fetched nothing, so there is no protected day to restore")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("refuses a sealed state this server did not mint rather than downgrading it to a "
+                + "first turn, because downgrading would let a client discard a state it disliked")
+        void refusesASealedStateThisServerDidNotMint() throws Exception {
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("PFK05", "not-a-token-this-server-sealed")))
+                    .andExpect(status().isConflict());
+
+            verify(cardUpdateService, never()).processCardUpdate(any());
+        }
+
+        @Test
+        @DisplayName("refuses a sealed state minted for the other purpose, so the record proof and the "
+                + "conversation state cannot be substituted for one another")
+        void refusesASealedStateMintedForTheOtherPurpose() throws Exception {
+            final Card presented = new Card("0000000000000001", "00000000011", "123", "MARY ANN",
+                    "2027-07-31", "Y");
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("PFK05", TOKEN_SERVICE.mint(presented))))
+                    .andExpect(status().isConflict());
+
+            verify(cardUpdateService, never()).processCardUpdate(any());
+        }
+
+        @Test
+        @DisplayName("refuses a confirming submission that supplies a value that state protects, which is "
+                + "a submission the terminal could not physically have transmitted")
+        void refusesAConfirmingSubmissionThatSuppliesAProtectedValue() throws Exception {
+            // Clause five of the dispatch at COCRDUPC lines 988 to 1001 is the only writing combination,
+            // and the attribute branch at line 1193 has the account identifier protected in that state.
+            final String confirming = TOKEN_SERVICE.sealContinuation(
+                    CardUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED, CARRIED_IMAGE);
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"accountId\":\"00000000011\","
+                                    + "\"cardNumber\":\"0000000000000001\","
+                                    + "\"keyAction\":\"PFK05\","
+                                    + "\"concurrencyToken\":\"" + confirming + "\"}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName").value("accountId"));
+
+            verify(cardUpdateService, never()).processCardUpdate(any());
+        }
+
+        @Test
+        @DisplayName("admits the same confirming submission once the protected value is left out, so the "
+                + "group refuses a supplied value rather than the turn itself")
+        void admitsAConfirmingSubmissionWithoutTheProtectedValue() throws Exception {
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("PFK05",
+                                    TOKEN_SERVICE.sealContinuation(
+                                            CardUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED,
+                                            CARRIED_IMAGE))))
+                    .andExpect(status().isOk());
+
+            verify(cardUpdateService, times(1)).processCardUpdate(any());
+        }
+
+        @Test
+        @DisplayName("leaves the protected value unpoliced on a turn the group does not name, because the "
+                + "operator types it on the searching turn")
+        void leavesTheProtectedValueUnpolicedOnASearchingTurn() throws Exception {
+            when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"accountId\":\"00000000011\","
+                                    + "\"cardNumber\":\"0000000000000001\","
+                                    + "\"keyAction\":\"ENTER\"}"))
+                    .andExpect(status().isOk());
+
+            assertThat(capturedUpdateInput().accountId()).isEqualTo("00000000011");
         }
 
         @Test
@@ -562,20 +1007,34 @@ class CardControllerTest {
         }
 
         @Test
-        @DisplayName("leaves the carried change action and before-image for the service to default, "
-                + "holding no screen state of its own")
-        void leavesTheCarriedStateToTheService() throws Exception {
+        @DisplayName("holds no screen state of its own: two turns sealed at different states reach the "
+                + "transaction as those two states through one boundary instance")
+        void holdsNoScreenStateOfItsOwn() throws Exception {
             when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
 
             mockMvc.perform(post(UPDATE_ROUTE)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(updateBody("ENTER")))
+                            .content(updateBody("ENTER",
+                                    TOKEN_SERVICE.sealContinuation(
+                                            CardUpdateService.ChangeAction.SHOW_DETAILS,
+                                            CARRIED_IMAGE))))
+                    .andExpect(status().isOk());
+            final CardUpdateService.ChangeAction first = capturedUpdateInput().changeAction();
+
+            mockMvc.perform(post(UPDATE_ROUTE)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(updateBody("ENTER",
+                                    TOKEN_SERVICE.sealContinuation(
+                                            CardUpdateService.ChangeAction.CHANGES_NOT_OK,
+                                            CARRIED_IMAGE))))
                     .andExpect(status().isOk());
 
-            final CardUpdateService.CardUpdateScreenInput captured = capturedUpdateInput();
-            assertThat(captured.changeAction()).isNull();
-            assertThat(captured.carriedImage()).isNull();
-            assertThat(captured.attentionKeyIdentifier()).isEqualTo("DFHENTER");
+            assertThat(first).isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
+            assertThat(lastCapturedUpdateInput().changeAction())
+                    .as("nothing about the first turn survived into the second, because the boundary "
+                            + "keeps no field and the state travels sealed")
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_NOT_OK);
+            assertThat(lastCapturedUpdateInput().attentionKeyIdentifier()).isEqualTo("DFHENTER");
         }
 
         @Test
@@ -599,17 +1058,21 @@ class CardControllerTest {
         }
 
         @Test
-        @DisplayName("an echoed navigation record crosses component for component")
+        @DisplayName("an echoed navigation record crosses component for component, except the two identity "
+                + "members, which the authenticated principal supplies instead of the caller")
         void anEchoedNavigationRecordCrossesComponentForComponent() throws Exception {
             when(cardUpdateService.processCardUpdate(any())).thenReturn(updateResult(List.of()));
 
             mockMvc.perform(post(UPDATE_ROUTE)
+                            .principal(identityOf("USER0001", UserType.USER))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"cardNumber\":\"0000000000000001\","
                                     + "\"embossedName\":\"MARY ANN\",\"activeStatus\":\"Y\","
                                     + "\"expiryMonth\":\"07\",\"expiryYear\":\"2027\","
                                     + "\"keyAction\":\"ENTER\","
-                                    + "\"concurrencyToken\":\"sealed-proof-as-presented\","
+                                    + "\"concurrencyToken\":\"" + TOKEN_SERVICE.sealContinuation(
+                                            CardUpdateService.ChangeAction.SHOW_DETAILS, CARRIED_IMAGE)
+                                    + "\","
                                     + "\"navigationContext\":{"
                                     + "\"fromTransactionId\":\"CCLI\","
                                     + "\"fromProgram\":\"COCRDLIC\","
@@ -812,6 +1275,22 @@ class CardControllerTest {
     }
 
     /**
+     * Reads the input the card-update service was handed most recently, across however many turns ran.
+     *
+     * <p>Separate from {@link #capturedUpdateInput()} because that one asserts a single invocation, which
+     * is the right assertion for a single-turn test and the wrong one for a test whose whole subject is
+     * that two turns do not contaminate each other.
+     *
+     * @return the last captured input
+     */
+    private CardUpdateService.CardUpdateScreenInput lastCapturedUpdateInput() {
+        final ArgumentCaptor<CardUpdateService.CardUpdateScreenInput> captor =
+                ArgumentCaptor.forClass(CardUpdateService.CardUpdateScreenInput.class);
+        verify(cardUpdateService, atLeastOnce()).processCardUpdate(captor.capture());
+        return captor.getValue();
+    }
+
+    /**
      * Renders a card-list request body.
      *
      * @param accountFilter the account filter, or {@code null} to omit it
@@ -838,10 +1317,30 @@ class CardControllerTest {
      * @return the JSON body
      */
     private static String updateBody(final String keyActionName) {
+        return updateBody(keyActionName,
+                TOKEN_SERVICE.sealContinuation(
+                        CardUpdateService.ChangeAction.SHOW_DETAILS, CARRIED_IMAGE));
+    }
+
+    /**
+     * Builds a card-update submission carrying the given attention key and the given sealed state.
+     *
+     * <p>The sealed state is supplied rather than fabricated because the boundary opens it: a literal
+     * stand-in cannot be opened and would be refused as a forgery, which is the whole behaviour the token
+     * exists to produce.
+     *
+     * @param keyActionName the attention key the operator pressed
+     * @param sealedContinuation the sealed conversation state to echo, or {@code null} for a first turn
+     * @return the request body
+     */
+    private static String updateBody(final String keyActionName, final String sealedContinuation) {
         return "{\"cardNumber\":\"0000000000000001\",\"embossedName\":\"MARY ANN\","
                 + "\"activeStatus\":\"Y\",\"expiryMonth\":\"07\",\"expiryYear\":\"2027\","
-                + "\"keyAction\":\"" + keyActionName + "\","
-                + "\"concurrencyToken\":\"sealed-proof-as-presented\"}";
+                + "\"keyAction\":\"" + keyActionName + "\""
+                + (sealedContinuation == null
+                        ? ""
+                        : ",\"concurrencyToken\":\"" + sealedContinuation + "\"")
+                + "}";
     }
 
     /**
@@ -868,6 +1367,37 @@ class CardControllerTest {
      */
     private static CardListService.CardListResult listResult(
             final List<CardListService.CardListRow> rows, final boolean markOddSlots) {
+        return listResult(rows, markOddSlots, false);
+    }
+
+    /**
+     * Builds a settled card-list turn, stating the retained end-of-data flag it leaves.
+     *
+     * @param rows the rows the browse settled on
+     * @param markOddSlots whether the odd screen slots carry a selection error
+     * @param lastPageAlreadyShown the retained {@code WS-CA-LAST-PAGE-DISPLAYED} the turn leaves
+     * @return the settled turn
+     */
+    private static CardListService.CardListResult listResult(
+            final List<CardListService.CardListRow> rows, final boolean markOddSlots,
+            final boolean lastPageAlreadyShown) {
+        return listResult(rows, markOddSlots, lastPageAlreadyShown, List.of());
+    }
+
+    /**
+     * Builds a settled card-list turn, stating both the retained end-of-data flag it leaves and the
+     * field findings it reported.
+     *
+     * @param rows the rows the browse settled on
+     * @param markOddSlots whether the odd screen slots carry a selection error
+     * @param lastPageAlreadyShown the retained {@code WS-CA-LAST-PAGE-DISPLAYED} the turn leaves
+     * @param fieldErrors the field findings the turn reported, in the order it reported them
+     * @return the settled turn
+     */
+    private static CardListService.CardListResult listResult(
+            final List<CardListService.CardListRow> rows, final boolean markOddSlots,
+            final boolean lastPageAlreadyShown,
+            final List<ValidationException.FieldError> fieldErrors) {
         final Boolean[] flags = new Boolean[BrowseWindow.CARD_LIST_PAGE_SIZE];
         for (int slot = 1; slot <= BrowseWindow.CARD_LIST_PAGE_SIZE; slot++) {
             flags[slot - 1] = markOddSlots && slot % 2 == 1;
@@ -876,17 +1406,20 @@ class CardControllerTest {
                 NavigationService.Route.CARD_LIST,
                 ScreenNavigationState.empty(),
                 "CCLI",
+                new CardListService.ScreenHeader(SCREEN_TITLE_01, SCREEN_TITLE_02, "CCLI",
+                        "COCRDLIC", HEADER_DATE, HEADER_TIME),
                 rows,
                 BrowseWindow.forward(BrowseWindow.CARD_LIST_PAGE_SIZE, "0000000000000001",
                         "0000000000000007", true, false, "1"),
                 "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD",
                 "",
                 Arrays.asList(flags),
-                List.of(),
+                fieldErrors,
                 "ACCTSID",
                 false,
                 false,
-                0);
+                0,
+                lastPageAlreadyShown);
     }
 
     /**
@@ -895,6 +1428,17 @@ class CardControllerTest {
      * @return the settled turn
      */
     private static CardDetailService.CardDetailResult detailResult() {
+        return detailResult(List.of());
+    }
+
+    /**
+     * Builds a settled card-detail turn presenting one card and reporting the given field findings.
+     *
+     * @param fieldErrors the field findings the turn reported, in the order it reported them
+     * @return the settled turn
+     */
+    private static CardDetailService.CardDetailResult detailResult(
+            final List<ValidationException.FieldError> fieldErrors) {
         return new CardDetailService.CardDetailResult(
                 NavigationService.Route.CARD_DETAIL,
                 ScreenNavigationState.empty(),
@@ -908,7 +1452,7 @@ class CardControllerTest {
                 "ACCTSID",
                 false,
                 false,
-                List.of(),
+                fieldErrors,
                 new CardDetailService.ScreenHeader("Card Detail", "View Card", "CCDL", "COCRDSLC",
                         "07/19/22", "23:12:33"),
                 new CardDetailService.ScreenFields("00000000011", "0000000000000001", "MARY ANN", "Y",

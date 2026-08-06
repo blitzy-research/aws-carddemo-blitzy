@@ -50,6 +50,7 @@ import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
+import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DailyTransactionRepository;
@@ -137,6 +138,15 @@ class TransactionPostingServiceTest {
 
     private TransactionPostingService service;
 
+    /**
+     * The real per-record transaction boundary. A stub would be wrong here: the boundary's whole
+     * contribution is that it runs the callback, and every assertion below depends on the callback
+     * having run, so the genuine collaborator is the honest one to use. Its transactional behaviour is
+     * the framework's and is asserted separately.
+     */
+    private static final PostingRecordTransactionBoundary POSTING_BOUNDARY =
+            new PostingRecordTransactionBoundary();
+
     private Logger serviceLogger;
 
     private Level previousLogLevel;
@@ -171,7 +181,7 @@ class TransactionPostingServiceTest {
         });
         service = new TransactionPostingService(dailyTransactionRepository, transactionRepository,
                 accountRepository, cardCrossReferenceRepository, categoryBalanceRepository,
-                recordWriter, new AbendService(),
+                recordWriter, new AbendService(), POSTING_BOUNDARY,
                 Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
 
         serviceLogger = (Logger) LoggerFactory.getLogger(TransactionPostingService.class);
@@ -244,6 +254,7 @@ class TransactionPostingServiceTest {
         Mockito.when(accountRepository.findById(ACCT)).thenReturn(Optional.of(acct));
         Mockito.when(accountRepository.rewritePostingBalances(
                         ArgumentMatchers.eq(ACCT),
+                        ArgumentMatchers.anyLong(),
                         ArgumentMatchers.any(BigDecimal.class),
                         ArgumentMatchers.any(BigDecimal.class),
                         ArgumentMatchers.any(BigDecimal.class)))
@@ -273,7 +284,7 @@ class TransactionPostingServiceTest {
         ArgumentCaptor<BigDecimal> currentCycleCredit = ArgumentCaptor.forClass(BigDecimal.class);
         ArgumentCaptor<BigDecimal> currentCycleDebit = ArgumentCaptor.forClass(BigDecimal.class);
         Mockito.verify(accountRepository).rewritePostingBalances(ArgumentMatchers.eq(ACCT),
-                currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
+                ArgumentMatchers.anyLong(), currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
         return account(currentBalance.getValue().toPlainString(), "99999.00",
                 currentCycleCredit.getValue().toPlainString(),
                 currentCycleDebit.getValue().toPlainString(), "2099-01-01");
@@ -383,6 +394,167 @@ class TransactionPostingServiceTest {
     }
 
     @Nested
+    @DisplayName("The account rewrite is a compare-and-set on the version it read")
+    class TheAccountRewriteComparesAndSets {
+
+        @Test
+        @DisplayName("the version observed when the account was read is the version the rewrite matches "
+                + "on, so a write that another writer has already superseded cannot succeed")
+        void theReadVersionIsWhatTheRewriteMatchesOn() {
+            final Account read = account("0.00", "99999.00", "0.00", "0.00", "2099-01-01");
+            resolving(read);
+            final ArgumentCaptor<Long> matchedVersion = ArgumentCaptor.forClass(Long.class);
+
+            service.post(record("T1", "10.00"));
+
+            Mockito.verify(accountRepository).rewritePostingBalances(
+                    ArgumentMatchers.eq(ACCT),
+                    matchedVersion.capture(),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class));
+            assertThat(matchedVersion.getValue())
+                    .as("sourced from the read image rather than from a constant or omitted")
+                    .isEqualTo(read.getVersion());
+        }
+
+        @Test
+        @DisplayName("no row rewritten while the account is still present is a lost version race, "
+                + "refused with the legacy changed-record text rather than reported as an absent account")
+        void aPresentAccountThatRewroteNoRowIsAVersionConflict() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.post(record("T1", "10.00")))
+                    .satisfies(conflict -> {
+                        assertThat(conflict.getMessage()).isEqualTo(
+                                OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+                        assertThat(conflict.conflictKind()).isEqualTo(
+                                OptimisticLockConflictException.ConflictKind
+                                        .RECORD_CHANGED_BEFORE_UPDATE);
+                        assertThat(conflict.key()).isEqualTo(ACCT);
+                        assertThat(conflict.entityName()).isEqualTo("Account");
+                    });
+        }
+
+        @Test
+        @DisplayName("the refusal reaches the caller before the transaction file is written, so no posted "
+                + "transaction can outlive the balance rewrite it was supposed to accompany")
+        void theTransactionFileIsNotWrittenOnAVersionConflict() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.post(record("T1", "10.00")));
+
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.startsWith(
+                            "account rewrite lost a version race program=CBTRN02C"))
+                    .noneMatch(message -> message.contains(ACCT));
+        }
+
+        @Test
+        @DisplayName("a run carrying one does not swallow it, because the legacy member has no arm for a "
+                + "condition its uncommitted-read file could not observe")
+        void aRunPropagatesTheConflictRatherThanRejectingTheRecord() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
+            List<PostingResult> sink = new ArrayList<>();
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.postAll(List.of(record("T1", "10.00")), sink::add));
+            assertThat(sink)
+                    .as("a conflict is a failure, not a reject: nothing is handed to the reject writer")
+                    .isEmpty();
+        }
+    }
+
+    @Nested
+    @DisplayName("Every record obtains its own unit of work, and the mainline loop cannot bypass it")
+    class ThePerRecordUnitOfWork {
+
+        @Test
+        @DisplayName("a single post runs inside the injected boundary rather than inside the service")
+        void asinglePostRunsInsideTheBoundary() {
+            final PostingRecordTransactionBoundary boundary =
+                    Mockito.spy(new PostingRecordTransactionBoundary());
+            final TransactionPostingService proxied = serviceWith(boundary);
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+
+            assertThat(proxied.post(record("T1", "10.00")).posted()).isTrue();
+
+            Mockito.verify(boundary).execute(ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("the mainline loop opens one boundary per record - the property a transactional "
+                + "method on the service could never have, because the loop's own call bypasses the proxy")
+        void theMainlineLoopOpensOneBoundaryPerRecord() {
+            final PostingRecordTransactionBoundary boundary =
+                    Mockito.spy(new PostingRecordTransactionBoundary());
+            final TransactionPostingService proxied = serviceWith(boundary);
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(cardCrossReferenceRepository.findById(CARD))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD, "000000001", ACCT)));
+
+            final PostingRunSummary summary = proxied.postAll(
+                    List.of(record("T1", "10.00"), record("T2", "20.00"), record("T3", "30.00")),
+                    result -> { });
+
+            assertThat(summary.transactionsProcessed()).isEqualTo(3L);
+            Mockito.verify(boundary, Mockito.times(3)).execute(ArgumentMatchers.any());
+        }
+
+        @Test
+        @DisplayName("nothing wraps the run itself, so the boundary count equals the record count and "
+                + "never one")
+        void theRunItselfIsNotOneUnitOfWork() {
+            final PostingRecordTransactionBoundary boundary =
+                    Mockito.spy(new PostingRecordTransactionBoundary());
+            final TransactionPostingService proxied = serviceWith(boundary);
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+
+            proxied.postAll(List.of(record("T1", "10.00"), record("T2", "20.00")), result -> { });
+
+            Mockito.verify(boundary, Mockito.times(2)).execute(ArgumentMatchers.any());
+            Mockito.verifyNoMoreInteractions(boundary);
+        }
+
+        /** Builds the service over the shared collaborator mocks and the supplied boundary. */
+        private TransactionPostingService serviceWith(
+                final PostingRecordTransactionBoundary boundary) {
+            return new TransactionPostingService(dailyTransactionRepository, transactionRepository,
+                    accountRepository, cardCrossReferenceRepository, categoryBalanceRepository,
+                    recordWriter, new AbendService(), boundary,
+                    Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
+        }
+    }
+
+    @Nested
     @DisplayName("Reject 109 is inert: set, but producing no reject record")
     class InertReason109 {
 
@@ -390,8 +562,11 @@ class TransactionPostingServiceTest {
         @DisplayName("the record still posts and the transaction is still written")
         void theTransactionIsStillWritten() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.existsById(ACCT))
+                    .thenReturn(false);
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
@@ -425,6 +600,7 @@ class TransactionPostingServiceTest {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
@@ -579,6 +755,7 @@ class TransactionPostingServiceTest {
                     .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
             ordered.verify(accountRepository).rewritePostingBalances(
                     ArgumentMatchers.eq(ACCT),
+                    ArgumentMatchers.anyLong(),
                     ArgumentMatchers.any(BigDecimal.class),
                     ArgumentMatchers.any(BigDecimal.class),
                     ArgumentMatchers.any(BigDecimal.class));
@@ -1265,7 +1442,7 @@ class TransactionPostingServiceTest {
             TransactionPostingService farFuture = new TransactionPostingService(
                     dailyTransactionRepository, transactionRepository, accountRepository,
                     cardCrossReferenceRepository, categoryBalanceRepository, recordWriter,
-                    new AbendService(),
+                    new AbendService(), POSTING_BOUNDARY,
                     Clock.fixed(Instant.parse("+10000-01-01T00:00:00Z"), ZoneOffset.UTC));
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
 
@@ -1279,7 +1456,7 @@ class TransactionPostingServiceTest {
     class Construction {
 
         @Test
-        @DisplayName("every one of the eight collaborators is mandatory")
+        @DisplayName("every one of the nine collaborators is mandatory")
         void everyCollaboratorIsMandatory() {
             Clock clock = Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC);
             AbendService abend = new AbendService();
@@ -1287,35 +1464,41 @@ class TransactionPostingServiceTest {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(null, transactionRepository,
                             accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, recordWriter, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             null, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, recordWriter, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, null, cardCrossReferenceRepository,
-                            categoryBalanceRepository, recordWriter, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, null,
-                            categoryBalanceRepository, recordWriter, abend, clock));
+                            categoryBalanceRepository, recordWriter, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            null, recordWriter, abend, clock));
+                            null, recordWriter, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, null, abend, clock));
+                            categoryBalanceRepository, null, abend, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, recordWriter, null, clock));
+                            categoryBalanceRepository, recordWriter, null, POSTING_BOUNDARY, clock));
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
                             transactionRepository, accountRepository, cardCrossReferenceRepository,
-                            categoryBalanceRepository, recordWriter, abend, null));
+                            categoryBalanceRepository, recordWriter, abend, POSTING_BOUNDARY, null));
+            assertThatExceptionOfType(NullPointerException.class)
+                    .as("the per-record transaction boundary is mandatory: without it there would be no "
+                            + "per-record unit of work at all, only an unbounded one")
+                    .isThrownBy(() -> new TransactionPostingService(dailyTransactionRepository,
+                            transactionRepository, accountRepository, cardCrossReferenceRepository,
+                            categoryBalanceRepository, recordWriter, abend, null, clock));
         }
     }
 }

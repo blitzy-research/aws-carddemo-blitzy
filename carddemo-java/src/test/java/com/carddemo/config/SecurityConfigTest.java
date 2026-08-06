@@ -818,7 +818,8 @@ class SecurityConfigTest {
      * @return the credential value to present
      */
     private static String tokenFor(final AssertableWebApplicationContext context, final UserType type) {
-        return context.getBean(JwtTokenProvider.class).issue(identifierFor(type), type);
+        return context.getBean(JwtTokenProvider.class)
+                .issue(identifierFor(type), type, type.getCode());
     }
 
     /**
@@ -1209,7 +1210,7 @@ class SecurityConfigTest {
 
                 clientFor(context)
                         .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
-                                "Bearer " + past.issue(ADMIN_USER_ID, UserType.ADMIN)))
+                                "Bearer " + past.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())))
                         .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
             });
         }
@@ -1226,7 +1227,7 @@ class SecurityConfigTest {
 
                 clientFor(context)
                         .perform(get(ADMIN_ROUTE).header(HttpHeaders.AUTHORIZATION,
-                                "Bearer " + foreign.issue(ADMIN_USER_ID, UserType.ADMIN)))
+                                "Bearer " + foreign.issue(ADMIN_USER_ID, UserType.ADMIN, UserType.ADMIN.getCode())))
                         .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401));
             });
         }

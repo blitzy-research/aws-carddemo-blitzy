@@ -109,7 +109,7 @@ class CardListResponseRuleComplianceTest {
     private static List<CardListResponse.CardListRow> aFullPageOfRows() {
         final List<CardListResponse.CardListRow> rows = new ArrayList<>();
         for (int row = 1; row <= SCREEN_ROW_COUNT; row++) {
-            rows.add(new CardListResponse.CardListRow(null, "0000000001" + row,
+            rows.add(new CardListResponse.CardListRow(1,null, "0000000001" + row,
                     "411111111111111" + row, row % 2 == 0 ? "N" : "Y"));
         }
         return List.copyOf(rows);
@@ -153,7 +153,7 @@ class CardListResponseRuleComplianceTest {
                 "CardDemo", "10:30:00", "001", "00000000011", "4111111111111111", rows,
                 selectionErrorFlags, CardListResponse.MSG_ROW_ACTION_PROMPT, null, false,
                 PageMetadata.forward(PageMetadata.CARD_LIST_PAGE_SIZE, null, "next", true, false,
-                        "001"), "CRDSEL1", "card-list", NavigationContext.empty());
+                        "001"), false, List.of(), "CRDSEL1", "card-list", NavigationContext.empty());
     }
 
     /**
@@ -443,18 +443,19 @@ class CardListResponseRuleComplianceTest {
     class TheNestedRowType {
 
         @Test
-        @DisplayName("a row declares four components, the action character and the three values the "
-                + "screen shows")
-        void aRowDeclaresFourComponents() {
+        @DisplayName("a row declares five components: the screen slot it occupies, the action character "
+                + "and the three values the screen shows")
+        void aRowDeclaresFiveComponents() {
             assertThat(Arrays.stream(CardListResponse.CardListRow.class.getRecordComponents())
                     .map(RecordComponent::getName).toList())
-                    .containsExactly("selection", "accountNumber", "cardNumber", "cardStatus");
+                    .containsExactly("screenSlot", "selection", "accountNumber", "cardNumber",
+                            "cardStatus");
         }
 
         @Test
         @DisplayName("a row round-trips through its own accessors unchanged")
         void aRowRoundTripsThroughItsAccessors() {
-            final CardListResponse.CardListRow row = new CardListResponse.CardListRow("S",
+            final CardListResponse.CardListRow row = new CardListResponse.CardListRow(1,"S",
                     "00000000011", "4111111111111111", "Y");
 
             assertThat(row.selection()).isEqualTo("S");
@@ -467,9 +468,9 @@ class CardListResponseRuleComplianceTest {
         @DisplayName("two rows carrying the same values are equal and share a hash code")
         void twoIdenticalRowsAreEqual() {
             final CardListResponse.CardListRow first =
-                    new CardListResponse.CardListRow(null, "00000000011", "4111111111111111", "Y");
+                    new CardListResponse.CardListRow(1,null, "00000000011", "4111111111111111", "Y");
             final CardListResponse.CardListRow second =
-                    new CardListResponse.CardListRow(null, "00000000011", "4111111111111111", "Y");
+                    new CardListResponse.CardListRow(1,null, "00000000011", "4111111111111111", "Y");
 
             assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
         }
@@ -479,7 +480,7 @@ class CardListResponseRuleComplianceTest {
                 + "pads its unused lines with")
         void aRowWithNothingSuppliedIsConstructible() {
             final CardListResponse.CardListRow blank =
-                    new CardListResponse.CardListRow(null, null, null, null);
+                    new CardListResponse.CardListRow(1,null, null, null, null);
 
             assertThat(blank.selection()).isNull();
             assertThat(blank.cardNumber()).isNull();
@@ -521,17 +522,17 @@ class CardListResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares eighteen components in screen order")
-        void theResponseDeclaresEighteenComponents() {
+        @DisplayName("the response declares twenty components in screen order")
+        void theResponseDeclaresTwentyComponents() {
             final List<String> declared = Arrays.stream(CardListResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("transactionName", "title01", "currentDate",
                     "programName", "title02", "currentTime", "displayedPageNumber", "accountFilter",
                     "cardNumberFilter", "rows", "selectionErrorFlags", "infoMessage", "errorMessage",
-                    "generalError", "pageMetadata", "focusScreenFieldId", "nextRoute",
-                    "navigationContext");
-            assertThat(declared).hasSize(18);
+                    "generalError", "pageMetadata", "lastPageAlreadyShown", "fieldErrors",
+                    "focusScreenFieldId", "nextRoute", "navigationContext");
+            assertThat(declared).hasSize(20);
         }
 
         @ParameterizedTest(name = "{0} bounded at {1}")
@@ -579,7 +580,7 @@ class CardListResponseRuleComplianceTest {
                 + "lists")
         void anEmptyResponsePassesValidationAndPublishesTwoEmptyLists() {
             final CardListResponse empty = new CardListResponse(null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, false, null, null, null, null);
+                    null, null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(empty)).isEmpty();
@@ -593,7 +594,7 @@ class CardListResponseRuleComplianceTest {
         void aFilterOneDigitOverItsKeyWidthIsReported() {
             final CardListResponse overBound = new CardListResponse(null, null, null, null, null,
                     null, null, "0".repeat(CardListResponse.ACCOUNT_NUMBER_LENGTH + 1), null, null,
-                    null, null, null, false, null, null, null, null);
+                    null, null, null, false, null, false, List.of(), null, null, null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator().validate(overBound))
@@ -606,7 +607,7 @@ class CardListResponseRuleComplianceTest {
         @DisplayName("an over-wide row is not reported by validating the response, because the row list "
                 + "carries no cascade marker - the rows are the server's own output and not client input")
         void anOverWideRowIsNotReportedByValidatingTheResponse() {
-            final CardListResponse response = aResponse(List.of(new CardListResponse.CardListRow(
+            final CardListResponse response = aResponse(List.of(new CardListResponse.CardListRow(1,
                     "SU", "0".repeat(20), "4".repeat(20), "YN")), null);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {

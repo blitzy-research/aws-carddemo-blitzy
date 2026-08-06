@@ -123,7 +123,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * every one of them auto-skip and dark, so no operator can place the cursor in one or see its
  * content, and an exhaustive search of all 1,459 lines of the program returns zero references to any
  * of them. They are dead generated fields. This suite pins their absence structurally, by asserting
- * the exact set of members a fully populated request puts on the wire: any member beyond the thirteen
+ * the exact set of members a fully populated request puts on the wire: any member beyond the fourteen
  * the contract declares fails that assertion, so a future reader cannot "restore a missing field"
  * without the failure naming it.
  *
@@ -163,7 +163,7 @@ class CardListRequestTest {
     private static final int SCREEN_ROWS = PageMetadata.CARD_LIST_PAGE_SIZE;
 
     /**
-     * The thirteen members the contract puts on the wire, in the order the record declares them.
+     * The fourteen members the contract puts on the wire, in the order the record declares them.
      *
      * <p>Asserting against this exact set is what pins the contract shape without asking the runtime
      * to describe itself: a member the contract does not declare cannot appear, and a member it does
@@ -181,8 +181,20 @@ class CardListRequestTest {
             "selection6",
             "selection7",
             "pageMetadata",
+            "lastPageAlreadyShown",
             "keyAction",
             "navigationContext");
+
+    /**
+     * The one member a submission always writes, because it is a primitive and therefore has no
+     * absent state.
+     *
+     * <p>It carries back the communication-area value the card-list program keeps across a
+     * pseudo-conversational turn - the program declares it at {@code app/cbl/COCRDLIC.cbl:L239-L242}
+     * as {@code WS-CA-LAST-PAGE-DISPLAYED} with condition names for shown and not-shown - so the next
+     * turn can tell an exhausted browse from an unexplored one without re-reading past the end.
+     */
+    private static final String RETAINED_END_OF_BROWSE_MEMBER = "lastPageAlreadyShown";
 
     /** Fictional account identifier at the map's full eleven characters, with leading zeros. */
     private static final String ACCOUNT_FILTER = "00000000011";
@@ -275,7 +287,7 @@ class CardListRequestTest {
      * @return the two resume cursors and that direction
      */
     private static PageMetadata.PageCursorRequest cursor(PageMetadata.PagingDirection direction) {
-        return new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR, direction);
+        return new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR, direction, null, false);
     }
 
     /**
@@ -301,7 +313,7 @@ class CardListRequestTest {
                 null,
                 null,
                 null,
-                cursor(PageMetadata.PagingDirection.FORWARD),
+                cursor(PageMetadata.PagingDirection.FORWARD), false,
                 KeyAction.PFK08,
                 navigation());
     }
@@ -315,7 +327,7 @@ class CardListRequestTest {
      * can show the full member set. The six unmarked rows carry an empty mark, which is a legal
      * unmarked state and not the same state as an absent one.
      *
-     * @return a submission with all thirteen components supplied
+     * @return a submission with all fourteen components supplied
      */
     private static CardListRequest everyMemberPresent() {
         return new CardListRequest(
@@ -329,7 +341,7 @@ class CardListRequestTest {
                 "",
                 "",
                 "",
-                cursor(PageMetadata.PagingDirection.FORWARD),
+                cursor(PageMetadata.PagingDirection.FORWARD), false,
                 KeyAction.PFK08,
                 navigation());
     }
@@ -340,7 +352,7 @@ class CardListRequestTest {
      * @return a submission whose every component is absent
      */
     private static CardListRequest firstEntry() {
-        return new CardListRequest(null, null, null, null, null, null, null, null, null, null, null,
+        return new CardListRequest(null, null, null, null, null, null, null, null, null, null, null, false,
                 null, null);
     }
 
@@ -358,7 +370,7 @@ class CardListRequestTest {
      */
     private static CardListRequest marked(String row1, String row2, String row3, String row4,
             String row5, String row6, String row7) {
-        return new CardListRequest(null, null, null, row1, row2, row3, row4, row5, row6, row7, null,
+        return new CardListRequest(null, null, null, row1, row2, row3, row4, row5, row6, row7, null, false,
                 null, null);
     }
 
@@ -394,7 +406,7 @@ class CardListRequestTest {
     private static CardListRequest filtered(String accountFilter, String cardFilter,
             String pageEcho) {
         return new CardListRequest(accountFilter, cardFilter, pageEcho, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, false, null, null);
     }
 
     /**
@@ -477,7 +489,7 @@ class CardListRequestTest {
     class SubmittedValuesCrossUnchanged {
 
         @Test
-        @DisplayName("every one of the thirteen accessors returns exactly what it was constructed "
+        @DisplayName("every one of the fourteen accessors returns exactly what it was constructed "
                 + "with")
         void everyAccessorReturnsWhatItWasConstructedWith() {
             CardListRequest request = populated();
@@ -816,7 +828,7 @@ class CardListRequestTest {
                 + "presence rule fires anywhere")
         void aSubmissionWhoseEveryTextComponentIsEmptyReportsNothing() {
             CardListRequest allEmpty = new CardListRequest("", "", "", "", "", "", "", "", "", "",
-                    null, null, null);
+                    null, false, null, null);
 
             assertThat(violations(allEmpty))
                     .as("no presence, pattern, digit or range rule is declared on any component")
@@ -837,7 +849,7 @@ class CardListRequestTest {
                     exactlyAsWide(CardListRequest.SELECTION_LENGTH),
                     exactlyAsWide(CardListRequest.SELECTION_LENGTH),
                     exactlyAsWide(CardListRequest.SELECTION_LENGTH),
-                    cursor(PageMetadata.PagingDirection.BACKWARD),
+                    cursor(PageMetadata.PagingDirection.BACKWARD), false,
                     KeyAction.PFK07,
                     navigation());
 
@@ -925,7 +937,7 @@ class CardListRequestTest {
 
             assertThat(request.pageMetadata())
                     .isEqualTo(new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR,
-                            PageMetadata.PagingDirection.FORWARD));
+                            PageMetadata.PagingDirection.FORWARD, null, false));
         }
 
         @Test
@@ -951,7 +963,7 @@ class CardListRequestTest {
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
                     null, null, null,
                     new PageMetadata.PageCursorRequest(paddedKey, null,
-                            PageMetadata.PagingDirection.FORWARD),
+                            PageMetadata.PagingDirection.FORWARD, null, false), false,
                     null, null);
 
             assertThat(request.pageMetadata().previousCursorKey())
@@ -967,10 +979,10 @@ class CardListRequestTest {
             // A backward walk fills the screen rows from the bottom upward before the service
             // reverses them for display, so the two directions are not interchangeable.
             CardListRequest walkingForward = new CardListRequest(null, null, null, null, null, null,
-                    null, null, null, null, cursor(PageMetadata.PagingDirection.FORWARD), null,
+                    null, null, null, null, cursor(PageMetadata.PagingDirection.FORWARD), false, null,
                     null);
             CardListRequest walkingBackward = new CardListRequest(null, null, null, null, null, null,
-                    null, null, null, null, cursor(PageMetadata.PagingDirection.BACKWARD), null,
+                    null, null, null, null, cursor(PageMetadata.PagingDirection.BACKWARD), false, null,
                     null);
 
             assertThat(walkingForward.pageMetadata().direction())
@@ -1005,7 +1017,7 @@ class CardListRequestTest {
         void anAbsentDirectionInsideASuppliedPagingStateIsLegal() {
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
                     null, null, null,
-                    new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR, null), null,
+                    new PageMetadata.PageCursorRequest(PREVIOUS_CURSOR, NEXT_CURSOR, null, null, false), false, null,
                     null);
 
             assertThat(request.pageMetadata().direction()).isNull();
@@ -1018,9 +1030,9 @@ class CardListRequestTest {
         void anOverWideCursorIsReportedThroughTheCascade() {
             PageMetadata.PageCursorRequest tooWide = new PageMetadata.PageCursorRequest(
                     oneCharacterTooWide(PageMetadata.CURSOR_KEY_MAX_LENGTH), null,
-                    PageMetadata.PagingDirection.BACKWARD);
+                    PageMetadata.PagingDirection.BACKWARD, null, false);
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, tooWide, KeyAction.PFK07, null);
+                    null, null, null, tooWide, false, KeyAction.PFK07, null);
 
             Set<ConstraintViolation<CardListRequest>> reported = violations(request);
 
@@ -1164,7 +1176,7 @@ class CardListRequestTest {
         @DisplayName("the submission carries the key it was given and tolerates its absence")
         void theSubmissionCarriesTheKeyAndToleratesItsAbsence() {
             CardListRequest withKey = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, KeyAction.PFK07, null);
+                    null, null, null, null, false, KeyAction.PFK07, null);
 
             assertThat(withKey.keyAction()).isEqualTo(KeyAction.PFK07);
             assertThat(violations(withKey)).isEmpty();
@@ -1185,7 +1197,7 @@ class CardListRequestTest {
                     "ANN", "SMITH", "00000000001", "Y", "0000000000000001", "CCRDLIA", "COCRDLI");
 
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, KeyAction.ENTER, echoed);
+                    null, null, null, null, false, KeyAction.ENTER, echoed);
 
             assertThat(request.navigationContext()).isEqualTo(echoed);
             assertThat(request.navigationContext().accountId())
@@ -1215,7 +1227,7 @@ class CardListRequestTest {
                     "000000011", "MARY", "ANN", "SMITH", ACCOUNT_FILTER, "Y", CARD_FILTER, "CCRDLIA",
                     "COCRDLI");
             CardListRequest request = new CardListRequest(null, null, null, null, null, null, null,
-                    null, null, null, null, KeyAction.ENTER, tooWide);
+                    null, null, null, null, false, KeyAction.ENTER, tooWide);
 
             Set<ConstraintViolation<CardListRequest>> reported = violations(request);
 
@@ -1240,21 +1252,21 @@ class CardListRequestTest {
     }
 
     @Nested
-    @DisplayName("the wire form carries the thirteen contract members and nothing else")
+    @DisplayName("the wire form carries the fourteen contract members and nothing else")
     class WireFormCarriesTheContractMembers {
 
         @Test
-        @DisplayName("a fully populated submission writes exactly the thirteen declared members")
-        void aFullyPopulatedSubmissionWritesExactlyThirteenMembers() throws JsonProcessingException {
+        @DisplayName("a fully populated submission writes exactly the fourteen declared members")
+        void aFullyPopulatedSubmissionWritesExactlyFourteenMembers() throws JsonProcessingException {
             // This is also what pins the exclusion of the six dead protected one-character row items
             // the generated map declares on rows two to seven - there is deliberately no counterpart
             // on row one - which an exhaustive search of the program's 1,459 lines shows it never
-            // reads. Any member beyond these thirteen fails here and is named in the failure, so the
+            // reads. Any member beyond these fourteen fails here and is named in the failure, so the
             // dead fields cannot be "restored" unnoticed.
             List<String> written = memberNames(payloadOf(everyMemberPresent()));
 
             assertThat(written)
-                    .hasSize(13)
+                    .hasSize(14)
                     .containsExactlyInAnyOrderElementsOf(CONTRACT_MEMBERS);
         }
 
@@ -1279,7 +1291,13 @@ class CardListRequestTest {
             JsonNode payload = payloadOf(firstEntry());
 
             assertThat(payload.isObject()).isTrue();
-            assertThat(memberNames(payload)).isEmpty();
+            assertThat(memberNames(payload))
+                    .as("a first entry establishes no field, so the only member written is the "
+                            + "retained end-of-browse indicator, which is a primitive and therefore "
+                            + "cannot be absent; the program's own initial state for it is the false "
+                            + "this carries")
+                    .containsExactly(RETAINED_END_OF_BROWSE_MEMBER);
+            assertThat(payload.get(RETAINED_END_OF_BROWSE_MEMBER).asBoolean()).isFalse();
         }
 
         @Test
@@ -1288,7 +1306,8 @@ class CardListRequestTest {
         void anEmptyRowMarkIsWrittenWhileAnAbsentOneIsOmitted() throws JsonProcessingException {
             JsonNode payload = payloadOf(marked(null, "", VIEW_MARK, null, null, null, null));
 
-            assertThat(memberNames(payload)).containsExactlyInAnyOrder("selection2", "selection3");
+            assertThat(memberNames(payload)).containsExactlyInAnyOrder(
+                    "selection2", "selection3", RETAINED_END_OF_BROWSE_MEMBER);
             assertThat(payload.get("selection2").asText()).isEmpty();
             assertThat(payload.get("selection3").asText()).isEqualTo(VIEW_MARK);
         }
@@ -1348,7 +1367,7 @@ class CardListRequestTest {
 
             CardListRequest expected = new CardListRequest(ACCOUNT_FILTER, CARD_FILTER, null, null,
                     "", VIEW_MARK, " ", null, null, null,
-                    cursor(PageMetadata.PagingDirection.FORWARD), KeyAction.PFK08, navigation());
+                    cursor(PageMetadata.PagingDirection.FORWARD), false, KeyAction.PFK08, navigation());
             assertThat(returned).isEqualTo(expected);
             assertThat(returned.selectionsInRowOrder())
                     .containsExactly(null, "", VIEW_MARK, " ", null, null, null);
@@ -1371,7 +1390,7 @@ class CardListRequestTest {
         private CardListRequest withoutNavigation(String accountFilter, String cardFilter,
                 PageMetadata.PageCursorRequest resumeCursor) {
             return new CardListRequest(accountFilter, cardFilter, PAGE_ECHO, null, "", VIEW_MARK,
-                    " ", null, null, null, resumeCursor, KeyAction.PFK08, null);
+                    " ", null, null, null, resumeCursor, false, KeyAction.PFK08, null);
         }
 
         @Test
@@ -1411,7 +1430,7 @@ class CardListRequestTest {
                     cursor(PageMetadata.PagingDirection.FORWARD)).toString();
             String second = withoutNavigation("99999999999", "9999999999999999",
                     new PageMetadata.PageCursorRequest("9".repeat(27), null,
-                            PageMetadata.PagingDirection.FORWARD)).toString();
+                            PageMetadata.PagingDirection.FORWARD, null, false)).toString();
 
             assertThat(first).isEqualTo(second);
         }

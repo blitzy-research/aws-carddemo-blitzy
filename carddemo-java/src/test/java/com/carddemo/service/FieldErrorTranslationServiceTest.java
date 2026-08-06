@@ -26,6 +26,7 @@ import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.FieldErrorMarks.FlagState;
 import com.carddemo.service.FieldErrorMarks.MarkedField;
+import com.carddemo.service.NavigationService;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
@@ -339,7 +340,7 @@ final class FieldErrorTranslationServiceTest {
         private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
         /** The API boundary's independent projection, used as the client-shape oracle. */
-        private final ScreenStateAdapter screenStateAdapter = new ScreenStateAdapter();
+        private final ScreenStateAdapter screenStateAdapter = new ScreenStateAdapter(new NavigationService());
 
         @Test
         @DisplayName("a decoration marked by a service reaches a client as the same entries in the "

@@ -61,7 +61,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>What is under test</h2>
  *
  * <p>The declared shape of the response shared by all four administrative user transactions: its
- * nineteen components and their order, the twelve widths it measures and the seven components it
+ * twenty-one components and their order, the twelve widths it measures and the seven components it
  * leaves unmeasured, the nested row's five map-derived components, the thirty-five published message
  * texts, the two collections its compact constructor normalises, and the one field it deliberately
  * refuses to carry.
@@ -137,6 +137,7 @@ class UserResponseCoverageTest {
             "fieldErrors",
             "generalError",
             "actionSucceeded",
+            "preserveDisplayedPage",
             "focusScreenFieldId",
             "nextRoute",
             "navigationContext");
@@ -164,6 +165,7 @@ class UserResponseCoverageTest {
             "fieldErrors",
             "generalError",
             "actionSucceeded",
+            "preserveDisplayedPage",
             "nextRoute",
             "navigationContext");
 
@@ -509,7 +511,7 @@ class UserResponseCoverageTest {
                 text.get("message"),
                 fieldErrors,
                 generalError,
-                actionSucceeded,
+                actionSucceeded, false,
                 text.get("focusScreenFieldId"),
                 text.get("nextRoute"),
                 navigation);
@@ -650,9 +652,9 @@ class UserResponseCoverageTest {
             return size.max();
         }
 
-        /** The nineteen components appear in the documented order. */
+        /** The twenty-one components appear in the documented order. */
         @Test
-        @DisplayName("declares nineteen components in the documented order")
+        @DisplayName("declares twenty-one components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
             List<String> declared =
                     Arrays.stream(UserResponse.class.getRecordComponents())
@@ -705,6 +707,7 @@ class UserResponseCoverageTest {
                     "fieldErrors",
                     "generalError",
                     "actionSucceeded",
+                    "preserveDisplayedPage",
                     "nextRoute",
                     "navigationContext"
                 })
@@ -723,7 +726,7 @@ class UserResponseCoverageTest {
 
             assertThat(partition).containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
             assertThat(BOUNDED_COMPONENTS).hasSize(12);
-            assertThat(UNBOUNDED_COMPONENTS).hasSize(8);
+            assertThat(UNBOUNDED_COMPONENTS).hasSize(9);
         }
 
         /** Each declared width constant carries its documented value. */
@@ -814,7 +817,7 @@ class UserResponseCoverageTest {
 
         /** Both indicators are primitive booleans, stated explicitly. */
         @ParameterizedTest(name = "{0} is a primitive boolean")
-        @ValueSource(strings = {"generalError", "actionSucceeded"})
+        @ValueSource(strings = {"generalError", "actionSucceeded", "preserveDisplayedPage"})
         @DisplayName("carries both indicators as primitive booleans")
         void bothIndicatorsArePrimitiveBooleans(String component) throws NoSuchFieldException {
             assertThat(UserResponse.class.getDeclaredField(component).getType())
@@ -859,14 +862,23 @@ class UserResponseCoverageTest {
             assertThat(declared).containsExactlyInAnyOrder("hasRows", "hasFieldErrors");
         }
 
-        /** The canonical constructor and the pre-token compatibility constructor are both present. */
+        /**
+         * One constructor, so there is exactly one way to build this response.
+         *
+         * <p>An earlier revision also carried a shorter compatibility constructor that defaulted the
+         * page snapshot to {@code null}. It has been removed: the snapshot is what a later row selection
+         * is resolved against, and a constructor that supplies it silently lets a screen publish rows
+         * with no snapshot to seal them, which is the omission a selector then cannot recover from. A
+         * caller that genuinely displays no rows now states its {@code null} at the call site, where a
+         * reader can see the claim being made.</p>
+         */
         @Test
-        @DisplayName("publishes the canonical token-aware constructor and the compatibility constructor")
+        @DisplayName("publishes only the canonical constructor, so a page cannot be built without "
+                + "stating whether it carries a snapshot")
         void onlyTheCompactCanonicalConstructorExists() {
             assertThat(Arrays.stream(UserResponse.class.getDeclaredConstructors())
                     .map(constructor -> constructor.getParameterCount()).toList())
-                    .containsExactlyInAnyOrder(EXPECTED_COMPONENTS.size(),
-                            EXPECTED_COMPONENTS.size() - 1);
+                    .containsExactly(EXPECTED_COMPONENTS.size());
         }
 
         /** No serialisation annotation appears on any component. */
@@ -1954,7 +1966,8 @@ class UserResponseCoverageTest {
             assertThat(tree.fieldNames())
                     .toIterable()
                     .containsExactlyInAnyOrder(
-                            "rows", "fieldErrors", "generalError", "actionSucceeded");
+                            "rows", "fieldErrors", "generalError", "actionSucceeded",
+                            "preserveDisplayedPage");
         }
 
         /** An absent component is omitted rather than emitted as a null. */
@@ -1969,7 +1982,8 @@ class UserResponseCoverageTest {
                         && !"rows".equals(component)
                         && !"fieldErrors".equals(component)
                         && !"generalError".equals(component)
-                        && !"actionSucceeded".equals(component)) {
+                        && !"actionSucceeded".equals(component)
+                        && !"preserveDisplayedPage".equals(component)) {
                     assertThat(payload)
                             .as("absent component %s must be omitted", component)
                             .doesNotContain("\"" + component + "\"");

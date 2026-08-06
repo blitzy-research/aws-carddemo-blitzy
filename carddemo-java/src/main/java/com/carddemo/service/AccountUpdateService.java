@@ -222,6 +222,17 @@ public final class AccountUpdateService {
     /** {@code LIT-THISTRANID}, line 536. */
     static final String LEGACY_TRANSACTION_ID = "CAUP";
 
+    /**
+     * The character a withheld regulated value is composed of on its way out to an unauthorized caller.
+     *
+     * <p>Declared here because this is the layer that has to recognise it coming back, and it must be the
+     * same character the outbound gate composes with -
+     * {@code com.carddemo.api.AccountProtectedDataAdapter.MASK_CHARACTER} - which a suite pins by
+     * comparing the two. It cannot be imported from there: that class sits in the boundary layer and
+     * nothing in this layer may depend upward.
+     */
+    static final char WITHHELD_VALUE_CHARACTER = '*';
+
     /** {@code LIT-THISMAPSET}, line 538, with its trailing pad removed for the response contract. */
     static final String LEGACY_MAPSET = "COACTUP";
 
@@ -809,6 +820,23 @@ public final class AccountUpdateService {
         /** The token that replaces the old-image copy the commarea extension used to carry. */
         private String concurrencyToken = "";
 
+        /**
+         * The submission as the receive paragraph leaves it, standing for {@code ACUP-NEW-DETAILS}.
+         *
+         * <p>{@code 1100-RECEIVE-MAP} moves every transmitted field into working storage and every
+         * paragraph after it reads working storage rather than the map buffer. This translation takes the
+         * command itself as the received map, which is faithful for the forty-three fields it copies
+         * unchanged; the exception is the regulated group, whose withheld stand-in cannot be told from a
+         * typed value until the old image has been read. Once it has, the restored submission is held here
+         * so that the comparison, the edits, the write and the redisplay all read one received image -
+         * exactly as they all read one working-storage group in the source.
+         *
+         * <p>{@code null} until the edit driver establishes it, which is every path that does not reach
+         * the driver at all; {@link #receivedDetails(EditState, AccountUpdateCommand)} answers the
+         * submission itself on those paths.
+         */
+        private AccountUpdateCommand receivedDetails;
+
         /** The ordered rewrite currently executing inside the independent transaction. */
         private RewriteStage rewriteStage = RewriteStage.ACCOUNT;
 
@@ -1199,10 +1227,13 @@ public final class AccountUpdateService {
             sendMap(state, request, output, context);
             response = commonReturn(state, output, context, currentRoute());
         } else {
-            // WHEN OTHER at lines 996 to 1003.
+            // WHEN OTHER at lines 996 to 1003. Everything after the receive reads the received image, which
+            // is what the source does too: 1100-RECEIVE-MAP fills ACUP-NEW-DETAILS and no later paragraph
+            // looks at the map buffer again.
             processInputs(state, request, keyAction);
-            context = decideAction(state, request, keyAction, context);
-            sendMap(state, request, output, context);
+            final AccountUpdateCommand received = receivedDetails(state, request);
+            context = decideAction(state, received, keyAction, context);
+            sendMap(state, received, output, context);
             response = commonReturn(state, output, context, currentRoute());
         }
         mainExit();
@@ -1328,7 +1359,13 @@ public final class AccountUpdateService {
             return;
         }
 
-        compareOldNew(state, request);
+        // The old image is now available, which is the earliest point at which a withheld stand-in can be
+        // told from a typed value. Everything downstream reads the restored submission, so no comparison,
+        // no edit and no write ever sees a stand-in.
+        final AccountUpdateCommand submitted = restoreWithheldValues(state, request);
+        state.receivedDetails = submitted;
+
+        compareOldNew(state, submitted);
         if (!state.changeHasOccurred
                 || state.action == ChangeAction.CHANGES_OK_NOT_CONFIRMED
                 || state.action == ChangeAction.CHANGES_OKAYED_AND_DONE) {
@@ -1339,46 +1376,46 @@ public final class AccountUpdateService {
 
         state.action = ChangeAction.CHANGES_NOT_OK;
 
-        editYesNo(state, ScreenField.ACCT_STATUS, request.accountStatus());
+        editYesNo(state, ScreenField.ACCT_STATUS, submitted.accountStatus());
 
         editDateGroup(state, ScreenField.OPEN_YEAR, ScreenField.OPEN_MONTH, ScreenField.OPEN_DAY,
-                request.openYear(), request.openMonth(), request.openDay());
+                submitted.openYear(), submitted.openMonth(), submitted.openDay());
 
-        editSigned9v2(state, ScreenField.CRED_LIMIT, request.creditLimit());
+        editSigned9v2(state, ScreenField.CRED_LIMIT, submitted.creditLimit());
 
         editDateGroup(state, ScreenField.EXPIRY_YEAR, ScreenField.EXPIRY_MONTH,
-                ScreenField.EXPIRY_DAY, request.expiryYear(), request.expiryMonth(),
-                request.expiryDay());
+                ScreenField.EXPIRY_DAY, submitted.expiryYear(), submitted.expiryMonth(),
+                submitted.expiryDay());
 
-        editSigned9v2(state, ScreenField.CASH_CREDIT_LIMIT, request.cashCreditLimit());
+        editSigned9v2(state, ScreenField.CASH_CREDIT_LIMIT, submitted.cashCreditLimit());
 
         editDateGroup(state, ScreenField.REISSUE_YEAR, ScreenField.REISSUE_MONTH,
-                ScreenField.REISSUE_DAY, request.reissueYear(), request.reissueMonth(),
-                request.reissueDay());
+                ScreenField.REISSUE_DAY, submitted.reissueYear(), submitted.reissueMonth(),
+                submitted.reissueDay());
 
-        editSigned9v2(state, ScreenField.CURR_BAL, request.currentBalance());
-        editSigned9v2(state, ScreenField.CURR_CYC_CREDIT, request.currentCycleCredit());
-        editSigned9v2(state, ScreenField.CURR_CYC_DEBIT, request.currentCycleDebit());
+        editSigned9v2(state, ScreenField.CURR_BAL, submitted.currentBalance());
+        editSigned9v2(state, ScreenField.CURR_CYC_CREDIT, submitted.currentCycleCredit());
+        editSigned9v2(state, ScreenField.CURR_CYC_DEBIT, submitted.currentCycleDebit());
 
-        editUsSsn(state, request);
+        editUsSsn(state, submitted);
 
         // Lines 1533 to 1543: the cascade first, then the date-of-birth check only when all three
         // group flags came back valid.
         editDateGroup(state, ScreenField.DT_OF_BIRTH_YEAR, ScreenField.DT_OF_BIRTH_MONTH,
-                ScreenField.DT_OF_BIRTH_DAY, request.dateOfBirthYear(), request.dateOfBirthMonth(),
-                request.dateOfBirthDay());
+                ScreenField.DT_OF_BIRTH_DAY, submitted.dateOfBirthYear(), submitted.dateOfBirthMonth(),
+                submitted.dateOfBirthDay());
         if (dateGroupIsValid(state, ScreenField.DT_OF_BIRTH_YEAR, ScreenField.DT_OF_BIRTH_MONTH,
                 ScreenField.DT_OF_BIRTH_DAY)) {
-            editDateOfBirth(state, request);
+            editDateOfBirth(state, submitted);
         }
 
         // Lines 1545 to 1556: the numeric edit, then the range edit gated on the flag still being valid.
-        editNumericRequired(state, ScreenField.FICO_SCORE, request.ficoScore());
+        editNumericRequired(state, ScreenField.FICO_SCORE, submitted.ficoScore());
         if (state.flag(ScreenField.FICO_SCORE).isValid()) {
-            editFicoScore(state, request.ficoScore());
+            editFicoScore(state, submitted.ficoScore());
         }
 
-        editAlphaRequired(state, ScreenField.FIRST_NAME, request.firstName());
+        editAlphaRequired(state, ScreenField.FIRST_NAME, submitted.firstName());
 
         // Line 1571 performs the optional alphabetic edit on the middle name, yet the decoration
         // comment at line 3345 records "no edits coded". The action plan resolves the contradiction in
@@ -1386,38 +1423,38 @@ public final class AccountUpdateService {
         // can only accept more than the legacy, never reject more, and is recorded in the decision log.
         noEditsCoded(state, ScreenField.MIDDLE_NAME);
 
-        editAlphaRequired(state, ScreenField.LAST_NAME, request.lastName());
-        editMandatory(state, ScreenField.ADDRESS_LINE_1, request.addressLine1());
+        editAlphaRequired(state, ScreenField.LAST_NAME, submitted.lastName());
+        editMandatory(state, ScreenField.ADDRESS_LINE_1, submitted.addressLine1());
 
         // Lines 1592 to 1602: the state code is edited as required alphabetic and only then, when that
         // generic flag is still valid, tested against the flat 56-code table.
-        editAlphaRequired(state, ScreenField.STATE, request.stateCode());
+        editAlphaRequired(state, ScreenField.STATE, submitted.stateCode());
         if (state.flag(ScreenField.STATE).isValid()) {
-            editUsStateCode(state, request.stateCode());
+            editUsStateCode(state, submitted.stateCode());
         }
 
-        editNumericRequired(state, ScreenField.ZIPCODE, request.zipCode());
+        editNumericRequired(state, ScreenField.ZIPCODE, submitted.zipCode());
 
         // Lines 1613 to 1614: the address line 2 edit is commented out in the source. Nothing runs.
         noEditsCoded(state, ScreenField.ADDRESS_LINE_2);
 
         // Line 1616: the screen's city field is backed by address line 3, not by a city column.
-        editAlphaRequired(state, ScreenField.CITY, request.city());
-        editAlphaRequired(state, ScreenField.COUNTRY, request.countryCode());
+        editAlphaRequired(state, ScreenField.CITY, submitted.city());
+        editAlphaRequired(state, ScreenField.COUNTRY, submitted.countryCode());
 
         editUsPhoneNumber(state, ScreenField.PHONE_NUM_1A, ScreenField.PHONE_NUM_1B,
-                ScreenField.PHONE_NUM_1C, request.phone1AreaCode(), request.phone1Prefix(),
-                request.phone1LineNumber());
+                ScreenField.PHONE_NUM_1C, submitted.phone1AreaCode(), submitted.phone1Prefix(),
+                submitted.phone1LineNumber());
         editUsPhoneNumber(state, ScreenField.PHONE_NUM_2A, ScreenField.PHONE_NUM_2B,
-                ScreenField.PHONE_NUM_2C, request.phone2AreaCode(), request.phone2Prefix(),
-                request.phone2LineNumber());
+                ScreenField.PHONE_NUM_2C, submitted.phone2AreaCode(), submitted.phone2Prefix(),
+                submitted.phone2LineNumber());
 
-        editNumericRequired(state, ScreenField.EFT_ACCOUNT_ID, request.eftAccountId());
-        editYesNo(state, ScreenField.PRI_CARDHOLDER, request.primaryCardHolderIndicator());
+        editNumericRequired(state, ScreenField.EFT_ACCOUNT_ID, submitted.eftAccountId());
+        editYesNo(state, ScreenField.PRI_CARDHOLDER, submitted.primaryCardHolderIndicator());
 
         // Lines 1664 to 1669: the one cross-field edit, gated on both of its inputs being valid.
         if (state.flag(ScreenField.STATE).isValid() && state.flag(ScreenField.ZIPCODE).isValid()) {
-            editUsStateZipCode(state, request.stateCode(), request.zipCode());
+            editUsStateZipCode(state, submitted.stateCode(), submitted.zipCode());
         }
 
         // Lines 1671 to 1675.
@@ -1427,6 +1464,153 @@ public final class AccountUpdateService {
         LOG.debug("transaction={} key={} editOutcome={} fieldErrors={}", LEGACY_TRANSACTION_ID,
                 keyAction, state.action, state.decoration.markedFields().size());
         editMapInputsExit();
+    }
+
+    /**
+     * Restores the regulated values a caller was not permitted to see, so an unrelated change can be saved.
+     *
+     * <p><strong>The problem this exists to solve.</strong> The legacy screen withheld nothing: the map
+     * carried the national identifier, the date of birth, the government-issued identifier and the
+     * transfer-account identifier in clear, the terminal transmitted them back on every submission, and the
+     * mandatory edits at lines 1520 to 1556 therefore always saw real values. This estate does withhold
+     * them - a caller without the authority to see them receives a stand-in in their place - and a caller
+     * echoes back what it received. Without this restoration those mandatory edits reject the stand-in and
+     * an ordinary authorized operator can never save <em>any</em> change, not even to a field that has
+     * nothing to do with the withheld ones. The government-issued identifier is worse than rejected: it
+     * carries no edit at all, so a stand-in would compare as a difference and then be <em>written</em>,
+     * replacing a stored identifier with a row of asterisks.
+     *
+     * <p><strong>Why this is safe, and where it is bounded.</strong> Three conditions must hold together
+     * before any value is restored, and each closes a way the substitution could otherwise be abused.
+     * First, the boundary must have recorded that the values were withheld from this caller; that fact
+     * comes from the authenticated principal and never from the body, so a caller cannot ask for its own
+     * typed values to be replaced. Second, the submitted value must consist solely of the stand-in
+     * character, which is not legal input for any of these fields - the identifier parts and the transfer
+     * account are digits and the date parts are digits - so a value an operator could legitimately have
+     * typed is never reinterpreted. Third, its length must equal the stored value's, which is the width the
+     * stand-in is composed at.
+     *
+     * <p><strong>What is deliberately <em>not</em> restored.</strong> The final part of the national
+     * identifier, because the outbound gate does not withhold it - an operator is shown those digits so an
+     * identity can be confirmed - so a stand-in in that component did not come from this server.
+     *
+     * <p><strong>The consequence, stated plainly.</strong> A caller without the authority to see these
+     * values also cannot change them by echoing the screen: the stand-in restores to the stored value, so
+     * the comparison reads unchanged and the record keeps what it held. Such a caller <em>can</em> still
+     * change them by typing a real value over the stand-in, which is what the legacy permitted, so no
+     * capability is removed. This is a documented divergence from a screen that withheld nothing, recorded
+     * in {@code docs/decision-log.md}; the alternative - leaving the stand-in to be edited - is not a
+     * stricter reading of the legacy but a total loss of the update transaction for every ordinary
+     * operator.
+     *
+     * @param state the turn's working storage, holding the old image this restores from
+     * @param request the submission as transmitted
+     * @return the submission with every withheld stand-in replaced by the stored value, or the submission
+     *         itself when nothing was withheld
+     */
+    private AccountUpdateCommand restoreWithheldValues(final EditState state,
+            final AccountUpdateCommand request) {
+        if (!request.protectedValuesWithheld()) {
+            return request;
+        }
+
+        final Customer customer = state.customer;
+        final String[] storedSsn = storedSsnParts(
+                revealed(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, customer.getCustSsn()));
+        final String[] storedBirthDate = storedDateParts(customer.getCustDob());
+        final String storedGovernmentId = revealed(
+                SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                customer.getGovtIssuedId());
+
+        return new AccountUpdateCommand(
+                request.accountId(),
+                request.accountStatus(),
+                request.openYear(),
+                request.openMonth(),
+                request.openDay(),
+                request.creditLimit(),
+                request.expiryYear(),
+                request.expiryMonth(),
+                request.expiryDay(),
+                request.cashCreditLimit(),
+                request.reissueYear(),
+                request.reissueMonth(),
+                request.reissueDay(),
+                request.currentBalance(),
+                request.currentCycleCredit(),
+                request.accountGroupId(),
+                request.currentCycleDebit(),
+                request.customerId(),
+                restoredValue(request.ssnPart1(), storedSsn[0]),
+                restoredValue(request.ssnPart2(), storedSsn[1]),
+                request.ssnPart3(),
+                restoredValue(request.dateOfBirthYear(), storedBirthDate[0]),
+                restoredValue(request.dateOfBirthMonth(), storedBirthDate[1]),
+                restoredValue(request.dateOfBirthDay(), storedBirthDate[2]),
+                request.ficoScore(),
+                request.firstName(),
+                request.middleName(),
+                request.lastName(),
+                request.addressLine1(),
+                request.stateCode(),
+                request.addressLine2(),
+                request.zipCode(),
+                request.city(),
+                request.countryCode(),
+                request.phone1AreaCode(),
+                request.phone1Prefix(),
+                request.phone1LineNumber(),
+                restoredValue(request.governmentIssuedId(), storedGovernmentId),
+                request.phone2AreaCode(),
+                request.phone2Prefix(),
+                request.phone2LineNumber(),
+                restoredValue(request.eftAccountId(), customer.getEftAccountId()),
+                request.primaryCardHolderIndicator(),
+                request.keyAction(),
+                request.navigationContext(),
+                request.concurrencyToken(),
+                request.protectedValuesWithheld());
+    }
+
+    /**
+     * Answers the stored value when the submitted one is the stand-in composed from it, and the submitted
+     * one otherwise.
+     *
+     * <p>The stand-in is the withheld character repeated to the stored value's own width, so both the
+     * character test and the width test have to pass. A stored value that is absent leaves the submitted
+     * value untouched: there is nothing a stand-in could have been composed from, so whatever arrived was
+     * typed.
+     *
+     * @param submitted the value as transmitted, which may be {@code null}
+     * @param stored the value the record holds, which may be {@code null}
+     * @return the stored value when the submitted one is its stand-in, otherwise the submitted one
+     */
+    private static String restoredValue(final String submitted, final String stored) {
+        if (submitted == null || stored == null || submitted.length() != stored.length()) {
+            return submitted;
+        }
+        for (int index = 0; index < submitted.length(); index++) {
+            if (submitted.charAt(index) != WITHHELD_VALUE_CHARACTER) {
+                return submitted;
+            }
+        }
+        return stored;
+    }
+
+    /**
+     * The submission every paragraph after the receive reads.
+     *
+     * <p>The restored image when the edit driver established one, and the submission itself otherwise -
+     * which is every path that never reaches the driver, where nothing has been read and so nothing could
+     * have been restored.
+     *
+     * @param state the turn's working storage
+     * @param request the submission as transmitted
+     * @return the received image, never {@code null}
+     */
+    private static AccountUpdateCommand receivedDetails(final EditState state,
+            final AccountUpdateCommand request) {
+        return state.receivedDetails == null ? request : state.receivedDetails;
     }
 
     /**

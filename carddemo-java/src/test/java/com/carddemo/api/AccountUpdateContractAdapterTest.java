@@ -21,9 +21,11 @@ import com.carddemo.api.dto.AccountUpdateResponse;
 import com.carddemo.api.dto.ErrorResponse;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.service.AccountUpdateCommand;
 import com.carddemo.service.AccountUpdateOutcome;
+import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenNavigationState;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -36,6 +38,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -64,12 +69,31 @@ class AccountUpdateContractAdapterTest {
             "COACTUPC", "USER0001", "U", NavigationContext.ProgramContext.REENTER, "000000456", "ANN",
             "B", "SMITH", "00000000011", "Y", "4111111111111111", "CACTUPA", "COACTUP");
 
+    /**
+     * The identity the filter chain establishes for these turns, deliberately naming the same principal the
+     * echoed record names so the positional assertions below compare the crossing rather than the
+     * reconciliation. The reconciliation itself is proved separately, by an identity that disagrees.
+     */
+    private static final Authentication IDENTITY = identityOf("USER0001", UserType.USER);
+
+    /**
+     * Builds an established identity carrying the single authority the chain grants for a user type.
+     *
+     * @param userId the principal name
+     * @param userType the type whose declared authority is granted
+     * @return an authenticated token the adapter can read identity from
+     */
+    private static Authentication identityOf(final String userId, final UserType userType) {
+        return new TestingAuthenticationToken(userId, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + userType.name())));
+    }
+
     /** The adapter under test, over the real navigation seam it delegates to. */
     private AccountUpdateContractAdapter adapter;
 
     @BeforeEach
     void setUp() {
-        adapter = new AccountUpdateContractAdapter(new ScreenStateAdapter());
+        adapter = new AccountUpdateContractAdapter(new ScreenStateAdapter(new NavigationService()));
     }
 
     /** A request whose every text component carries a distinct, padding-bearing marker. */
@@ -166,9 +190,9 @@ class AccountUpdateContractAdapterTest {
         @DisplayName("refuses an absent request and an absent outcome, because neither is a reachable state "
                 + "and converting nothing would answer a response the screen never composed")
         void refusesAnAbsentRequestOrOutcome() {
-            assertThatNullPointerException().isThrownBy(() -> adapter.toCommand(null))
+            assertThatNullPointerException().isThrownBy(() -> adapter.toCommand(null, IDENTITY))
                     .withMessageContaining("request");
-            assertThatNullPointerException().isThrownBy(() -> adapter.toResponse(null))
+            assertThatNullPointerException().isThrownBy(() -> adapter.toResponse(null, IDENTITY))
                     .withMessageContaining("outcome");
         }
     }
@@ -180,15 +204,16 @@ class AccountUpdateContractAdapterTest {
         @Test
         @DisplayName("copies all forty-four shared components positionally, padding and blanks included")
         void copiesEverySharedComponent() {
-            assertEveryNamedComponentAgrees(request(), adapter.toCommand(request()),
-                    List.of("navigationContext"));
+            assertEveryNamedComponentAgrees(request(),
+                    adapter.toCommand(request(), IDENTITY), List.of("navigationContext"));
         }
 
         @Test
         @DisplayName("carries the echoed communication area across as the service-owned state, all sixteen "
                 + "fields of it")
         void carriesTheCommunicationAreaAcross() {
-            final ScreenNavigationState carried = adapter.toCommand(request()).navigationContext();
+            final ScreenNavigationState carried =
+                    adapter.toCommand(request(), IDENTITY).navigationContext();
 
             assertThat(carried).isEqualTo(new ScreenNavigationState("CAUP", "COMEN01C", "CAUP",
                     "COACTUPC", "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER,
@@ -197,6 +222,24 @@ class AccountUpdateContractAdapterTest {
             assertThat(carried.reEntry())
                     .as("the re-enter gate is what decides whether the screen decorates a field at all")
                     .isTrue();
+        }
+
+        @Test
+        @DisplayName("replaces the echoed identity with the authenticated one, so a caller cannot act as "
+                + "somebody else by editing two fields of the record it echoes")
+        void replacesTheEchoedIdentity() {
+            final ScreenNavigationState carried = adapter
+                    .toCommand(request(), identityOf("ADMIN001", UserType.ADMIN))
+                    .navigationContext();
+
+            // The echoed record names USER0001 as a standard user; the credential names ADMIN001 as an
+            // administrator, and it is the credential that reaches the transaction.
+            assertThat(carried.userId()).isEqualTo("ADMIN001");
+            assertThat(carried.userType()).isEqualTo(UserType.ADMIN.getCode());
+            // And nothing else moved: the remaining fourteen members are still the echoed ones.
+            assertThat(carried.accountId()).isEqualTo("00000000011");
+            assertThat(carried.customerId()).isEqualTo("000000456");
+            assertThat(carried.lastMap()).isEqualTo("CACTUPA");
         }
 
         @Test
@@ -209,15 +252,18 @@ class AccountUpdateContractAdapterTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null);
 
-            assertThat(adapter.toCommand(withoutContext).navigationContext())
-                    .isEqualTo(ScreenNavigationState.empty());
+            // Empty in every member the client could have echoed, and reconciled in the two it could not:
+            // an absent record still cannot leave the transaction without the identity that is acting.
+            assertThat(adapter.toCommand(withoutContext, IDENTITY).navigationContext())
+                    .isEqualTo(ScreenNavigationState.empty()
+                            .reconciledWith("USER0001", UserType.USER));
         }
 
         @Test
         @DisplayName("neither trims nor upper-folds nor defaults a value, because the ordered cascade "
                 + "distinguishes blank from supplied-but-unusable")
         void altersNoValue() {
-            final AccountUpdateCommand command = adapter.toCommand(request());
+            final AccountUpdateCommand command = adapter.toCommand(request(), IDENTITY);
 
             assertThat(command.accountId()).isEqualTo(" 0000000011");
             assertThat(command.creditLimit()).isEqualTo(" 5000.00");
@@ -226,6 +272,45 @@ class AccountUpdateContractAdapterTest {
             assertThat(command.middleName()).isEqualTo(" B ");
             assertThat(command.keyAction()).isEqualTo(KeyAction.PFK05);
             assertThat(command.concurrencyToken()).isEqualTo("sealed-proof-as-presented");
+        }
+
+        @Test
+        @DisplayName("states that the regulated values were withheld when the caller's own authority does "
+                + "not permit revealing them, which is the same decision the outbound gate makes")
+        void statesTheWithholdingForAnUnprivilegedCaller() {
+            assertThat(adapter.toCommand(request(), identityOf("USER0001", UserType.USER))
+                    .protectedValuesWithheld())
+                    .as("a standard operator receives stand-ins, so the transaction has to know that a "
+                            + "stand-in coming back is not something the operator typed")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("states that nothing was withheld from an administrator, so a literal entry of the "
+                + "stand-in character is edited rather than reinterpreted")
+        void statesNoWithholdingForAnAdministrator() {
+            assertThat(adapter.toCommand(request(), identityOf("ADMIN001", UserType.ADMIN))
+                    .protectedValuesWithheld())
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("treats an unauthenticated turn as one the values were withheld from, because an "
+                + "absent credential grants no authority to reveal anything")
+        void treatsAnAbsentCredentialAsWithholding() {
+            assertThat(adapter.toCommand(request(), null).protectedValuesWithheld()).isTrue();
+        }
+
+        @Test
+        @DisplayName("takes the withholding statement from the credential and never from the body, so a "
+                + "caller cannot ask for its own typed values to be replaced by the stored ones")
+        void takesTheWithholdingStatementFromTheCredentialAlone() {
+            // Two commands from the SAME body under two different credentials disagree on the statement,
+            // which is only possible if the body contributes nothing to it.
+            assertThat(adapter.toCommand(request(), identityOf("USER0001", UserType.USER))
+                    .protectedValuesWithheld())
+                    .isNotEqualTo(adapter.toCommand(request(), identityOf("ADMIN001", UserType.ADMIN))
+                            .protectedValuesWithheld());
         }
     }
 
@@ -236,14 +321,15 @@ class AccountUpdateContractAdapterTest {
         @Test
         @DisplayName("copies all fifty-four shared components positionally, padding included")
         void copiesEverySharedComponent() {
-            assertEveryNamedComponentAgrees(outcome(List.of()), adapter.toResponse(outcome(List.of())),
+            assertEveryNamedComponentAgrees(outcome(List.of()),
+                    adapter.toResponse(outcome(List.of()), IDENTITY),
                     List.of("navigationContext", "fieldErrors"));
         }
 
         @Test
         @DisplayName("carries the monetary components at the record field's own scale, unrounded")
         void carriesMoneyAtTheRecordScale() {
-            final AccountUpdateResponse response = adapter.toResponse(outcome(List.of()));
+            final AccountUpdateResponse response = adapter.toResponse(outcome(List.of()), IDENTITY);
 
             assertThat(response.creditLimit()).isEqualTo(new BigDecimal("250.00"));
             assertThat(response.creditLimit().scale()).isEqualTo(2);
@@ -253,9 +339,10 @@ class AccountUpdateContractAdapterTest {
         @DisplayName("carries the communication area back as the wire record, and an absent one back as "
                 + "nothing, so a response omits a member the turn never produced")
         void carriesTheCommunicationAreaBack() {
-            assertThat(adapter.toResponse(outcome(List.of())).navigationContext())
-                    .isEqualTo(new ScreenStateAdapter()
-                            .toNavigationContext(ScreenNavigationState.empty().withReEntry()));
+            assertThat(adapter.toResponse(outcome(List.of()), IDENTITY).navigationContext())
+                    .isEqualTo(new ScreenStateAdapter(new NavigationService())
+                            .toNavigationContext(ScreenNavigationState.empty().withReEntry(),
+                                    IDENTITY));
         }
 
         @Test
@@ -270,7 +357,7 @@ class AccountUpdateContractAdapterTest {
                             AccountUpdateOutcome.SUFFIX_FICO_OUT_OF_RANGE));
 
             final List<ErrorResponse.FieldError> translated =
-                    adapter.toResponse(outcome(findings)).fieldErrors();
+                    adapter.toResponse(outcome(findings), IDENTITY).fieldErrors();
 
             assertThat(translated).hasSize(2);
             assertThat(translated.get(0).fieldName()).isEqualTo("accountStatus");
@@ -289,7 +376,7 @@ class AccountUpdateContractAdapterTest {
         void substitutesTheEmptyStringForAnAbsentIdentity() {
             final List<ErrorResponse.FieldError> translated = adapter.toResponse(outcome(List.of(
                     new ValidationException.FieldError(null, null,
-                            ValidationException.FieldState.INVALID, null)))).fieldErrors();
+                            ValidationException.FieldState.INVALID, null))), IDENTITY).fieldErrors();
 
             assertThat(translated).singleElement().satisfies(entry -> {
                 assertThat(entry.fieldName()).isEmpty();
@@ -301,7 +388,7 @@ class AccountUpdateContractAdapterTest {
         @Test
         @DisplayName("an absent finding list becomes an empty one, never a null on the wire")
         void anAbsentFindingListBecomesEmpty() {
-            assertThat(adapter.toResponse(outcome(null)).fieldErrors()).isEmpty();
+            assertThat(adapter.toResponse(outcome(null), IDENTITY).fieldErrors()).isEmpty();
         }
     }
 }

@@ -19,6 +19,10 @@ package com.carddemo.api;
 import com.carddemo.api.dto.NavigationContext;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.ConversationState;
+import com.carddemo.service.NavigationService;
+import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -56,13 +60,40 @@ import org.springframework.stereotype.Component;
  * a re-authentication, and the legacy screen has no message for it. Reconciliation already makes the
  * disagreement harmless, so this exists for diagnostics and for a caller that wants to log it.
  *
- * <p>Stateless and immutable, holding no field of any kind, so the singleton is safe for unsynchronised
- * concurrent use.
+ * <p><strong>Inbound: the routing nominations are screened.</strong> Two of the four routing fields the
+ * carried state keeps hold an eight-character program name, and the navigation authority resolves one into a
+ * destination. Its unresolvable arm reproduces the abend a legacy transfer to an unknown program would have
+ * raised, and that arm was defensive and unreachable on the mainframe because the communication area was held
+ * by the region: only the system itself could put a name in it. Over HTTP the caller holds it, so an invented
+ * name would reach that arm and surface as a terminal failure on an authenticated route. A nomination that
+ * resolves to no destination is therefore carried as blank - which is exactly "nominates nothing", the
+ * legacy's own empty-field case, so the calling screen's default applies. Every name the estate actually
+ * declares still crosses unchanged, so no reachable legacy behaviour changes; what changes is that the
+ * unreachable arm stays unreachable.
+ *
+ * <p>Holds one injected collaborator, the navigation authority it screens nominations against, and no
+ * per-turn state of any kind, so the singleton remains safe for unsynchronised concurrent use.
  *
  * @since 1.0.0
  */
 @Component
 public final class ConversationStateAdapter {
+
+    /** Diagnostics for a screened nomination; never carries the caller-controlled value itself. */
+    private static final Logger LOG = LoggerFactory.getLogger(ConversationStateAdapter.class);
+
+    /** The destination vocabulary an echoed nomination is screened against. */
+    private final NavigationService navigationService;
+
+    /**
+     * Creates the adapter over the navigation authority it screens nominations against.
+     *
+     * @param navigationService the destination vocabulary; must not be {@code null}
+     */
+    public ConversationStateAdapter(final NavigationService navigationService) {
+        this.navigationService =
+                Objects.requireNonNull(navigationService, "navigationService must not be null");
+    }
 
     /**
      * Converts the client-echoed navigation record into the state the service tier is entitled to
@@ -71,6 +102,10 @@ public final class ConversationStateAdapter {
      * <p>An absent record becomes {@link ConversationState#empty()} rather than {@code null}, so a
      * service never has to null-check the state it is given, and the empty state is exactly what the
      * navigation authority treats as no carry-over at all.
+     *
+     * <p>The two program-name nominations are screened on the way through, for the reason given on the type:
+     * an invented name is carried as nominating nothing rather than reaching the navigation authority's
+     * unresolvable arm.
      *
      * @param context the record the client echoed, which may be {@code null}
      * @return the five-field carried state, never {@code null}
@@ -81,10 +116,50 @@ public final class ConversationStateAdapter {
         }
         return new ConversationState(
                 context.fromTransactionId(),
-                context.fromProgram(),
+                screenedProgramName(context.fromProgram()),
                 context.toTransactionId(),
-                context.toProgram(),
+                screenedProgramName(context.toProgram()),
                 entryModeOf(context));
+    }
+
+    /**
+     * Screens an echoed program-name nomination, keeping only a name that resolves to a destination.
+     *
+     * <p>A nomination that is already empty is left exactly as received, because a blank field is
+     * significant: it is what makes the calling screen's default apply. The legacy test is
+     * {@code = SPACES OR LOW-VALUES}, so an absent value, an empty one, one made only of spaces and one made
+     * only of low values are all that same state.
+     *
+     * @param nominatedProgram the eight-character program name the client echoed, possibly {@code null}
+     * @return the same value when it resolves or is already empty, and {@code null} otherwise
+     */
+    private String screenedProgramName(final String nominatedProgram) {
+        if (isEffectivelyEmpty(nominatedProgram)
+                || this.navigationService.routeForLegacyProgram(nominatedProgram).isPresent()) {
+            return nominatedProgram;
+        }
+        LOG.debug("Echoed program nomination names no destination and is carried as empty: length={}",
+                nominatedProgram.length());
+        return null;
+    }
+
+    /**
+     * Reports whether a fixed-width nomination field nominates nothing.
+     *
+     * @param value the transmitted nomination, possibly {@code null}
+     * @return {@code true} when the field nominates nothing
+     */
+    private static boolean isEffectivelyEmpty(final String value) {
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        for (int index = 0; index < value.length(); index++) {
+            final char character = value.charAt(index);
+            if (character != ' ' && character != '\0') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

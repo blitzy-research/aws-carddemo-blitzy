@@ -16,6 +16,8 @@
  */
 package com.carddemo.api;
 
+import com.carddemo.api.dto.BatchJobExecutionResponse;
+import com.carddemo.api.dto.BatchJobLaunchResponse;
 import com.carddemo.batch.BackupTransactionJobConfig;
 import com.carddemo.batch.CategoryBalanceReportJobConfig;
 import com.carddemo.batch.CombineTransactionsJobConfig;
@@ -347,6 +349,45 @@ class BatchJobControllerTest {
                         .doesNotStartWith("com.carddemo.batch");
             }
         }
+
+        @Test
+        @DisplayName("composes every answer as a named record and never as a keyed map, so no value this "
+                + "controller produced is read back out of it by a cast")
+        void composesEveryAnswerAsANamedRecord() {
+            final List<Method> answering = Arrays.stream(BatchJobController.class.getDeclaredMethods())
+                    .filter(method -> ResponseEntity.class.equals(method.getReturnType()))
+                    .toList();
+
+            assertThat(answering)
+                    .as("the two published operations plus the helpers they delegate to")
+                    .isNotEmpty();
+            assertThat(answering).allSatisfy(method -> {
+                final java.lang.reflect.Type carried = ((java.lang.reflect.ParameterizedType)
+                        method.getGenericReturnType()).getActualTypeArguments()[0];
+                assertThat(carried.getTypeName())
+                        .as("%s answers a named record from the published contract", method.getName())
+                        .startsWith("com.carddemo.api.dto.");
+                assertThat(((Class<?>) carried).isRecord())
+                        .as("%s answers a record, whose components are read by name", method.getName())
+                        .isTrue();
+            });
+            assertThat(answering).extracting(method -> ((Class<?>) ((java.lang.reflect.ParameterizedType)
+                            method.getGenericReturnType()).getActualTypeArguments()[0]).getSimpleName())
+                    .as("only the two transport records the batch surface publishes")
+                    .containsOnly("BatchJobLaunchResponse", "BatchJobExecutionResponse");
+        }
+
+        @Test
+        @DisplayName("declares no map key of its own, because a key is only needed by an answer assembled "
+                + "as a map and there is no longer one to assemble")
+        void declaresNoMapKeyOfItsOwn() {
+            for (final Field field : BatchJobController.class.getDeclaredFields()) {
+                assertThat(field.getName())
+                        .as("field %s reads as a map key rather than a route or a collaborator",
+                                field.getName())
+                        .doesNotStartWith("FIELD_");
+            }
+        }
     }
 
     // ==================================================================================================
@@ -425,16 +466,15 @@ class BatchJobControllerTest {
             final String jobName = PostTransactionJobConfig.JOB_NAME;
             final Job registered = registerLaunchableJob(jobName);
 
-            final ResponseEntity<Map<String, Object>> answer =
+            final ResponseEntity<BatchJobLaunchResponse> answer =
                     controller.launchJob(jobName, Map.of());
 
             verify(jobRegistry).getJob(jobName);
             verify(jobLauncher).run(eq(registered), any(JobParameters.class));
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(answer.getBody())
-                    .containsExactlyInAnyOrderEntriesOf(Map.of(
-                            BatchJobController.FIELD_EXECUTION_ID, EXECUTION_ID,
-                            BatchJobController.FIELD_JOB_NAME, jobName));
+                    .as("the typed answer carries both values by name, so neither is read back by a cast")
+                    .isEqualTo(new BatchJobLaunchResponse(EXECUTION_ID, jobName));
         }
 
         @Test
@@ -765,15 +805,17 @@ class BatchJobControllerTest {
                     executionOf(jobName, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
             when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
 
-            final ResponseEntity<Map<String, Object>> answer =
+            final ResponseEntity<BatchJobExecutionResponse> answer =
                     controller.readJobExecution(EXECUTION_ID);
 
             assertThat(answer.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(answer.getBody()).containsExactlyInAnyOrderEntriesOf(Map.of(
-                    BatchJobController.FIELD_EXECUTION_ID, EXECUTION_ID,
-                    BatchJobController.FIELD_JOB_NAME, jobName,
-                    BatchJobController.FIELD_STATUS, BatchStatus.COMPLETED.name(),
-                    BatchJobController.FIELD_EXIT_CODE, ExitStatus.COMPLETED.getExitCode()));
+            assertThat(answer.getBody())
+                    .as("four named values, each read from its own accessor rather than from a map key")
+                    .isEqualTo(new BatchJobExecutionResponse(EXECUTION_ID, jobName,
+                            BatchStatus.COMPLETED.name(), ExitStatus.COMPLETED.getExitCode()));
+            assertThat(BatchJobExecutionResponse.class.getRecordComponents())
+                    .as("and carries nothing else")
+                    .hasSize(4);
         }
 
         @Test
@@ -786,12 +828,14 @@ class BatchJobControllerTest {
                     BatchStatus.FAILED, failedWithTrace);
             when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
 
-            final Map<String, Object> body = controller.readJobExecution(EXECUTION_ID).getBody();
+            final BatchJobExecutionResponse body =
+                    controller.readJobExecution(EXECUTION_ID).getBody();
 
-            assertThat(body).containsEntry(BatchJobController.FIELD_EXIT_CODE,
-                    ExitStatus.FAILED.getExitCode());
-            assertThat(body.values()).noneSatisfy(value -> assertThat(String.valueOf(value))
-                    .contains("internal detail"));
+            assertThat(body).isNotNull();
+            assertThat(body.exitCode()).isEqualTo(ExitStatus.FAILED.getExitCode());
+            assertThat(List.of(String.valueOf(body.executionId()), body.jobName(), body.status(),
+                    body.exitCode()))
+                    .noneSatisfy(value -> assertThat(value).contains("internal detail"));
             verify(execution, never()).getJobParameters();
         }
 
@@ -803,11 +847,12 @@ class BatchJobControllerTest {
                     executionOf(CreateStatementJobConfig.JOB_NAME, null, null);
             when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
 
-            final Map<String, Object> body = controller.readJobExecution(EXECUTION_ID).getBody();
+            final BatchJobExecutionResponse body =
+                    controller.readJobExecution(EXECUTION_ID).getBody();
 
-            assertThat(body).containsEntry(BatchJobController.FIELD_STATUS, BatchStatus.UNKNOWN.name())
-                    .containsEntry(BatchJobController.FIELD_EXIT_CODE,
-                            ExitStatus.UNKNOWN.getExitCode());
+            assertThat(body).isNotNull();
+            assertThat(body.status()).isEqualTo(BatchStatus.UNKNOWN.name());
+            assertThat(body.exitCode()).isEqualTo(ExitStatus.UNKNOWN.getExitCode());
         }
 
         @Test
@@ -819,7 +864,8 @@ class BatchJobControllerTest {
             when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
 
             assertThat(controller.readJobExecution(EXECUTION_ID).getBody())
-                    .containsEntry(BatchJobController.FIELD_EXIT_CODE, ExitStatus.UNKNOWN.getExitCode());
+                    .extracting(BatchJobExecutionResponse::exitCode)
+                    .isEqualTo(ExitStatus.UNKNOWN.getExitCode());
         }
 
         @Test

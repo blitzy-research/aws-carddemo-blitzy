@@ -59,7 +59,7 @@ class TransactionViewResponseTest {
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "searchTransactionId", "transactionId", "cardNumber", "typeCode", "categoryCode",
             "source", "description", "amount", "originationDate", "processingDate", "merchantId",
-            "merchantName", "merchantCity", "merchantZip", "errorMessage", "generalError",
+            "merchantName", "merchantCity", "merchantZip", "errorMessage", "generalError", "fieldErrors",
             "focusScreenFieldId", "nextRoute", "navigationContext");
 
     private static final String TRANSACTION_NAME = "CT01";
@@ -146,38 +146,38 @@ class TransactionViewResponseTest {
                 TITLE02, CURRENT_TIME, SEARCH_TRANSACTION_ID, FOUND_TRANSACTION_ID, CARD_NUMBER,
                 TYPE_CODE, CATEGORY_CODE, SOURCE, DESCRIPTION, AMOUNT, ORIGINATION_DATE,
                 PROCESSING_DATE, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
-                TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true, FOCUS_SCREEN_FIELD_ID,
+                TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true, List.of(), FOCUS_SCREEN_FIELD_ID,
                 NEXT_ROUTE, populatedNavigation());
     }
 
     private static TransactionViewResponse absentReply() {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, false, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, false, List.of(), null,
                 null, null);
     }
 
     private static TransactionViewResponse withDescription(final String description) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, description, null, null, null, null, null, null, null, null,
-                false, null, null, null);
+                false, List.of(), null, null, null);
     }
 
     private static TransactionViewResponse withMerchant(final String merchantName,
             final String merchantCity) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, merchantName, merchantCity, null,
-                null, false, null, null, null);
+                null, false, List.of(), null, null, null);
     }
 
     private static TransactionViewResponse withErrorMessage(final String errorMessage) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, errorMessage,
-                true, null, null, null);
+                true, List.of(), null, null, null);
     }
 
     private static TransactionViewResponse withAmount(final BigDecimal amount) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
-                null, null, null, null, amount, null, null, null, null, null, null, null, false,
+                null, null, null, null, amount, null, null, null, null, null, null, null, false, List.of(),
                 null, null, null);
     }
 
@@ -185,19 +185,19 @@ class TransactionViewResponseTest {
             final String processingDate) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, originationDate, processingDate, null, null, null,
-                null, null, false, null, null, null);
+                null, null, false, List.of(), null, null, null);
     }
 
     private static TransactionViewResponse withIdentifiers(final String searchTransactionId,
             final String transactionId) {
         return new TransactionViewResponse(null, null, null, null, null, null, searchTransactionId,
                 transactionId, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, false, null, null, null);
+                null, null, false, List.of(), null, null, null);
     }
 
     private static TransactionViewResponse withSource(final String source) {
         return new TransactionViewResponse(null, null, null, null, null, null, null, null, null,
-                null, null, source, null, null, null, null, null, null, null, null, null, false,
+                null, null, source, null, null, null, null, null, null, null, null, null, false, List.of(),
                 null, null, null);
     }
 
@@ -286,7 +286,7 @@ class TransactionViewResponseTest {
             TransactionViewResponse notFound = new TransactionViewResponse(TRANSACTION_NAME, TITLE01,
                     CURRENT_DATE, PROGRAM_NAME, TITLE02, CURRENT_TIME, SEARCH_TRANSACTION_ID, null,
                     null, null, null, null, null, null, null, null, null, null, null, null,
-                    TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true,
+                    TransactionViewResponse.TRANSACTION_NOT_FOUND_MESSAGE, true, List.of(),
                     FOCUS_SCREEN_FIELD_ID, NEXT_ROUTE, populatedNavigation());
 
             assertThat(notFound.searchTransactionId())
@@ -557,7 +557,7 @@ class TransactionViewResponseTest {
                     .hasSize(TransactionViewResponse.SCREEN_FIELD_ID_LENGTH);
             assertThat(violationsOf(new TransactionViewResponse(null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, false, oneCharacterOver(7), null, null)))
+                    null, null, false, List.of(), oneCharacterOver(7), null, null)))
                     .singleElement()
                     .satisfies(refusal -> assertThat(refusal.getPropertyPath())
                             .hasToString("focusScreenFieldId"));
@@ -574,7 +574,7 @@ class TransactionViewResponseTest {
                     atWidth("CARDNUMBER", 16), atWidth("", 2), atWidth("", 4), atWidth("CHANNEL", 10),
                     atWidth("DESCRIPTION", 60), AMOUNT, atWidth("ORIGDATE", 10),
                     atWidth("PROCDATE", 10), atWidth("MERCHID", 9), atWidth("MERCHANT NAME", 30),
-                    atWidth("MERCHANT CITY", 25), atWidth("ZIP", 10), atWidth("MESSAGE", 78), true,
+                    atWidth("MERCHANT CITY", 25), atWidth("ZIP", 10), atWidth("MESSAGE", 78), true, List.of(),
                     atWidth("FOCUS", 7), NEXT_ROUTE, populatedNavigation());
         }
 
@@ -687,7 +687,7 @@ class TransactionViewResponseTest {
         private TransactionViewResponse withZeroLeadingValues() {
             return new TransactionViewResponse(null, null, null, null, null, null, null,
                     "0000000000000001", null, null, "0002", null, null, null, null, null,
-                    "000000042", null, null, null, null, false, null, null, null);
+                    "000000042", null, null, null, null, false, List.of(), null, null, null);
         }
 
         @Test
@@ -958,7 +958,7 @@ class TransactionViewResponseTest {
                 + "pattern constraint is present")
         void anEmptyStringReportsNoViolation() {
             TransactionViewResponse allEmpty = new TransactionViewResponse("", "", "", "", "", "",
-                    "", "", "", "", "", "", "", null, "", "", "", "", "", "", "", false, "", "",
+                    "", "", "", "", "", "", "", null, "", "", "", "", "", "", "", false, List.of(), "", "",
                     NavigationContext.empty());
 
             assertThat(violationsOf(allEmpty))
@@ -981,7 +981,7 @@ class TransactionViewResponseTest {
         void nonNumericTextInACodeComponentReportsNoViolation() {
             TransactionViewResponse reply = new TransactionViewResponse(null, null, null, null, null,
                     null, null, "NOT-A-NUMBER----", null, null, "ABCD", null, null, null, null,
-                    null, "NOTNUMBER", null, null, null, null, false, null, null, null);
+                    null, "NOTNUMBER", null, null, null, null, false, List.of(), null, null, null);
 
             assertThat(violationsOf(reply))
                     .as("a digit constraint would reject values the legacy screen accepts")
@@ -996,7 +996,7 @@ class TransactionViewResponseTest {
         void onlyTheOverLongComponentsAreReported() {
             TransactionViewResponse reply = new TransactionViewResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null, oneCharacterOver(60), null, null,
-                    null, null, oneCharacterOver(30), atWidth("SEATTLE", 25), null, null, false,
+                    null, null, oneCharacterOver(30), atWidth("SEATTLE", 25), null, null, false, List.of(),
                     null, null, null);
 
             assertThat(violationsOf(reply)).hasSize(2);
@@ -1010,7 +1010,7 @@ class TransactionViewResponseTest {
         void theUnboundedRouteAcceptsALongLabel() {
             TransactionViewResponse reply = new TransactionViewResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, false, null, atWidth("/api/transactions/view", 200), null);
+                    null, null, null, false, List.of(), null, atWidth("/api/transactions/view", 200), null);
 
             assertThat(violationsOf(reply))
                     .as("a route label is an opaque server-chosen name, not a screen field")
@@ -1048,7 +1048,7 @@ class TransactionViewResponseTest {
 
             TransactionViewResponse reply = new TransactionViewResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, false, null, null, supplied);
+                    null, null, null, false, List.of(), null, null, supplied);
 
             assertThat(reply.navigationContext()).isSameAs(supplied);
         }
@@ -1101,10 +1101,10 @@ class TransactionViewResponseTest {
         void anyLabelIsAccepted() {
             assertThatNoException().isThrownBy(() -> new TransactionViewResponse(null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, false, null, "not-a-route-at-all", null));
+                    null, null, null, null, null, false, List.of(), null, "not-a-route-at-all", null));
             assertThat(violationsOf(new TransactionViewResponse(null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, false, null, "not-a-route-at-all", null))).isEmpty();
+                    null, null, false, List.of(), null, "not-a-route-at-all", null))).isEmpty();
         }
 
         @Test
@@ -1140,7 +1140,7 @@ class TransactionViewResponseTest {
                             + "truncated card number, a security code, a page cursor or a screen "
                             + "attribute byte - fails here")
                     .containsExactlyElementsOf(PUBLISHED_MEMBERS)
-                    .hasSize(25);
+                    .hasSize(26);
         }
 
         @Test
@@ -1163,9 +1163,11 @@ class TransactionViewResponseTest {
             String payload = serialise(absentReply());
 
             assertThat(payload)
-                    .as("a field the map did not carry has to be absent rather than present-and-empty")
-                    .isEqualTo("{\"generalError\":false}");
-            assertThat(memberNamesOf(payload)).containsExactly("generalError");
+                    .as("a field the map did not carry has to be absent rather than present-and-empty, "
+                            + "leaving only the two members that cannot be absent - the primitive flag "
+                            + "and the normalised finding list")
+                    .isEqualTo("{\"generalError\":false,\"fieldErrors\":[]}");
+            assertThat(memberNamesOf(payload)).containsExactly("generalError", "fieldErrors");
         }
 
         @Test

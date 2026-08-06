@@ -1066,13 +1066,17 @@ class ApplicationJsonContractTest {
                 assertThat(request.previousCursorKey()).isEqualTo("0000000000000011");
                 assertThat(request.nextCursorKey()).isEqualTo("0000000000000018");
                 assertThat(request.direction()).isEqualTo(PageMetadata.PagingDirection.BACKWARD);
+                // The retained page number IS bound, because the legacy programs read that field back out
+                // of the communication area rather than recomputing it; the values that remain
+                // server-owned are the screen's row count and the derived preceding-page flag.
+                assertThat(request.retainedPageNumber()).isEqualTo(99999999);
                 assertThat(mapper.writeValueAsString(request))
-                        .as("the four server-owned values are tolerated as unknown input and discarded, so "
-                                + "no page size, availability flag or display value can be dictated")
+                        .as("the genuinely server-owned values are tolerated as unknown input and "
+                                + "discarded, so neither the page size nor the derived preceding-page "
+                                + "flag can be dictated")
                         .doesNotContain("pageSize")
-                        .doesNotContain("hasMorePages")
                         .doesNotContain("hasPreviousPages")
-                        .doesNotContain("displayedPageNumber");
+                        .doesNotContain("2147483647");
             });
         }
 
@@ -1081,7 +1085,7 @@ class ApplicationJsonContractTest {
                 + "the card-list browse key is the card number itself")
         void theInboundPagingShapeWithholdsItsBoundaryKeys() {
             PageMetadata.PageCursorRequest request = new PageMetadata.PageCursorRequest(
-                    "0000000000000011", "0000000000000018", PageMetadata.PagingDirection.FORWARD);
+                    "0000000000000011", "0000000000000018", PageMetadata.PagingDirection.FORWARD, null, false);
 
             assertThat(request.toString())
                     .doesNotContain("0000000000000011")

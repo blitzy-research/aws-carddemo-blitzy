@@ -20,8 +20,10 @@ import java.util.Objects;
 
 import com.carddemo.util.ContractTypeRoster;
 import io.swagger.v3.core.converter.ModelConverters;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.headers.Header;
 import io.swagger.v3.oas.models.info.Info;
 import io.swagger.v3.oas.models.info.License;
@@ -38,6 +40,11 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.MethodParameter;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.method.HandlerMethod;
 
 /**
  * Publishes the OpenAPI document that <em>is</em> the machine-readable interface description of this
@@ -382,9 +389,44 @@ public final class OpenApiConfig {
     }
 
     /**
-     * Applies the reusable error responses to every served operation.
+     * Attaches to each served operation the reusable error responses that operation can actually reach.
      *
-     * @return an operation customizer for the shared HTTP contract
+     * <p><strong>What this replaces, and why the difference matters.</strong> An earlier revision added
+     * all six responses to every operation unconditionally. That published outcomes several routes cannot
+     * produce, and each false entry misleads in a specific way. Advertising {@code 401} and {@code 403}
+     * on the anonymous sign-on route tells a caller a credential might be required to obtain one, which
+     * inverts the route's whole purpose. Advertising {@code 404} on a screen route contradicts the
+     * contract those routes are built to keep: the legacy screens answer an absent record with a message
+     * on the screen, so every one of them returns {@code 200} for absence and a client written against a
+     * published {@code 404} would handle a case that never arrives while mishandling the one that does.
+     * Advertising {@code 409} where no optimistic-lock check exists suggests a retry path that has
+     * nothing to retry. A generated contract is read by people and by code generators, and an
+     * unreachable status is a defect in it rather than harmless breadth.
+     *
+     * <p><strong>How reachability is decided.</strong> From the route's own security and exception
+     * chain, using only what the operation and its handler already state:
+     *
+     * <ul>
+     *   <li>{@code 500} on every operation. Any operation can fail internally, and the module answers
+     *       that failure the same way everywhere.</li>
+     *   <li>{@code 401} and {@code 403} only when the route is secured. An empty
+     *       {@code @SecurityRequirements} on the handler is how this module declares a route anonymous -
+     *       the two authentication routes carry it - and neither status is reachable on such a route.</li>
+     *   <li>{@code 400} when the operation takes a request body, or takes a path or query value that has
+     *       to be converted from text before the handler runs, or already declares {@code 400} itself.
+     *       Those are the three ways a request can be refused before any business rule is consulted.</li>
+     *   <li>{@code 404} when the operation addresses a resource by a path value, or already declares
+     *       {@code 404} itself. This is the discriminator that keeps the status off the screen routes:
+     *       every {@code RecordNotFoundException} in this module is raised by the batch-control surface,
+     *       and that surface is also the only one that addresses anything by path.</li>
+     *   <li>{@code 409} only when the operation declares it. A conflict arises solely where an
+     *       optimistic-lock check exists, and an operation that has one says so.</li>
+     * </ul>
+     *
+     * <p>Only Spring's {@code HandlerMethod} and {@code MethodParameter} are used to read the handler.
+     * Neither is reflective object access, which keeps the module's reflection count at zero.
+     *
+     * @return an operation customizer attaching each operation's reachable error responses
      */
     @Bean
     public OperationCustomizer sharedOperationContract() {
@@ -394,11 +436,20 @@ public final class OpenApiConfig {
                 responses = new io.swagger.v3.oas.models.responses.ApiResponses();
                 operation.setResponses(responses);
             }
-            responses.addApiResponse("400", responseReference(BAD_REQUEST_RESPONSE));
-            responses.addApiResponse("401", responseReference(UNAUTHORIZED_RESPONSE));
-            responses.addApiResponse("403", responseReference(FORBIDDEN_RESPONSE));
-            responses.addApiResponse("404", responseReference(NOT_FOUND_RESPONSE));
-            responses.addApiResponse("409", responseReference(CONFLICT_RESPONSE));
+
+            if (declaresOrRefusesInput(operation, handlerMethod)) {
+                responses.addApiResponse("400", responseReference(BAD_REQUEST_RESPONSE));
+            }
+            if (isSecured(handlerMethod)) {
+                responses.addApiResponse("401", responseReference(UNAUTHORIZED_RESPONSE));
+                responses.addApiResponse("403", responseReference(FORBIDDEN_RESPONSE));
+            }
+            if (addressesAPathResource(operation, handlerMethod)) {
+                responses.addApiResponse("404", responseReference(NOT_FOUND_RESPONSE));
+            }
+            if (declares(operation, "409")) {
+                responses.addApiResponse("409", responseReference(CONFLICT_RESPONSE));
+            }
             responses.addApiResponse("500", responseReference(INTERNAL_SERVER_ERROR_RESPONSE));
 
             if ("signOn".equals(operation.getOperationId())) {
@@ -430,5 +481,94 @@ public final class OpenApiConfig {
 
     private static ApiResponse responseReference(final String component) {
         return new ApiResponse().$ref("#/components/responses/" + component);
+    }
+
+    /**
+     * Reports whether the operation already declares one status itself.
+     *
+     * <p>A handler that states an outcome in its own {@code @ApiResponses} is the authority on that
+     * outcome, so a declared status is always kept whatever the signature-derived rules would infer. This
+     * is the escape hatch that keeps those rules honest: a route with an outcome the signature cannot
+     * reveal declares it, rather than the rules being widened until they cover everything again.
+     *
+     * @param operation the operation springdoc has assembled so far
+     * @param status    the three-digit status to look for
+     * @return {@code true} when the operation already carries a response for that status
+     */
+    private static boolean declares(final Operation operation, final String status) {
+        return operation.getResponses() != null && operation.getResponses().get(status) != null;
+    }
+
+    /**
+     * Reports whether the route requires a credential.
+     *
+     * <p>An empty {@code @SecurityRequirements} on the handler is how this module declares a route
+     * anonymous, and it is also what clears the operation's security list in the served document, so the
+     * two statements cannot drift apart. Everything else inherits the document-level bearer requirement.
+     *
+     * @param handlerMethod the handler springdoc is describing
+     * @return {@code true} unless the handler declares itself anonymous
+     */
+    private static boolean isSecured(final HandlerMethod handlerMethod) {
+        final SecurityRequirements declared =
+                handlerMethod.getMethodAnnotation(SecurityRequirements.class);
+        return declared == null || declared.value().length > 0;
+    }
+
+    /**
+     * Reports whether a request to this operation can be refused before any business rule runs.
+     *
+     * <p>Three ways, and all three are visible on the signature. A request body can fail to read or to
+     * satisfy its constraints. A path or query value has to be converted from text, and a value that
+     * will not convert is refused during binding - which is why the type is examined and not merely the
+     * annotation: a path value already declared as text cannot fail a conversion. And an operation that
+     * declares {@code 400} itself is taken at its word.
+     *
+     * @param operation     the operation springdoc has assembled so far
+     * @param handlerMethod the handler springdoc is describing
+     * @return {@code true} when a refusal before dispatch is reachable
+     */
+    private static boolean declaresOrRefusesInput(final Operation operation,
+                                                  final HandlerMethod handlerMethod) {
+        if (declares(operation, "400")) {
+            return true;
+        }
+        for (final MethodParameter parameter : handlerMethod.getMethodParameters()) {
+            if (parameter.hasParameterAnnotation(RequestBody.class)) {
+                return true;
+            }
+            final boolean bound = parameter.hasParameterAnnotation(PathVariable.class)
+                    || parameter.hasParameterAnnotation(RequestParam.class);
+            if (bound && !String.class.equals(parameter.getParameterType())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Reports whether the operation addresses a resource that may not exist.
+     *
+     * <p>A path value names a resource by identity, and asking for one that is not held is what produces
+     * an absent-resource answer. This is deliberately not true of a value carried in a request body: the
+     * screen routes address records that way and answer absence with a message on the screen and status
+     * {@code 200}, exactly as the legacy transactions did, so publishing {@code 404} against them would
+     * contradict the contract they exist to keep.
+     *
+     * @param operation     the operation springdoc has assembled so far
+     * @param handlerMethod the handler springdoc is describing
+     * @return {@code true} when an absent-resource answer is reachable
+     */
+    private static boolean addressesAPathResource(final Operation operation,
+                                                  final HandlerMethod handlerMethod) {
+        if (declares(operation, "404")) {
+            return true;
+        }
+        for (final MethodParameter parameter : handlerMethod.getMethodParameters()) {
+            if (parameter.hasParameterAnnotation(PathVariable.class)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

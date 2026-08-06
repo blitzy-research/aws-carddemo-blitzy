@@ -188,7 +188,7 @@ class ReportResponseTest {
             "reportPeriod", "startMonth",
             "startDay", "startYear", "endMonth", "endDay", "endYear", "confirm", "transactionName",
             "title01", "currentDate", "programName", "title02", "currentTime", "errorMessage",
-            "submissionAccepted", "message", "generalError", "focusScreenFieldId", "nextRoute",
+            "submissionAccepted", "message", "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute",
             "navigationContext");
 
     /**
@@ -229,7 +229,7 @@ class ReportResponseTest {
         return new ReportResponse(SELECTION_MARK, SELECTION_MARK, SELECTION_MARK,
                 ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
                 "Y", "CR00", TITLE_UPPER, "07/19/22", "CORPT00C", TITLE_LOWER, "19:27:53",
-                ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false,
+                ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false, List.of(),
                 ReportResponse.FIELD_MONTHLY_SELECTION, "/api/v1/reports", navigation());
     }
 
@@ -244,7 +244,7 @@ class ReportResponseTest {
      */
     private static ReportResponse everyComponentAbsent() {
         return new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, false, null, false, null, null, null);
+                null, null, null, null, null, null, null, false, null, false, List.of(), null, null, null);
     }
 
     /**
@@ -255,7 +255,7 @@ class ReportResponseTest {
      */
     private static ReportResponse selecting(ReportPeriod period) {
         return new ReportResponse(null, null, null,period, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, false, null, false, null, null,
+                null, null, null, null, null, null, null, null, false, null, false, List.of(), null, null,
                 null);
     }
 
@@ -275,7 +275,7 @@ class ReportResponseTest {
             String endMonth, String endDay, String endYear, String confirm) {
         return new ReportResponse(null, null, null,null, startMonth, startDay, startYear, endMonth,
                 endDay, endYear, confirm, null, null, null, null, null, null, null, false, null,
-                false, null, null, null);
+                false, List.of(), null, null, null);
     }
 
     /**
@@ -293,7 +293,7 @@ class ReportResponseTest {
     private static ReportResponse announcing(String text, boolean submissionAccepted,
             boolean generalError) {
         return new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, text, submissionAccepted, text, generalError,
+                null, null, null, null, null, null, text, submissionAccepted, text, generalError, List.of(),
                 null, null, null);
     }
 
@@ -632,8 +632,9 @@ class ReportResponseTest {
                     .as("the derived report name is the carried value, a different string")
                     .isEqualTo("Yearly").isNotEqualTo("YEARLY");
             assertThat(payload.size())
-                    .as("only the period and the two primitive flags are written")
-                    .isEqualTo(3);
+                    .as("only the period, the two primitive flags and the empty decoration list are "
+                            + "written")
+                    .isEqualTo(4);
         }
 
         @Test
@@ -753,7 +754,7 @@ class ReportResponseTest {
         void returnsAttentionToTheSelectorBlock() {
             ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null,
-                                              NO_SELECTION_TEXT, false, NO_SELECTION_TEXT, true,
+                                              NO_SELECTION_TEXT, false, NO_SELECTION_TEXT, true, List.of(),
                                               ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
 
             assertThat(response.focusScreenFieldId()).isEqualTo("MONTHLY");
@@ -890,7 +891,7 @@ class ReportResponseTest {
             ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.MONTHLY, null, null, null, null,
                                               null, null, null, null, null, null, null, null,
                                               null, CONFIRM_MONTHLY, false, CONFIRM_MONTHLY,
-                                              true, ReportResponse.FIELD_CONFIRM, null, null);
+                                              true, List.of(), ReportResponse.FIELD_CONFIRM, null, null);
 
             assertThat(response.message()).isEqualTo(CONFIRM_MONTHLY);
             assertThat(response.errorMessage()).isEqualTo(CONFIRM_MONTHLY);
@@ -1048,7 +1049,7 @@ class ReportResponseTest {
         void carriesTheSuppliedCharacterBesideTheText() {
             ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.YEARLY, null, null,
                     null, null, null, null, "q", null, null, null, null, null, null,
-                    INVALID_CONFIRM_LOWER, false, INVALID_CONFIRM_LOWER, true,
+                    INVALID_CONFIRM_LOWER, false, INVALID_CONFIRM_LOWER, true, List.of(),
                     ReportResponse.FIELD_CONFIRM, null, null);
 
             assertThat(response.confirm()).isEqualTo("q");
@@ -1076,7 +1077,7 @@ class ReportResponseTest {
         void isConstructibleAsAnOrdinaryMessage() {
             ReportResponse response = new ReportResponse(null, null, null,ReportPeriod.MONTHLY, null, null,
                     null, null, null, null, null, null, null, null, null, null, null,
-                    QUEUE_WRITE_FAILURE_TEXT, false, QUEUE_WRITE_FAILURE_TEXT, true,
+                    QUEUE_WRITE_FAILURE_TEXT, false, QUEUE_WRITE_FAILURE_TEXT, true, List.of(),
                     ReportResponse.FIELD_MONTHLY_SELECTION, null, null);
 
             assertThat(response.message()).isEqualTo(QUEUE_WRITE_FAILURE_TEXT).hasSize(29);
@@ -1337,11 +1338,28 @@ class ReportResponseTest {
             }
         }
 
+        /**
+         * The summary message is one text and is never published as a collection of texts.
+         *
+         * <p>The legacy screen has a single message line, {@code ERRMSG}, and assembles whatever it
+         * wants to say into that one field, so a response offering a list of messages would be offering
+         * something the screen cannot express and a client would have to choose which entry to show.
+         *
+         * <p>The per-field decoration list is deliberately <em>not</em> in the forbidden set. It is not
+         * an alternative rendering of the summary text: each entry names a screen field and the state it
+         * is in, which is what the legacy expresses through the field's own attribute byte and asterisk
+         * marker rather than through the message line. The two coexist on the real screen - one message
+         * line plus highlighted fields - so they coexist here.
+         */
         @Test
-        @DisplayName("publishes no collection-shaped error surface beside the one text")
+        @DisplayName("publishes no collection-shaped message surface beside the one text, though the "
+                + "per-field decoration list is a separate contract and is expected")
         void publishesNoCollectionShapedErrorSurface() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent())).doesNotContain("messages", "errors",
-                    "fieldErrors", "violations", "details", "errorList", "warnings");
+                    "violations", "details", "errorList", "warnings");
+            assertThat(publishedNames(everyComponentPresent()))
+                    .as("the field decoration list is part of this contract, not a message collection")
+                    .contains("fieldErrors");
         }
 
         @Test
@@ -1350,7 +1368,7 @@ class ReportResponseTest {
             String longerThanTheScreen = "L".repeat(ReportResponse.ERROR_MESSAGE_LENGTH + 40);
             ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
-                                              longerThanTheScreen, true, null, null, null);
+                                              longerThanTheScreen, true, List.of(), null, null, null);
 
             assertThat(response.message()).hasSize(ReportResponse.ERROR_MESSAGE_LENGTH + 40);
             assertThat(violationsOf(response)).isEmpty();
@@ -1434,7 +1452,7 @@ class ReportResponseTest {
             ReportResponse overWideMessage = announcing(tooWide, false, true);
             ReportResponse overWideFocus = new ReportResponse(null, null, null,null, null, null, null, null, null, null,
                                                    null, null, null, null, null, null, null,
-                                                   null, false, null, true, "TOOLONG1", null,
+                                                   null, false, null, true, List.of(), "TOOLONG1", null,
                                                    null);
 
             assertThat(violationsOf(overWideMessage)).hasSize(1);
@@ -1453,7 +1471,7 @@ class ReportResponseTest {
             for (String identity : identities) {
                 ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null,
                                                   null, null, null, null, null, null, null,
-                                                  null, false, null, true, identity, null, null);
+                                                  null, false, null, true, List.of(), identity, null, null);
 
                 assertThat(identity.length())
                         .isLessThanOrEqualTo(ReportResponse.SCREEN_FIELD_ID_LENGTH);
@@ -1473,7 +1491,7 @@ class ReportResponseTest {
             NavigationContext supplied = navigation();
             ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
-                                              null, false, null, null, supplied);
+                                              null, false, List.of(), null, null, supplied);
 
             assertThat(response.navigationContext()).isSameAs(supplied);
         }
@@ -1523,7 +1541,7 @@ class ReportResponseTest {
             NavigationContext empty = NavigationContext.empty();
             ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
-                                              null, false, null, null, empty);
+                                              null, false, List.of(), null, null, empty);
 
             assertThat(response.navigationContext()).isSameAs(empty);
             assertThat(response.navigationContext().userId()).isNull();
@@ -1544,17 +1562,28 @@ class ReportResponseTest {
     class TheSerializedForm {
 
         @Test
-        @DisplayName("publishes all twenty-four components when all twenty-four are present")
-        void publishesAllTwentyFourComponents() throws JsonProcessingException {
+        @DisplayName("publishes all twenty-five components when all twenty-four are present")
+        void publishesAllTwentyFiveComponents() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent()))
                     .containsExactlyInAnyOrderElementsOf(ALL_COMPONENTS);
         }
 
+        /**
+         * Three members have no absent state, so an otherwise empty reply still carries them.
+         *
+         * <p>The two indicators are primitives and never were null. The per-field decoration list is
+         * normalised to an empty list by the canonical constructor, and the module omits nulls rather
+         * than empties, so it crosses as {@code []}. That is deliberate: a reader has to be able to tell
+         * "this turn faulted no field" from "this reply does not speak about fields", and only a member
+         * that is always present can carry that distinction.</p>
+         */
         @Test
-        @DisplayName("publishes only the two flags when every other component is absent")
+        @DisplayName("publishes only the two flags and the empty decoration list when every other "
+                + "component is absent")
         void publishesOnlyTheTwoFlagsWhenEverythingElseIsAbsent() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentAbsent()))
-                    .containsExactlyInAnyOrder("submissionAccepted", "generalError");
+                    .containsExactlyInAnyOrder("submissionAccepted", "generalError", "fieldErrors");
+            assertThat(payloadOf(everyComponentAbsent()).get("fieldErrors")).isEmpty();
         }
 
         @Test
@@ -1638,7 +1667,7 @@ class ReportResponseTest {
         void acceptsAnyRouteValueWithoutValidatingIt() {
             ReportResponse response = new ReportResponse(null, null, null,null, null, null, null, null, null, null, null,
                                               null, null, null, null, null, null, null, false,
-                                              null, false, null,
+                                              null, false, List.of(), null,
                                               "/api/v1/reports/transaction-report", null);
 
             assertThat(response.nextRoute()).isEqualTo("/api/v1/reports/transaction-report");
@@ -1688,20 +1717,43 @@ class ReportResponseTest {
                     "timestamp", "correlationId", "queueDepth");
         }
 
+        /**
+         * The only array on this screen is the per-field decoration list.
+         *
+         * <p>This screen displays no repeating group: it has three selector positions, six date parts
+         * and one confirmation, each its own map item, and no row list of any kind. So every displayed
+         * value is a scalar, and an array-shaped member among them would mean a repeating group had been
+         * invented that the map does not have.
+         *
+         * <p>The decoration list is the one exception and is not a displayed value at all - it reports
+         * which of those scalar fields are in which error state, one entry per faulted field, which is
+         * inherently as many entries as there are faulted fields. Asserting its absence is what the
+         * earlier revision of this test did, and that is exactly what left a client unable to highlight
+         * anything.
+         */
         @Test
-        @DisplayName("publishes no array-shaped member at all")
+        @DisplayName("publishes no array-shaped member other than the per-field decoration list, "
+                + "because the screen has no repeating display group")
         void publishesNoArrayShapedMember() throws JsonProcessingException {
             JsonNode payload = payloadOf(everyComponentPresent());
 
             assertThat(payload.isObject()).isTrue();
-            payload.forEach(member -> assertThat(member.isArray()).isFalse());
+            payload.properties().forEach(member -> {
+                if (!"fieldErrors".equals(member.getKey())) {
+                    assertThat(member.getValue().isArray())
+                            .as("%s is a scalar screen value and not a repeating group",
+                                    member.getKey())
+                            .isFalse();
+                }
+            });
+            assertThat(payload.get("fieldErrors").isArray()).isTrue();
         }
 
         @Test
         @DisplayName("publishes exactly the component count and no twenty-fifth member")
         void publishesExactlyTheComponentCount() throws JsonProcessingException {
             assertThat(publishedNames(everyComponentPresent())).hasSize(ALL_COMPONENTS.size());
-            assertThat(ALL_COMPONENTS).hasSize(24);
+            assertThat(ALL_COMPONENTS).hasSize(25);
         }
     }
 
@@ -1720,7 +1772,7 @@ class ReportResponseTest {
             ReportResponse response = new ReportResponse(SELECTION_MARK, SELECTION_MARK, SELECTION_MARK,
                     ReportPeriod.CUSTOM, "07", "01", "2022", "07", "19", "2022",
                     "Y", "CR00", TITLE_UPPER, "07/19/22", "CORPT00C", TITLE_LOWER, "19:27:53",
-                    ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false,
+                    ACCEPTED_CUSTOM, true, ACCEPTED_CUSTOM, false, List.of(),
                     ReportResponse.FIELD_MONTHLY_SELECTION, "/api/v1/reports", nested);
 
             for (int read = 0; read < 2; read++) {

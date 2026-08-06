@@ -115,6 +115,7 @@ class ReportResponseCoverageTest {
             "startMonth", "startDay", "startYear", "endMonth", "endDay", "endYear",
             "confirm", "transactionName", "title01", "currentDate", "programName", "title02",
             "currentTime", "errorMessage", "submissionAccepted", "message", "generalError",
+            "fieldErrors",
             "focusScreenFieldId", "nextRoute", "navigationContext");
 
     /**
@@ -193,7 +194,7 @@ class ReportResponseCoverageTest {
                 "errorMessage".equals(component) ? value : null,
                 false,
                 "message".equals(component) ? value : null,
-                false,
+                false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
                 null);
@@ -211,7 +212,7 @@ class ReportResponseCoverageTest {
                 "01", "31", "2022", "12", "28", "2022", "Y", "CR00",
                 "AWS Mainframe Modernization             ", "08/02/26", "CORPT00C",
                 "CardDemo                                ", "14:35:07", null, true,
-                reportNameOf(period) + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX, false,
+                reportNameOf(period) + ReportResponse.FRAGMENT_SUBMITTED_SUFFIX, false, List.of(),
                 ReportResponse.FIELD_MONTHLY_SELECTION, "/api/menu",
                 JsonContractSupport.populatedNavigation());
     }
@@ -830,7 +831,7 @@ class ReportResponseCoverageTest {
             assertThat(validator.validate(
                             new ReportResponse(null, null, null,null, null, null, null, null,
                                     null, null, null, null, null, null, null, null, null, null,
-                                    false, null, false, null, null, null)))
+                                    false, null, false, List.of(), null, null, null)))
                     .isEmpty();
         }
 
@@ -911,12 +912,18 @@ class ReportResponseCoverageTest {
         void bothBooleanIndicatorsAreAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(
                     new ReportResponse(null, null, null,null, null, null, null, null, null, null,
-                            null, null, null, null, null, null, null, null, false, null, false, null,
+                            null, null, null, null, null, null, null, null, false, null, false, List.of(), null,
                             null, null));
 
-            assertThat(payload.size()).isEqualTo(2);
+            // Three, not two: the per-field decoration list is normalised to an empty list by the
+            // canonical constructor, and the module omits nulls rather than empties, so it crosses as
+            // [] on every reply. That is what lets a reader tell "this turn faulted no field" from
+            // "this reply does not speak about fields" at all.
+            assertThat(payload.size()).isEqualTo(3);
             assertThat(payload.get("submissionAccepted").asBoolean()).isFalse();
             assertThat(payload.get("generalError").asBoolean()).isFalse();
+            assertThat(payload.get("fieldErrors").isArray()).isTrue();
+            assertThat(payload.get("fieldErrors")).isEmpty();
         }
 
         @Test
@@ -1045,10 +1052,10 @@ class ReportResponseCoverageTest {
         void theAcceptanceIndicatorParticipatesInEquality() {
             ReportResponse acceptedFlag = new ReportResponse(null, null, null,null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, true, "same",
-                    false, null, null, null);
+                    false, List.of(), null, null, null);
             ReportResponse pendingFlag = new ReportResponse(null, null, null,null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, false, "same",
-                    false, null, null, null);
+                    false, List.of(), null, null, null);
 
             assertThat(acceptedFlag).isNotEqualTo(pendingFlag);
         }

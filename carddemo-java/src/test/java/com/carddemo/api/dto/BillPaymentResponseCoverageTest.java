@@ -109,7 +109,7 @@ class BillPaymentResponseCoverageTest {
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "accountId", "currentBalance", "confirm", "newTransactionId",
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
-            "errorMessage", "paymentAccepted", "generalError", "focusScreenFieldId", "nextRoute",
+            "errorMessage", "paymentAccepted", "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute",
             "navigationContext");
 
     /** The four components the diagnostic rendering withholds. */
@@ -173,7 +173,7 @@ class BillPaymentResponseCoverageTest {
                 "title02".equals(component) ? value : null,
                 "currentTime".equals(component) ? value : null,
                 "errorMessage".equals(component) ? value : null,
-                false, false,
+                false, false, List.of(),
                 "focusScreenFieldId".equals(component) ? value : null,
                 "nextRoute".equals(component) ? value : null,
                 null);
@@ -191,7 +191,7 @@ class BillPaymentResponseCoverageTest {
      */
     private static BillPaymentResponse carryingBalance(BigDecimal currentBalance) {
         return new BillPaymentResponse(null, currentBalance, null, null, null, null,
-                null, null, null, null, null, false, false, null, null, null);
+                null, null, null, null, null, false, false, List.of(), null, null, null);
     }
 
     /**
@@ -206,7 +206,7 @@ class BillPaymentResponseCoverageTest {
                 "CardDemo                                ", "14:35:07",
                 BillPaymentResponse.MSG_PAYMENT_SUCCESSFUL_PREFIX
                         + BillPaymentResponse.MSG_TRANSACTION_ID_FRAGMENT + "42.",
-                true, false, null, "/api/menu", JsonContractSupport.populatedNavigation());
+                true, false, List.of(), null, "/api/menu", JsonContractSupport.populatedNavigation());
     }
 
     /**
@@ -610,7 +610,7 @@ class BillPaymentResponseCoverageTest {
         void anEntirelyEmptyResponseReportsNoViolation() {
             assertThat(validator.validate(
                             new BillPaymentResponse(null, null, null, null, null, null, null, null,
-                                    null, null, null, false, false, null, null, null)))
+                                    null, null, null, false, false, List.of(), null, null, null)))
                     .isEmpty();
         }
 
@@ -647,7 +647,7 @@ class BillPaymentResponseCoverageTest {
                             + "double-valued node by default, which would silently drop the trailing "
                             + "zero the wire form actually carried")
                     .isEqualTo("{\"currentBalance\":" + expected + ",\"paymentAccepted\":false,"
-                            + "\"generalError\":false}");
+                            + "\"generalError\":false,\"fieldErrors\":[]}");
         }
 
         @Test
@@ -734,8 +734,8 @@ class BillPaymentResponseCoverageTest {
     class WireShape {
 
         @Test
-        @DisplayName("an accepted response renders all sixteen members under their contract names")
-        void anAcceptedResponseRendersAllSixteenMembers() throws JsonProcessingException {
+        @DisplayName("an accepted response renders all seventeen members under their contract names")
+        void anAcceptedResponseRendersAllSeventeenMembers() throws JsonProcessingException {
             JsonNode payload = payloadOf(accepted());
 
             assertThat(payload.size()).isEqualTo(EXPECTED_COMPONENTS.size() - 1);
@@ -783,11 +783,17 @@ class BillPaymentResponseCoverageTest {
         void bothBooleanFlagsAreAlwaysWritten() throws JsonProcessingException {
             JsonNode payload = payloadOf(
                     new BillPaymentResponse(null, null, null, null, null, null, null, null, null,
-                            null, null, false, false, null, null, null));
+                            null, null, false, false, List.of(), null, null, null));
 
-            assertThat(payload.size()).isEqualTo(2);
+            // Three, not two: the per-field decoration list is normalised to an empty list by the
+            // canonical constructor, and the module omits nulls rather than empties, so it crosses as
+            // [] on every reply. That is what lets a reader tell "this turn faulted no field" from
+            // "this reply does not speak about fields" at all.
+            assertThat(payload.size()).isEqualTo(3);
             assertThat(payload.get("paymentAccepted").asBoolean()).isFalse();
             assertThat(payload.get("generalError").asBoolean()).isFalse();
+            assertThat(payload.get("fieldErrors").isArray()).isTrue();
+            assertThat(payload.get("fieldErrors")).isEmpty();
         }
 
         @Test
@@ -914,7 +920,7 @@ class BillPaymentResponseCoverageTest {
                 + "presence are indistinguishable in a diagnostic")
         void absenceAndPresenceAreIndistinguishable() {
             String rendered = new BillPaymentResponse(null, null, null, null, null, null, null,
-                    null, null, null, null, false, false, null, null, null).toString();
+                    null, null, null, null, false, false, List.of(), null, null, null).toString();
 
             for (String component : EXPECTED_WITHHELD) {
                 assertThat(rendered).as("%s is withheld even when absent", component)
@@ -985,9 +991,9 @@ class BillPaymentResponseCoverageTest {
                 + "response carrying the same text are distinguishable")
         void theAcceptanceFlagParticipatesInEquality() {
             BillPaymentResponse acceptedFlag = new BillPaymentResponse(null, null, null, null,
-                    null, null, null, null, null, null, "same", true, false, null, null, null);
+                    null, null, null, null, null, null, "same", true, false, List.of(), null, null, null);
             BillPaymentResponse rejectedFlag = new BillPaymentResponse(null, null, null, null,
-                    null, null, null, null, null, null, "same", false, true, null, null, null);
+                    null, null, null, null, null, null, "same", false, true, List.of(), null, null, null);
 
             assertThat(acceptedFlag).isNotEqualTo(rejectedFlag);
         }

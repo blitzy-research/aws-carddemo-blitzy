@@ -61,6 +61,17 @@ public record UserResponse(
         List<ErrorResponse.FieldError> fieldErrors,
         boolean generalError,
         boolean actionSucceeded,
+
+        /* Whether the turn asks the operator's displayed page to be kept rather than rebuilt.
+         *
+         * The positive form of the legacy erase flag. The list program clears SEND-ERASE-NO on exactly
+         * two arms - already at the top at COUSR00C L250-L254 and already at the bottom at L272-L276 -
+         * and both release the browse and return no rows, so the screen is overwritten in place and the
+         * ten rows the operator was looking at remain. Without this instruction that reply is
+         * indistinguishable from an empty page, and a client would blank a screen the legacy keeps. The
+         * three single-record screens each have one always-erasing send and always report false. */
+        boolean preserveDisplayedPage,
+
         @Size(max = UserResponse.SCREEN_FIELD_ID_LENGTH) String focusScreenFieldId,
         String nextRoute,
         NavigationContext navigationContext) {
@@ -224,34 +235,10 @@ public record UserResponse(
     }
 
     /**
-     * Compatibility constructor for non-list responses and callers that do not yet carry a page
-     * snapshot. The list service uses the canonical constructor and always supplies the token that
-     * protects the rows it returns.
+     * Reports whether this response carries any displayed row.
+     *
+     * @return {@code true} when at least one row is carried
      */
-    public UserResponse(final List<UserRow> rows,
-                        final PageMetadata pageMetadata,
-                        final String userId,
-                        final String firstName,
-                        final String lastName,
-                        final String userType,
-                        final String transactionName,
-                        final String title01,
-                        final String currentDate,
-                        final String programName,
-                        final String title02,
-                        final String currentTime,
-                        final String message,
-                        final List<ErrorResponse.FieldError> fieldErrors,
-                        final boolean generalError,
-                        final boolean actionSucceeded,
-                        final String focusScreenFieldId,
-                        final String nextRoute,
-                        final NavigationContext navigationContext) {
-        this(rows, pageMetadata, null, userId, firstName, lastName, userType, transactionName,
-                title01, currentDate, programName, title02, currentTime, message, fieldErrors,
-                generalError, actionSucceeded, focusScreenFieldId, nextRoute, navigationContext);
-    }
-
     public boolean hasRows() {
         return !rows.isEmpty();
     }
@@ -299,6 +286,7 @@ public record UserResponse(
                 + ", fieldErrors=" + fieldErrors
                 + ", generalError=" + generalError
                 + ", actionSucceeded=" + actionSucceeded
+                + ", preserveDisplayedPage=" + preserveDisplayedPage
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext

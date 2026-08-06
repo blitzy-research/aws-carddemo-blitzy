@@ -27,11 +27,12 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The service-owned account-update command: forty-six components, no bounds, no disclosure.
+ * The service-owned account-update command: forty-seven components, no bounds, no disclosure.
  *
  * <p>What is asserted here is what the type owes. Its shape is a contract in its own right, because
- * {@code api.AccountUpdateContractAdapter} copies into it positionally across forty-six components and a
- * component added or reordered on one side alone is a silent mis-mapping. Its rendering is a disclosure
+ * {@code api.AccountUpdateContractAdapter} copies into it positionally across forty-six transmitted
+ * components and derives the forty-seventh from the authenticated principal, and a component added or
+ * reordered on one side alone is a silent mis-mapping. Its rendering is a disclosure
  * surface, because forty-three of the components are operator-typed account and customer values, four of
  * them regulated. Its equality is a parity instrument, because the account-update parity suite compares
  * whole commands.
@@ -49,7 +50,7 @@ class AccountUpdateCommandTest {
                 "000000456", "123", "45", "6789", "1984", "07", "22", "750", "ANN", "B", "SMITH",
                 "1 MAIN ST", "MI", "SUITE 2", "48226", "DETROIT", "USA", "248", "555", "0188",
                 "GOVT-ID-000000000001", "313", "555", "0199", "4471902856", "Y", KeyAction.ENTER,
-                ScreenNavigationState.empty().withReEntry(), "sealed-proof-as-presented");
+                ScreenNavigationState.empty().withReEntry(), "sealed-proof-as-presented", false);
     }
 
     @Nested
@@ -57,22 +58,23 @@ class AccountUpdateCommandTest {
     final class TheDeclaredShape {
 
         @Test
-        @DisplayName("declares exactly forty-six components, because the adapter copies into it "
-                + "positionally and a forty-seventh would be copied from nothing")
-        void declaresExactlyFortySixComponents() {
-            assertThat(AccountUpdateCommand.class.getRecordComponents()).hasSize(46);
+        @DisplayName("declares exactly forty-seven components, because the adapter copies forty-six of "
+                + "them positionally and derives the last from the caller's own authority")
+        void declaresExactlyFortySevenComponents() {
+            assertThat(AccountUpdateCommand.class.getRecordComponents()).hasSize(47);
         }
 
         @Test
-        @DisplayName("declares the three non-map components last and in that order, matching the "
-                + "position their wire counterparts occupy")
-        void declaresTheThreeNonMapComponentsLast() {
+        @DisplayName("declares the four non-map components last and in that order, the first three "
+                + "matching the position their wire counterparts occupy and the fourth having none")
+        void declaresTheFourNonMapComponentsLast() {
             final List<String> names = Arrays.stream(AccountUpdateCommand.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .toList();
 
-            assertThat(names.subList(43, 46))
-                    .containsExactly("keyAction", "navigationContext", "concurrencyToken");
+            assertThat(names.subList(43, 47))
+                    .containsExactly("keyAction", "navigationContext", "concurrencyToken",
+                            "protectedValuesWithheld");
         }
 
         @Test
@@ -86,7 +88,8 @@ class AccountUpdateCommandTest {
                             .toList();
 
             assertThat(nonTextTypes)
-                    .containsExactly(KeyAction.class, ScreenNavigationState.class);
+                    .as("the withholding statement is a primitive, so it too carries no wire type")
+                    .containsExactly(KeyAction.class, ScreenNavigationState.class, boolean.class);
         }
 
         @Test
@@ -112,7 +115,7 @@ class AccountUpdateCommandTest {
                     " 5000.00 ", null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, "  ANN  ", null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null);
+                    null, null, null, false);
 
             assertThat(command.accountId()).isEqualTo("  1  ");
             assertThat(command.accountStatus()).isEqualTo(" ");
@@ -131,7 +134,7 @@ class AccountUpdateCommandTest {
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null);
+                    null, null, false);
 
             assertThat(command.keyAction()).isNull();
             assertThat(command.navigationContext()).isNull();
@@ -160,7 +163,7 @@ class AccountUpdateCommandTest {
                     "1984", "07", "22", "750", "ANN", "B", "SMITH", "1 MAIN ST", "MI", "SUITE 2",
                     "48226", "DETROIT", "USA", "248", "555", "0188", "GOVT-ID-000000000001", "313",
                     "555", "0199", "4471902856", "N", KeyAction.ENTER,
-                    ScreenNavigationState.empty().withReEntry(), "sealed-proof-as-presented");
+                    ScreenNavigationState.empty().withReEntry(), "sealed-proof-as-presented", false);
 
             assertThat(other).isNotEqualTo(populated());
         }

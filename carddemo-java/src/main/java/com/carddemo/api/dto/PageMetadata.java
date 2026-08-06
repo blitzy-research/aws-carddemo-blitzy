@@ -17,6 +17,7 @@
 package com.carddemo.api.dto;
 
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.util.Objects;
@@ -213,6 +214,18 @@ public record PageMetadata(
     public static final int DISPLAYED_PAGE_NUMBER_MAX_LENGTH = 8;
 
     /**
+     * Lexical form of a retained page number echoed back on a request: one contiguous run of digits,
+     * optionally surrounded by the spaces a fixed-width field pads with, or nothing at all.
+     *
+     * <p>Deliberately narrower than "digits and spaces in any arrangement". A field of that looser shape
+     * admits a value such as {@code "1 2"}, which is not a page number the screen ever displayed and which
+     * has no single reading; refusing it at the boundary is what stops the disagreement travelling further
+     * in. An empty value and an all-blank value are both admitted, because both are what a fixed-width
+     * field holds on a first entry.
+     */
+    public static final String RETAINED_PAGE_NUMBER_PATTERN = "^ *[0-9]* *$";
+
+    /**
      * Fixed stand-in emitted by {@link #toString()} in place of each boundary cursor. A constant rather
      * than any transformation of the value, so neither the length nor a prefix nor a digest of a
      * redacted cursor survives into a stringified instance. A partial mask was rejected deliberately: a
@@ -376,17 +389,36 @@ public record PageMetadata(
      *   <li>the page size, which is the legacy screen's row count - seven for the card list and ten for
      *       the transaction and user lists, each an independent screen shape rather than a tunable
      *       figure - so a request that carried it could put a different number of rows on a screen;</li>
-     *   <li>{@link PageMetadata#hasMorePages()} and {@link PageMetadata#hasPreviousPages()}, which the
-     *       legacy browse discovers only by attempting the next read, so they are outcomes of walking
-     *       the key sequence and cannot be asserted by the caller that asked for the walk;</li>
-     *   <li>the displayed page indicator, which the legacy programs only ever <em>write</em> to the
-     *       screen - {@code app/cbl/COUSR00C.cbl} assigns it at lines 327 and 376,
-     *       {@code app/cbl/COTRN00C.cbl} at lines 324 and 373 and {@code app/cbl/COCRDLIC.cbl} at line
-     *       667, and none of the three ever reads it back - so it is display state, never authority.</li>
+     *   <li>{@link PageMetadata#hasPreviousPages()}, which each program derives from the retained page
+     *       number rather than retaining separately - the tests at {@code app/cbl/COCRDLIC.cbl} lines 440
+     *       and 502, {@code app/cbl/COTRN00C.cbl} line 366 and {@code app/cbl/COUSR00C.cbl} line 366 all
+     *       ask only whether the page number exceeds one - so a request that asserted it could contradict
+     *       the number it also carried.</li>
      * </ul>
      *
+     * <p><strong>The retained page number and the next-page flag are a different case, and they are
+     * carried.</strong> Both are communication-area fields in all three list programs, not screen fields:
+     * {@code CDEMO-CT00-PAGE-NUM} and {@code CDEMO-CT00-NEXT-PAGE-FLG} at
+     * {@code app/cbl/COTRN00C.cbl:L65-L68}, {@code CDEMO-CU00-PAGE-NUM} and
+     * {@code CDEMO-CU00-NEXT-PAGE-FLG} at {@code app/cbl/COUSR00C.cbl:L70-L73}, and
+     * {@code WS-CA-SCREEN-NUM} and {@code WS-CA-NEXT-PAGE-IND} at {@code app/cbl/COCRDLIC.cbl:L237-L244}.
+     * Each program hands its area back on return and reads it on the next turn - it increments the number
+     * rather than recomputing it, and it tests the flag <em>before</em> the browse recomputes it - so
+     * neither is derivable from the request that follows. What the programs never read back is the
+     * <em>screen</em> field the number is displayed in, which is a separate thing and remains a
+     * write-only echo. Not carrying these two is what makes a paginated screen restart at page one on
+     * every turn and lose the end-of-data message rule entirely.</p>
+     *
+     * <p>Carrying them widens what the client asserts, and the widening is bounded on purpose. Neither
+     * value reaches a record: the boundary keys decide which rows a browse returns and they were already
+     * client-carried, so an untruthful page number or flag can only misstate the indicator the screen
+     * displays and the advisory message that accompanies it. The page number is bounded to its declared
+     * width and to digits, and a value that is not a page number is read as the zero the programs
+     * themselves initialise the field to rather than rejected, because a first entry legitimately carries
+     * nothing.</p>
+     *
      * <p>Separating the two shapes is what keeps that asymmetry structural rather than documentary.
-     * Reusing the enclosing record as a request body would make every one of those four values
+     * Reusing the enclosing record as a request body would make every one of its server-owned values
      * client-supplied, and a value the server needs but the client controls is a value the client can
      * be wrong about. Nesting the request shape here rather than declaring a further top-level type
      * keeps the two halves of one contract adjacent, and keeps this package at its declared size.</p>
@@ -412,11 +444,50 @@ public record PageMetadata(
      *     and likewise {@code null} on a first entry
      * @param direction the way the browse should walk, or {@code null} when the request is not a paging
      *     action; see the paragraph above for why absence is legitimate on the inbound side
+     * @param displayedPageNumber the retained page number echoed from the previous response, as text so
+     *     that the leading zeros the fixed-width field carries survive. At most
+     *     {@link PageMetadata#DISPLAYED_PAGE_NUMBER_MAX_LENGTH} characters and digits only, optionally
+     *     surrounded by the spaces a fixed-width field pads with. {@code null} on a first entry, which
+     *     {@link #retainedPageNumber()} reports as the zero the programs initialise the field to
+     * @param nextPageIndicated the retained next-page flag echoed from the previous response, being that
+     *     response's {@link PageMetadata#hasMorePages()}. Absent reads as {@code false}, which is the
+     *     {@code 'N'} the two menu-driven programs initialise their flag to and the low values the card
+     *     list initialises its own to
      */
     public record PageCursorRequest(
             @Size(max = PageMetadata.CURSOR_KEY_MAX_LENGTH) String previousCursorKey,
             @Size(max = PageMetadata.CURSOR_KEY_MAX_LENGTH) String nextCursorKey,
-            PagingDirection direction) {
+            PagingDirection direction,
+            @Size(max = PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH)
+            @Pattern(regexp = PageMetadata.RETAINED_PAGE_NUMBER_PATTERN) String displayedPageNumber,
+            boolean nextPageIndicated) {
+
+        /**
+         * Reads the retained page number as the count the browse increments.
+         *
+         * <p>Non-throwing by construction, which is defence in depth rather than tolerance: the pattern
+         * on the component already refuses anything but digits and padding, and this still answers zero
+         * for a value that somehow reached it unvalidated - a direct constructor call in a test, or a
+         * future call path that bypasses bean validation. Zero is not a guess: it is the value every one
+         * of the three programs leaves in the field on a first entry, and each raises it to one itself.
+         *
+         * @return the retained page number, or zero when none was carried or none could be read
+         */
+        public int retainedPageNumber() {
+            if (displayedPageNumber == null) {
+                return 0;
+            }
+            final String digits = displayedPageNumber.strip();
+            if (digits.isEmpty() || digits.length() > PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH) {
+                return 0;
+            }
+            for (int index = 0; index < digits.length(); index++) {
+                if (digits.charAt(index) < '0' || digits.charAt(index) > '9') {
+                    return 0;
+                }
+            }
+            return Integer.parseInt(digits);
+        }
 
         /**
          * Renders the request with both boundary keys withheld, for the same reason the enclosing
@@ -441,6 +512,8 @@ public record PageMetadata(
                     + "previousCursorKey=" + REDACTION_PLACEHOLDER
                     + ", nextCursorKey=" + REDACTION_PLACEHOLDER
                     + ", direction=" + direction
+                    + ", displayedPageNumber=" + displayedPageNumber
+                    + ", nextPageIndicated=" + nextPageIndicated
                     + "]";
         }
     }

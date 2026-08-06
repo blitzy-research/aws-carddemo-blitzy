@@ -95,25 +95,20 @@ public record UserOutcome(
         List<ValidationException.FieldError> fieldErrors,
         boolean generalError,
         boolean actionSucceeded,
+
+        /* Whether the turn asks the operator's displayed page to be kept rather than rebuilt.
+         *
+         * The positive form of the legacy erase flag. SEND-ERASE-NO is set on exactly two arms of the
+         * list program - already at the top at COUSR00C L250-L254 and already at the bottom at
+         * L272-L276 - and both arms release the browse and return no rows. A response that carried
+         * neither the rows nor this instruction would look identical to an empty page, so a client
+         * would blank a screen the legacy overwrites in place and the operator would lose the ten rows
+         * they were looking at. Every other arm rebuilds, and reports false. */
+        boolean preserveDisplayedPage,
+
         String focusScreenFieldId,
         String nextRoute,
         ScreenNavigationState navigationContext) {
-
-    /**
-     * Compatibility constructor for turns that carry no displayed-row snapshot.
-     */
-    public UserOutcome(final List<UserRow> rows, final BrowseWindow pageMetadata,
-            final String userId, final String firstName, final String lastName, final String userType,
-            final String transactionName, final String title01, final String currentDate,
-            final String programName, final String title02, final String currentTime,
-            final String message, final List<ValidationException.FieldError> fieldErrors,
-            final boolean generalError, final boolean actionSucceeded,
-            final String focusScreenFieldId, final String nextRoute,
-            final ScreenNavigationState navigationContext) {
-        this(rows, pageMetadata, null, userId, firstName, lastName, userType, transactionName,
-                title01, currentDate, programName, title02, currentTime, message, fieldErrors,
-                generalError, actionSucceeded, focusScreenFieldId, nextRoute, navigationContext);
-    }
 
     /**
      * The screen message texts, one per legacy emission site, declared here and on the wire record alike.

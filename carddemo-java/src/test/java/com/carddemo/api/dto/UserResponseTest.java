@@ -164,7 +164,7 @@ class UserResponseTest {
     private static final String DISPLAYED_PAGE_NUMBER = "00000003";
 
     /**
-     * The nineteen component names of {@link UserResponse}, in constructor order.
+     * The twenty-one component names of {@link UserResponse}, in constructor order.
      *
      * <p>Read from the production record declaration rather than derived, and used as the expected
      * key set of a fully populated payload. An exact-match assertion over this list is what proves
@@ -173,7 +173,8 @@ class UserResponseTest {
     private static final List<String> RESPONSE_COMPONENTS = List.of(
             "rows", "pageMetadata", "userId", "firstName", "lastName", "userType",
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
-            "message", "fieldErrors", "generalError", "actionSucceeded", "focusScreenFieldId",
+            "message", "fieldErrors", "generalError", "actionSucceeded", "preserveDisplayedPage",
+            "focusScreenFieldId",
             "nextRoute", "navigationContext");
 
     /** The five component names of the nested row type, in constructor order. */
@@ -314,15 +315,15 @@ class UserResponseTest {
     }
 
     /**
-     * Builds a response with every one of the nineteen components populated, which is what an
+     * Builds a response with every one of the twenty-one components populated, which is what an
      * inventory assertion and a rendering assertion both need.
      *
      * @return a fully populated response
      */
     private static UserResponse populated() {
-        return new UserResponse(rows(1), forwardPage(), USER_ID, FIRST_NAME, LAST_NAME, ADMIN_CODE,
+        return new UserResponse(rows(1), forwardPage(), null, USER_ID, FIRST_NAME, LAST_NAME, ADMIN_CODE,
                 TRANSACTION_NAME, TITLE_01, CURRENT_DATE, PROGRAM_NAME, TITLE_02, CURRENT_TIME,
-                UserResponse.MSG_LIST_UNABLE_TO_LOOKUP_USER, fieldErrors(), true, false,
+                UserResponse.MSG_LIST_UNABLE_TO_LOOKUP_USER, fieldErrors(), true, false, false,
                 FOCUS_FIELD, NEXT_ROUTE, navigation());
     }
 
@@ -335,8 +336,8 @@ class UserResponseTest {
      * @return a response carrying only those two values
      */
     private static UserResponse reporting(String message, boolean generalError) {
-        return new UserResponse(null, null, null, null, null, null, null, null, null, null, null,
-                null, message, null, generalError, false, null, null, null);
+        return new UserResponse(null, null, null, null, null, null, null, null, null, null, null, null,
+                null, message, null, generalError, false, false, null, null, null);
     }
 
     /**
@@ -346,8 +347,8 @@ class UserResponseTest {
      * @return a response carrying those rows and nothing else
      */
     private static UserResponse carrying(List<UserResponse.UserRow> carried) {
-        return new UserResponse(carried, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, false, false, null, null, null);
+        return new UserResponse(carried, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, false, false, false, null, null, null);
     }
 
     /**
@@ -357,8 +358,8 @@ class UserResponseTest {
      * @return a response carrying nothing but the two explicitly false indicators
      */
     private static UserResponse empty() {
-        return new UserResponse(null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, false, false, null, null, null);
+        return new UserResponse(null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, false, false, false, null, null, null);
     }
 
     /**
@@ -444,9 +445,9 @@ class UserResponseTest {
             assertThat(rowsCarried).isLessThan(PageMetadata.USER_LIST_PAGE_SIZE);
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> new UserResponse(rows(rowsCarried), narrowerThanThePage, null,
+                    .isThrownBy(() -> new UserResponse(rows(rowsCarried), narrowerThanThePage, null, null,
                             null, null, null, null, null, null, null, null, null, null, null, false,
-                            false, null, null, null))
+                            false, false, null, null, null))
                     .withMessageContaining(String.valueOf(declaredPageSize))
                     .withMessageContaining(String.valueOf(rowsCarried));
         }
@@ -458,16 +459,16 @@ class UserResponseTest {
             PageMetadata matchingThePage = PageMetadata.forward(declaredPageSize, FIRST_CURSOR_KEY,
                     LAST_CURSOR_KEY, true, false, DISPLAYED_PAGE_NUMBER);
 
-            assertThat(new UserResponse(rows(declaredPageSize), matchingThePage, null, null, null,
-                            null, null, null, null, null, null, null, null, null, false, false, null,
+            assertThat(new UserResponse(rows(declaredPageSize), matchingThePage, null, null, null, null,
+                            null, null, null, null, null, null, null, null, null, false, false, false, null,
                             null, null)
                     .rows())
                     .hasSize(declaredPageSize);
 
             // A short page is still a valid page: the final page of a browse is routinely shorter than
             // the page size, so only exceeding the declared size is a defect.
-            assertThat(new UserResponse(rows(1), matchingThePage, null, null, null, null, null, null,
-                            null, null, null, null, null, null, false, false, null, null, null)
+            assertThat(new UserResponse(rows(1), matchingThePage, null, null, null, null, null, null, null,
+                            null, null, null, null, null, null, false, false, false, null, null, null)
                     .rows())
                     .hasSize(1);
         }
@@ -628,8 +629,8 @@ class UserResponseTest {
                     .as("the identifier-input field of the list map")
                     .isEqualTo(PageMetadata.DISPLAYED_PAGE_NUMBER_MAX_LENGTH);
 
-            UserResponse response = new UserResponse(null, forwardPage(), USER_ID, null, null, null,
-                    null, null, null, null, null, null, null, null, false, false, null, null, null);
+            UserResponse response = new UserResponse(null, forwardPage(), null, USER_ID, null, null, null,
+                    null, null, null, null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(response.userId()).isEqualTo(USER_ID);
             assertThat(response.pageMetadata().displayedPageNumber())
@@ -1056,11 +1057,11 @@ class UserResponseTest {
         void keepsTheIdentifierComponentAtItsFullWidth() {
             String padded = SHORT_USER_ID + "    ";
 
-            UserResponse response = new UserResponse(null, null, padded, null, null, null, null,
+            UserResponse response = new UserResponse(null, null, null, padded, null, null, null, null,
                     null, null, null, null, null,
                     UserResponse.MSG_ADD_SUCCESS_PREFIX + SHORT_USER_ID
                             + UserResponse.MSG_ADD_SUCCESS_SUFFIX,
-                    null, false, true, null, null, null);
+                    null, false, true, false, null, null, null);
 
             assertThat(response.userId())
                     .isEqualTo(padded)
@@ -1144,8 +1145,8 @@ class UserResponseTest {
                             + UserResponse.MSG_DELETE_SUCCESS_SUFFIX);
 
             assertThat(confirmations).allSatisfy(text -> {
-                UserResponse response = new UserResponse(null, null, null, null, null, null, null,
-                        null, null, null, null, null, text, null, false, true, null, null, null);
+                UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, text, null, false, true, false, null, null, null);
 
                 assertThat(response.message()).isEqualTo(text);
                 assertThat(response.generalError()).isFalse();
@@ -1204,9 +1205,9 @@ class UserResponseTest {
         @DisplayName("carries the invalid-selection rejection together with a full page and a false "
                 + "failure flag, which is what the legacy arm actually does")
         void carriesTheSelectionRejectionWithAFullPage() {
-            UserResponse response = new UserResponse(rows(PageMetadata.USER_LIST_PAGE_SIZE), forwardPage(),
+            UserResponse response = new UserResponse(rows(PageMetadata.USER_LIST_PAGE_SIZE), forwardPage(), null,
                     null, null, null, null, null, null, null, null, null, null,
-                    UserResponse.MSG_LIST_INVALID_SELECTION, null, false, false, FOCUS_FIELD, null,
+                    UserResponse.MSG_LIST_INVALID_SELECTION, null, false, false, false, FOCUS_FIELD, null,
                     null);
 
             assertThat(response.message()).isEqualTo(UserResponse.MSG_LIST_INVALID_SELECTION);
@@ -1245,9 +1246,9 @@ class UserResponseTest {
         @Test
         @DisplayName("proves the flag is not derived from the collections or from the other flag")
         void provesTheFlagIsNotDerivedFromTheCollectionsOrTheOtherFlag() {
-            UserResponse withFieldErrorsButNoFailure = new UserResponse(null, null, null, null,
+            UserResponse withFieldErrorsButNoFailure = new UserResponse(null, null, null, null, null,
                     null, null, null, null, null, null, null, null,
-                    UserResponse.MSG_UPDATE_NO_CHANGE, fieldErrors(), false, false, null, null,
+                    UserResponse.MSG_UPDATE_NO_CHANGE, fieldErrors(), false, false, false, null, null,
                     null);
 
             assertThat(withFieldErrorsButNoFailure.hasFieldErrors()).isTrue();
@@ -1315,9 +1316,9 @@ class UserResponseTest {
         @Test
         @DisplayName("keeps the summary line independent of the per-field errors")
         void keepsTheSummaryLineIndependentOfTheFieldErrors() {
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
                     null, null, null, null, UserResponse.MSG_ADD_USER_ID_EMPTY, fieldErrors(), true,
-                    false, FOCUS_FIELD, null, null);
+                    false, false, FOCUS_FIELD, null, null);
 
             assertThat(response.message()).isEqualTo(UserResponse.MSG_ADD_USER_ID_EMPTY);
             assertThat(response.fieldErrors()).hasSize(1);
@@ -1337,8 +1338,8 @@ class UserResponseTest {
                             ErrorResponse.FieldState.INVALID,
                             UserResponse.MSG_ADD_USER_TYPE_EMPTY));
 
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, both, true, false, null, null, null);
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, both, true, false, false, null, null, null);
 
             assertThat(response.fieldErrors()).hasSize(2);
             assertThat(response.fieldErrors())
@@ -1365,7 +1366,7 @@ class UserResponseTest {
         @Test
         @DisplayName("returns each value exactly as supplied at its declared width")
         void returnsEachValueExactlyAsSupplied() {
-            UserResponse response = new UserResponse(null, null,
+            UserResponse response = new UserResponse(null, null, null,
                     widthOf(UserResponse.USER_ID_LENGTH),
                     widthOf(UserResponse.FIRST_NAME_LENGTH),
                     widthOf(UserResponse.LAST_NAME_LENGTH),
@@ -1376,7 +1377,7 @@ class UserResponseTest {
                     widthOf(UserResponse.PROGRAM_NAME_LENGTH),
                     widthOf(UserResponse.SCREEN_TITLE_LENGTH),
                     widthOf(UserResponse.CURRENT_TIME_LENGTH),
-                    widthOf(UserResponse.MESSAGE_LENGTH), null, false, false,
+                    widthOf(UserResponse.MESSAGE_LENGTH), null, false, false, false,
                     widthOf(UserResponse.SCREEN_FIELD_ID_LENGTH), null, null);
 
             assertThat(violationsOf(response)).isEmpty();
@@ -1422,9 +1423,9 @@ class UserResponseTest {
         @Test
         @DisplayName("never re-cases a value, at either level")
         void neverReCasesAValue() {
-            UserResponse response = new UserResponse(List.of(rowOf("d", "abcd1234", "a")), null,
+            UserResponse response = new UserResponse(List.of(rowOf("d", "abcd1234", "a")), null, null,
                     "abcd1234", "mary ann", LAST_NAME, "a", null, null, null, null, null, null,
-                    null, null, false, false, null, null, null);
+                    null, null, false, false, false, null, null, null);
 
             assertThat(response.userId()).isEqualTo("abcd1234");
             assertThat(response.firstName()).isEqualTo("mary ann");
@@ -1438,9 +1439,9 @@ class UserResponseTest {
         @DisplayName("accepts a name carrying a digit, an apostrophe, a hyphen or an embedded space, "
                 + "because the legacy alphabetic idiom accepts them")
         void acceptsAPunctuatedOrDigitBearingName() {
-            UserResponse response = new UserResponse(null, null, null, "MARY ANN 2ND",
+            UserResponse response = new UserResponse(null, null, null, null, "MARY ANN 2ND",
                     "o'HARA-smith", null, null, null, null, null, null, null, null, null, false,
-                    false, null, null, null);
+                    false, false, null, null, null);
 
             assertThat(violationsOf(response))
                     .as("no name-format constraint exists on this contract")
@@ -1455,8 +1456,8 @@ class UserResponseTest {
     class NoCredentialAnywhere {
 
         @Test
-        @DisplayName("declares exactly nineteen components, so there is no credential one")
-        void declaresExactlyNineteenComponents() throws JsonProcessingException {
+        @DisplayName("declares exactly twenty-one components, so there is no credential one")
+        void declaresExactlyTwentyOneComponents() throws JsonProcessingException {
             List<String> keys = keysOf(payloadOf(populated()));
 
             assertThat(keys)
@@ -1579,9 +1580,9 @@ class UserResponseTest {
         @Test
         @DisplayName("carries the code on the response as raw text, not as the enumeration")
         void carriesTheCodeAsRawText() throws JsonProcessingException {
-            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, ADMIN_CODE)), null,
+            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, ADMIN_CODE)), null, null,
                     USER_ID, null, null, USER_CODE, null, null, null, null, null, null, null, null,
-                    false, false, null, null, null);
+                    false, false, false, null, null, null);
 
             JsonNode payload = payloadOf(response);
 
@@ -1597,8 +1598,8 @@ class UserResponseTest {
         @DisplayName("still carries an undeclared one-character code, at both levels and without a "
                 + "violation")
         void stillCarriesAnUndeclaredCode() {
-            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, "X")), null, null,
-                    null, null, "X", null, null, null, null, null, null, null, null, false, false,
+            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, "X")), null, null, null,
+                    null, null, "X", null, null, null, null, null, null, null, null, false, false, false,
                     null, null, null);
 
             assertThat(violationsOf(response))
@@ -1613,8 +1614,8 @@ class UserResponseTest {
         @Test
         @DisplayName("bounds the code by width, so a two-character value is still refused")
         void boundsTheCodeByWidth() {
-            UserResponse overWide = new UserResponse(null, null, null, null, null, "AU", null, null,
-                    null, null, null, null, null, null, false, false, null, null, null);
+            UserResponse overWide = new UserResponse(null, null, null, null, null, null, "AU", null, null,
+                    null, null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(violationsOf(overWide))
                     .hasSize(1)
@@ -1630,9 +1631,9 @@ class UserResponseTest {
         @Test
         @DisplayName("returns an eight-character identifier byte for byte at both levels")
         void returnsAnEightCharacterIdentifierByteForByte() {
-            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, USER_CODE)), null,
+            UserResponse response = new UserResponse(List.of(rowOf("U", USER_ID, USER_CODE)), null, null,
                     USER_ID, null, null, null, null, null, null, null, null, null, null, null,
-                    false, false, null, null, null);
+                    false, false, false, null, null, null);
 
             assertThat(response.userId()).isEqualTo(USER_ID).hasSize(UserResponse.USER_ID_LENGTH);
             assertThat(response.rows().get(0).userId())
@@ -1647,8 +1648,8 @@ class UserResponseTest {
             assertThat(numericLooking).hasSize(UserResponse.USER_ID_LENGTH);
 
             UserResponse response = new UserResponse(
-                    List.of(rowOf(null, numericLooking, USER_CODE)), null, numericLooking, null,
-                    null, null, null, null, null, null, null, null, null, null, false, false, null,
+                    List.of(rowOf(null, numericLooking, USER_CODE)), null, null, numericLooking, null,
+                    null, null, null, null, null, null, null, null, null, null, false, false, false, null,
                     null, null);
 
             assertThat(response.userId()).isEqualTo(numericLooking);
@@ -1677,12 +1678,12 @@ class UserResponseTest {
         @Test
         @DisplayName("refuses an identifier wider than the field and admits one exactly at it")
         void refusesAnOverWideIdentifier() {
-            UserResponse atTheBound = new UserResponse(null, null,
+            UserResponse atTheBound = new UserResponse(null, null, null,
                     widthOf(UserResponse.USER_ID_LENGTH), null, null, null, null, null, null, null,
-                    null, null, null, null, false, false, null, null, null);
-            UserResponse overWide = new UserResponse(null, null,
+                    null, null, null, null, false, false, false, null, null, null);
+            UserResponse overWide = new UserResponse(null, null, null,
                     widthOf(UserResponse.USER_ID_LENGTH + 1), null, null, null, null, null, null,
-                    null, null, null, null, null, false, false, null, null, null);
+                    null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(violationsOf(atTheBound)).isEmpty();
             assertThat(violationsOf(overWide))
@@ -1742,8 +1743,8 @@ class UserResponseTest {
         void normalisesTheFieldErrorCollection() {
             List<ErrorResponse.FieldError> mutable = new ArrayList<>(fieldErrors());
 
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, mutable, true, false, null, null, null);
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, mutable, true, false, false, null, null, null);
             mutable.add(new ErrorResponse.FieldError("userType", "UTYPE01",
                     ErrorResponse.FieldState.INVALID, UserResponse.MSG_ADD_USER_TYPE_EMPTY));
 
@@ -1778,8 +1779,8 @@ class UserResponseTest {
         @Test
         @DisplayName("carries both cursors unchanged, including their leading zeros")
         void carriesBothCursorsUnchanged() {
-            UserResponse response = new UserResponse(rows(1), forwardPage(), null, null, null, null,
-                    null, null, null, null, null, null, null, null, false, false, null, null, null);
+            UserResponse response = new UserResponse(rows(1), forwardPage(), null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(response.pageMetadata().previousCursorKey()).isEqualTo(FIRST_CURSOR_KEY);
             assertThat(response.pageMetadata().nextCursorKey()).isEqualTo(LAST_CURSOR_KEY);
@@ -1820,8 +1821,8 @@ class UserResponseTest {
             PageMetadata backwards = PageMetadata.backward(PageMetadata.USER_LIST_PAGE_SIZE,
                     FIRST_CURSOR_KEY, LAST_CURSOR_KEY, false, true, DISPLAYED_PAGE_NUMBER);
 
-            UserResponse response = new UserResponse(ordered, backwards, null, null, null, null,
-                    null, null, null, null, null, null, null, null, false, false, null, null, null);
+            UserResponse response = new UserResponse(ordered, backwards, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, false, false, false, null, null, null);
 
             assertThat(response.rows()).containsExactlyElementsOf(ordered);
             assertThat(response.pageMetadata().direction())
@@ -1942,8 +1943,8 @@ class UserResponseTest {
         @Test
         @DisplayName("produces no violation for a blank value, so no emptiness constraint exists")
         void producesNoViolationForABlankValue() {
-            UserResponse response = new UserResponse(List.of(rowOf(" ", " ", " ")), null, "",
-                    "   ", "", " ", "", "", "", "", "", "", "", null, false, false, "", "", null);
+            UserResponse response = new UserResponse(List.of(rowOf(" ", " ", " ")), null, null, "",
+                    "   ", "", " ", "", "", "", "", "", "", "", null, false, false, false, "", "", null);
 
             assertThat(violationsOf(response))
                     .as("the ordered cascade in the service decides emptiness, not an annotation")
@@ -1971,9 +1972,9 @@ class UserResponseTest {
         @DisplayName("produces exactly one violation for an over-long value, naming that component "
                 + "and nothing else")
         void producesExactlyOneViolationForAnOverLongValue() {
-            UserResponse response = new UserResponse(null, null, null,
+            UserResponse response = new UserResponse(null, null, null, null,
                     widthOf(UserResponse.FIRST_NAME_LENGTH + 1), null, null, null, null, null, null,
-                    null, null, null, null, false, false, null, null, null);
+                    null, null, null, null, false, false, false, null, null, null);
 
             assertThat(violationsOf(response))
                     .hasSize(1)
@@ -1988,8 +1989,8 @@ class UserResponseTest {
         void leavesTheRouteUnbounded() {
             String longRoute = "/api/v1/admin/users/" + widthOf(200);
 
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, false, null, longRoute, null);
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, false, false, false, null, longRoute, null);
 
             assertThat(violationsOf(response)).isEmpty();
             assertThat(response.nextRoute()).isEqualTo(longRoute);
@@ -2001,8 +2002,8 @@ class UserResponseTest {
             assertThat(UserResponse.SCREEN_FIELD_ID_LENGTH).isEqualTo(7);
             assertThat(FOCUS_FIELD).hasSize(UserResponse.SCREEN_FIELD_ID_LENGTH);
 
-            UserResponse overWide = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, false,
+            UserResponse overWide = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, false, false, false,
                     widthOf(UserResponse.SCREEN_FIELD_ID_LENGTH + 1), null, null);
 
             assertThat(violationsOf(overWide))
@@ -2144,8 +2145,8 @@ class UserResponseTest {
         @Test
         @DisplayName("carries an opaque route label unchanged")
         void carriesAnOpaqueRouteLabelUnchanged() throws JsonProcessingException {
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, true, null, NEXT_ROUTE, null);
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, false, true, false, null, NEXT_ROUTE, null);
 
             assertThat(response.nextRoute()).isEqualTo(NEXT_ROUTE);
             assertThat(payloadOf(response).get("nextRoute").isTextual()).isTrue();
@@ -2155,8 +2156,8 @@ class UserResponseTest {
         @Test
         @DisplayName("carries an unrecognised label just as readily, since it interprets none")
         void carriesAnUnrecognisedLabelJustAsReadily() {
-            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, false, false, null, "NOT-A-KNOWN-ROUTE",
+            UserResponse response = new UserResponse(null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, false, false, false, null, "NOT-A-KNOWN-ROUTE",
                     null);
 
             assertThat(violationsOf(response)).isEmpty();
@@ -2361,9 +2362,9 @@ class UserResponseTest {
         @DisplayName("serves the list transaction with rows and the three write transactions "
                 + "without them")
         void servesAllFourTransactions() {
-            UserResponse listResult = new UserResponse(rows(PageMetadata.USER_LIST_PAGE_SIZE), forwardPage(),
+            UserResponse listResult = new UserResponse(rows(PageMetadata.USER_LIST_PAGE_SIZE), forwardPage(), null,
                     USER_ID, null, null, null, TRANSACTION_NAME, TITLE_01, CURRENT_DATE,
-                    PROGRAM_NAME, TITLE_02, CURRENT_TIME, null, null, false, false, FOCUS_FIELD,
+                    PROGRAM_NAME, TITLE_02, CURRENT_TIME, null, null, false, false, false, FOCUS_FIELD,
                     null, navigation());
             UserResponse addResult = reporting(
                     UserResponse.MSG_ADD_SUCCESS_PREFIX + USER_ID
@@ -2391,16 +2392,16 @@ class UserResponseTest {
         @DisplayName("reports a successful update with its fields still populated, unlike add and "
                 + "delete which clear theirs")
         void reportsASuccessfulUpdateWithFieldsStillPopulated() {
-            UserResponse updateResult = new UserResponse(null, null, USER_ID, FIRST_NAME, LAST_NAME,
+            UserResponse updateResult = new UserResponse(null, null, null, USER_ID, FIRST_NAME, LAST_NAME,
                     USER_CODE, null, null, null, null, null, null,
                     UserResponse.MSG_UPDATE_SUCCESS_PREFIX + USER_ID
                             + UserResponse.MSG_UPDATE_SUCCESS_SUFFIX,
-                    null, false, true, null, null, null);
-            UserResponse addResult = new UserResponse(null, null, null, null, null, null, null, null,
+                    null, false, true, false, null, null, null);
+            UserResponse addResult = new UserResponse(null, null, null, null, null, null, null, null, null,
                     null, null, null, null,
                     UserResponse.MSG_ADD_SUCCESS_PREFIX + USER_ID
                             + UserResponse.MSG_ADD_SUCCESS_SUFFIX,
-                    null, false, true, null, null, null);
+                    null, false, true, false, null, null, null);
 
             assertThat(updateResult.userId()).isEqualTo(USER_ID);
             assertThat(updateResult.firstName()).isEqualTo(FIRST_NAME);

@@ -16,6 +16,8 @@
  */
 package com.carddemo.service;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -36,6 +38,7 @@ import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.PfKeyTranslator;
 
 /**
@@ -284,6 +287,39 @@ public final class CardListService {
     /** {@code LIT-THISMAP}, line 186. */
     private static final String LIT_THISMAP = "CCRDLIA";
 
+    // ==============================================================================================
+    // Header field widths and separators, from the moves at lines 647 to 664
+    // ==============================================================================================
+
+    /** {@code TRNNAME}, {@code PIC X(4)}: the width the transaction name is moved at, line 649. */
+    private static final int TRANSACTION_NAME_WIDTH = 4;
+
+    /** {@code PGMNAME}, {@code PIC X(8)}: the width the program name is moved at, line 650. */
+    private static final int PROGRAM_NAME_WIDTH = 8;
+
+    /** Width of each two-digit part of the header date and time, lines 654 to 662. */
+    private static final int HEADER_PART_WIDTH = 2;
+
+    /** Width of the four-digit year the two-digit header year is sliced out of. */
+    private static final int HEADER_FULL_YEAR_WIDTH = 4;
+
+    /**
+     * Start of the two-digit header year, zero-based.
+     *
+     * <p>The reference modification at line 656 is {@code WS-CURDATE-YEAR(3:2)}, and COBOL positions are
+     * one-based, so the third character is index two here.
+     */
+    private static final int HEADER_YEAR_FROM = 2;
+
+    /** End of the two-digit header year, exclusive. */
+    private static final int HEADER_YEAR_TO = 4;
+
+    /** Separator of the header date, {@code MM/DD/YY}, assembled at lines 654 to 658. */
+    private static final String HEADER_DATE_SEPARATOR = "/";
+
+    /** Separator of the header time, {@code HH:MM:SS}, assembled at lines 660 to 664. */
+    private static final String HEADER_TIME_SEPARATOR = ":";
+
     /**
      * The standard-user code, from the condition name {@code CDEMO-USRTYP-USER} of
      * {@code app/cpy/COCOM01Y.cpy}, which this member copies at line 227. Assigned unconditionally at
@@ -527,27 +563,39 @@ public final class CardListService {
     private final AbendService abendService;
 
     /**
+     * Stands in for {@code FUNCTION CURRENT-DATE} at lines 645 and 652.
+     *
+     * <p>Injected rather than read from the system default so the header this screen stamps is
+     * reproducible under test, which is the same arrangement the card-detail screen uses for the same
+     * paragraph.
+     */
+    private final Clock clock;
+
+    /**
      * Creates the service.
      *
      * @param cardRepository        the card persistence gateway, browsed through its inherited paged
      *                              {@code findAll} only; must not be {@code null}
-     * @param messageCatalogService the common message catalogue, sole source of the invalid-key text;
-     *                              must not be {@code null}
+     * @param messageCatalogService the common message catalogue, source of the invalid-key text and of
+     *                              the two screen titles; must not be {@code null}
      * @param navigationService     the route resolver, sole owner of the destination table; must not
      *                              be {@code null}
      * @param abendService          the diagnostic and abend gateway; must not be {@code null}
+     * @param clock                 the clock the screen header reads; must not be {@code null}
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public CardListService(final CardRepository cardRepository,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
-            final AbendService abendService) {
+            final AbendService abendService,
+            final Clock clock) {
         this.cardRepository = Objects.requireNonNull(cardRepository, "cardRepository must not be null");
         this.messageCatalogService =
                 Objects.requireNonNull(messageCatalogService, "messageCatalogService must not be null");
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
         this.abendService = Objects.requireNonNull(abendService, "abendService must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     // ==============================================================================================
@@ -896,6 +944,31 @@ public final class CardListService {
     }
 
     /**
+     * The screen header, as {@code 1100-SCREEN-INIT} stamps it at lines 642 to 664.
+     *
+     * <p>Declared here and produced by the turn rather than assembled above this layer, for the same
+     * reason the card-detail screen declares its own: the header is what one translated paragraph writes,
+     * and splitting one paragraph's output across two layers would leave neither able to be checked
+     * against the source. The two clock readings the source takes, at lines 645 and 652, are taken once
+     * here; the source uses only the second, so the duplicate statement is documented rather than
+     * reproduced.
+     *
+     * @param title01         {@code CCDA-TITLE01}, moved at line 647 at its catalogue width
+     * @param title02         {@code CCDA-TITLE02}, moved at line 648 at its catalogue width
+     * @param transactionName {@code TRNNAMEO}, moved at line 649
+     * @param programName     {@code PGMNAMEO}, moved at line 650
+     * @param currentDate     {@code CURDATEO} as {@code MM/DD/YY}, assembled at lines 654 to 658
+     * @param currentTime     {@code CURTIMEO} as {@code HH:MM:SS}, assembled at lines 660 to 664
+     */
+    public record ScreenHeader(String title01,
+                               String title02,
+                               String transactionName,
+                               String programName,
+                               String currentDate,
+                               String currentTime) {
+    }
+
+    /**
      * One row of the seven-row screen table declared at lines 252 to 260 of
      * {@code app/cbl/COCRDLIC.cbl}, carrying the three fields the browse stores at lines 1165 to 1171
      * on the forward path and 1338 to 1344 on the backward one.
@@ -1001,6 +1074,9 @@ public final class CardListService {
      * @param navigationContext the navigation state as this turn leaves it, ready to be echoed back
      * @param reArmedTransactionId the transaction the source re-arms at line 616, so the client knows
      *     which transaction its next call continues
+     * @param header the header this turn stamped, being the whole output of {@code 1100-SCREEN-INIT}
+     *     apart from the page indicator, which the paging state already carries. Always supplied,
+     *     because the source stamps the header on every transmitted screen
      * @param rows the accepted card rows, at most seven and possibly none. In screen order in both
      *     paging directions: on the backward path this is the <em>reverse</em> of the read order,
      *     because the source reads descending and fills slots upward from the seventh. Unmodifiable
@@ -1027,10 +1103,17 @@ public final class CardListService {
      *     source's decoration applies and therefore the gate that makes field detail conditional
      * @param selectedRowIndex {@code I-SELECTED} of lines 92 to 94: the 1-based slot the operator
      *     chose, or zero when none was chosen. Zero is the source's own initial value from line 1097
+     * @param lastPageAlreadyShown {@code WS-CA-LAST-PAGE-DISPLAYED} as this turn leaves it, lines 239
+     *     to 241. Reported because it is retained paging state that the next turn's message rule at
+     *     lines 905 to 916 reads, and it is the one of the three retained paging fields that the paging
+     *     state cannot express: the page indicator is its displayed page number and whether a further
+     *     page exists is its more-pages flag, but whether the operator has <em>already been told</em>
+     *     they are at the end is a memory of a previous turn and is derivable from nothing in this one
      */
     public record CardListResult(NavigationService.Route route,
                                  ScreenNavigationState navigationContext,
                                  String reArmedTransactionId,
+                                 ScreenHeader header,
                                  List<CardListRow> rows,
                                  BrowseWindow pageMetadata,
                                  String infoMessage,
@@ -1040,7 +1123,8 @@ public final class CardListService {
                                  String focusField,
                                  boolean errorFlag,
                                  boolean reEntry,
-                                 int selectedRowIndex) {
+                                 int selectedRowIndex,
+                                 boolean lastPageAlreadyShown) {
 
         /**
          * Replaces the three lists with unmodifiable copies and leaves every other component exactly
@@ -1224,6 +1308,24 @@ public final class CardListService {
         /** {@code WS-CA-LAST-CARD-NUM}, line 231: the key a forward browse restarts from. */
         private String caLastCardNumber = NO_MESSAGE;
 
+        /** {@code TITLE01O}, line 647: the first catalogue title the header carries. */
+        private String title01 = NO_MESSAGE;
+
+        /** {@code TITLE02O}, line 648: the second catalogue title the header carries. */
+        private String title02 = NO_MESSAGE;
+
+        /** {@code TRNNAMEO}, line 649: this transaction's own name, at its map width. */
+        private String transactionName = NO_MESSAGE;
+
+        /** {@code PGMNAMEO}, line 650: this member's own name, at its map width. */
+        private String programName = NO_MESSAGE;
+
+        /** {@code CURDATEO}, line 658: the header date as {@code MM/DD/YY}. */
+        private String currentDate = NO_MESSAGE;
+
+        /** {@code CURTIMEO}, line 664: the header time as {@code HH:MM:SS}. */
+        private String currentTime = NO_MESSAGE;
+
         /** {@code WS-CA-SCREEN-NUM}, lines 237 to 238: the page indicator the screen displays. */
         private int caScreenNumber;
 
@@ -1372,6 +1474,7 @@ public final class CardListService {
                 state.route,
                 state.navigationContext,
                 LIT_THISTRANID,
+                assembleScreenHeader(state),
                 assembleRows(state),
                 assembleBrowseWindow(state),
                 state.infoMessage,
@@ -1381,7 +1484,8 @@ public final class CardListService {
                 state.focusField,
                 state.inputError,
                 state.reEntry,
-                state.selectedIndex);
+                state.selectedIndex,
+                state.caLastPageShown);
     }
 
     // ==============================================================================================
@@ -1686,23 +1790,101 @@ public final class CardListService {
     /**
      * {@code 1100-SCREEN-INIT}, lines 642 to 671: clears the outbound map and stamps the header.
      *
-     * <p>Most of what this paragraph writes is presentation state that the response mapper above this
-     * layer owns rather than the turn's outcome: the two screen titles at lines 647 to 648, the
-     * transaction and program names at lines 649 to 650, and the current date and time assembled at
-     * lines 645 and 652 to 664. None of those is reproduced here, and no clock is injected to
-     * manufacture them, because a service that invented a timestamp would be asserting a value the
-     * screen contract says belongs to the moment of rendering.
+     * <p>Every move the paragraph makes is reproduced. The two catalogue titles at lines 647 to 648, the
+     * transaction and program names at lines 649 to 650 and the date and time assembled at lines 652 to
+     * 664 are stamped into the turn's header, the page indicator moved at line 667 is reported as the
+     * displayed page number, and the advisory message cleared at lines 669 to 671 is cleared here.
+     * Clearing the advisory is load bearing, because the message paragraph's own arm at line 917 tests
+     * whether it is still blank.
      *
-     * <p>What <em>is</em> reproduced is the state the turn's outcome depends on: the page indicator
-     * moved at line 667, which is reported as the displayed page number, and the advisory message
-     * cleared at lines 669 to 671. Clearing the advisory here is load bearing, because the message
-     * paragraph's own arm at line 917 tests whether it is still blank.
+     * <p>The header is produced here rather than above this layer because it is the output of one
+     * translated paragraph, and a paragraph whose output is split across two layers can be checked
+     * against the source from neither. The card-detail screen translates the same paragraph the same way,
+     * so the two card screens stamp their headers by one mechanism rather than two. The clock is injected
+     * for the same reason it is there, which is that a rendered timestamp has to be reproducible under
+     * test.
+     *
+     * <p>The source reads the current date twice, at lines 645 and 652, and uses only the second reading.
+     * One reading is taken here: a second would be a redundant call on the same clock and could differ
+     * from the first across a second boundary, which the legacy could equally suffer. The duplicate
+     * statement is documented rather than reproduced.
      *
      * @param state the turn's working storage
      */
     private void screenInit(final TurnState state) {
+        // MOVE CCDA-TITLE01 and CCDA-TITLE02 at lines 647 to 648, at their catalogue widths.
+        state.title01 = this.messageCatalogService.screenTitle01();
+        state.title02 = this.messageCatalogService.screenTitle02();
+
+        // MOVE LIT-THISTRANID and LIT-THISPGM at lines 649 to 650.
+        state.transactionName = headerField(LIT_THISTRANID, TRANSACTION_NAME_WIDTH);
+        state.programName = headerField(LIT_THISPGM, PROGRAM_NAME_WIDTH);
+
+        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 652.
+        final LocalDateTime now = LocalDateTime.now(this.clock);
+        final String fullYear = headerNumber(now.getYear(), HEADER_FULL_YEAR_WIDTH);
+
+        // Lines 654 to 658: MM/DD/YY, with the year taken as WS-CURDATE-YEAR(3:2) at line 656.
+        state.currentDate = headerNumber(now.getMonthValue(), HEADER_PART_WIDTH)
+                + HEADER_DATE_SEPARATOR
+                + headerNumber(now.getDayOfMonth(), HEADER_PART_WIDTH)
+                + HEADER_DATE_SEPARATOR
+                + fullYear.substring(HEADER_YEAR_FROM, HEADER_YEAR_TO);
+
+        // Lines 660 to 664: HH:MM:SS.
+        state.currentTime = headerNumber(now.getHour(), HEADER_PART_WIDTH)
+                + HEADER_TIME_SEPARATOR
+                + headerNumber(now.getMinute(), HEADER_PART_WIDTH)
+                + HEADER_TIME_SEPARATOR
+                + headerNumber(now.getSecond(), HEADER_PART_WIDTH);
+
         state.infoMessage = NO_MESSAGE;
         screenInitExit();
+    }
+
+    /**
+     * Renders a header literal at the width its map field declares, as a fixed-width move does.
+     *
+     * <p>A shorter value is space filled on the right and a longer one truncated on the right, which is
+     * what a {@code MOVE} into an alphanumeric field of that width does. Neither case arises for the two
+     * literals this screen moves - both are already exactly their field's width - so this bounds the
+     * values rather than transforming them, and it is here so that a renamed literal cannot silently
+     * change a header field's width.
+     *
+     * @param value the literal being moved, never {@code null} at any call site here
+     * @param width the receiving field's declared width
+     * @return the value at exactly {@code width} characters
+     */
+    private static String headerField(final String value, final int width) {
+        if (value.length() == width) {
+            return value;
+        }
+        if (value.length() > width) {
+            return value.substring(0, width);
+        }
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * Renders one numeric header part zero filled on the left, as a move into {@code PIC 9(n)} does.
+     *
+     * @param value the reading taken from the clock, never negative at any call site here
+     * @param width the receiving field's declared width
+     * @return the value at exactly {@code width} digits
+     */
+    private static String headerNumber(final int value, final int width) {
+        return CobolStringUtils.rightJustifyZeroFill(Integer.toString(Math.abs(value)), width);
+    }
+
+    /**
+     * The header the turn stamped, gathered out of the working storage the init paragraph wrote.
+     *
+     * @param state the turn's working storage
+     * @return the header, never {@code null}
+     */
+    private static ScreenHeader assembleScreenHeader(final TurnState state) {
+        return new ScreenHeader(state.title01, state.title02, state.transactionName,
+                state.programName, state.currentDate, state.currentTime);
     }
 
     /** {@code 1100-SCREEN-INIT-EXIT}, lines 674 to 676: the {@code EXIT.} statement. A documented no-op. */

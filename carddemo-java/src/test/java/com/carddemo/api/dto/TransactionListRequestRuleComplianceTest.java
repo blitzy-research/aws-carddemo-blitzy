@@ -491,7 +491,7 @@ class TransactionListRequestRuleComplianceTest {
         @DisplayName("every component round-trips through its own accessor unchanged")
         void everyComponentRoundTripsThroughItsAccessor() {
             final PageMetadata.PageCursorRequest cursor = new PageMetadata.PageCursorRequest(
-                    TRANSACTION_ID, null, PageMetadata.PagingDirection.FORWARD);
+                    TRANSACTION_ID, null, PageMetadata.PagingDirection.FORWARD, null, false);
             final TransactionListRequest request = aRequest(TRANSACTION_ID, "00000001",
                     List.of("S"), KeyAction.PFK08, NavigationContext.empty(), cursor);
 
@@ -500,7 +500,11 @@ class TransactionListRequestRuleComplianceTest {
             assertThat(request.rowSelectors()).containsExactly("S");
             assertThat(request.keyAction()).isEqualTo(KeyAction.PFK08);
             assertThat(request.navigationContext()).isEqualTo(NavigationContext.empty());
-            assertThat(request.pageMetadata()).isEqualTo(cursor);
+            // The retained page number reaches the paging carrier, which is where the screen reads it
+            // from, so the carrier the request answers is the supplied one plus that value.
+            assertThat(request.pageMetadata()).isEqualTo(new PageMetadata.PageCursorRequest(
+                    TRANSACTION_ID, null, PageMetadata.PagingDirection.FORWARD, "00000001", false));
+            assertThat(request.pageMetadata().retainedPageNumber()).isEqualTo(1);
         }
 
         @Test
@@ -555,7 +559,7 @@ class TransactionListRequestRuleComplianceTest {
             final PageMetadata.PageCursorRequest overWidthCursor =
                     new PageMetadata.PageCursorRequest(
                             "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH + 1), null,
-                            PageMetadata.PagingDirection.FORWARD);
+                            PageMetadata.PagingDirection.FORWARD, null, false);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator()
@@ -574,7 +578,7 @@ class TransactionListRequestRuleComplianceTest {
             final PageMetadata.PageCursorRequest atBound = new PageMetadata.PageCursorRequest(
                     "X".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH),
                     "Y".repeat(PageMetadata.CURSOR_KEY_MAX_LENGTH),
-                    PageMetadata.PagingDirection.BACKWARD);
+                    PageMetadata.PagingDirection.BACKWARD, null, false);
 
             try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
                 assertThat(factory.getValidator()
@@ -635,7 +639,7 @@ class TransactionListRequestRuleComplianceTest {
             final String rendered = aRequest(TRANSACTION_ID, "00000001", List.of("S"),
                     KeyAction.PFK07, null,
                     new PageMetadata.PageCursorRequest(TRANSACTION_ID, null,
-                            PageMetadata.PagingDirection.FORWARD)).toString();
+                            PageMetadata.PagingDirection.FORWARD, null, false)).toString();
 
             assertThat(rendered).startsWith("TransactionListRequest[");
             assertThat(rendered).contains("transactionIdFilter=" + REDACTION_PLACEHOLDER,
@@ -725,7 +729,7 @@ class TransactionListRequestRuleComplianceTest {
             final TransactionListRequest original = aRequest(TRANSACTION_ID, "00000002",
                     List.of(" ", "S"), KeyAction.PFK08, NavigationContext.empty().withReEntry(),
                     new PageMetadata.PageCursorRequest(TRANSACTION_ID, null,
-                            PageMetadata.PagingDirection.BACKWARD));
+                            PageMetadata.PagingDirection.BACKWARD, null, false));
 
             final TransactionListRequest returned = mapper.readValue(
                     mapper.writeValueAsString(original), TransactionListRequest.class);

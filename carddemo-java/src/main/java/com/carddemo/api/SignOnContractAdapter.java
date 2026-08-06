@@ -85,7 +85,11 @@ public final class SignOnContractAdapter {
                 screen.focusScreenFieldId(),
                 screen.route() == null ? null : screen.route().getRouteValue(),
                 navigationContextFor(screen),
-                screen.userId(),
+                // The map's safe output echo, not the authenticated identity: a redisplayed screen has to
+                // restate the identifier the operator keyed, and on a rejected turn there is no
+                // authenticated identity to publish. The service carries the two apart for exactly this
+                // reason, and reading the wrong one here is what left every rejection's echo empty.
+                screen.displayUserId(),
                 screen.userTypeCode(),
                 SignOnResponse.TRANSACTION_NAME,
                 SignOnResponse.PROGRAM_NAME,

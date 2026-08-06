@@ -132,7 +132,7 @@ class AccountViewResponseRuleComplianceTest {
                 new BigDecimal("50.00"), "000000011", "123-45-6789", "1980-06-30", "720", "JOHN",
                 "Q", "PUBLIC", "1 MAIN ST", "NY", "APT 2", "10001", "NEW YORK", "USA",
                 "212-555-0100", "DL-987654321", "212-555-0101", "EFT0000001", "Y",
-                "Displaying account", null, false, "ACCTSID", "account-view",
+                "Displaying account", null, false, List.of(), "ACCTSID", "account-view",
                 NavigationContext.empty());
     }
 
@@ -163,7 +163,7 @@ class AccountViewResponseRuleComplianceTest {
                 ficoScore, null, null, null, null,
                 null, null, null, null, null,
                 null, null, null, null, null,
-                null, null, false, null, null,
+                null, null, false, List.of(), null, null,
                 null);
     }
 
@@ -189,8 +189,8 @@ class AccountViewResponseRuleComplianceTest {
     class TheDeclaredShapeInScreenOrder {
 
         @Test
-        @DisplayName("the response declares forty-one components in the map's own field order")
-        void theResponseDeclaresFortyOneComponentsInMapOrder() {
+        @DisplayName("the response declares forty-two components in the map's own field order")
+        void theResponseDeclaresFortyTwoComponentsInMapOrder() {
             final List<String> declared =
                     Arrays.stream(AccountViewResponse.class.getRecordComponents())
                             .map(RecordComponent::getName).toList();
@@ -203,8 +203,9 @@ class AccountViewResponseRuleComplianceTest {
                     "lastName", "addressLine1", "stateCode", "addressLine2", "zipCode", "city",
                     "countryCode", "phoneNumber1", "governmentIssuedId", "phoneNumber2",
                     "eftAccountId", "primaryCardHolderIndicator", "infoMessage", "errorMessage",
-                    "inputError", "focusScreenFieldId", "nextRoute", "navigationContext");
-            assertThat(declared).hasSize(41);
+                    "inputError", "fieldErrors", "focusScreenFieldId", "nextRoute",
+                    "navigationContext");
+            assertThat(declared).hasSize(42);
         }
 
         @Test

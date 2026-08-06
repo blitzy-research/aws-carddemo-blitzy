@@ -36,7 +36,7 @@ import org.junit.jupiter.api.Test;
  * form, while still carrying every one of them on the wire.
  *
  * <p>This is the widest response in the module and the one carrying the most regulated data:
- * twenty-three of its forty-one components are withheld. They span four kinds of disclosure - durable
+ * twenty-three of its forty-two components are withheld. They span four kinds of disclosure - durable
  * record keys, monetary and credit-score data, personal identity including a tax identifier and a
  * government-issued identifier, and address and telephone data. A single accidental interpolation of
  * this object into a log line would disclose an identified person's full financial position, home
@@ -136,7 +136,7 @@ class AccountViewResponseSecurityTest {
                 CUSTOMER_ID, SSN, DATE_OF_BIRTH, FICO_SCORE, FIRST_NAME, MIDDLE_NAME, LAST_NAME,
                 ADDRESS_LINE_1, STATE_CODE, ADDRESS_LINE_2, ZIP_CODE, CITY, COUNTRY_CODE,
                 PHONE_NUMBER_1, GOVERNMENT_ISSUED_ID, PHONE_NUMBER_2, EFT_ACCOUNT_ID, "Y",
-                "INFORMATION LINE", "ERROR LINE", true, "ACCTSID", "route/next", navigation);
+                "INFORMATION LINE", "ERROR LINE", true, List.of(), "ACCTSID", "route/next", navigation);
     }
 
     /** The same response shape carrying entirely different regulated values. */
@@ -148,14 +148,14 @@ class AccountViewResponseSecurityTest {
                 new BigDecimal("0.02"), "GOLD001", new BigDecimal("0.03"), "111111111",
                 "000-00-0000", "2001-01-01", "300", "A", "B", "C", "X", "CA", "Y", "90210",
                 "LOS ANGELES", "CAN", "(555)000-0000", "CA-DL-000001", "(555)111-1111", "1",
-                "Y", "INFORMATION LINE", "ERROR LINE", true, "ACCTSID", "route/next", null);
+                "Y", "INFORMATION LINE", "ERROR LINE", true, List.of(), "ACCTSID", "route/next", null);
     }
 
     private static AccountViewResponse empty() {
         return new AccountViewResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, false, null, null, null);
+                null, null, null, null, null, null, null, null, null, false, List.of(), null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -384,7 +384,7 @@ class AccountViewResponseSecurityTest {
                     EFT_ACCOUNT_ID, "Y",
                     "Account " + ACCOUNT_ID + " not found in Cross ref file..",
                     "Account " + ACCOUNT_ID + " not found in Cross ref file..",
-                    true, "ACCTSID", "route/next", null);
+                    true, List.of(), "ACCTSID", "route/next", null);
 
             assertThat(notFound.toString())
                     .doesNotContain(ACCOUNT_ID)

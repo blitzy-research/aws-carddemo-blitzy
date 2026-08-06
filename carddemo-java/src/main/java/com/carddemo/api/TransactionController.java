@@ -37,11 +37,13 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.PositiveOrZero;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -202,6 +204,15 @@ public final class TransactionController {
 
     /** Tag value used when a turn resolved no route, which no current path does. */
     private static final String ROUTE_ABSENT = "none";
+
+    /**
+     * The first screen slot, one-based, as the legacy row loop counts them.
+     *
+     * <p>Named rather than written as a literal because it is the lower bound of the same slot range the
+     * selection loop at {@code app/cbl/COTRN00C.cbl} lines 148 to 182 walks, and an off-by-one here would
+     * shift every identifier in the continuation by one row.
+     */
+    private static final int FIRST_SCREEN_ROW = 1;
 
     /**
      * Width of the list screen's date column: eight characters.
@@ -415,13 +426,14 @@ public final class TransactionController {
         @ApiResponse(responseCode = "200",
                 description = "The turn completed and returns the displayed transaction page.")})
     public TransactionListResponse listTransactions(
-            @Valid @RequestBody final TransactionListRequest request) {
+            @Valid @RequestBody final TransactionListRequest request,
+            final Authentication authentication) {
         final TransactionListRequest.ScreenContinuation continuation =
                 request.continuation() == null
                         ? TransactionListRequest.ScreenContinuation.empty()
                         : request.continuation();
         return listTransactions(request, continuation.displayedTransactionIds(),
-                continuation.currentPageNumber(), continuation.nextPageAvailable());
+                continuation.currentPageNumber(), continuation.nextPageAvailable(), authentication);
     }
 
     @Operation(summary = "List or search transactions",
@@ -449,7 +461,8 @@ public final class TransactionController {
             @RequestParam(name = "currentPageNumber", required = false, defaultValue = "0")
                     @PositiveOrZero final int currentPageNumber,
             @RequestParam(name = "nextPageAvailable", required = false, defaultValue = "false")
-                    final boolean nextPageAvailable) {
+                    final boolean nextPageAvailable,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         String route = ROUTE_ABSENT;
@@ -459,7 +472,7 @@ public final class TransactionController {
                             new TransactionListService.TransactionListCommand(
                                     attentionKeyOrUnnamed(request.keyAction()),
                                     this.screenStateAdapter.toNavigationState(
-                                            request.navigationContext()),
+                                            request.navigationContext(), authentication),
                                     request.transactionIdFilter(),
                                     request.rowSelectors(),
                                     displayedTransactionIds,
@@ -470,7 +483,7 @@ public final class TransactionController {
             final String nextRoute =
                     (result.route() == null) ? null : result.route().getRouteValue();
             final TransactionListResponse body =
-                    toListResponse(result, request.rowSelectors(), nextRoute);
+                    toListResponse(result, request.rowSelectors(), nextRoute, authentication);
 
             outcome = outcomeOf(result.error());
             route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
@@ -540,7 +553,8 @@ public final class TransactionController {
             @RequestParam(name = "selectedTransactionId", required = false)
                     final String selectedTransactionId,
             @RequestParam(name = "keyAction", required = false) final KeyAction keyAction,
-            @Valid @RequestBody(required = false) final NavigationContext navigationContext) {
+            @Valid @RequestBody(required = false) final NavigationContext navigationContext,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         String route = ROUTE_ABSENT;
@@ -549,11 +563,12 @@ public final class TransactionController {
                     this.transactionViewService.viewTransaction(
                             new TransactionViewService.TransactionViewInput(transactionId,
                                     selectedTransactionId, keyAction,
-                                    this.screenStateAdapter.toNavigationState(navigationContext)));
+                                    this.screenStateAdapter.toNavigationState(navigationContext,
+                                            authentication)));
 
             final String nextRoute =
                     (result.route() == null) ? null : result.route().getRouteValue();
-            final TransactionViewResponse body = toViewResponse(result, nextRoute);
+            final TransactionViewResponse body = toViewResponse(result, nextRoute, authentication);
 
             outcome = outcomeOf(result.errorFlag());
             route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
@@ -621,7 +636,8 @@ public final class TransactionController {
     public TransactionAddResponse addTransaction(
             @Valid @RequestBody final TransactionAddRequest request,
             @RequestParam(name = "selectedTransaction", required = false)
-                    final String selectedTransaction) {
+                    final String selectedTransaction,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         String route = ROUTE_ABSENT;
@@ -646,11 +662,11 @@ public final class TransactionController {
                                     selectedTransaction,
                                     request.keyAction(),
                                     this.screenStateAdapter.toNavigationState(
-                                            request.navigationContext())));
+                                            request.navigationContext(), authentication)));
 
             final String nextRoute =
                     (result.route() == null) ? null : result.route().getRouteValue();
-            final TransactionAddResponse body = toAddResponse(result, nextRoute);
+            final TransactionAddResponse body = toAddResponse(result, nextRoute, authentication);
 
             outcome = addOutcome(result);
             route = Objects.requireNonNullElse(nextRoute, ROUTE_ABSENT);
@@ -708,11 +724,13 @@ public final class TransactionController {
     private TransactionListResponse toListResponse(
             final TransactionListService.TransactionListResult result,
             final List<String> submittedSelectors,
-            final String nextRoute) {
+            final String nextRoute,
+            final Authentication authentication) {
         final List<TransactionListResponse.TransactionRow> rows =
                 new ArrayList<>(result.rows().size());
         for (final TransactionListService.TransactionListRow row : result.rows()) {
             rows.add(new TransactionListResponse.TransactionRow(
+                    row.screenRow(),
                     selectorForRow(submittedSelectors, row.screenRow()),
                     row.tranId(),
                     listDateColumn(row.tranOrigTs()),
@@ -722,15 +740,21 @@ public final class TransactionController {
 
         final PageMetadata pageMetadata =
                 this.screenStateAdapter.toPageMetadata(result.pageMetadata());
+        final String displayedPageNumber =
+                (pageMetadata == null) ? null : pageMetadata.displayedPageNumber();
         return new TransactionListResponse(
                 rows,
                 pageMetadata,
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()),
+                toContinuation(result, pageMetadata, displayedPageNumber),
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication),
                 nextRoute,
                 result.transactionIdFilterEcho(),
-                (pageMetadata == null) ? null : pageMetadata.displayedPageNumber(),
+                displayedPageNumber,
                 result.message(),
                 result.error(),
+                toResponseFieldErrors(result.fieldErrors()),
+                result.selectedTransactionId(),
+                !result.eraseScreen(),
                 result.focusScreenFieldId(),
                 result.screenTitle01(),
                 result.screenTitle02(),
@@ -738,6 +762,45 @@ public final class TransactionController {
                 result.currentTime(),
                 result.transactionName(),
                 result.programName());
+    }
+
+    /**
+     * Builds the continuation the client echoes on its next turn.
+     *
+     * <p><strong>The identifier list is positional and has a fixed length.</strong> The next turn resolves
+     * a row selection by indexing this list with the slot the selector sits on - the loop at
+     * {@code app/cbl/COTRN00C.cbl} lines 148 to 182 walks slots one to ten and takes the identifier at
+     * that slot - so the list has to be ten entries long with a blank in every slot the browse did not
+     * fill. A list compacted to the populated rows would be shorter, every entry would sit at the wrong
+     * index whenever the page does not start at slot one, and a backward page - which the legacy fills
+     * downward from slot ten at line 349 - would resolve a selection to a different transaction than the
+     * one the operator marked. That is the difference between a client selecting what it saw and a client
+     * selecting something else.
+     *
+     * @param result the settled turn, whose rows carry their own slots
+     * @param pageMetadata the published paging state, or {@code null} when the turn produced none
+     * @param displayedPageNumber the page indicator the screen shows, or {@code null}
+     * @return the continuation, never {@code null}
+     */
+    private static TransactionListRequest.ScreenContinuation toContinuation(
+            final TransactionListService.TransactionListResult result,
+            final PageMetadata pageMetadata,
+            final String displayedPageNumber) {
+        final List<String> displayedIdentifiers =
+                new ArrayList<>(Collections.nCopies(PageMetadata.TRANSACTION_LIST_PAGE_SIZE, ""));
+        for (final TransactionListService.TransactionListRow row : result.rows()) {
+            final int slot = row.screenRow();
+            if (slot >= FIRST_SCREEN_ROW && slot <= PageMetadata.TRANSACTION_LIST_PAGE_SIZE) {
+                displayedIdentifiers.set(slot - 1, (row.tranId() == null) ? "" : row.tranId());
+            }
+        }
+        return new TransactionListRequest.ScreenContinuation(
+                (pageMetadata == null) ? null : pageMetadata.previousCursorKey(),
+                (pageMetadata == null) ? null : pageMetadata.nextCursorKey(),
+                (pageMetadata == null) ? null : pageMetadata.direction(),
+                displayedPageNumber,
+                pageMetadata != null && pageMetadata.hasMorePages(),
+                Collections.unmodifiableList(displayedIdentifiers));
     }
 
     /**
@@ -824,7 +887,8 @@ public final class TransactionController {
      * @return the transport response, never {@code null}
      */
     private TransactionViewResponse toViewResponse(
-            final TransactionViewService.TransactionViewResult result, final String nextRoute) {
+            final TransactionViewService.TransactionViewResult result, final String nextRoute,
+            final Authentication authentication) {
         final TransactionViewService.ScreenHeader header = Objects.requireNonNullElseGet(
                 result.header(),
                 () -> new TransactionViewService.ScreenHeader(null, null, null, null, null, null));
@@ -856,9 +920,10 @@ public final class TransactionController {
                 record.merchantZip(),
                 result.message(),
                 result.errorFlag(),
+                toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 nextRoute,
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
     }
 
     /**
@@ -882,7 +947,8 @@ public final class TransactionController {
      * @return the transport response, never {@code null}
      */
     private TransactionAddResponse toAddResponse(
-            final TransactionAddService.TransactionAddResult result, final String nextRoute) {
+            final TransactionAddService.TransactionAddResult result, final String nextRoute,
+            final Authentication authentication) {
         final TransactionAddService.ScreenFields screen = result.screen();
         final TransactionAddService.ScreenHeader header = result.header();
         final TransactionAddService.TransactionProjection written = result.transaction();
@@ -914,7 +980,7 @@ public final class TransactionController {
                 toResponseFieldErrors(result.fieldErrors()),
                 result.focusField(),
                 nextRoute,
-                this.screenStateAdapter.toNavigationContext(result.navigationContext()));
+                this.screenStateAdapter.toNavigationContext(result.navigationContext(), authentication));
     }
 
     /**

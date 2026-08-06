@@ -122,6 +122,33 @@ class OpenApiRouteContractTest {
             "409", OpenApiConfig.CONFLICT_RESPONSE,
             "500", OpenApiConfig.INTERNAL_SERVER_ERROR_RESPONSE);
 
+    /**
+     * The statuses that are reachable on a route carrying a request body, behind a credential, and
+     * addressing its record by a value in that body rather than by a path segment: a body can be refused
+     * before dispatch, a missing or insufficient credential is refused, and any handler can fail.
+     *
+     * <p>{@code 404} is deliberately absent. The screen routes answer an absent record with a message on
+     * the screen and status {@code 200}, exactly as the legacy transactions did, so publishing an
+     * absent-resource status against them would contradict the contract they exist to keep.
+     */
+    private static final Set<String> SECURED_SCREEN_STATUSES = Set.of("400", "401", "403", "500");
+
+    /** A secured screen route that also rewrites a record, and so can lose a version race. */
+    private static final Set<String> SECURED_WRITE_STATUSES = Set.of("400", "401", "403", "409", "500");
+
+    /** A secured route addressing its resource by a path segment, which may name nothing. */
+    private static final Set<String> SECURED_PATH_STATUSES = Set.of("400", "401", "403", "404", "500");
+
+    /**
+     * The reachable error statuses of every published operation.
+     *
+     * <p>This table is the whole point of the finding it pins: a customizer that attached the same six
+     * statuses to every operation advertised outcomes that cannot occur - an anonymous sign-on that
+     * answers {@code 401}, a screen route that answers {@code 404} - and a published outcome that cannot
+     * occur is a contract a client writes handling for and never exercises.
+     */
+    private static final Map<String, Set<String>> REACHABLE_ERRORS = reachableErrors();
+
     private static final Set<String> EXPECTED_OPERATIONS = Set.of(
             "POST " + AccountController.ACCOUNT_VIEW_PATH,
             "POST " + AccountController.ACCOUNT_UPDATE_PATH,
@@ -130,6 +157,9 @@ class OpenApiRouteContractTest {
             "POST " + AdminUserController.USERS_PATH + AdminUserController.UPDATE_SUBPATH,
             "POST " + AdminUserController.USERS_PATH + AdminUserController.DELETE_SUBPATH,
             "POST " + AuthController.SIGN_ON_PATH,
+            // First entry to the sign-on screen. Documented as a GET operation, and therefore mapped as
+            // one: a described operation the router does not publish is a contract a client cannot call.
+            "GET " + AuthController.SIGN_ON_PATH,
             "POST " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.LAUNCH_SUBPATH,
             "GET " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.EXECUTION_SUBPATH,
             "POST " + BillPaymentController.BILL_PAYMENT_PATH,
@@ -234,7 +264,7 @@ class OpenApiRouteContractTest {
     private MeterRegistry meterRegistry;
 
     @Test
-    @DisplayName("the served document publishes exactly nineteen typed operations and shared errors")
+    @DisplayName("the served document publishes exactly twenty typed operations and shared errors")
     void theServedDocumentPublishesTheCompleteTypedContract() throws Exception {
         final String payload = this.client.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())
@@ -246,14 +276,11 @@ class OpenApiRouteContractTest {
 
         assertThat(operations.keySet())
                 .containsExactlyInAnyOrderElementsOf(EXPECTED_OPERATIONS)
-                .hasSize(19);
+                .hasSize(20);
         operations.forEach((route, operation) -> {
             assertTypedSuccess(route, operation.path("responses").path("200"));
             assertTypedRequest(route, operation);
-            ERROR_RESPONSES.forEach((statusCode, component) ->
-                    assertThat(operation.path("responses").path(statusCode).path("$ref").asText())
-                            .as("%s response %s", route, statusCode)
-                            .isEqualTo("#/components/responses/" + component));
+            assertReachableErrorsOnly(route, operation);
         });
 
         assertThat(document.at("/components/schemas/ErrorResponse").isObject()).isTrue();
@@ -268,6 +295,89 @@ class OpenApiRouteContractTest {
                 .isEqualTo(OpenApiConfig.AUTHORIZATION_HEADER_REFERENCE);
         assertThat(document.at("/paths/~1api~1auth~1signon/post/security").isArray()).isTrue();
         assertThat(document.at("/paths/~1api~1auth~1signon/post/security").isEmpty()).isTrue();
+    }
+
+    @Test
+    @DisplayName("the anonymous sign-on operations publish no credential rejection, because a route that "
+            + "requires no credential cannot refuse one")
+    void theAnonymousOperationsPublishNoCredentialRejection() throws Exception {
+        final JsonNode document = servedDocument();
+
+        for (final String method : List.of("get", "post")) {
+            final JsonNode operation = document.at("/paths/~1api~1auth~1signon/" + method);
+
+            assertThat(operation.isObject()).as("%s sign-on is published", method).isTrue();
+            assertThat(operation.path("responses").path("401").isMissingNode())
+                    .as("%s sign-on advertises no 401", method)
+                    .isTrue();
+            assertThat(operation.path("responses").path("403").isMissingNode())
+                    .as("%s sign-on advertises no 403", method)
+                    .isTrue();
+            assertThat(operation.path("responses").path("500").path("$ref").asText())
+                    .as("%s sign-on can still fail, and says so", method)
+                    .isEqualTo("#/components/responses/"
+                            + OpenApiConfig.INTERNAL_SERVER_ERROR_RESPONSE);
+        }
+        assertThat(document.at("/paths/~1api~1auth~1signon/get/responses").properties())
+                .as("first entry takes no input, so nothing but the terminal failure is reachable")
+                .hasSize(2);
+    }
+
+    @Test
+    @DisplayName("a screen route publishes no absent-resource status, because it answers an absent record "
+            + "with a message on the screen and status 200, exactly as the legacy transaction did")
+    void aScreenRoutePublishesNoAbsentResourceStatus() throws Exception {
+        final JsonNode document = servedDocument();
+
+        for (final String route : List.of(AccountController.ACCOUNT_VIEW_PATH,
+                CardController.CARDS_BASE_PATH + CardController.CARD_DETAIL_PATH,
+                TransactionController.TRANSACTION_PATH + TransactionController.VIEW_PATH)) {
+            final JsonNode operation =
+                    document.at("/paths/" + route.replace("/", "~1") + "/post");
+
+            assertThat(operation.isObject()).as("%s is published", route).isTrue();
+            assertThat(operation.path("responses").path("404").isMissingNode())
+                    .as("%s answers absence on the screen, so it advertises no 404", route)
+                    .isTrue();
+            assertThat(operation.path("responses").path("200").isObject())
+                    .as("%s answers the screen, present record or not", route)
+                    .isTrue();
+        }
+        assertThat(document.at("/paths/" + (BatchJobController.BATCH_JOBS_PATH
+                + BatchJobController.EXECUTION_SUBPATH).replace("/", "~1")
+                + "/get/responses/404/$ref").asText())
+                .as("an operational route addressed by a path segment does publish one, so the rule "
+                        + "distinguishes the two rather than suppressing the status everywhere")
+                .isEqualTo("#/components/responses/" + OpenApiConfig.NOT_FOUND_RESPONSE);
+    }
+
+    @Test
+    @DisplayName("the published launch schema declares one property per parameter a registered job "
+            + "accepts, and names no generation or dataset the consolidation job resolves for itself")
+    void thePublishedLaunchSchemaDeclaresOnlyRealParameters() throws Exception {
+        final JsonNode properties =
+                servedDocument().at("/components/schemas/BatchJobLaunchRequest/properties");
+
+        final List<String> declared = properties.properties().stream()
+                .map(Map.Entry::getKey)
+                .toList();
+
+        assertThat(properties.isObject()).isTrue();
+        assertThat(declared)
+                .containsExactlyInAnyOrder("interestParmDate", "reportStartDate", "reportEndDate",
+                        "fileProbeMode");
+        assertThat(declared)
+                .as("a caller cannot be led to name an input the job reads from the store")
+                .doesNotContain("transactionBackupCurrentGeneration",
+                        "synthesizedTransactionCurrentGeneration");
+    }
+
+    private JsonNode servedDocument() throws Exception {
+        return this.objectMapper.readTree(this.client.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString());
     }
 
     private static Map<String, JsonNode> operationsOf(final JsonNode paths) {
@@ -304,5 +414,77 @@ class OpenApiRouteContractTest {
                             parameter.path("name").asText())
                     .isTrue();
         });
+    }
+
+    /**
+     * Asserts that the operation publishes exactly the error statuses it can reach - each of them
+     * referring to the one shared component for that status, and none of the others present at all.
+     *
+     * @param route     the method and path the operation is published under
+     * @param operation the operation node from the served document
+     */
+    private static void assertReachableErrorsOnly(final String route, final JsonNode operation) {
+        final Set<String> expected = REACHABLE_ERRORS.get(route);
+        assertThat(expected).as("%s is covered by the reachable-status table", route).isNotNull();
+
+        ERROR_RESPONSES.forEach((statusCode, component) -> {
+            final JsonNode declared = operation.path("responses").path(statusCode);
+            if (expected.contains(statusCode)) {
+                assertThat(declared.path("$ref").asText())
+                        .as("%s reaches %s and refers to the one shared component", route, statusCode)
+                        .isEqualTo("#/components/responses/" + component);
+            } else {
+                assertThat(declared.isMissingNode())
+                        .as("%s cannot reach %s, so it must not be advertised", route, statusCode)
+                        .isTrue();
+            }
+        });
+    }
+
+    /**
+     * Builds the reachable-status table, one entry per published operation.
+     *
+     * @return the statuses each route may answer with, never {@code null}
+     */
+    private static Map<String, Set<String>> reachableErrors() {
+        final Map<String, Set<String>> reachable = new LinkedHashMap<>();
+
+        // Anonymous: the two sign-on entries carry no credential, so neither can be refused for one.
+        // First entry takes no input at all, so it cannot even be refused before dispatch.
+        reachable.put("GET " + AuthController.SIGN_ON_PATH, Set.of("500"));
+        reachable.put("POST " + AuthController.SIGN_ON_PATH, Set.of("400", "500"));
+
+        // Addressed by a path segment, so an absent resource is reachable.
+        reachable.put("POST " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.LAUNCH_SUBPATH,
+                SECURED_PATH_STATUSES);
+        reachable.put("GET " + BatchJobController.BATCH_JOBS_PATH + BatchJobController.EXECUTION_SUBPATH,
+                SECURED_PATH_STATUSES);
+
+        // Rewrites a record under an optimistic version, so a lost race is reachable.
+        reachable.put("POST " + AccountController.ACCOUNT_UPDATE_PATH, SECURED_WRITE_STATUSES);
+        reachable.put("POST " + BillPaymentController.BILL_PAYMENT_PATH, SECURED_WRITE_STATUSES);
+        reachable.put("POST " + CardController.CARDS_BASE_PATH + CardController.CARD_UPDATE_PATH,
+                SECURED_WRITE_STATUSES);
+
+        // Every remaining route is a secured screen turn reading its record from the body.
+        List.of("POST " + AccountController.ACCOUNT_VIEW_PATH,
+                        "POST " + AdminUserController.USERS_PATH + AdminUserController.LIST_SUBPATH,
+                        "POST " + AdminUserController.USERS_PATH + AdminUserController.ADD_SUBPATH,
+                        "POST " + AdminUserController.USERS_PATH + AdminUserController.UPDATE_SUBPATH,
+                        "POST " + AdminUserController.USERS_PATH + AdminUserController.DELETE_SUBPATH,
+                        "POST " + CardController.CARDS_BASE_PATH + CardController.CARD_LIST_PATH,
+                        "POST " + CardController.CARDS_BASE_PATH + CardController.CARD_DETAIL_PATH,
+                        "POST " + MenuController.USER_MENU_PATH,
+                        "POST " + MenuController.ADMIN_MENU_PATH,
+                        "POST " + ReportController.REPORT_REQUEST_PATH,
+                        "POST " + TransactionController.TRANSACTION_PATH
+                                + TransactionController.LIST_PATH,
+                        "POST " + TransactionController.TRANSACTION_PATH
+                                + TransactionController.VIEW_PATH,
+                        "POST " + TransactionController.TRANSACTION_PATH
+                                + TransactionController.ADD_PATH)
+                .forEach(route -> reachable.put(route, SECURED_SCREEN_STATUSES));
+
+        return Map.copyOf(reachable);
     }
 }

@@ -35,6 +35,7 @@ import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
+import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -186,7 +187,7 @@ class TransactionValidationProcessorTest {
         });
         postingService = new TransactionPostingService(dailyTransactionRepository,
                 transactionRepository, accountRepository, cardCrossReferenceRepository,
-                categoryBalanceRepository, recordWriter, new AbendService(),
+                categoryBalanceRepository, recordWriter, new AbendService(), new PostingRecordTransactionBoundary(),
                 Clock.fixed(Instant.parse(FIXED_INSTANT), ZoneOffset.UTC));
         meterRegistry = new SimpleMeterRegistry();
         processor = new TransactionValidationProcessor(postingService, meterRegistry);
@@ -244,6 +245,7 @@ class TransactionValidationProcessorTest {
         Mockito.when(accountRepository.findById(ACCT)).thenReturn(Optional.of(acct));
         Mockito.when(accountRepository.rewritePostingBalances(
                         ArgumentMatchers.eq(ACCT),
+                        ArgumentMatchers.anyLong(),
                         ArgumentMatchers.any(BigDecimal.class),
                         ArgumentMatchers.any(BigDecimal.class),
                         ArgumentMatchers.any(BigDecimal.class)))
@@ -288,7 +290,7 @@ class TransactionValidationProcessorTest {
         ArgumentCaptor<BigDecimal> currentCycleCredit = ArgumentCaptor.forClass(BigDecimal.class);
         ArgumentCaptor<BigDecimal> currentCycleDebit = ArgumentCaptor.forClass(BigDecimal.class);
         Mockito.verify(accountRepository).rewritePostingBalances(ArgumentMatchers.eq(ACCT),
-                currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
+                ArgumentMatchers.anyLong(), currentBalance.capture(), currentCycleCredit.capture(), currentCycleDebit.capture());
         return account(currentBalance.getValue().toPlainString(), "99999.00",
                 currentCycleCredit.getValue().toPlainString(),
                 currentCycleDebit.getValue().toPlainString(), "2099-01-01");
@@ -652,6 +654,7 @@ class TransactionValidationProcessorTest {
                     .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
             inOrder.verify(accountRepository).rewritePostingBalances(
                     ArgumentMatchers.eq(ACCT),
+                    ArgumentMatchers.anyLong(),
                     ArgumentMatchers.any(BigDecimal.class),
                     ArgumentMatchers.any(BigDecimal.class),
                     ArgumentMatchers.any(BigDecimal.class));
@@ -672,6 +675,7 @@ class TransactionValidationProcessorTest {
             // The account was there when it was read and gone when it was rewritten.
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
@@ -690,6 +694,7 @@ class TransactionValidationProcessorTest {
             resolving(postableAccount());
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
@@ -714,6 +719,7 @@ class TransactionValidationProcessorTest {
             resolving(postableAccount());
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))

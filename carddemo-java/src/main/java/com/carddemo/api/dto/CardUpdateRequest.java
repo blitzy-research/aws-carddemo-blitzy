@@ -128,16 +128,18 @@ import jakarta.validation.constraints.Size;
  * from too. The constraint is scoped to that group alone and so is inert on the searching turn,
  * which leaves the ordered first-error-wins cascade described below exactly as it was.
  *
- * <p><strong>Neither of the two survives as a value the service may believe, and the concurrency
- * proof is what replaces the attribute byte.</strong> A protected attribute is a property of a
- * terminal and not of a JSON body. On the confirming turn the service therefore takes the owning
- * account and the expiry day from the sealed proof described below -
- * {@code com.carddemo.service.CardConcurrencyTokenService} verifies the proof and hands both values
- * back - and never from these components, which is what the legacy write does too when it moves the
- * account id from the work area at line 1463 and assembles the day from the guaranteed-unaltered dark
- * echo at line 1471. The two declarations above are how that is enforced at the boundary: the day is
- * non-bindable in every state, and the account id, which the searching turn still needs as its
- * filter, is required to be absent once {@link ConfirmSave} names the turn that writes.
+ * <p><strong>Neither of the two survives as a value the service may believe, and the sealed state is
+ * what replaces the attribute byte.</strong> A protected attribute is a property of a terminal and not
+ * of a JSON body. The owning account and the expiry day therefore come from the sealed state described
+ * below - {@code com.carddemo.service.CardConcurrencyTokenService} opens it and hands back the fetched
+ * image it carries - and never from these components, which is what the legacy write does too when it
+ * moves the account id from the work area at line 1463 and assembles the day from the
+ * guaranteed-unaltered dark echo at line 1471. The two declarations above are how that is enforced at
+ * the boundary: the day is non-bindable in every state, and the account id, which the searching turn
+ * still needs as its filter, is required to be absent once {@link ConfirmSave} names the turn that
+ * writes. {@link ConfirmSave} is evaluated by the boundary against the <em>opened</em> state rather
+ * than by the framework's default group, because which turn a submission stands on is knowable only
+ * from that state and never from the body.
  *
  * <p><strong>Identifiers and date parts are text, never numbers.</strong> The account id is eleven
  * characters and the card number sixteen, and both have contractual leading zeros and fixed external
@@ -260,13 +262,18 @@ import jakarta.validation.constraints.Size;
  * manager and the terminal never sees it. Echoed to a client it is no longer safe, so the proof is
  * opaque and integrity-protected rather than a readable version number or entity tag: a client can
  * return it and cannot read, edit, fabricate or reuse one minted for another card.
- * {@code com.carddemo.service.CardConcurrencyTokenService} mints it when the card is presented,
- * returns it on {@code CardUpdateResponse}, and verifies it before the update - raising the module's
- * optimistic-lock conflict, whose text is the legacy concurrency notice, when it is absent, altered or
- * no longer describes the stored record. It also hands back the two protected values it seals, so the
- * account id and the expiry day the service writes come from the proof rather than from this body.
- * Decision {@code DL-109} in {@code docs/decision-log.md} records this arrangement and the
- * stale-update parity requirement that makes carrying a proof mandatory rather than optional.
+ * {@code com.carddemo.service.CardConcurrencyTokenService} seals it with the state each turn settles on
+ * and the image that turn fetched, returns it on {@code CardUpdateResponse}, and opens it at the start
+ * of the next turn - raising the module's optimistic-lock conflict when it is present and cannot be
+ * authenticated. It carries the two protected values, so the account id and the expiry day the service
+ * writes come from the sealed state rather than from this body, and it carries the state machine's own
+ * position, so the arm a turn may reach is the arm the previous turn left it on rather than one a
+ * client asserted. An <em>absent</em> token is not a conflict: it is the genuine first turn, the
+ * zero-length communication area the legacy answers at line 388. A present one that cannot be opened is
+ * refused rather than downgraded to a first turn, because downgrading would let a client discard a state
+ * it disliked by corrupting a byte of it. Decision {@code DL-109} in {@code docs/decision-log.md}
+ * records this arrangement and the stale-update parity requirement that makes carrying sealed state
+ * mandatory rather than optional.
  *
  * <p><strong>The card entity's version column is a different check, not this one.</strong> The
  * provider's version check catches a change made between reading the record for update and writing it;

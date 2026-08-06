@@ -116,14 +116,14 @@ class TransactionViewResponseSecurityTest {
                 "01", "0005", "POS TERM  ", DESCRIPTION, AMOUNT,
                 "2022-07-19", "2022-07-20",
                 MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
-                "MESSAGE LINE", true, "TRNIDIN", "route/next", navigation);
+                "MESSAGE LINE", true, List.of(), "TRNIDIN", "route/next", navigation);
     }
 
     /** An entirely absent response, which the not-found path legitimately produces. */
     private static TransactionViewResponse empty() {
         return new TransactionViewResponse(
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, false, null, null, null);
+                null, null, null, null, null, null, null, false, List.of(), null, null, null);
     }
 
     private static int occurrencesOf(String haystack, String needle) {
@@ -242,7 +242,7 @@ class TransactionViewResponseSecurityTest {
                     "01", "0005", "POS TERM  ", "A MUCH LONGER DESCRIPTION THAN THE OTHER FIXTURE",
                     new BigDecimal("0.01"), "2022-07-19", "2022-07-20",
                     "111111111", "OTHER MERCHANT", "OTHER CITY", "99999-0000",
-                    "MESSAGE LINE", true, "TRNIDIN", "route/next", null);
+                    "MESSAGE LINE", true, List.of(), "TRNIDIN", "route/next", null);
             assertThat(other.toString()).isEqualTo(populated().toString());
         }
     }

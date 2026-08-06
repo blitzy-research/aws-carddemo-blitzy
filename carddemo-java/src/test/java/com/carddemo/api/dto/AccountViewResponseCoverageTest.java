@@ -56,7 +56,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>What is under test</h2>
  *
- * <p>The declared shape of the account-view response: its forty-one components and their order, the
+ * <p>The declared shape of the account-view response: its forty-two components and their order, the
  * thirty-three screen widths it bounds and the eight components it deliberately leaves unbounded, the
  * five monetary values, the decimal shape its constructor holds them to and the wire form they take,
  * the two derived projections over the raw status character, and which twenty-five of its components
@@ -93,7 +93,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * vocabulary genuinely reaches this screen in the legacy system. Neither changes what the raw
  * accessor returns, and that non-interference is asserted alongside the projections themselves.
  *
- * <h2>Twenty-five of the forty-one components are withheld from the diagnostic rendering</h2>
+ * <h2>Twenty-five of the forty-two components are withheld from the diagnostic rendering</h2>
  *
  * <p>This type declares a rendering of its own rather than accepting the generated one. It is the
  * widest disclosure in the estate - one instance joins an account row to its customer row, carrying a
@@ -141,7 +141,14 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("AccountViewResponse :: response contract of legacy transaction CAVW")
 class AccountViewResponseCoverageTest {
 
-    /** The forty-one components, in the order the record declares them. */
+    /**
+     * The two components that appear on the wire even when nothing was supplied for them, in declaration
+     * order: the rejection indicator, which is a primitive and so has no absent state, and the ordered
+     * finding list, which the canonical constructor normalises from {@code null} to an empty list.
+     */
+    private static final List<String> ALWAYS_WRITTEN_COMPONENTS = List.of("inputError", "fieldErrors");
+
+    /** The forty-two components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "transactionName",
             "title01",
@@ -181,6 +188,7 @@ class AccountViewResponseCoverageTest {
             "infoMessage",
             "errorMessage",
             "inputError",
+            "fieldErrors",
             "focusScreenFieldId",
             "nextRoute",
             "navigationContext");
@@ -229,6 +237,7 @@ class AccountViewResponseCoverageTest {
             "currentCycleCredit",
             "currentCycleDebit",
             "inputError",
+            "fieldErrors",
             "nextRoute",
             "navigationContext");
 
@@ -432,7 +441,7 @@ class AccountViewResponseCoverageTest {
                 text.get("primaryCardHolderIndicator"),
                 text.get("infoMessage"),
                 text.get("errorMessage"),
-                inputError,
+                inputError, List.of(),
                 text.get("focusScreenFieldId"),
                 text.get("nextRoute"),
                 navigation);
@@ -572,9 +581,9 @@ class AccountViewResponseCoverageTest {
             return size.max();
         }
 
-        /** The forty-one components appear in the documented order. */
+        /** The forty-two components appear in the documented order. */
         @Test
-        @DisplayName("declares forty-one components in the documented order")
+        @DisplayName("declares forty-two components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
             List<String> declared =
                     Arrays.stream(AccountViewResponse.class.getRecordComponents())
@@ -587,15 +596,15 @@ class AccountViewResponseCoverageTest {
         /** The thirty-seven map items occupy the first thirty-seven positions. */
         @Test
         @DisplayName("places the four non-map components last")
-        void theFourNonMapComponentsAreDeclaredLast() {
+        void theFiveNonMapComponentsAreDeclaredLast() {
             List<String> declared =
                     Arrays.stream(AccountViewResponse.class.getRecordComponents())
                             .map(RecordComponent::getName)
                             .toList();
 
-            assertThat(declared.subList(37, 41))
-                    .containsExactly(
-                            "inputError", "focusScreenFieldId", "nextRoute", "navigationContext");
+            assertThat(declared.subList(37, 42))
+                    .containsExactly("inputError", "fieldErrors", "focusScreenFieldId", "nextRoute",
+                            "navigationContext");
             assertThat(declared.subList(0, 37))
                     .as("the first thirty-seven components are the map's own value items")
                     .hasSize(37);
@@ -675,7 +684,7 @@ class AccountViewResponseCoverageTest {
 
             assertThat(partition).containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
             assertThat(BOUNDED_COMPONENTS).hasSize(33);
-            assertThat(UNBOUNDED_COMPONENTS).hasSize(8);
+            assertThat(UNBOUNDED_COMPONENTS).hasSize(9);
         }
 
         /**
@@ -841,7 +850,7 @@ class AccountViewResponseCoverageTest {
             assertThat(helper.getReturnType()).isEqualTo(void.class);
         }
 
-        /** Only the generated canonical constructor exists, taking all forty-one components. */
+        /** Only the generated canonical constructor exists, taking all forty-two components. */
         @Test
         @DisplayName("keeps only the generated canonical constructor")
         void onlyTheGeneratedCanonicalConstructorExists() {
@@ -1316,7 +1325,7 @@ class AccountViewResponseCoverageTest {
 
             assertThat(payload).contains("\"accountId\":\"" + ACCOUNT_ID + "\"");
             for (String component : EXPECTED_COMPONENTS) {
-                if (!"accountId".equals(component) && !"inputError".equals(component)) {
+                if (!"accountId".equals(component) && !ALWAYS_WRITTEN_COMPONENTS.contains(component)) {
                     assertThat(payload)
                             .as("absent component %s must be omitted", component)
                             .doesNotContain("\"" + component + "\"");
@@ -1324,14 +1333,22 @@ class AccountViewResponseCoverageTest {
             }
         }
 
-        /** An empty response carries only the indicator, which cannot be absent. */
+        /**
+         * An empty response carries only the two components that cannot be absent: the indicator, which is
+         * a primitive, and the ordered finding list, which the canonical constructor normalises from
+         * {@code null} to an empty list so that a clean screen is distinguishable from one whose findings
+         * were never established.
+         */
         @Test
-        @DisplayName("emits only the indicator when nothing is populated")
-        void anEmptyResponseCarriesOnlyTheIndicator() throws JsonProcessingException {
+        @DisplayName("emits only the indicator and the finding list when nothing is populated")
+        void anEmptyResponseCarriesOnlyTheAlwaysWrittenComponents() throws JsonProcessingException {
             JsonNode tree =
                     JsonContractSupport.declaredSettingsMapper().readTree(payloadOf(empty()));
 
-            assertThat(tree.fieldNames()).toIterable().containsExactly("inputError");
+            assertThat(tree.fieldNames()).toIterable()
+                    .containsExactlyElementsOf(ALWAYS_WRITTEN_COMPONENTS);
+            assertThat(tree.get("fieldErrors").isArray()).isTrue();
+            assertThat(tree.get("fieldErrors")).isEmpty();
         }
 
         /** Every identifier is emitted as text with its leading zeros intact. */
@@ -1701,6 +1718,7 @@ class AccountViewResponseCoverageTest {
                             withheld,
                             withheld,
                             "true",
+                            "[]",
                             FOCUS_SCREEN_FIELD_ID,
                             NEXT_ROUTE,
                             "null");
@@ -1785,7 +1803,7 @@ class AccountViewResponseCoverageTest {
             List<String> retained = new ArrayList<>(EXPECTED_COMPONENTS);
             retained.removeAll(WITHHELD_BY_THIS_TYPE);
 
-            assertThat(retained).hasSize(16);
+            assertThat(retained).hasSize(17);
             for (String component : retained) {
                 assertThat(rendered)
                         .as(

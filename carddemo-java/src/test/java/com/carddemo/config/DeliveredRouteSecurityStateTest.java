@@ -123,6 +123,9 @@ class DeliveredRouteSecurityStateTest {
      */
     private static final List<DeliveredRoute> DELIVERED_ROUTES = List.of(
             new DeliveredRoute(AuthController.SIGN_ON_PATH, "POST", SecurityState.PUBLIC, "CC00"),
+            // First entry to the same screen, on the same exempted path: the transaction is entered with no
+            // communication area, which over HTTP is a request with no body at all.
+            new DeliveredRoute(AuthController.SIGN_ON_PATH, "GET", SecurityState.PUBLIC, "CC00"),
             new DeliveredRoute(MenuController.USER_MENU_PATH, "POST", SecurityState.AUTHENTICATED, "CM00"),
             new DeliveredRoute(MenuController.ADMIN_MENU_PATH, "POST", SecurityState.ADMIN, "CA00"),
             new DeliveredRoute(AccountController.ACCOUNT_VIEW_PATH, "POST",
@@ -227,13 +230,13 @@ class DeliveredRouteSecurityStateTest {
         }
 
         @Test
-        @DisplayName("and the count is the nineteen operations the module delivers, which is the figure "
+        @DisplayName("and the count is the twenty operations the module delivers, which is the figure "
                 + "the published interface description also reports")
-        void andTheCountIsNineteen() {
-            assertThat(DELIVERED_ROUTES).hasSize(19);
+        void andTheCountIsTwenty() {
+            assertThat(DELIVERED_ROUTES).hasSize(20);
             assertThat(mappedOperationCount())
                     .as("read from the sources, so this is a measurement rather than a restatement")
-                    .isEqualTo(19L);
+                    .isEqualTo(20L);
         }
 
         @Test
@@ -270,12 +273,17 @@ class DeliveredRouteSecurityStateTest {
         }
 
         @Test
-        @DisplayName("and exactly one route is reachable without a credential, because it is the one that "
-                + "issues them")
-        void andExactlyOneRouteIsPublic() {
+        @DisplayName("and exactly one path is reachable without a credential, because it is the one that "
+                + "issues them - both of its operations are turns of the same sign-on screen")
+        void andExactlyOnePathIsPublic() {
+            // Asserted over DISTINCT paths rather than over operations. The exemption is a path rule, and
+            // the screen it exempts has two turns on that one path: the GET that serves first entry, which
+            // is the zero-length communication area, and the POST that serves a submitted turn. Counting
+            // operations here would report two and read as though a second surface had been exempted.
             assertThat(DELIVERED_ROUTES.stream()
                     .filter(route -> route.state() == SecurityState.PUBLIC)
                     .map(DeliveredRoute::path)
+                    .distinct()
                     .toList())
                     .containsExactly(AuthController.SIGN_ON_PATH);
         }

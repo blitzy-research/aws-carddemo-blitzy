@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -195,6 +196,7 @@ public final class AuthController {
      *
      * @return the blank first-entry screen
      */
+    @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     @SecurityRequirements
     @Operation(summary = "Initialize the CardDemo sign-on screen",
             description = "The first entry to legacy transaction CC00. Returns the cleared sign-on "
@@ -293,8 +295,13 @@ public final class AuthController {
             return ResponseEntity.ok(body);
         }
         // Only an admitted turn is issued a session. The service's own invariant guarantees that an
-        // admitted turn names both the operator and the resolved role, so neither argument can be absent.
-        final String token = this.sessionTokenIssuer.issue(screen.userId(), screen.userType());
+        // admitted turn names the operator, the resolved authority and the stored type code, so no
+        // argument can be absent. All three are passed: the resolved authority decides what the session
+        // permits, and the stored code is what a later currency check reconciles against the record. They
+        // are not the same value for a record whose code the estate never declared, and requiring them to
+        // be was what refused a session to an operator this very turn had just admitted.
+        final String token = this.sessionTokenIssuer.issue(
+                screen.userId(), screen.userType(), screen.userTypeCode());
         LOG.debug("Sign-on session issued: outcome=issued");
         return ResponseEntity.ok()
                 .header(HttpHeaders.AUTHORIZATION, SessionTokenIssuer.BEARER_PREFIX + token)

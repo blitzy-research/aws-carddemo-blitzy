@@ -30,6 +30,7 @@ import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -350,12 +351,15 @@ public class AdminUserController {
                 description = "The session does not carry the administrative authority.")})
     public ResponseEntity<UserResponse> listUsers(
             @Validated({Default.class, UserRequest.ListOperation.class})
-            @RequestBody final UserRequest request) {
+            @RequestBody final UserRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
             final UserResponse body = this.userContractAdapter.toResponse(
-                    this.userManagementService.listUsers(this.userContractAdapter.toCommand(request)));
+                    this.userManagementService.listUsers(
+                            this.userContractAdapter.toCommand(request, authentication)),
+                    authentication);
             outcome = outcomeOf(body);
             logCompletedTurn(LIST_TRANSACTION_ID, outcome);
             return ResponseEntity.ok(body);
@@ -401,12 +405,15 @@ public class AdminUserController {
                 description = "The session does not carry the administrative authority.")})
     public ResponseEntity<UserResponse> addUser(
             @Validated({Default.class, UserRequest.AddOperation.class})
-            @RequestBody final UserRequest request) {
+            @RequestBody final UserRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
             final UserResponse body = this.userContractAdapter.toResponse(
-                    this.userManagementService.addUser(this.userContractAdapter.toCommand(request)));
+                    this.userManagementService.addUser(
+                            this.userContractAdapter.toCommand(request, authentication)),
+                    authentication);
             outcome = outcomeOf(body);
             logCompletedTurn(ADD_TRANSACTION_ID, outcome);
             return ResponseEntity.ok(body);
@@ -424,9 +431,32 @@ public class AdminUserController {
      * presence cascade in <em>this</em> screen's order, identifier first, and then compares the four
      * mutable items against what was stored, reporting a distinct message when nothing changed.
      *
-     * <p>A credential that arrives unchanged is carried forward as the stored digest rather than
-     * re-hashed, since hashing a digest would lock the identity out. That reasoning lives in the
-     * service; this method neither reads nor compares a credential.
+     * <h2>The credential has three states on this screen, not two</h2>
+     *
+     * <p>The presence cascade tests {@code PASSWDI} for spaces or low values at
+     * {@code app/cbl/COUSR02C.cbl} L198-L203, which on a fixed-width map is a single test because the
+     * map item is always transmitted. Over JSON the item can also be <em>omitted</em>, and that is a
+     * third state the legacy map had no way to express. The three are distinguished deliberately:
+     *
+     * <ul>
+     *   <li><strong>Absent</strong> - the component is not present in the body at all. The credential is
+     *       unchanged: the stored digest is carried forward and is not re-hashed, because hashing a
+     *       digest would lock the identity out. No fault is reported and the cascade's credential clause
+     *       cannot fire. This is what lets an administrator amend a name without being made to retype,
+     *       or to know, the credential.</li>
+     *   <li><strong>Present but blank</strong> - the component is present and holds only spaces or is
+     *       empty. This is the legacy's own empty-item condition and is reported as a
+     *       {@code MISSING} field error carrying this screen's own text, with the cursor placed on the
+     *       credential item.</li>
+     *   <li><strong>Present and populated</strong> - the value is hashed and replaces the stored digest.
+     *       It is never compared against the stored digest for equality first, because each digest
+     *       carries its own salt and such a comparison would report every credential as changed.</li>
+     * </ul>
+     *
+     * <p>So the credential is <em>conditionally</em> required rather than required: mandatory once
+     * supplied, optional when withheld. The add screen differs and requires it outright, because a
+     * record being created has no stored digest to carry forward. All of that reasoning lives in the
+     * service; this method neither reads, compares nor hashes a credential.
      *
      * @param request the identifier to fetch or the amended record to store, the attention key and the
      *                echoed navigation context
@@ -439,11 +469,19 @@ public class AdminUserController {
             description = "One turn of legacy transaction CU02, administrator-only, covering both the "
                     + "retrieval and the rewrite halves of the screen as the legacy program did. "
                     + "Required items are reported in this screen's own order - user id, first name, "
-                    + "last name, password, user type - which differs from the add screen. A "
-                    + "submission that changes nothing is reported as such. An absent record and a "
-                    + "failed rewrite are screen messages, so this route answers 200 for every outcome "
-                    + "the legacy screen could compose. The credential is accepted inbound only and is "
-                    + "never returned.")
+                    + "last name, password, user type - which differs from the add screen, and only "
+                    + "the first of them is reported because the legacy cascade stops at its first "
+                    + "empty item. A submission that changes nothing is reported as such. An absent "
+                    + "record and a failed rewrite are screen messages, so this route answers 200 for "
+                    + "every outcome the legacy screen could compose. "
+                    + "The password is CONDITIONALLY required on this operation, which is three states "
+                    + "rather than two: omit the component entirely to leave the credential unchanged, "
+                    + "in which case the stored digest is carried forward and nothing is reported; "
+                    + "send it present but blank and it is reported as a missing field, which is the "
+                    + "legacy screen's own empty-item condition; send it populated and it is hashed and "
+                    + "replaces the stored digest. The add operation differs and requires it outright, "
+                    + "because a new record has no stored digest to carry forward. The credential is "
+                    + "accepted inbound only and is never returned.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The turn completed, carrying the retrieved record or the outcome "
@@ -456,12 +494,15 @@ public class AdminUserController {
                 description = "The session does not carry the administrative authority.")})
     public ResponseEntity<UserResponse> updateUser(
             @Validated({Default.class, UserRequest.UpdateOperation.class})
-            @RequestBody final UserRequest request) {
+            @RequestBody final UserRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
             final UserResponse body = this.userContractAdapter.toResponse(
-                    this.userManagementService.updateUser(this.userContractAdapter.toCommand(request)));
+                    this.userManagementService.updateUser(
+                            this.userContractAdapter.toCommand(request, authentication)),
+                    authentication);
             outcome = outcomeOf(body);
             logCompletedTurn(UPDATE_TRANSACTION_ID, outcome);
             return ResponseEntity.ok(body);
@@ -516,12 +557,15 @@ public class AdminUserController {
                 description = "The session does not carry the administrative authority.")})
     public ResponseEntity<UserResponse> deleteUser(
             @Validated({Default.class, UserRequest.DeleteOperation.class})
-            @RequestBody final UserRequest request) {
+            @RequestBody final UserRequest request,
+            final Authentication authentication) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         String outcome = OUTCOME_FAILED;
         try {
             final UserResponse body = this.userContractAdapter.toResponse(
-                    this.userManagementService.deleteUser(this.userContractAdapter.toCommand(request)));
+                    this.userManagementService.deleteUser(
+                            this.userContractAdapter.toCommand(request, authentication)),
+                    authentication);
             outcome = outcomeOf(body);
             logCompletedTurn(DELETE_TRANSACTION_ID, outcome);
             return ResponseEntity.ok(body);

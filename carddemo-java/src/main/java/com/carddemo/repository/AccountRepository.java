@@ -125,13 +125,32 @@ public interface AccountRepository extends JpaRepository<Account, String> {
 
     /**
      * Rewrites the three account balances changed by the posting program and advances the optimistic
-     * version in the same database statement.
+     * version in the same database statement, but only while the row still carries the version the
+     * caller read.
+     *
+     * <p><strong>Why the version is part of the predicate and not only of the assignment.</strong>
+     * Incrementing {@code version} while matching on the business key alone advances the counter without
+     * ever consulting it, which is the shape of a lost update: an online screen that read the same
+     * account, changed a balance and committed between this caller's read and this statement would have
+     * its write silently overwritten, and because the statement always matched exactly one row the
+     * caller could never learn that it had happened. Naming the read version in the predicate turns that
+     * case into a zero-row outcome, which the caller can then tell apart from a genuinely absent
+     * account - the legacy invalid-key condition - by asking whether the row exists at all. The
+     * statement is therefore a compare-and-set, and the version attribute now does the job the
+     * {@code @Version} declaration promises rather than being carried along as a counter.
+     *
+     * <p>Two callers of the same account inside one run are unaffected: the statement clears the
+     * persistence context, and the posting mainline re-reads the account for every record, so each
+     * record compares against the version its own read observed.
      *
      * @param accountId          the eleven-character account business key
+     * @param version            the optimistic version observed when the account was read
      * @param currentBalance     the new current balance
      * @param currentCycleCredit the new current-cycle credit total
      * @param currentCycleDebit  the new current-cycle debit total, retaining a negative sign
-     * @return one when the row was rewritten, or zero for the legacy invalid-key outcome
+     * @return one when the row was rewritten, or zero when no row carries that key at that version -
+     *     which is either the legacy invalid-key outcome or a lost version race, and the two are
+     *     distinguished by the caller
      */
     @Modifying(clearAutomatically = true)
     @Transactional
@@ -142,8 +161,10 @@ public interface AccountRepository extends JpaRepository<Account, String> {
                 a.acctCurrCycDebit = :currentCycleDebit,
                 a.version = a.version + 1
             WHERE a.acctId = :accountId
+              AND a.version = :version
             """)
     int rewritePostingBalances(@Param("accountId") String accountId,
+                               @Param("version") long version,
                                @Param("currentBalance") BigDecimal currentBalance,
                                @Param("currentCycleCredit") BigDecimal currentCycleCredit,
                                @Param("currentCycleDebit") BigDecimal currentCycleDebit);

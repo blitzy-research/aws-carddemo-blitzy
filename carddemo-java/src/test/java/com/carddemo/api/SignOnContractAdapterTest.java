@@ -97,7 +97,7 @@ class SignOnContractAdapterTest {
     private static AuthenticationService.SignOnScreen admitted(final UserType userType,
             final String rawUserTypeCode, final NavigationService.Route route) {
         return new AuthenticationService.SignOnScreen(AuthenticationService.Decision.ADMITTED,
-                USER_ID, userType, rawUserTypeCode, route, false, null,
+                USER_ID, USER_ID, userType, rawUserTypeCode, route, false, null,
                 MessageCatalogService.CCDA_TITLE01, MessageCatalogService.CCDA_TITLE02, DATE, TIME);
     }
 
@@ -113,8 +113,8 @@ class SignOnContractAdapterTest {
             final AuthenticationService.Decision decision,
             final boolean errorFlag,
             final String focusScreenFieldId) {
-        return new AuthenticationService.SignOnScreen(decision, null, null, null, null, errorFlag,
-                focusScreenFieldId, MessageCatalogService.CCDA_TITLE01,
+        return new AuthenticationService.SignOnScreen(decision, null, USER_ID, null, null, null,
+                errorFlag, focusScreenFieldId, MessageCatalogService.CCDA_TITLE01,
                 MessageCatalogService.CCDA_TITLE02, DATE, TIME);
     }
 
@@ -301,9 +301,23 @@ class SignOnContractAdapterTest {
             final SignOnResponse response = subject.toResponse(refused(decision, true, "USERID"));
 
             assertThat(response.navigationContext()).isNull();
-            assertThat(response.userId()).isNull();
             assertThat(response.userType()).isNull();
             assertThat(response.nextRoute()).isNull();
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = AuthenticationService.Decision.class, names = "ADMITTED",
+                mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("a turn that failed to admit still echoes the keyed identifier, because seven of the "
+                + "nine outcomes redisplay this screen and a client that cannot restate it makes the "
+                + "operator retype a value that was never in question")
+        void aRefusedTurnStillEchoesTheKeyedIdentifier(
+                final AuthenticationService.Decision decision) {
+            final SignOnResponse response = subject.toResponse(refused(decision, true, "USERID"));
+
+            // The echo comes from the turn's display component. It establishes nothing: the state, the
+            // role and the destination are all still absent, which the sibling case above asserts.
+            assertThat(response.userId()).isEqualTo(USER_ID);
         }
 
         @Test

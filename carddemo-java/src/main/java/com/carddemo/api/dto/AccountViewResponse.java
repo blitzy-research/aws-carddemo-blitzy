@@ -19,12 +19,22 @@ package com.carddemo.api.dto;
 import com.carddemo.domain.enums.AccountStatus;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 
 /**
  * Immutable, display-only account view response for legacy transaction {@code CAVW}: the thirty-seven
- * value items of symbolic map {@code app/cpy-bms/COACTVW.CPY} in map order, plus four response-only
- * components - the rejection flag, the field to focus, the next route and the echoed navigation state.
+ * value items of symbolic map {@code app/cpy-bms/COACTVW.CPY} in map order, plus five response-only
+ * components - the rejection flag, the ordered field-level detail behind it, the field to focus, the next
+ * route and the echoed navigation state.
+ *
+ * <p><strong>Why the flag alone was not enough.</strong> The transaction keeps two filter states, not one,
+ * and each of them holds three values rather than two: valid, not in order, and blank. The blank state is
+ * how the screen says a filter was never supplied, and the not-in-order state is how it says one was
+ * supplied and could not be used - a distinction the legacy makes visible with two different devices, a
+ * marker beside a blank field and a colour change on an unusable one. Collapsing both into one boolean and
+ * one message line loses which of the two filters was at fault and which of the two states it was in, so
+ * the ordered detail is published alongside the flag, in the order the transaction established it.
  *
  * <p>Display-only, so it validates nothing and alters nothing on the way out. Identifiers are text
  * rather than numbers so leading zeros survive; the five monetary values are exact decimals at the
@@ -156,6 +166,13 @@ public record AccountViewResponse(
 
         boolean inputError,
 
+        /* The field-level detail behind the flag above, in the order the transaction established it:
+         * the account filter first, then the customer filter. Never null; empty when the turn raised
+         * nothing. Two states, not one - the legacy screen distinguishes a filter that was left blank
+         * from one that was supplied and could not be used, and it distinguishes them with two
+         * different devices, so a single flag cannot carry both. */
+        List<ErrorResponse.FieldError> fieldErrors,
+
         @Size(max = 7) String focusScreenFieldId,
 
         String nextRoute,
@@ -168,6 +185,7 @@ public record AccountViewResponse(
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     public AccountViewResponse {
+        fieldErrors = (fieldErrors == null) ? List.of() : List.copyOf(fieldErrors);
         requireRecordShape("creditLimit", creditLimit);
         requireRecordShape("cashCreditLimit", cashCreditLimit);
         requireRecordShape("currentBalance", currentBalance);
@@ -241,6 +259,7 @@ public record AccountViewResponse(
                 + ", infoMessage=" + REDACTION_PLACEHOLDER
                 + ", errorMessage=" + REDACTION_PLACEHOLDER
                 + ", inputError=" + inputError
+                + ", fieldErrors=" + fieldErrors
                 + ", focusScreenFieldId=" + focusScreenFieldId
                 + ", nextRoute=" + nextRoute
                 + ", navigationContext=" + navigationContext

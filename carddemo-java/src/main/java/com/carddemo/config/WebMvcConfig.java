@@ -16,6 +16,13 @@
  */
 package com.carddemo.config;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.deser.DeserializationProblemHandler;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -277,6 +284,86 @@ public final class WebMvcConfig implements WebMvcConfigurer {
                     .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
                     .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail);
         });
+    }
+
+    /**
+     * Makes a body that declares itself closed genuinely closed, which the declaration cannot achieve
+     * alone.
+     *
+     * <p><strong>The defect this closes.</strong> The batch-launch body is annotated
+     * {@code @JsonIgnoreProperties(ignoreUnknown = false)} and its schema states that an unknown property
+     * is refused. Neither is true on its own: {@code @JsonIgnoreProperties(ignoreUnknown = false)} does
+     * not <em>enable</em> the check, it merely declines to suppress it, and the decision then falls to
+     * the mapper's {@code FAIL_ON_UNKNOWN_PROPERTIES} feature - which {@code application.yml} sets to
+     * {@code false} for the whole application. A misspelled property therefore bound silently, and a
+     * caller who wrote {@code interestParmDte} launched a job with no parameter at all rather than being
+     * told they had made a typing error. On a surface whose nine operations include one that clears the
+     * transaction master, silence is the wrong answer.
+     *
+     * <p><strong>Why the global setting stays as it is.</strong> Tolerating unknown properties is
+     * deliberate for the screen contracts: every one of them is derived from a 3270 map and a client
+     * echoing a whole screen back may legitimately carry a member a given operation does not read. That
+     * tolerance is a decision about the screen surface and is not withdrawn here. What is withdrawn is
+     * its application to the one body that is not a screen at all - a batch launch is an operational
+     * instruction with a closed parameter set, and every name in it is either one the addressed job
+     * declares or a mistake.
+     *
+     * <p><strong>Why a problem handler and not a per-type config override or a second mapper.</strong>
+     * Three mechanisms look like they would do this and two of them do not.
+     * {@code configOverride(...).setIgnorals(...)} sets the same switch the record's annotation already
+     * sets, so it changes nothing; the annotation was never the missing piece. Jackson publishes
+     * {@code FAIL_ON_UNKNOWN_PROPERTIES} as a mapper-wide feature with no per-type form, so it cannot be
+     * narrowed to one body. A second {@code ObjectMapper} would work and was rejected: it would have to
+     * be kept in step by hand with every {@code spring.jackson.*} setting - the plain-decimal generator,
+     * the non-null inclusion, the scalar coercions configured immediately above - and the first setting
+     * that drifted would silently change how a batch body reads. A problem handler is consulted
+     * <em>before</em> the mapper-wide feature decides, which is exactly the seam needed: one mapper, one
+     * stated exception, and every other type still bound by the global tolerance.
+     *
+     * <p><strong>Why the rule reads the declaration rather than naming the type.</strong> A handler that
+     * compared the target against one named class would leave a second closed body silently open, and
+     * would make this package depend on the boundary package the layering rule keeps it out of. Reading
+     * the type's own {@code @JsonIgnoreProperties} declaration avoids both: closure becomes a property a
+     * body states about itself, next to the schema text that promises it, and this configuration honours
+     * that statement without knowing which types make it. A type that declares nothing is untouched, and
+     * so is a type that declares {@code ignoreUnknown = true}.
+     *
+     * <p>The refusal arrives as an ordinary deserialisation failure, so it reaches
+     * {@link com.carddemo.api.GlobalExceptionHandler}'s unreadable-body arm and is answered {@code 400}
+     * with the neutral summary and no echo of the rejected name. The published schema is unchanged: the
+     * annotation on the record already says the body is closed, and this is what makes that statement
+     * true.
+     *
+     * @return an additive customiser that closes every self-declared closed body to unknown properties
+     *     and changes the binding of no other type
+     */
+    @Bean
+    public Jackson2ObjectMapperBuilderCustomizer declaredClosedBodyCustomizer() {
+        return builder -> builder.postConfigurer(mapper -> mapper.addHandler(
+                new DeserializationProblemHandler() {
+                    @Override
+                    public boolean handleUnknownProperty(final DeserializationContext context,
+                                                         final JsonParser parser,
+                                                         final JsonDeserializer<?> deserializer,
+                                                         final Object beanOrClass,
+                                                         final String propertyName)
+                            throws IOException {
+                        // The framework passes either the target type or a partially built instance of
+                        // it, depending on where in the bind the unknown name was met.
+                        final Class<?> target = (beanOrClass instanceof Class<?> declared)
+                                ? declared
+                                : beanOrClass.getClass();
+                        final JsonIgnoreProperties declaration =
+                                target.getAnnotation(JsonIgnoreProperties.class);
+                        if (declaration != null && !declaration.ignoreUnknown()) {
+                            throw UnrecognizedPropertyException.from(
+                                    parser, target, propertyName, null);
+                        }
+                        // Every other type keeps the module-wide tolerance: false means "not handled
+                        // here", which returns the decision to the global feature.
+                        return false;
+                    }
+                }));
     }
 
     /**
