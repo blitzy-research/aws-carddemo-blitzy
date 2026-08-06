@@ -364,7 +364,17 @@ public final class TransactionReportJobConfig {
     // Generation retention, as measured and as resolved. Stated, never enforced here.
     // -----------------------------------------------------------------------------------------------
 
-    /** Measured retention limit of the transaction backup generation base. */
+    /**
+     * Measured retention limit of the transaction backup generation base.
+     *
+     * <p>This base is shared with {@link BackupTransactionJobConfig}, which publishes to it under
+     * {@link StagedGenerationStore#STANDARD_RETENTION_LIMIT}. Both values are read from the same measured
+     * {@code LIMIT(5)} declaration and must therefore agree: retention depth is a property of the base,
+     * not of the job that happens to be publishing, so two publishers disagreeing about the depth would
+     * make the retained set depend on which job ran last. The agreement is asserted by test rather than
+     * collapsed into one reference, because the two constants record two independent measurements and a
+     * future divergence in the source must be resolved deliberately rather than silently inherited.
+     */
     public static final int TRANSACTION_BACKUP_GENERATION_LIMIT = 5;
 
     /** Measured retention limit of the filtered transaction generation base. */
@@ -553,8 +563,13 @@ public final class TransactionReportJobConfig {
                     + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
                     + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
+            // The default is READ FROM the backup job's own declaration rather than repeated here. Both
+            // jobs publish generations of this one base - this job's unload step and that job's archive
+            // step - and the base is the unit of retention counting, so two spellings of it would be two
+            // retention groups that only appeared to be one. A constant reference cannot drift.
             @Value("${carddemo.batch.transaction-report.transaction-backup-base:"
-                    + "AWS.M2.CARDDEMO.TRANSACT.BKUP}") final String transactionBackupBase,
+                    + BackupTransactionJobConfig.ARCHIVE_DATASET_BASE + "}")
+                    final String transactionBackupBase,
             @Value("${carddemo.batch.transaction-report.filtered-transaction-base:"
                     + "AWS.M2.CARDDEMO.TRANSACT.DALY}") final String filteredTransactionBase,
             @Value("${carddemo.batch.transaction-report.report-base:AWS.M2.CARDDEMO.TRANREPT}")

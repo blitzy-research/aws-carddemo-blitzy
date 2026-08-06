@@ -407,8 +407,16 @@ spring:
       region:
         static: ${carddemo.aws.region}
       credentials:
-        access-key: ${AWS_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
-        secret-key: ${AWS_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
+        # ONLY LOCALSTACK_* MAY OVERRIDE THESE. An earlier revision read the standard AWS_ACCESS_KEY_ID
+        # and AWS_SECRET_ACCESS_KEY names here, which inverted the very protection the note above
+        # describes: declaring a static pair does keep the SDK's default credential chain out of the
+        # picture, but reading that chain's own variable names to populate it hands the ambient value
+        # straight back in. A developer machine or a build agent holding a real key would then send that
+        # key - as an Authorization signature - to whatever the endpoint below resolves to. The emulator
+        # verifies nothing, so the leak would never surface as a failure. The dedicated names cannot be
+        # set by accident, which is the whole point of them, and application-local.yml already uses them.
+        access-key: ${LOCALSTACK_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}
+        secret-key: ${LOCALSTACK_SECRET_ACCESS_KEY:localstack-placeholder-not-a-real-secret}
       endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
       s3:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
@@ -658,3 +666,24 @@ carddemo:
     # on it - and a test that measures the exposition needs to be able to read the exposition. Nothing
     # else is opened. Production does not open this.
     anonymous-metrics-scrape: true
+    # -------------------------------------------------------------------------------------------
+    # OPERATOR CREDENTIAL FOR THE MANAGEMENT SURFACE. config/SecurityConfig matches the whole
+    # management base path with its own filter chain, permits exactly three anonymous paths - the
+    # aggregate health endpoint and its two probe groups - and requires the ROLE_MONITORING authority
+    # for everything else beneath it. That authority is held ONLY by a caller presenting this
+    # credential; neither of the two authorities a sign-on grants can satisfy it, which is the point:
+    # a collector is not a user of this application, and an ordinary signed-on cardholder must not be
+    # able to read per-endpoint latency, per-batch-step record counts, pool saturation or JVM
+    # internals.
+    #
+    # THIS VALUE IS A TEST LITERAL AND IS NOT A SECRET OF ANYTHING. A test that asserts the operator
+    # gate has to be able to satisfy it, and a test that asserts an ordinary token CANNOT satisfy it
+    # needs a configured credential to contrast against - an unconfigured surface refuses everyone and
+    # would prove nothing about the authority rule.
+    #
+    # Overridable by CARDDEMO_MANAGEMENT_TOKEN so a build agent can supply its own inert value. The
+    # setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no identity can
+    # hold the authority, so the surface admits nobody beyond the three probe paths. Production binds
+    # this to a bare environment reference with no fallback and is refused start-up without it.
+    management:
+      token: ${CARDDEMO_MANAGEMENT_TOKEN:test-only-management-token-not-used-outside-tests}

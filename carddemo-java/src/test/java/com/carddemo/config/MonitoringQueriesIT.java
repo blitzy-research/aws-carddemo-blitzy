@@ -36,6 +36,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.StreamSupport;
 
@@ -117,7 +118,12 @@ class MonitoringQueriesIT {
 
     private Path writePrometheusConfiguration(final int metricsPort) throws IOException {
         final Path configuration = this.temporaryDirectory.resolve("prometheus.yml");
-        Files.writeString(configuration, """
+        // Locale.ROOT is pinned because the port is rendered with %d into a file Prometheus parses. The
+        // shorthand String.formatted accepts no locale and would have taken its digits from the ambient
+        // default, so under a locale whose numbering system is not Latin the scrape target would have
+        // named a port number Prometheus cannot read - and the failure would have surfaced as a target
+        // that never came up rather than as a formatting defect.
+        Files.writeString(configuration, String.format(Locale.ROOT, """
                 global:
                   scrape_interval: 1s
                   evaluation_interval: 1s
@@ -127,7 +133,7 @@ class MonitoringQueriesIT {
                     static_configs:
                       - targets:
                           - host.testcontainers.internal:%d
-                """.formatted(metricsPort), StandardCharsets.UTF_8);
+                """, metricsPort), StandardCharsets.UTF_8);
         return configuration;
     }
 
@@ -217,17 +223,22 @@ class MonitoringQueriesIT {
 
         private void writeMetrics(final HttpExchange exchange) throws IOException {
             final long value = this.count.addAndGet(RECORDS_PER_SCRAPE);
-            final byte[] body = ("""
+            // Locale.ROOT is pinned because %d renders the sample value into an exposition body a real
+            // Prometheus scrapes. The shorthand String.formatted accepts no locale, so under a default
+            // locale whose numbering system is not Latin this stub would have served a sample Prometheus
+            // rejects, and the assertion below would have failed on an empty result rather than on the
+            // digits that caused it.
+            final byte[] body = String.format(Locale.ROOT, """
                     # HELP spring_batch_item_read_seconds Item read calls.
                     # TYPE spring_batch_item_read_seconds summary
                     %s{%s="%s",%s="%s"} %d
-                    """.formatted(
+                    """,
                             ITEM_READ_METRIC,
                             ITEM_READ_JOB_LABEL,
                             BATCH_JOB,
                             ITEM_READ_STEP_LABEL,
                             BATCH_STEP,
-                            value))
+                            value)
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set(
                     "Content-Type", "text/plain; version=0.0.4; charset=utf-8");

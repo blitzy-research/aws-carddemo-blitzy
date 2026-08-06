@@ -25,6 +25,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.InterestCalculationProcessor;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.AwsProperties;
@@ -40,6 +41,7 @@ import com.carddemo.service.DateValidationService;
 import com.carddemo.service.InterestCalculationService;
 import com.carddemo.service.InterestGroupTransactionBoundary;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.RunScopedPerformanceRecorder;
 import com.carddemo.util.TransactionRecordMapper;
 
 import io.awspring.cloud.s3.S3Operations;
@@ -47,6 +49,7 @@ import io.awspring.cloud.sns.core.SnsOperations;
 
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -137,6 +140,9 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
 
     /** A distinct valid run date for the late-group failure scenario. */
     private static final String FAILURE_RUN_DATE = "2022071801";
+
+    /** A third distinct valid run date, so the measured baseline run is its own job instance. */
+    private static final String BASELINE_RUN_DATE = "2022071802";
 
     /** An account the reference seed carries, together with a cross-reference that names its card. */
     private static final String FIRST_ACCOUNT = "00000000001";
@@ -535,6 +541,78 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
         assertThat(liveMasterTransactionsFor(FAILURE_RUN_DATE)).isEmpty();
     }
 
+    @Test
+    @Order(5)
+    @DisplayName("the Gate 3 figures are measured over this run itself - records, its own elapsed time, "
+            + "and the JVM's own peak - and no threshold is asserted over any of them")
+    void theGateThreeFiguresAreMeasuredOverOneRun() throws Exception {
+        // WHY THIS IS MEASURED HERE AND NOT READ OFF A PANEL. Gate 3 names three figures, and until this
+        // run existed two of them had no source that produced what they were called. The dashboard's
+        // records-per-second panel is rate(counter[window]), which divides by the RATE WINDOW rather than
+        // by the run's elapsed time - three hundred records in four seconds inside a one-minute window
+        // reads as five per second, not seventy-five. Its peak-memory panel is max_over_time over scraped
+        // samples, so a peak that rises and falls between two scrapes is invisible, and a run this short
+        // can fall between two scrapes entirely. Those panels are honest visualisations of a running
+        // system and are now labelled as such; the quotable figures come from here.
+        //
+        // NOTHING BELOW IS A THRESHOLD. No latency, throughput or capacity figure exists anywhere in the
+        // legacy estate, so there is nothing to compare against and this gate establishes the first Java
+        // baseline instead. Every assertion here is about the measurement being WELL FORMED - a positive
+        // elapsed time, the fixture's own record count, a peak the platform actually reported - and none
+        // is about a figure being fast enough. Adding such an assertion would invent a service level the
+        // migration is expressly forbidden from inventing.
+        final RunScopedPerformanceRecorder recorder = new RunScopedPerformanceRecorder();
+
+        final JobExecution execution = recorder.measure(
+                InterestCalculationJobConfig.JOB_NAME,
+                FIXTURE_ROWS + " transaction-category-balance rows forming " + FIXTURE_GROUPS
+                        + " account groups, resolved against the seeded default disclosure group; "
+                        + "reference seed of 50 accounts, 50 category balances and 51 disclosure rows",
+                measured -> measured.getStepExecutions().iterator().next().getExecutionContext()
+                        .getInt(InterestCalculationProcessor.CONTEXT_ROWS_READ),
+                () -> this.jobLauncher.run(this.interestCalculationJob,
+                        new JobParametersBuilder()
+                                .addString(InterestCalculationJobConfig.PARM_DATE_KEY, BASELINE_RUN_DATE)
+                                .toJobParameters()));
+
+        assertThat(execution.getStatus())
+                .as("a baseline may only be taken from a run that actually completed")
+                .isEqualTo(BatchStatus.COMPLETED);
+
+        assertThat(recorder.baselines()).singleElement().satisfies(baseline -> {
+            assertThat(baseline.records())
+                    .as("the record count is the run's own, read from the step that did the reading, so "
+                            + "the quotient below is records-of-this-run over elapsed-of-this-run")
+                    .isEqualTo(FIXTURE_ROWS);
+            assertThat(baseline.elapsedNanos())
+                    .as("elapsed time is wall clock across the launch and must be positive for the "
+                            + "quotient to exist at all")
+                    .isPositive();
+            assertThat(baseline.peakHeapBytes())
+                    .as("the peak is read from the platform's own per-pool accounting after a reset "
+                            + "immediately before the launch, so it does not depend on a scrape interval")
+                    .isPositive();
+            assertThat(baseline.recordsPerSecond())
+                    .as("records divided by this run's own elapsed seconds - the quotient Gate 3 names")
+                    .isGreaterThan(BigDecimal.ZERO);
+            assertThat(baseline.fixtureNote())
+                    .as("a figure without the volumes it was measured over is not a baseline")
+                    .contains("account groups");
+        });
+
+        final Path published = recorder.publish("gate3-interest-calculation.md");
+        assertThat(published)
+                .as("the figures are written into the build output for an operator to copy into "
+                        + "docs/gate-evidence.md beside the date and the machine; a test must not edit "
+                        + "the documentation tree, or the repository's content would depend on the "
+                        + "hardware of whoever last ran the suite")
+                .isRegularFile();
+        assertThat(Files.readString(published, StandardCharsets.UTF_8))
+                .contains("Records/second")
+                .contains(InterestCalculationJobConfig.JOB_NAME)
+                .contains("measurements, not thresholds");
+    }
+
     /**
      * The narrowest context the interest job needs: batch orchestration, persistence, the launch-boundary
      * parameter contract and the translated program with its own collaborators.
@@ -545,8 +623,13 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
      */
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
+    // AdvisoryGenerationPublicationLock is imported because the generation store now requires the
+    // per-base publication lock, and this slice has the PostgreSQL server the production lock needs.
+    // Importing the real one rather than a direct-run stand-in keeps the slice faithful: this job's
+    // publication is serialized here exactly as it is in the application.
     @Import({InterestCalculationJobConfig.class, BatchConfig.class, JobParameterValidators.class,
-            BatchStagingArea.class, StagedGenerationStore.class, DateValidationService.class,
+            BatchStagingArea.class, StagedGenerationStore.class,
+            AdvisoryGenerationPublicationLock.class, DateValidationService.class,
             InterestCalculationService.class, InterestGroupTransactionBoundary.class,
             AbendService.class})
     @EnableConfigurationProperties(AwsProperties.class)

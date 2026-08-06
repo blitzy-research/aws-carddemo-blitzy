@@ -224,16 +224,38 @@ server:
     connection-timeout: 10s
 
 # THE MINIMUM SURFACE THAT STILL HONOURS THIS MODULE'S CROSS-FILE CONTRACTS. Exactly four endpoints
-# are published, each because something else resolves it: health is the Dockerfile HEALTHCHECK and
-# the readiness gate every Compose service waits on; prometheus is the scrape target of
+# are published, each because something else resolves it: health carries the liveness group the
+# Dockerfile HEALTHCHECK asks for and the readiness group a Compose dependent or a CI gate waits on -
+# two groups because they answer two different questions, developed at the group block below;
+# prometheus is the scrape target of
 # config/prometheus/prometheus.yml; metrics is the surface the performance baseline is read from;
 # and info identifies the running build. Publishing an endpoint does not make it anonymously
-# readable. SecurityConfig permits the health probe without a credential unconditionally, and adds an
-# anonymous permit for the Prometheus scrape path only when carddemo.security.anonymous-metrics-scrape
-# is set - which this baseline sets to false further down, so under this file alone the scrape path is
-# authenticated along with metrics and info. Health detail and components are withheld: an aggregate
-# status is all an unauthenticated probe may see, and a component list names the infrastructure behind
-# it.
+# readable.
+#
+# THE MANAGEMENT SURFACE HAS ITS OWN FILTER CHAIN AND ITS OWN KIND OF IDENTITY. config/SecurityConfig
+# matches this whole base path with a higher-precedence chain that permits exactly THREE anonymous
+# paths - the aggregate health endpoint and its two probe groups - and requires the operator authority
+# ROLE_MONITORING for everything else beneath it. An earlier revision permitted /actuator/health/** as
+# a subtree and gated the rest on bare authenticated(), which every signed-on cardholder satisfies: any
+# ordinary application user could read per-endpoint request counts and latency distributions,
+# per-batch-step record counts, connection-pool saturation and JVM heap, thread and garbage-collection
+# internals. That set is enough to profile transaction volume and infer business activity, and none of
+# it is anything a cardholder's session needs.
+#
+# THE OPERATOR AUTHORITY IS NOT ONE OF THE TWO SIGN-ON AUTHORITIES, and it deliberately cannot be. The
+# estate declares exactly two user types and this module grants exactly two authorities from them,
+# neither of which is an operator - a collector holds no account, signs on through no screen and appears
+# in no legacy user record. It presents the machine credential at carddemo.security.management.token
+# instead, which is bound with an EMPTY default: unset means no identity can hold the authority, so the
+# surface admits nobody beyond the three probe paths. Unset is FAIL-CLOSED, never permissive.
+#
+# The one relaxation is carddemo.security.anonymous-metrics-scrape, which adds an anonymous permit for
+# the scrape path alone and is set to false in this baseline - so under this file the scrape path needs
+# the operator credential along with metrics and info. Only the local and test overlays open it, because
+# only their collector runs on the same machine as the application.
+#
+# Health detail and components are withheld: an aggregate status is all an unauthenticated probe may
+# see, and a component list names the infrastructure behind it.
 management:
   endpoints:
     web:
@@ -247,15 +269,49 @@ management:
       probes:
         enabled: true
       # Liveness answers only whether this process can continue. Readiness additionally requires the
-      # datasource and all three externally provisioned AWS resources. The report-submission path keeps
+      # datasource and the externally provisioned AWS resources. The report-submission path keeps
       # the legacy queue's ignore-on-error response contract for an individual request, while readiness
       # turns DOWN so a router stops sending new work to an instance whose destination is absent
       # (decision log DL-155).
+      #
+      # THE TWO GROUPS ANSWER DIFFERENT QUESTIONS, AND THE DIFFERENCE IS WHAT EACH CALLER WANTS.
+      # Liveness is "should this process be restarted", and the answer never depends on somebody else's
+      # service: an instance that cannot reach a queue is not an instance a restart would help. It
+      # contains only the process state, so it makes NO external call and is bounded by construction.
+      # That is why the container probe in the Dockerfile asks for this group and not the aggregate - an
+      # earlier revision asked for the aggregate under a five-second timeout, which made the probe's own
+      # duration a function of four external services and let successive probes overlap and accumulate.
+      #
+      # READINESS IS BOUNDED TOO, BY THE CONTRIBUTORS THEMSELVES rather than by the caller. Every AWS
+      # contributor in config/AwsResourceHealthConfig carries its own deadline and answers DOWN with a
+      # bounded reason when it expires, so this group cannot be held open by a provider that accepts a
+      # connection and then stops answering. A Compose dependent or a CI gate can therefore wait on
+      # readiness safely, which is the caller that genuinely wants the dependency question answered.
+      #
+      # THE NOTIFICATION TOPIC IS DELIBERATELY NOT IN THE READINESS GROUP, AND THE awsSns CONTRIBUTOR IS
+      # STILL PUBLISHED. Membership of this group means "an instance without this cannot serve", and that
+      # is not true of the topic. The topic carries an operational notice that a batch job has ALREADY
+      # finished; its absence loses a notice and prevents no work, so taking the whole instance out of
+      # service for it would be the wrong remedy applied to the wrong problem. An earlier revision had it
+      # both ways - service/JobCompletionNotificationService documented the channel as best-effort while
+      # this group treated it as required - and a dependency cannot be optional in one file and required
+      # in another. It is optional, and it is optional here too.
+      #
+      # THE QUEUE STAYS IN THE GROUP, and the contrast is what settles the topic's case rather than a
+      # preference. A report request that cannot reach the queue never runs its job, so an instance that
+      # cannot reach the queue genuinely cannot serve - and it must still answer that individual request
+      # successfully, because the legacy queue was defined ignore-on-error. Readiness is how the two are
+      # reconciled: the request keeps its parity response while a router stops sending new work here.
+      # Decision log DL-155 records the separation.
+      #
+      # NOTHING IS HIDDEN BY THE OMISSION. awsSns remains a published component, so a deployment can read
+      # the topic's state from the health endpoint whenever it wants; what changed is only whether that
+      # state decides this instance's fitness to receive traffic.
       group:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db,awsS3,awsSqs,awsSns
+          include: readinessState,db,awsS3,awsSqs
   health:
     db:
       enabled: true
@@ -459,15 +515,18 @@ carddemo:
     # data-source pool saturation, and JVM heap, thread and garbage-collection internals. Together
     # those let an unauthenticated network client profile transaction volume, infer business
     # activity from batch counts, and time an attack against a deployment it holds no credential
-    # for. That is a disclosure, not diagnostics: the health probe answers with a status word, and
-    # this answers with the shape of the workload.
+    # for. That is a disclosure, not diagnostics: the three probe paths answer with a status word,
+    # and this answers with the shape of the workload.
     #
-    # ENFORCED, NOT DESCRIBED. SecurityConfig binds this key and adds the anonymous permit for the
-    # scrape path only when it is set. When it is not, no permit is added and the path falls through
-    # to the rule that authenticates everything under the management base path - so closing it takes
-    # no second edit anywhere, and the endpoint STAYS PUBLISHED either way. A collector that presents
-    # a bearer token still collects, which is why the performance gate is unaffected by this being
-    # closed in production.
+    # ENFORCED, NOT DESCRIBED. SecurityConfig binds this key inside its MANAGEMENT filter chain and
+    # adds the anonymous permit for the scrape path only when it is set. When it is not, no permit is
+    # added and the path falls through to that chain's catch-all, which requires the ROLE_MONITORING
+    # authority - so closing it takes no second edit anywhere, and the endpoint STAYS PUBLISHED
+    # either way. A collector presenting the operator credential at carddemo.security.management.token
+    # still collects, which is why the performance gate is unaffected by this being closed in
+    # production. A token issued at sign-on does NOT collect, on any profile: that authority is
+    # minted only from the operator credential and the sign-on bearer filter is not installed on the
+    # management chain at all.
     #
     # It is opened ONLY by the two overlays whose collector runs on the same machine as the
     # application - local and test, the same two that relax transport - and each states the

@@ -48,6 +48,20 @@ final class ContainerHardeningContractTest {
     private static final Path DOCKERFILE_PATH = Path.of("Dockerfile");
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
 
+    /**
+     * Every shipped configuration document, including both copies of the test profile.
+     *
+     * <p>The test profile exists twice - packaged on the main classpath and again on the test classpath,
+     * where it takes precedence during a suite run - so a rule applied to one copy and not the other is
+     * a rule that holds for whichever copy the reader happened to open. Both are listed.</p>
+     */
+    private static final List<Path> PROFILE_DOCUMENTS = List.of(
+            Path.of("src/main/resources/application.yml"),
+            Path.of("src/main/resources/application-local.yml"),
+            Path.of("src/main/resources/application-test.yml"),
+            Path.of("src/main/resources/application-prod.yml"),
+            Path.of("src/test/resources/application-test.yml"));
+
     private static final List<String> SERVICES =
             List.of("postgres", "localstack", "jaeger", "app", "prometheus", "grafana");
 
@@ -188,6 +202,53 @@ final class ContainerHardeningContractTest {
     }
 
     @Test
+    @DisplayName("no shipped profile may resolve a credential from the ambient AWS_* variables either")
+    void noProfileResolvesCredentialsFromAmbientAwsVariables() throws IOException {
+        // The rule above held for the Compose document and for nothing else, which is how two profiles
+        // came to read AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY while claiming in the same breath to
+        // keep the SDK's default credential chain out of the picture. The rule is the same wherever a
+        // credential is resolved, so it is enforced across every profile document rather than only where
+        // it was first written. A reference is what matters, not a mention: the assertion looks for the
+        // interpolation "${AWS_ACCESS_KEY_ID", so a comment naming the variable to explain why it is not
+        // read - which both profiles now carry - is left alone.
+        for (final Path profile : PROFILE_DOCUMENTS) {
+            assertThat(profile).isRegularFile();
+            assertThat(Files.readString(profile, StandardCharsets.UTF_8))
+                    .as("%s must resolve emulator credentials only from LOCALSTACK_* variables", profile)
+                    .doesNotContain("${AWS_ACCESS_KEY_ID")
+                    .doesNotContain("${AWS_SECRET_ACCESS_KEY")
+                    .doesNotContain("${AWS_SESSION_TOKEN");
+        }
+    }
+
+    @Test
+    @DisplayName("the slow-statement diagnostic cannot print the values it was bound with")
+    void theDatabaseDiagnosticCannotLogBindValues() throws IOException {
+        // Suppressing bind values takes an explicit setting because the server's default is to log them
+        // in full: log_parameter_max_length defaults to -1. Every statement this application issues is
+        // prepared and bound through the extended protocol, so each logged slow statement carried a
+        // "DETAIL: parameters: $1 = ..." line naming a social security number, a card number, a card
+        // verification code, a balance, or a credential digest - into a container log that is collected
+        // and retained by whatever reads the Docker log driver.
+        final List<String> command = textValues(service(compose(), "postgres").path("command"));
+
+        assertThat(command)
+                .as("the diagnostic itself must remain, or the setting below would be protecting nothing")
+                .contains("log_min_duration_statement=2000")
+                .as("zero disables parameter logging; -1, the default, logs every value in full")
+                .contains("log_parameter_max_length=0")
+                .as("the error path must give the same answer, so one half cannot read as both")
+                .contains("log_parameter_max_length_on_error=0");
+        assertThat(command)
+                .as("no setting may re-enable parameter logging at any width")
+                .noneMatch(argument -> argument.startsWith("log_parameter_max_length=")
+                        && !"log_parameter_max_length=0".equals(argument))
+                .as("statement logging must stay off: it would log every statement, not only slow ones")
+                .noneMatch(argument -> argument.startsWith("log_statement=")
+                        && !"log_statement=none".equals(argument));
+    }
+
+    @Test
     @DisplayName("the application receives five seconds beyond Spring's graceful-shutdown budget")
     void applicationStopBudgetExceedsTheFrameworkBudget() throws IOException {
         assertThat(service(compose(), "app").path("stop_grace_period").asText())
@@ -225,5 +286,56 @@ final class ContainerHardeningContractTest {
                 .contains("org.opencontainers.image.revision=\"${SOURCE_REVISION}\"")
                 .contains("com.carddemo.legacy-estate.release="
                         + "\"CardDemo_v1.0-15-g27d6c6f-68 (2022-07-19)\"");
+    }
+
+    @Test
+    @DisplayName("the image probe reads the liveness group, over the transport the server is using, "
+            + "through an interpreter that actually has the feature it uses")
+    void theImageProbeIsCorrectInAllThreeRespects() throws IOException {
+        // Three separate defects have lived in this one instruction, and none of them was observable from
+        // the outside as a probe defect - each presented as a healthy application reported unhealthy.
+        //
+        // THE INTERPRETER. /dev/tcp is a bash feature and is absent from dash. A revision that named
+        // /bin/sh produced "cannot create /dev/tcp/127.0.0.1/8080: Directory nonexistent" on every single
+        // probe: a container observed in this workspace had a failing streak of 9,453 while the
+        // application inside it was serving correctly. Measured in the pinned runtime base image:
+        // `/bin/sh -c 'exec 3<>/dev/tcp/127.0.0.1/8080'` reports Directory nonexistent, while
+        // `/usr/bin/bash -c` of the same line reports Connection refused - which is the feature working
+        // and nothing listening. /bin/sh is the more conventional-looking choice, which is exactly why
+        // this is asserted rather than left to the next person's judgement.
+        //
+        // THE TRANSPORT. The probe used to send plaintext unconditionally while the transport is a profile
+        // decision, so a TLS-enabled process was reported unhealthy. It now switches on
+        // SERVER_SSL_ENABLED - the same relaxed-binding form Spring Boot itself binds to
+        // server.ssl.enabled, so the server and its probe read ONE switch and cannot drift - and speaks
+        // TLS through openssl, which the pinned runtime image already ships, so no package and no CVE
+        // surface is added.
+        //
+        // THE GROUP. Asking for the aggregate made the probe's own duration a function of four external
+        // services under a five-second timeout, and let successive probes overlap. The liveness group
+        // consults only this process's state, so it is bounded by construction.
+        assertThat(DOCKERFILE_PATH).isRegularFile();
+        final String dockerfile = Files.readString(DOCKERFILE_PATH, StandardCharsets.UTF_8);
+        final String probe = dockerfile.lines()
+                .dropWhile(line -> !line.startsWith("HEALTHCHECK"))
+                .takeWhile(line -> !line.isBlank())
+                .reduce("", (first, second) -> first + "\n" + second);
+
+        assertThat(probe).as("the HEALTHCHECK instruction must be present").contains("HEALTHCHECK");
+        assertThat(probe)
+                .as("bash, because the probe uses /dev/tcp and dash does not have it")
+                .contains("\"/usr/bin/bash\"")
+                .as("naming sh here would fail every probe while the application served correctly")
+                .doesNotContain("\"/bin/sh\"")
+                .as("the liveness group, so the probe makes no external call")
+                .contains("/actuator/health/liveness")
+                .as("and never the aggregate, whose duration depends on other services")
+                .doesNotContain("GET /actuator/health HTTP")
+                .as("the transport is read rather than assumed, from the switch the server reads")
+                .contains("SERVER_SSL_ENABLED")
+                .as("and the TLS branch speaks TLS, using the tool the runtime image already ships")
+                .contains("openssl s_client")
+                .as("a 200 status line is the pass condition on both branches")
+                .contains("^HTTP/1\\\\.[01] 200");
     }
 }

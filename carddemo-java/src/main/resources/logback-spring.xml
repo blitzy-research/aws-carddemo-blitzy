@@ -414,7 +414,13 @@
        number or a national identifier, so it must never be raised in production, and nothing raises
        it here. Where a developer does want to see statements, the local overlay turns on the
        provider's OWN statement echo through its own switch rather than through this category, which
-       keeps the two decisions separate. -->
+       keeps the two decisions separate.
+
+       THIS IS ONE HALF OF ONE RULE. The other half is in docker-compose.yml, where the database's
+       slow-statement diagnostic is given log_parameter_max_length=0 so the server cannot print the
+       values a statement was bound with either - its default is to print them in full. Closing one
+       channel and leaving the other open would read as though both were closed. Both halves are
+       asserted: this one by ObservabilityConfigTest, the other by ContainerHardeningContractTest. -->
   <logger name="org.hibernate.SQL" level="INFO"/>
   <logger name="org.hibernate.orm.jdbc.bind" level="INFO"/>
 

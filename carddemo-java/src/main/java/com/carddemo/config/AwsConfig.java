@@ -351,8 +351,25 @@ public class AwsConfig {
      * region's own endpoint, which is exactly what a deployment wants and what a production profile
      * enforces.</p>
      *
+     * <h2>What the absent case does and does not assert</h2>
+     *
+     * <p>Not calling {@code endpointOverride(...)} means <strong>this application applies no
+     * redirection</strong>. It does not, on its own, mean the client is unredirected: the SDK resolves
+     * an endpoint from a chain of its own - {@code AWS_ENDPOINT_URL} and its per-service variants, the
+     * matching {@code aws.endpointUrl*} system properties, and {@code endpoint_url} in the shared
+     * configuration file - and no Spring property source participates in that chain, so
+     * {@link AwsProperties#endpointOverrideUri()} cannot observe it.
+     *
+     * <p>The diagnostic below therefore states only what this class controls. Closing the SDK's own
+     * chain is a deployment-posture question rather than a builder question, and it is enforced where
+     * postures are enforced: {@link ProductionConfigurationValidator} refuses to start the production
+     * profile when any arm of that chain supplies a redirection. An earlier revision of this method
+     * logged that the client was "resolving the endpoint of region ..." with no such enforcement behind
+     * it, which asserted a posture the process was not holding.
+     *
      * @param builder    the client builder the integration has finished configuring
      * @param clientName the client's name for diagnostics
+     * @see ProductionConfigurationValidator#validateNativeSdkEndpointChannels
      */
     private void aimClient(final AwsClientBuilder<?, ?> builder, final String clientName) {
         builder.region(Region.of(this.awsProperties.region()));
@@ -363,7 +380,9 @@ public class AwsConfig {
                             clientName, AwsProperties.ENDPOINT_OVERRIDE_PROPERTY,
                             this.awsProperties.region());
                 },
-                () -> LOG.debug("{} client resolving the endpoint of region {}; no {} configured",
+                () -> LOG.debug("{} client left at region {} by this application; no {} configured."
+                                + " The SDK's own endpoint chain is not visible here and is refused"
+                                + " for the production profile by ProductionConfigurationValidator",
                         clientName, this.awsProperties.region(),
                         AwsProperties.ENDPOINT_OVERRIDE_PROPERTY));
     }

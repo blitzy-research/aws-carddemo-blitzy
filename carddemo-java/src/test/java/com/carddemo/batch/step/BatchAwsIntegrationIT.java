@@ -107,8 +107,14 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
                             s3Client(), new PropertiesS3ObjectContentTypeResolver()),
                     new Jackson2JsonS3ObjectConverter(new ObjectMapper()),
                     presigner);
+            // This test provisions LocalStack only and has no database, so the production advisory lock
+            // cannot be used here. Running each publication directly is faithful for this test because it
+            // drives seven publications from one thread in sequence: there is nothing to serialize. The
+            // lock's own behaviour is asserted where it can be - in the store's unit test, which proves
+            // the store hands it the right bases and publishes inside it.
             final StagedGenerationStore store =
-                    new StagedGenerationStore(operations, bucket);
+                    new StagedGenerationStore(operations, bucket,
+                            (bases, publication) -> publication.run());
 
             for (long executionId = 1; executionId <= 7; executionId++) {
                 final JobExecution execution = completedJob(executionId);

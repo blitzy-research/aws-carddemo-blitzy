@@ -39,6 +39,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,11 +79,39 @@ class StagedGenerationStoreTest {
     private S3Operations objectStore;
     private StagedGenerationStore store;
     private Map<String, byte[]> uploaded;
+    private RecordingPublicationLock publicationLock;
+
+    /**
+     * A publication lock that runs the publication directly and records what it was asked to hold.
+     *
+     * <p>Recording rather than merely delegating is the point: the store's obligation is to name every
+     * base it touches, and a lock that only ran the body would let a store that named none of them pass.
+     * The order the bases arrive in is preserved so a test can assert what was requested; putting them
+     * into a deterministic acquisition order is the production lock's job, asserted in its own test.</p>
+     */
+    private static final class RecordingPublicationLock implements GenerationPublicationLock {
+
+        private final List<List<String>> requestedBases = new ArrayList<>();
+        private int publicationsRun;
+
+        @Override
+        public void whileHolding(final List<String> logicalBases, final Runnable publication) {
+            this.requestedBases.add(List.copyOf(logicalBases));
+            this.publicationsRun++;
+            publication.run();
+        }
+
+        private List<String> onlyRequest() {
+            assertThat(this.requestedBases).hasSize(1);
+            return this.requestedBases.get(0);
+        }
+    }
 
     @BeforeEach
     void setUp() {
         this.objectStore = mock(S3Operations.class);
         this.uploaded = new LinkedHashMap<>();
+        this.publicationLock = new RecordingPublicationLock();
         when(this.objectStore.listObjects(any(String.class), any(String.class)))
                 .thenReturn(List.of());
         doAnswer(invocation -> {
@@ -92,7 +121,7 @@ class StagedGenerationStoreTest {
             }
             return null;
         }).when(this.objectStore).upload(eq(BUCKET), any(String.class), any(InputStream.class));
-        this.store = new StagedGenerationStore(this.objectStore, BUCKET);
+        this.store = new StagedGenerationStore(this.objectStore, BUCKET, this.publicationLock);
     }
 
     private static JobExecution completedJob(final long executionId) {
@@ -311,6 +340,262 @@ class StagedGenerationStoreTest {
 
             verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000014V00");
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
+        }
+    }
+
+    /**
+     * The commit boundary: what survives a publication that fails after it has already uploaded.
+     *
+     * <p>Each test here fails the publication at a point <em>after</em> the last upload succeeded, which
+     * is the region the earlier compensation did not cover. The assertion in every case is the same
+     * property stated three ways: a job the boundary listener will mark FAILED leaves nothing externally
+     * visible - no durable object, and no fixed-name local view naming a generation that was rolled
+     * back.</p>
+     */
+    @Nested
+    @DisplayName("the commit boundary: a failed publication leaves nothing externally visible")
+    class TheCommitBoundary {
+
+        @Test
+        @DisplayName("an alias failure after every upload succeeded still deletes every uploaded object")
+        void anAliasFailureRollsBackTheUploadsItFollows() throws Exception {
+            final JobExecution execution = completedJob(21);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 21);
+            final Path second =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 21);
+            Files.writeString(first, "first", StandardCharsets.US_ASCII);
+            Files.writeString(second, "second", StandardCharsets.US_ASCII);
+            // A directory standing where the second alias file must be written. The alias replacement
+            // moves a temporary sibling onto this name, which cannot succeed against a directory, so the
+            // publication fails at its last step rather than during upload.
+            final Path blockedAlias = stagingDirectory.resolve("blocked-alias");
+            Files.createDirectory(blockedAlias);
+            Files.createFile(blockedAlias.resolve("occupant"));
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            StagedGenerationStore.register(step, OTHER_BASE, second,
+                    StagedGenerationStore.REPORT_RETENTION_LIMIT, blockedAlias);
+
+            assertThatExceptionOfType(RuntimeException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            // Both uploads had already succeeded when the alias failed, so both must be scratched.
+            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000021V00");
+            verify(objectStore).deleteObject(BUCKET, OTHER_BASE + "/G0000000021V00");
+            // And the registry is intact, so the failure is visible as an unpublished job rather than as
+            // a published one.
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("an alias advanced before the failure is put back to what it named before")
+        void anAdvancedAliasIsRestored() throws Exception {
+            final JobExecution execution = completedJob(22);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 22);
+            final Path second =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 22);
+            Files.writeString(first, "new first generation", StandardCharsets.US_ASCII);
+            Files.writeString(second, "new second generation", StandardCharsets.US_ASCII);
+            final Path advancedAlias = stagingDirectory.resolve("first-latest.txt");
+            Files.writeString(advancedAlias, "previous first generation", StandardCharsets.US_ASCII);
+            final Path blockedAlias = stagingDirectory.resolve("second-latest");
+            Files.createDirectory(blockedAlias);
+            Files.createFile(blockedAlias.resolve("occupant"));
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT, advancedAlias);
+            StagedGenerationStore.register(step, OTHER_BASE, second,
+                    StagedGenerationStore.REPORT_RETENTION_LIMIT, blockedAlias);
+
+            assertThatExceptionOfType(RuntimeException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            assertThat(advancedAlias).hasContent("previous first generation");
+        }
+
+        @Test
+        @DisplayName("an alias this publication created is removed rather than left behind")
+        void anAliasCreatedByTheFailedPublicationIsRemoved() throws Exception {
+            final JobExecution execution = completedJob(23);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 23);
+            final Path second =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 23);
+            Files.writeString(first, "new first generation", StandardCharsets.US_ASCII);
+            Files.writeString(second, "new second generation", StandardCharsets.US_ASCII);
+            final Path createdAlias = stagingDirectory.resolve("did-not-exist-before.txt");
+            final Path blockedAlias = stagingDirectory.resolve("second-latest");
+            Files.createDirectory(blockedAlias);
+            Files.createFile(blockedAlias.resolve("occupant"));
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT, createdAlias);
+            StagedGenerationStore.register(step, OTHER_BASE, second,
+                    StagedGenerationStore.REPORT_RETENTION_LIMIT, blockedAlias);
+
+            assertThatExceptionOfType(RuntimeException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            assertThat(createdAlias).doesNotExist();
+        }
+
+        @Test
+        @DisplayName("a committed publication leaves no set-aside alias content on disk")
+        void aCommittedPublicationLeavesNoTemporaryFiles() throws Exception {
+            final JobExecution execution = completedJob(24);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 24);
+            final Path alias = stagingDirectory.resolve("latest-output.txt");
+            Files.writeString(completed, "new generation", StandardCharsets.US_ASCII);
+            Files.writeString(alias, "old generation", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT, alias);
+
+            store.publishRegistered(execution);
+
+            assertThat(alias).hasContent("new generation");
+            try (var entries = Files.list(stagingDirectory)) {
+                assertThat(entries.map(entry -> entry.getFileName().toString()))
+                        .noneMatch(name -> name.contains(".pre-publish-"))
+                        .noneMatch(name -> name.contains(".publish-"));
+            }
+        }
+
+        @Test
+        @DisplayName("a retention failure after the commit point does NOT fail the published job")
+        void retentionCannotFailACommittedPublication() throws Exception {
+            final JobExecution execution = completedJob(25);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 25);
+            Files.writeString(completed, "published bytes", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            // The retention pass is the only caller of listObjects, so failing it fails retention alone.
+            when(objectStore.listObjects(any(String.class), any(String.class)))
+                    .thenThrow(new IllegalStateException("the object store could not be listed"));
+
+            final List<StagedGenerationStore.PublishedGeneration> result =
+                    store.publishRegistered(execution);
+
+            // The artifact is published, the result is reported, and the registry is cleared: a base left
+            // over depth is corrected by the next publication and is not a reason to fail a job whose
+            // output is durable and visible.
+            assertThat(result).singleElement().satisfies(generation ->
+                    assertThat(generation.objectKey()).isEqualTo(BASE + "/G0000000025V00"));
+            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000025V00");
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
+        }
+    }
+
+    /**
+     * Serialization: the store must name every base it touches and must publish inside the lock.
+     *
+     * <p>These assertions are about the store's side of the contract. That the named bases are then
+     * actually held across replicas is the production lock's responsibility and is asserted in
+     * {@code AdvisoryGenerationPublicationLockTest}.</p>
+     */
+    @Nested
+    @DisplayName("per-base serialization")
+    class PerBaseSerialization {
+
+        @Test
+        @DisplayName("names every distinct base a registered publication touches, and each one once")
+        void everyTouchedBaseIsNamedOnce() throws Exception {
+            final JobExecution execution = completedJob(31);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 31);
+            final Path second =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 31);
+            final Path alsoFirstBase =
+                    stagingDirectory.resolve(BASE + ".second-artifact-of-the-same-base");
+            Files.writeString(first, "first", StandardCharsets.US_ASCII);
+            Files.writeString(second, "second", StandardCharsets.US_ASCII);
+            Files.writeString(alsoFirstBase, "third", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            StagedGenerationStore.register(step, OTHER_BASE, second,
+                    StagedGenerationStore.REPORT_RETENTION_LIMIT);
+            StagedGenerationStore.register(step, BASE, alsoFirstBase,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            store.publishRegistered(execution);
+
+            assertThat(publicationLock.onlyRequest()).containsExactly(BASE, OTHER_BASE);
+        }
+
+        @Test
+        @DisplayName("uploads nothing outside the lock, so retention never measures a changing set")
+        void everyUploadHappensInsideTheLock() throws Exception {
+            final JobExecution execution = completedJob(32);
+            final StepExecution step = stepOf(execution);
+            final Path completed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 32);
+            Files.writeString(completed, "bytes", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            final GenerationPublicationLock refusingLock = (bases, publication) -> {
+                throw new IllegalStateException("the base could not be acquired");
+            };
+            final StagedGenerationStore refusedStore =
+                    new StagedGenerationStore(objectStore, BUCKET, refusingLock);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> refusedStore.publishRegistered(execution));
+
+            // Failure to acquire is failure to publish. Nothing was uploaded, nothing was pruned, and the
+            // registry is intact, so the boundary listener fails the job rather than the store publishing
+            // unserialized.
+            verify(objectStore, never())
+                    .upload(any(String.class), any(String.class), any(InputStream.class));
+            verify(objectStore, never()).listObjects(any(String.class), any(String.class));
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("names the single base of an immediate publication and holds it over its retention")
+        void immediatePublicationNamesItsOwnBase() {
+            final Path completed =
+                    completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
+
+            store.publishFile(BASE, 33, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(publicationLock.onlyRequest()).containsExactly(BASE);
+            assertThat(publicationLock.publicationsRun).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("an immediate publication that cannot acquire its base uploads nothing")
+        void immediatePublicationRefusedTheLockUploadsNothing() {
+            final Path completed =
+                    completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
+            final GenerationPublicationLock refusingLock = (bases, publication) -> {
+                throw new IllegalStateException("the base could not be acquired");
+            };
+            final StagedGenerationStore refusedStore =
+                    new StagedGenerationStore(objectStore, BUCKET, refusingLock);
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> refusedStore.publishFile(BASE, 33, completed,
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT));
+
+            verify(objectStore, never())
+                    .upload(any(String.class), any(String.class), any(InputStream.class));
+        }
+
+        @Test
+        @DisplayName("a retention failure cannot fail an immediate publication either")
+        void immediatePublicationSurvivesARetentionFailure() {
+            final Path completed =
+                    completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
+            when(objectStore.listObjects(any(String.class), any(String.class)))
+                    .thenThrow(new IllegalStateException("the object store could not be listed"));
+
+            final StagedGenerationStore.PublishedGeneration published = store.publishFile(
+                    BASE, 34, completed, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000034V00");
+            assertThat(published.contentLength()).isEqualTo("bytes".length());
         }
     }
 

@@ -399,8 +399,9 @@ clean with both test tiers green, the coverage floor met and the supply-chain sc
 per-commit measurement, and this README does not assert one. The compiler configuration and the full
 dependency resolution were executed and passed during the migration analysis; that is history, not a
 statement about the commit you have checked out. Recorded per-run figures belong in
-`docs/gate-evidence.md`, which is **not yet published**, so until it is the only trustworthy evidence
-is the run you perform yourself:
+[`../docs/gate-evidence.md`](../docs/gate-evidence.md), which carries the command and the artefact path
+for every gate — but a figure recorded there belongs to the machine and the date beside it, so the only
+trustworthy evidence for your tree is the run you perform yourself:
 
 ```bash
 cd carddemo-java && ./mvnw -B clean verify        # read the result; do not take this file's word for it
@@ -442,7 +443,13 @@ docker build --build-arg APP_VERSION --build-arg SOURCE_REVISION \
   packages the application and extracts the layered jar.
 - **runtime stage** — `eclipse-temurin:25.0.3_9-jre-noble`, the extracted layers only. It runs as a
   **non-root** user (uid:gid `10001:10001`), `EXPOSE`s 8080, and carries a `HEALTHCHECK` that polls
-  `/actuator/health` and marks the container healthy on the first HTTP 200.
+  `/actuator/health/liveness` and marks the container healthy on the first HTTP 200. The probe asks for
+  the **liveness group, not the aggregate**, and the distinction is the whole point: liveness contains
+  only this process's own state, so the probe makes no external call and its duration cannot become a
+  function of four other services under a five-second timeout. The probe also reads
+  `SERVER_SSL_ENABLED` — the same relaxed-binding form Spring Boot itself binds to `server.ssl.enabled`
+  — and speaks TLS through `openssl s_client` when it is on, so a TLS-enabled process is not reported
+  unhealthy by a plaintext request. One switch, read by both the server and its probe.
 - The entrypoint is **exec form**, so the JVM is PID 1 and receives `SIGTERM` directly and graceful
   shutdown actually drains in-flight work. Spring allows 30 seconds per shutdown phase and Compose
   grants 35 seconds before SIGKILL, so the orchestrator cannot cut the drain short at Docker's
@@ -475,12 +482,22 @@ docker compose down              # stop and remove the containers — VOLUMES SU
 docker compose down -v           # …and delete the named volumes with them
 ```
 
-**`down` and `down -v` are not interchangeable.** The stack declares three named volumes —
-`postgres-data`, `prometheus-data` and `grafana-data` — and a plain `down` leaves all three in place, so
-the seeded rows, the applied migration history, the scraped samples and any Grafana edit are still there
-on the next `up`. Local state therefore persists across as many `up`/`down` cycles as you like; **only
-`down -v` discards it**, and that is the command to reach for when you want a genuinely first-run
-database.
+**`down` and `down -v` are not interchangeable.** The stack declares **four** named volumes and a plain
+`down` leaves all four in place, so the seeded rows, the applied migration history, the staged batch
+generations, the scraped samples and any Grafana edit are still there on the next `up`. Local state
+therefore persists across as many `up`/`down` cycles as you like; **only `down -v` discards it**, and that
+is the command to reach for when you want a genuinely first-run database.
+
+| Volume | Mounted by | What survives a plain `down` |
+| --- | --- | --- |
+| `postgres-data` | `postgres` | the seeded rows and the applied migration history |
+| `batch-staging` | `app` | the local staging tree the file-producing jobs compose their generations in |
+| `prometheus-data` | `prometheus` | the scraped samples, so a dashboard still has history after a restart |
+| `grafana-data` | `grafana` | any dashboard or data-source edit made through the UI |
+
+`batch-staging` is the one worth knowing about deliberately: a batch job writes its working file and its
+completed generation there before publishing to the object store, so a plain `down` leaves the last run's
+local generations behind, and `down -v` is what clears them.
 
 [`docker-compose.yml`](docker-compose.yml) defines six services and **no Compose profiles**, so a
 plain `up -d` starts everything. Every published port is overridable through an environment variable
@@ -836,7 +853,7 @@ provision an external resource.
 
 | Endpoint | Access | What it gives you |
 |---|---|---|
-| `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` | anonymous | Aggregate health; process-only liveness; and readiness requiring the datasource plus the S3 staging bucket, SQS job queue and SNS completion topic |
+| `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` | anonymous | Aggregate health; process-only liveness (the group the container probe reads); and readiness requiring the datasource plus the S3 staging bucket and the SQS job queue. **The SNS completion topic is deliberately not in the readiness group** — it carries a notice that a job has already finished, so its absence loses a notice and prevents no work, and taking an instance out of service for it would be the wrong remedy. The `awsSns` contributor is still published, so its state remains readable; what it no longer does is decide this instance's fitness to receive traffic. |
 | `/actuator/prometheus` | anonymous | Micrometer timers on every REST endpoint and every batch step — the measurement surface the performance baseline is read from. Anonymous deliberately, so the collector can scrape it; closed in `prod`. |
 | `/actuator/metrics`, `/actuator/info`, and in `local` also `env`, `configprops`, `beans`, `flyway`, `mappings`, `loggers` | authenticated | Individual meters, build info and the wider diagnostic surface |
 | `/v3/api-docs` | open in `local`, **disabled in `prod`** | The machine-readable description of the 19 published operations. **There is no interactive viewer**, in any profile — see below |
@@ -1015,10 +1032,13 @@ catalog to update. Their absence is a **documented decision**, recorded in
 
 Eight gates. **Not one of them requires a production environment, a staging environment, or a running
 COBOL system.** Every check runs on a developer machine through Docker Compose, Testcontainers and the
-LocalStack **Community** edition. The consolidated evidence page, `docs/gate-evidence.md`, is **not yet
-published**, so this section documents each gate's *mechanism and current coverage* — including, gate by
-gate, what is proven today and what is still outstanding. Run the command and read the result rather
-than reading a status out of this file.
+LocalStack **Community** edition. The consolidated evidence page is
+[`../docs/gate-evidence.md`](../docs/gate-evidence.md): it carries, per gate, the command that produces the
+evidence, the artefact the evidence lands in, and the part of the outcome that is a property of the code
+rather than of the machine that ran it. This section documents each gate's *mechanism and current
+coverage* — including, gate by gate, what is proven today and what is still outstanding. For anything that
+is a per-run measurement, run the command and read the result rather than reading a status out of either
+file.
 
 | Gate | What it proves | How to run it | Coverage today |
 |---|---|---|---|
@@ -1237,8 +1257,17 @@ the JVM's own reservations, so it describes the process rather than the workload
 
 **Step 7 — write the figures down with their conditions.** Elapsed time, peak heap and records per second
 mean nothing without the fixture volumes, the heap bounds from step 1, the profile, and the commit they
-were taken at. `docs/gate-evidence.md` is the page they belong on; it is **not yet published**, so **no
-baseline has been recorded yet** and this gate is a defined procedure rather than a produced number.
+were taken at. [`../docs/gate-evidence.md`](../docs/gate-evidence.md) is the page they belong on, and its
+Gate 3 section carries the measured-runs table to add a row to. **No baseline has been recorded there
+yet**, so this gate is a mechanism plus an empty table rather than a produced number, and the row you add
+is the first.
+
+The measurement itself is not read off a dashboard panel, and that distinction matters enough to state
+here. `support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`, measures one run:
+wall clock across the launch, the run's own record count, and the JVM's own per-pool peak heap after a
+reset immediately before the launch. It writes the figures to `target/gate-evidence/`. The dashboard's
+rolling-rate panel divides by the rate window rather than by the run, and its peak panel is a maximum over
+scrapes, so both are labelled visualizations; `../docs/decision-log.md` DL-182 records why.
 
 Structural improvements are expected as a consequence of the migration — set-based SQL replaces
 record-at-a-time keyed reads, and B-tree indexes replace alternate-index path traversal — but **no
@@ -1399,8 +1428,8 @@ from an actual run.
 | End-to-end verification | golden fixtures at 80, 100, 133 and 430 bytes; no 40-byte fixture yet | `ExpectedOutputFixtureContractTest`, `ExpectedHtmlStatementFixtureContractTest` | **partial** — reject path end-to-end, the other three re-emitted; single-pipeline run outstanding |
 | Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `JobSubmissionServiceIT` | **met** for the queue contract |
 | Interface contract verification | the seven sign-on literals and the admin/user routing rule | `AuthControllerTest` (standalone MockMvc, mocked collaborators) | **partial** — booted interface test outstanding |
-| Performance baseline | Micrometer timers at `/actuator/prometheus` | procedure under Gate 3 | **procedure defined**; `docs/gate-evidence.md` not yet published |
-| Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the recorded counts page is pending |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **mechanism met and run-scoped**; no baseline row recorded yet, because a figure belongs to one machine on one date |
+| Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
 | Zero critical or high CVEs **in the compile and runtime graph** | `dependency-check-maven` 12.1.3 bound to `verify` | `./mvnw -B clean verify` | **met for that scope** — see the scope statement below |
 | Traceability 100% | `docs/traceability-matrix.md` (**not yet published**) and the row-count assertion that will check it | — | **outstanding** |
@@ -1699,6 +1728,7 @@ repository root.
 | [`../docs/decision-log.md`](../docs/decision-log.md) | Every divergence between COBOL semantics and idiomatic Java, and all fourteen source anomalies, with both provenance identifiers in its own Provenance section |
 | [`../docs/project-guide.md`](../docs/project-guide.md) | The prior delivery's completion record — the authoritative source for the historical test and coverage figures quoted under Gate 7 |
 | [`../docs/technical-specifications.md`](../docs/technical-specifications.md) | The migration's technical specification |
+| [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | Per gate: the command that produces the evidence, the artefact it lands in, and the standing result. Carries the Gate 6 audit counts, and a measured-runs table for the Gate 3 figures that is filled in per machine and per date rather than frozen |
 
 **Not yet published — pending at this milestone.** Every reference to one of these anywhere in this
 README is a statement of what the page is *for*, never a claim that its contents or its evidence exist
@@ -1707,7 +1737,6 @@ today. Do not cite one as evidence, and do not link one until it lands:
 | Pending document | What it will be | What this README does instead |
 |---|---|---|
 | `docs/traceability-matrix.md` | **544 rows** — every paragraph unit mapped to its Java class, method and covering test, citing both provenance identifiers | Gate 8 marks the traceability checklist item **outstanding** |
-| `docs/gate-evidence.md` | The dated, recorded evidence for all eight gates, including the audit counts and the performance baseline | every gate points at the command and the `target/` report to read instead |
 | `docs/architecture.md` | Layer diagram, package responsibilities, entity relationships, batch pipeline ordering | the package table here, plus `PackageLayeringTest` |
 | `docs/onboarding-guide.md` | First-run walkthrough: local build, stack bring-up, gate execution | the [Prerequisites](#prerequisites), [Build](#build) and [Run](#run) sections here |
 | `docs/presentation/index.html` | Migration summary deck | — |
@@ -1746,22 +1775,25 @@ permissions, and it:
    adapter preserves the class name Testcontainers 1.21.4 instantiates;
 5. re-executes the unit tier under the hostile `tr-TR` and `ar-EG` locales, so no assertion silently
    depends on the default locale of the machine that ran it;
-6. lints the container-bootstrap scripts, smoke-tests the executable jar, then performs a second
-   clean build with the same revision and epoch and requires the two jars to be byte-identical;
-7. checks and builds the Dockerfile, resolves and starts the hardened six-service Compose stack,
+6. lints the container-bootstrap scripts;
+7. uploads the coverage, vulnerability and test reports, so they survive even if a later gate fails;
+8. performs a second clean build with the same revision and epoch and requires the two jars to be
+   byte-identical — **the reproducibility gate runs before the smoke test**, so that the jar the smoke
+   test then starts is one already proved reproducible;
+9. smoke-tests that executable jar;
+10. checks and builds the Dockerfile, resolves and starts the hardened six-service Compose stack,
    waits for application health, verifies Grafana provisioning, executes a Prometheus query and
    checks the Jaeger API, with trap-based teardown of containers and volumes;
-8. runs digest-pinned Trivy scans. The application image and both Temurin base images are strict
+11. runs digest-pinned Trivy scans. The application image and both Temurin base images are strict
    HIGH/CRITICAL gates; the digest-pinned third-party Compose images are inventoried and their reports
    are retained because this repository cannot patch those upstream filesystems;
-9. uploads coverage, dependency-check, container-scan and test reports plus the executable jar, and
-   writes the linear gate summary.
+12. uploads the container-scan reports and the executable jar, and writes the linear gate summary.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `docker compose up` fails binding a port | Something already owns 8080, 5432, 4566, 9090, 3000 or 16686. Every port is overridable: `APP_PORT=18080 POSTGRES_PORT=15432 docker compose up -d`. |
+| `docker compose up` fails binding a port | Something already owns one of the eight published ports: 8080 (app), 5432 (PostgreSQL), 4566 (LocalStack), 9090 (Prometheus), 3000 (Grafana), or Jaeger's 16686 (UI), 4317 (OTLP gRPC) and 4318 (OTLP HTTP). The two OTLP ports are the ones most often already taken, because any other collector on the machine wants them too. Every port is overridable: `APP_PORT=18080 POSTGRES_PORT=15432 JAEGER_OTLP_GRPC_PORT=14317 JAEGER_OTLP_HTTP_PORT=14318 docker compose up -d`. |
 | A colleague or another host cannot reach the stack | Working as intended: every port binds `127.0.0.1`. See [Reaching the stack from another machine](#reaching-the-stack-from-another-machine) — widen the one service you need with its `*_BIND_ADDRESS` **and** supply generated credentials, because the committed local signing secret would otherwise let any peer mint an administrator token. |
 | `docker compose up` reports it cannot find an image digest | The pinned digest is not in the local store and the registry was not reachable. Pull the tag once (`docker pull postgres:16.14-bookworm`), confirm the digest matches with `docker image inspect <tag> --format '{{index .RepoDigests 0}}'`, and if upstream has genuinely republished the tag, update the digest in `docker-compose.yml` as a deliberate, reviewable change rather than dropping the pin. |
 | App exits during start-up with a Flyway error | PostgreSQL was not ready. Check with `docker compose exec postgres pg_isready -U carddemo -d carddemo`, then `docker compose logs postgres`. Compose already gates the app on the health check, so this normally means the database container itself is unhealthy. |

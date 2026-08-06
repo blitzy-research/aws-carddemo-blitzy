@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,10 +51,24 @@ class UserListPageTokenServiceTest {
     private final UserListPageTokenService service =
             new UserListPageTokenService(encryption);
 
+    /**
+     * Builds a full page of identifiers in the eight-character shape the legacy security record uses.
+     *
+     * <p>The locale is pinned, and it has to be. {@code String.formatted} carries no locale parameter and
+     * cannot be given one - it resolves {@code Locale.getDefault(Locale.Category.FORMAT)} - so a
+     * {@code %04d} written that way emits whatever digits the ambient locale's numbering system names.
+     * Under the {@code ar-EG} locale the workflow's locale gate re-runs this tier in, CLDR selects the
+     * {@code arab} numbering system and the identifier came out as {@code USER٠٠٠١}: eight characters
+     * still, but not the eight ASCII bytes the fixed-width field holds, so every assertion below read a
+     * string it could never match. {@code String.format} with {@link Locale#ROOT} is the spelling that
+     * accepts a locale, which is why the call is written this way round rather than as the shorthand.
+     *
+     * @return the page identifiers, always ASCII, in display order
+     */
     private static List<String> fullPage() {
         final List<String> userIds = new ArrayList<>();
         for (int index = 1; index <= UserListPageTokenService.MAX_PAGE_ROWS; index++) {
-            userIds.add("USER%04d".formatted(index));
+            userIds.add(String.format(Locale.ROOT, "USER%04d", index));
         }
         return List.copyOf(userIds);
     }

@@ -187,7 +187,10 @@ class SecurityConfigRouteTableTest {
                 false,
                 "/v3/api-docs",
                 "/actuator",
-                "/");
+                "/",
+                // Empty, because nothing here reaches the management chain: these assertions read the
+                // route table, and an operator credential would suggest they depended on one.
+                "");
     }
 
     /**

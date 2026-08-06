@@ -287,25 +287,69 @@ EXPOSE 8080
 # Liveness at the container boundary, so a dependent waiting on
 # `condition: service_healthy` is waiting on something real.
 #
-# The mechanism is chosen from what this image actually contains, verified
-# rather than assumed: the Temurin JRE image ships neither curl nor wget, and
-# /bin/sh is dash, which has no /dev/tcp. bash is present, so the check is a
-# bash networking redirection - no HTTP client is installed, keeping the runtime
-# stage free of a package manager, of a distro network dependency, and of the
-# extra CVE surface an HTTP stack would add.
+# TWO PROPERTIES OF THIS PROBE ARE LOAD-BEARING, and an earlier revision had
+# neither. It must speak the transport the server is actually listening with,
+# and it must be bounded independently of whether this deployment's external
+# dependencies happen to be reachable.
+#
+# ---- 1. THE TRANSPORT IS READ, NOT ASSUMED ------------------------------------
+# The previous probe always sent plaintext HTTP. application-prod.yml enables
+# in-JVM transport security on this same port, so under that profile the probe
+# sent a plaintext request to a TLS listener, never received a status line, and
+# reported a perfectly healthy process as unhealthy - which an orchestrator acts
+# on by restarting it, forever. Verified rather than reasoned about: a plaintext
+# /dev/tcp request to a TLS listener returns no `HTTP/1.1 200` line at all.
+#
+# The switch below is SERVER_SSL_ENABLED, and it is deliberately not a private
+# variable of this file. It is the relaxed-binding environment form of
+# `server.ssl.enabled`, which is the exact key the framework itself binds the
+# listener's transport from. So the server and its probe read ONE value and
+# cannot disagree: a deployment that turns transport security on has, by the
+# same act, told the probe to speak it.
+#
+# ---- 2. THE MECHANISM IS WHAT THIS IMAGE CONTAINS ----------------------------
+# Verified against the runtime image rather than assumed. It ships neither curl
+# nor wget, and /bin/sh is dash, which has no /dev/tcp - but bash IS present and
+# so is openssl. So both branches are built from what is already here: a bash
+# networking redirection for plaintext and `openssl s_client` for TLS. No HTTP
+# client is installed, which keeps the runtime stage free of a package manager,
+# of a distro network dependency, and of the extra CVE surface an HTTP stack
+# would add.
+#
+# The TLS branch does not verify the certificate, and that is correct rather
+# than lax. This probe addresses 127.0.0.1 from inside the same container as the
+# process it is probing, so there is no network to be intercepted on and no
+# identity to establish - the certificate is issued for the name clients reach
+# the service by, which is not the loopback address. Authenticating the server
+# is the job of the client that crosses the network. What this probe establishes
+# is that the process answers, and it must not fail merely because a correctly
+# issued certificate does not name 127.0.0.1.
+#
+# ---- 3. IT PROBES LIVENESS, WHICH IS WHAT A CONTAINER PROBE MEANS ------------
+# The previous probe asked for the aggregate status, whose readiness group
+# synchronously calls the database and all three AWS resources. Under a five
+# second timeout that is a probe whose duration is set by external services: a
+# provider that accepts a connection and stops answering held it open until the
+# timeout, the next probe arrived while that one was still in flight, and they
+# accumulated. It also conflated two questions - an instance that cannot reach a
+# queue is not an instance that should be restarted.
+#
+# The liveness group contains only the process liveness state, so this probe
+# makes no external call and is bounded by construction. The readiness question
+# is still asked, by whoever should be asking it: config/AwsResourceHealthConfig
+# now gives every AWS contributor its own deadline, so /actuator/health/readiness
+# is bounded too and a Compose dependent or a CI gate can wait on it safely.
 #
 # It asserts the HTTP status line rather than grepping the body for "UP":
-# Actuator answers 200 when the aggregate status is UP and 503 when it is not,
-# so the status line cannot be fooled by a healthy component inside an unhealthy
-# whole. The health endpoint aggregates the database check, which is exactly
-# what a dependent service should wait for. APP_PORT is honoured so the check
-# follows a relocated server port.
+# Actuator answers 200 when the group is UP and 503 when it is not, so the
+# status line cannot be fooled by a healthy component inside an unhealthy whole.
+# APP_PORT is honoured so the check follows a relocated server port.
 #
 # The start period is generous because startup runs the Flyway migrations before
 # the server accepts connections; failures inside it do not count against
 # --retries, while a success inside it marks the container healthy immediately.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=90s --retries=3 \
-  CMD ["/usr/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${APP_PORT:-8080} && printf 'GET /actuator/health HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200'"]
+  CMD ["/usr/bin/bash", "-c", "port=\"${APP_PORT:-8080}\"; request=$'GET /actuator/health/liveness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n'; case \"${SERVER_SSL_ENABLED:-false}\" in [Tt][Rr][Uu][Ee]) printf '%s' \"${request}\" | openssl s_client -quiet -connect \"127.0.0.1:${port}\" 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200' ;; *) exec 3<>\"/dev/tcp/127.0.0.1/${port}\" && printf '%s' \"${request}\" >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200' ;; esac"]
 
 # Exec form, so the JVM is PID 1 and receives SIGTERM directly. Wrapping this in
 # `sh -c` would put a shell at PID 1 that does not forward signals, and the

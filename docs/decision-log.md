@@ -7208,6 +7208,268 @@ every test written against the other path.
 
 ---
 
+### DL-180 — A publication has one commit point, and the irreversible step sits outside it
+
+**Context.** Publishing a completed job's artifacts was a four-part sequence: upload every registered
+generation, advance every fixed-name local alias, enforce every generation base's retention depth, and clear
+the registry. Only the **first** part was compensated. A failure in the alias replacement — the third
+artifact's alias, say — propagated to the job-boundary listener, which marked the execution FAILED, while the
+two objects already uploaded stayed in the bucket and the two aliases already advanced kept naming
+generations belonging to a job that had failed. A retention failure did the same thing one step later, and
+additionally left the registry uncleared. In both cases the terminal verdict said nothing was published and
+the outside world could see that something had been.
+
+**The decision.** The sequence is split at one commit point, and every step is placed on the side of it that
+matches whether the step can be undone.
+
+*Before the commit point,* and compensated as a single unit: the uploads and the alias replacements. If any
+of them fails, every alias this publication advanced is put back to what it named before and every object it
+uploaded is deleted, then the failure is rethrown for the listener to turn into the verdict. Restoring an
+alias is possible because the previous content is copied aside — by copy, not by move, so a failure before
+the atomic replacement leaves the alias itself untouched — and the copy is discarded once the publication
+commits. An alias the publication *created* is removed rather than restored, because not existing is what it
+named before. **A FAILED job therefore leaves nothing externally visible, durable or local.**
+
+*After the commit point,* and unable to fail the job: clearing the registry, and enforcing retention.
+Retention deletes rolled-off objects, which cannot be undone, so it cannot participate in any compensation
+and must not be attempted while compensation is still possible. Raising from there would leave only bad
+choices — mark a job FAILED whose artifacts are correctly published and visible, or compensate by deleting
+artifacts that are correct. A base left one generation over its depth is smaller than either and it is
+self-correcting: the next successful publication of that base measures depth from the state it inherits and
+prunes what this pass could not. The failure is logged, naming the base and the depth, and the publication
+stands.
+
+*Cited by:* `batch/step/StagedGenerationStore.java`, `config/BatchConfig.java`.
+
+---
+
+### DL-181 — Publication is serialized by generation base, because two differently named jobs share one
+
+**Context.** Retention is a read-decide-delete pass: list the objects beneath a base, sort them by execution
+identifier, delete everything past the declared depth. It ran with no mutual exclusion of any kind, so the
+decision was taken against a set another publication could still be changing — a time-of-check-to-time-of-use
+defect (CWE-367) with a concrete outcome. Two publications that each upload a generation and each then list a
+set that does not yet contain the other's upload both conclude that nothing has rolled off, and the base is
+left **permanently** one generation deeper than its limit, because the next publication measures depth from
+the state it inherits.
+
+This was reachable rather than theoretical. `BatchLaunchCoordinator` serializes launches, but its advisory
+lock is keyed on the **job name**, and the transaction-backup base `AWS.M2.CARDDEMO.TRANSACT.BKUP` is
+published by two differently named jobs: the backup job's archive step, eagerly at step close, and the
+transaction-report job's unload step, at the job boundary. A per-job lock leaves exactly the pair that shares
+a base free to run concurrently.
+
+**The decision.** The unit of exclusion is the thing being counted, so it is the base and not the job.
+`GenerationPublicationLock` holds every base a publication touches for the whole of upload-then-retention,
+which removes the window rather than narrowing it: the second publication cannot begin until the first has
+both uploaded and pruned, so it always measures depth against a settled set.
+
+The implementation is a PostgreSQL transaction-scoped advisory lock, the same primitive and namespace pattern
+the launch coordinator already uses, for three reasons. It is indifferent to how many replicas exist, which an
+in-process lock is not. It is also indifferent to how many store instances exist inside one JVM, which
+matters because `BackupTransactionJobConfig` constructs its own `StagedGenerationStore` rather than injecting
+the shared bean, so an instance-field lock would not be the same lock. And transaction scope cannot leak a
+held lock back into the connection pool, which a session-scoped lock released by hand can — and a leaked lock
+would stop every later publication of that base rather than one.
+
+Three details are deliberate. Acquisition is **blocking** rather than the coordinator's `try` form, because a
+busy base means "wait your turn", not "skip retention and leave the base over-depth"; the wait is bounded
+through the JDBC statement timeout, so a stuck holder surfaces as a failed job rather than as a batch tier
+that never finishes. Bases are **sorted** before acquisition, so two publications naming an overlapping pair
+cannot deadlock by taking them in opposite orders — the transaction-report job names three bases in one pass,
+which makes overlap real. And a **failure to acquire fails the publication**: publishing unserialized is the
+defect being closed, so it is never the fallback.
+
+The shared base is now declared once. `TransactionReportJobConfig` reads its default from
+`BackupTransactionJobConfig.ARCHIVE_DATASET_BASE` instead of spelling the name out a second time, because two
+spellings of one base would be two retention groups that only looked like one. The two retention depths remain
+two constants, because they record two independent measurements of the same `LIMIT(5)` declaration, and their
+agreement is asserted by test so that a future divergence in the source has to be resolved deliberately
+rather than inherited silently.
+
+*Cited by:* `batch/step/GenerationPublicationLock.java`,
+`batch/step/AdvisoryGenerationPublicationLock.java`, `batch/step/StagedGenerationStore.java`,
+`batch/BackupTransactionJobConfig.java`, `batch/TransactionReportJobConfig.java`.
+
+---
+
+### DL-182 — A dashboard panel visualizes a Gate 3 figure; it does not produce one
+
+**Context.** Gate 3 names three figures — elapsed time, peak memory, records per second — and the dashboard
+announced itself as the source of all three, with panel titles reading `GATE 3 RECORDS PER SECOND`,
+`GATE 3 PEAK MEMORY`, `GATE 3 ELAPSED TIME`, and a row header stating that the peak was "read from this
+row". Two of the three could not be what they were called.
+
+*Records per second* was `rate(counter[$__rate_interval])`. A rolling rate divides by the **rate window**,
+not by the run's elapsed time. A job that processes three hundred records in four seconds inside a
+one-minute rate window reads as five records per second rather than seventy-five. The query is not wrong as
+a rate; it is simply not the quotient the gate asks for, and the difference is a factor of fifteen in that
+example.
+
+*Peak memory* was `max_over_time(sum(jvm_memory_used_bytes)[$__range:])` — the largest occupancy Prometheus
+**happened to observe**. Occupancy between two scrapes is not sampled, so a peak that rises and falls
+inside one scrape interval is invisible, and a batch run short enough to fit between two scrapes is
+invisible entirely. Against the seeded fixtures the interest job completes in tens of milliseconds, so this
+was the normal case rather than the edge case.
+
+The guidance panel compounded it by pointing the reader at a panel called *Records read per second*, which
+no panel on the dashboard was titled — so a reader following the gate's own instructions arrived nowhere —
+and `docs/gate-evidence.md`, which the same panel named as where figures are written up, did not exist.
+
+**The decision.** The dashboard measures and visualizes; it does not certify. Every panel adjacent to a
+Gate 3 figure is now titled as a visualization and its description states what its divisor or its sampling
+actually is, so the honest reading is the first reading rather than one available only to someone who
+opens the query. `GATE 3` no longer appears in any panel title, including the elapsed-time panel, which
+reads a genuine per-execution timer and is therefore sound — but treating it differently from its two
+neighbours would leave a reader to work out which of three identically-branded panels could be trusted.
+It is labelled corroboration.
+
+The quotable figures are produced by a **run-scoped measurement** in the test estate,
+`support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`. Elapsed time is wall clock
+across the launch. Peak memory is read from `MemoryPoolMXBean.getPeakUsage()` summed across heap pools
+after `resetPeakUsage()` immediately before the launch, so it is this run's peak and depends on no sampling
+interval. Records come from the run's own step execution. Records per second is the quotient of the first
+and the third, both from the same run.
+
+Three constraints on that measurement are deliberate. It asserts only that a figure is **well formed** — a
+positive elapsed time, the fixture's own record count, a peak the platform reported — and never that a
+figure is fast enough, because no numeric performance figure exists anywhere in the legacy estate to
+compare against and inventing one is expressly forbidden. It **refuses a measurement with no fixture
+volumes named beside it**, because a number without them is not a baseline. And it writes to
+`target/gate-evidence/` rather than into `docs/`, because a recorded baseline belongs to a machine and a
+date that a person supplies; a test that edited the documentation tree would make this repository's content
+depend on the hardware of whoever last ran the suite.
+
+*Cited by:* `config/grafana/dashboards/carddemo-overview.json`,
+`src/test/java/com/carddemo/support/RunScopedPerformanceRecorder.java`,
+`src/test/java/com/carddemo/batch/InterestCalculationJobIT.java`, `docs/gate-evidence.md`.
+
+### DL-183 — A CI gate reads the same health group the container probe reads, not the aggregate
+
+The jar smoke gate started a database, launched the `local` profile and then required the **aggregate**
+health endpoint to report UP. The aggregate consults every registered contributor, and the gate
+deliberately starts no AWS emulator, so the object-store, queue and topic contributors could not be UP and
+the endpoint answered `{"status":"DOWN"}` with status 503. Under `curl -fsS` a 503 is a failure, so the
+poll never received a body to match and the gate failed on every run regardless of the artifact under test.
+Measured directly, with the database up and the emulator absent: the aggregate returns `DOWN` 503 while
+`/actuator/health/liveness` returns `{"status":"UP"}` 200.
+
+The gate now reads the liveness group. That is the same group `Dockerfile`'s HEALTHCHECK reads (DL-176), so
+the step's long-standing claim — that a jar satisfying it satisfies the image too — became true rather than
+aspirational. **Nothing about the database is given up by not naming its contributor.** Flyway runs inside
+context refresh, so an unreachable database fails the `flywayInitializer` bean, cancels the refresh and ends
+the process; liveness never turns UP at all and the poll reports the exit instead. Measured, pointed at a
+closed port: the process exits during start-up having reported nothing. The alternative resolution — start
+the emulator for this step too — was rejected because it makes an artifact gate depend on the whole stack
+that the following gate exists to exercise.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`,
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java`.
+
+---
+
+### DL-184 — A dashboard assertion must select the panels whose contract it asserts
+
+The container gate fetched the provisioned dashboard from Grafana and required panels 11 and 12 to carry the
+Spring Batch item-reader label names. Those label names are panels 31 and 32's contract. Panels 11 and 12
+read the application's own `carddemo_batch_*_total` counters and carry six targets each, so the filter failed
+twice over: its `length == 2` test was wrong against twelve targets, and every `contains` was false. The
+`length == 2` is itself the evidence of how it happened — two is the target count of panels 31 and 32, so the
+assertion was written for that pair and the selector was left naming the other.
+
+Both contracts are now asserted, each against the panels that hold it, with the exact target counts stated so
+that adding a counter has to be a deliberate edit rather than a silent widening. Two further clauses carry
+DL-182's honesty rule onto the **served** document rather than the file: no panel may re-brand itself as the
+Gate 3 figure, and panels 11, 12 and 17 must each say what they are. Asserting this in CI is not a duplicate
+of the unit test that reads the file — only the CI check can prove that provisioning delivered *that* file.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`,
+`config/grafana/dashboards/carddemo-overview.json`,
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java`.
+
+---
+
+### DL-185 — A vulnerability gate that hides findings from its own report is not a gate
+
+The container scans passed `--ignore-unfixed`. That flag does not merely soften a verdict: it removes the
+matching findings from the JSON output as well, so the archived report — the durable record a reviewer signs
+the gate off from, and the only one, because these reports are untracked — could not show what had been
+dropped. A gate describing itself as a strict zero-HIGH/CRITICAL gate while a flag deleted an unbounded
+subset from both the verdict and the evidence was neither strict nor auditable.
+
+Every HIGH and CRITICAL is now retained whether or not a fix exists upstream, and the verdict is decided in
+the workflow from the retained report rather than by the scanner's exit code. The reason is concrete:
+`--exit-code 1` ends the scanner before the breakdown can be printed, so a failing run reported *that* it had
+failed and not *what* it had found. Scanning with `--exit-code 0` and then judging lets the same run
+enumerate every finding it is failing on, with the fix status of each, and removes the possibility of the
+printed count and the verdict disagreeing — previously one came from the report and the other from the
+scanner.
+
+The strict/inventory split is unchanged and is a different decision: the application image and the two
+digest-pinned Dockerfile bases are gated strictly, while third-party Compose images are inventoried, because
+this repository cannot patch inside someone else's binary. **There is deliberately no ignore file.** When a
+strictly gated image fails on a finding with no fix available there are exactly two honest actions — move the
+digest pin to a rebuilt upstream image, or record a reviewed acceptance for that identifier — and neither is
+pre-empted by a flag.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`,
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java`.
+
+---
+
+### DL-186 — One gate inventory, named identically in all three places that name it
+
+The workflow carried three disagreeing counts of its own gates: a header saying five, two step banners saying
+"of 4", three saying "of 5", and a summary listing six. A reviewer signing the gates off could not tell which
+was authoritative. Six is the count and the summary was the accurate list; the header undercounted because the
+container gate was the only failing step with no banner at all, so anyone counting banners counted one short
+of the steps that can fail.
+
+The header now states six, enumerates them, and records that three properties are carried by one gate — the
+Maven build gate, because they are bound to its verify phase — rather than by three steps. A previous revision
+said "the first three properties" were carried there, which was also wrong: the three are the zero-warning
+build, the coverage floor and the supply chain scan, and locale hardening sits between them in the list while
+being a gate of its own. The banners are renumbered "of 6", the container gate has one, and the summary names
+the same six in the same order. A contract test reads all three places and requires them to agree.
+
+*Cited by:* `.github/workflows/carddemo-java-ci.yml`,
+`src/test/java/com/carddemo/config/BuildAndCiContractTest.java`.
+
+---
+
+### DL-187 — `String.formatted` is banned outright, because it cannot be given a locale
+
+A page of user identifiers was built with `"USER%04d".formatted(index)`. `String.formatted` has no overload
+accepting a `Locale` — it resolves `Locale.getDefault(Locale.Category.FORMAT)` and offers the caller no way to
+say otherwise — so under the `ar-EG` locale that the workflow's locale gate re-executes the unit tier in, CLDR
+selected the `arab` numbering system and the identifier was rendered `USER٠٠٠١`. Eight characters still, but
+not the eight ASCII bytes the fixed-width field holds, so every assertion in that class compared against a
+string it could never match. Reproduced before fixing: `Optional[USER٠٠٠١]` did not contain `"USER0001"`.
+
+A module-wide sweep found the reviewed site was one of **four**, not one. The other three are in integration
+tests, which the locale gate does not re-execute: a sixteen-digit transaction identifier, a port number
+rendered into a Prometheus configuration file, and a sample value rendered into an exposition body that a real
+Prometheus scrapes. The sweep also confirmed what was already right — all forty-nine `String.format` calls
+already named a locale, every `DateTimeFormatter.ofPattern` already passed one, and no `toUpperCase()`,
+`DecimalFormat` or `SimpleDateFormat` existed anywhere. The rule was known; what had never been held to it was
+the code that builds the fixtures the locale-invariance suites run against.
+
+The shorthand is now **absent from the module** rather than permitted where its conversions happen to be
+locale-independent. A per-call-site rule would require every author and reviewer to classify conversions
+correctly forever and would still be wrong the first time a `%s` is handed a `Formattable` or a `%S` is
+written. `LocaleDeterminismAuditTest` enforces the absence by reading every source file in both trees, which
+is how the integration tier — never re-executed under a hostile locale — is covered at unit-tier cost with no
+container. The locale gate and the audit are complementary: the gate observes real behaviour in one tier, the
+audit forbids the construct everywhere.
+
+*Cited by:* `src/test/java/com/carddemo/LocaleDeterminismAuditTest.java`,
+`src/test/java/com/carddemo/service/UserListPageTokenServiceTest.java`,
+`src/test/java/com/carddemo/repository/TransactionRepositoryIT.java`,
+`src/test/java/com/carddemo/config/MonitoringQueriesIT.java`,
+`.github/workflows/carddemo-java-ci.yml`.
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

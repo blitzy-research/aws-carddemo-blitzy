@@ -210,16 +210,43 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
       TZ: UTC
       PGTZ: UTC
-    # One diagnostic setting, and nothing else. A statement slower than two seconds is logged so a
-    # fixed-width mapping or a truncating decimal store is visible while parity evidence is being
-    # gathered - the replacement for a diagnostic channel that used to be a DISPLAY statement. NO
-    # memory, connection or planner setting is declared: performance engineering is out of scope,
-    # there is no legacy baseline to tune against, and the measurement surface is the meter set
-    # Prometheus scrapes rather than a value guessed here.
+    # One diagnostic setting, and two settings that bound what that diagnostic is allowed to say. A
+    # statement slower than two seconds is logged so a fixed-width mapping or a truncating decimal store
+    # is visible while parity evidence is being gathered - the replacement for a diagnostic channel that
+    # used to be a DISPLAY statement. NO memory, connection or planner setting is declared: performance
+    # engineering is out of scope, there is no legacy baseline to tune against, and the measurement
+    # surface is the meter set Prometheus scrapes rather than a value guessed here.
+    #
+    # THE SLOW-STATEMENT LOG MUST NOT CARRY BIND VALUES, and suppressing them takes an explicit setting
+    # because the server's default is to log them IN FULL. log_parameter_max_length defaults to -1, and
+    # every statement this application issues is a prepared statement bound through the extended
+    # protocol, so a logged slow statement arrived with a "DETAIL: parameters: $1 = ..." line beneath it
+    # naming every value. The values are the estate's own: a customer's social security number, a card
+    # number, a card verification code, an account balance, and on a sign-on write the credential digest.
+    # Container logs are collected, shipped and retained by whatever reads the Docker log driver, so the
+    # diagnostic was a disclosure channel that widened with every slow query. Zero disables parameter
+    # logging outright and leaves the statement text, the duration and the timing - which is the whole of
+    # what the diagnostic was added for. Verified against this image: the slow statement is still logged
+    # and the DETAIL line is gone.
+    #
+    # The on-error path is pinned to the same answer. log_parameter_max_length_on_error already defaults
+    # to zero, so this restates a safe default rather than changing behaviour; it is stated because a
+    # default is a thing that can change under you, and because the two settings must agree - suppressing
+    # values on the slow-statement path while an error message printed them would close one half of one
+    # channel and read as though both were closed.
+    #
+    # THIS IS ONE HALF OF ONE RULE. The other half is in src/main/resources/logback-spring.xml, which
+    # pins org.hibernate.SQL and org.hibernate.orm.jdbc.bind to INFO so the persistence provider cannot
+    # print the same statements and the same values from the application side. Both halves are asserted:
+    # this one by ContainerHardeningContractTest, the other by ObservabilityConfigTest.
     command:
       - postgres
       - -c
       - log_min_duration_statement=2000
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_parameter_max_length_on_error=0
     ports:
       - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -402,8 +429,11 @@ services:
   # then answers nothing.
   #
   # NO HEALTHCHECK IS DECLARED HERE ON PURPOSE: the image already defines one against
-  # /actuator/health, compose honours it, and `docker compose ps` reports it. A second definition
-  # would be a second thing to keep in step with the actuator path.
+  # /actuator/health/liveness, compose honours it, and `docker compose ps` reports it. A second
+  # definition would be a second thing to keep in step with the actuator path - and with the
+  # transport, since the image's probe switches to TLS on SERVER_SSL_ENABLED rather than assuming
+  # plaintext. The liveness group is deliberate: it consults nothing outside this process, so the
+  # probe cannot be held open by another service in this stack.
   app:
     build:
       context: .

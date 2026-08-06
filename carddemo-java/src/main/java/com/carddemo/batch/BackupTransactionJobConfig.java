@@ -19,6 +19,7 @@ package com.carddemo.batch;
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
+import com.carddemo.batch.step.GenerationPublicationLock;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
@@ -452,6 +453,9 @@ public final class BackupTransactionJobConfig {
      * @param transactionRepository the transaction master
      * @param transactionScanRepository bounded sequential-read view of the transaction master
      * @param objectStore the object-store client used by the durable generation store
+     * @param publicationLock the per-base publication lock the generation store serializes with; this
+     *                        job shares its archive base with the transaction-report job's unload step,
+     *                        so the lock is what keeps the two from interleaving their retention passes
      * @param awsProperties the already-registered settings bean carrying the destination bucket and
      *                      the region; this class never registers it a second time
      * @param meterRegistry the registry both step timers are recorded on
@@ -466,6 +470,7 @@ public final class BackupTransactionJobConfig {
             final TransactionRepository transactionRepository,
             final TransactionScanRepository transactionScanRepository,
             final S3Operations objectStore,
+            final GenerationPublicationLock publicationLock,
             final AwsProperties awsProperties,
             final MeterRegistry meterRegistry,
             final Clock clock,
@@ -483,7 +488,8 @@ public final class BackupTransactionJobConfig {
         this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
         this.generationStore = new StagedGenerationStore(
                 Objects.requireNonNull(objectStore, "objectStore"),
-                this.awsProperties.s3().batchStagingBucket());
+                this.awsProperties.s3().batchStagingBucket(),
+                Objects.requireNonNull(publicationLock, "publicationLock"));
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.stagingDirectory = Path.of(requireStagingDirectory(stagingDirectory))

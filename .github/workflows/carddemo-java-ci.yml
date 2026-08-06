@@ -20,10 +20,26 @@
 # itself back into the module with defaults.run.working-directory.
 #
 # WHAT THIS RUN PROVES
-# Five linear gates, every one of which ends the run where it is not satisfied - directly, by failing
-# its own step, with nothing recording a failure and carrying on. The first three properties below
-# are carried by the Maven build gate because they are bound to its verify phase; the remaining
-# runtime properties have explicit steps:
+# SIX linear gates, every one of which ends the run where it is not satisfied - directly, by failing
+# its own step, with nothing recording a failure and carrying on.
+#
+# There is one inventory of those six and it is the list below. It is written out because this file
+# previously carried three disagreeing counts - a header that said five, two step banners that said
+# "of 4", three that said "of 5", and a summary that listed six - and a reviewer signing the gates off
+# could not tell which was authoritative. Six is the count, the summary was the accurate one, and the
+# reason the header undercounted is that the last gate was the only one with no banner at all.
+#
+# Three properties are carried by ONE gate, the Maven build gate, because they are bound to its verify
+# phase rather than invoked separately. Each remaining property is a gate of its own:
+#
+#   gate 1  zero-warning build, coverage floor and supply chain (all three bound to verify)
+#   gate 2  locale hardening
+#   gate 3  bootstrap contract
+#   gate 4  reproducibility
+#   gate 5  jar deployability
+#   gate 6  container, Compose and monitoring deployability
+#
+# Decision log DL-186 records why this list is written out rather than left implied.
 #
 #   zero-warning build : the compiler plugin runs javac with -Xlint:all -Werror under release
 #                        25, so any warning ends the run instead of accumulating in a report.
@@ -31,9 +47,13 @@
 #                        integration execution data - LINE counter, covered ratio, minimum
 #                        0.80, halting on failure. LINE is the enforced counter; the other
 #                        counters are produced for information only.
-#   locale hardening   : the unit tier is re-executed under two hostile default locales, which
-#                        is the only way a locale defect in a fixed-width byte format can be
-#                        observed at all, because the suite itself pins the locale.
+#   locale hardening   : the unit tier is re-executed under two hostile default locales, because
+#                        the suite pins the locale and so cannot observe such a defect on its own.
+#                        It is one of two mechanisms rather than the only one: this gate observes
+#                        real behaviour but only in the tier it re-executes, while
+#                        LocaleDeterminismAuditTest forbids the constructs by reading every source
+#                        file in both trees - which is how the integration tier, never re-executed
+#                        here, is covered too. Decision log DL-187 records the ban.
 #   supply chain       : the vulnerability plugin runs its check goal and ends the build on any
 #                        finding at or above the configured score. It is EXECUTED here rather
 #                        than merely declared: the module build leaves the scan switched on by
@@ -47,9 +67,14 @@
 #                        would be the only executable artifact here that nothing verified.
 #   reproducibility    : a second package build with the same revision and source epoch is compared
 #                        byte for byte with the verified jar.
-#   deployability      : the digest-pinned image and complete Compose stack are built, scanned,
-#                        started and queried through application, Prometheus, Grafana and Jaeger
-#                        endpoints before the artifact is published.
+#   jar deployability  : the repackaged jar's declared start class is proven present inside the
+#                        artifact, and the artifact is started against a real database and must
+#                        report live on the same group the container image probes.
+#   container and      : the digest-pinned image and complete Compose stack are built, scanned,
+#   monitoring           started and queried through application, Prometheus, Grafana and Jaeger
+#   deployability        endpoints before the artifact is published. Nothing is filtered out of the
+#                        scans - a finding with no fix available upstream is retained in both the
+#                        verdict and the archived report rather than dropped from both.
 #
 # Stopping at package instead of verify would run none of the build-phase gates and a green run
 # would prove nothing, so the build invocation below always goes all the way to verify.
@@ -341,7 +366,7 @@ jobs:
               "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}"
           } >> "${GITHUB_ENV}"
 
-      # ---- gate 1 of 4: build, test, coverage and supply chain --------------------------------
+      # ---- gate 1 of 6: build, test, coverage and supply chain --------------------------------
       # The command reaches verify with no gate-disabling property. The two identity properties do
       # not change what runs: they make the generated build-info and archive timestamps derive from
       # the checked-out commit rather than the wall clock. Coverage and full-scope dependency-check
@@ -364,7 +389,7 @@ jobs:
             -Dsource.date.epoch="${SOURCE_DATE_EPOCH}" \
             clean verify
 
-      # ---- gate 2 of 4: locale-hostile re-execution -----------------------------------------
+      # ---- gate 2 of 6: locale-hostile re-execution -----------------------------------------
       # The module pins -Duser.language=en -Duser.country=US in test.jvm.args so that a test's
       # result never depends on the machine running it. That pinning is correct, and it has one
       # cost: it makes the suite structurally unable to observe a locale defect. The module emits
@@ -441,7 +466,7 @@ jobs:
       # Nothing about the gate's strictness is decided in this file: the score that fails the build
       # and the report formats are all declared in the module build.
 
-      # ---- gate 3 of 5: bootstrap contract --------------------------------------------------
+      # ---- gate 3 of 6: bootstrap contract --------------------------------------------------
       # The module's local AWS surface is provisioned by a single emulator initializer,
       # localstack/init/01-create-aws-resources.sh. Nothing in the Maven build reads that file, so
       # every other gate here can pass while it is broken - and it is the one file the
@@ -685,7 +710,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # ---- gate 4 of 5: reproducibility ------------------------------------------------------
+      # ---- gate 4 of 6: reproducibility ------------------------------------------------------
       # Save the verified jar, rebuild from a clean target with the same revision and source epoch,
       # and compare bytes. The reports from the verified run have already been uploaded above, so the
       # clean cannot erase evidence. A timestamp or archive-order regression fails here even when both
@@ -712,11 +737,17 @@ jobs:
           sha256sum "${rebuilt_jar}"
           echo 'The clean rebuild is byte-identical to the verified artifact.'
 
-      # ---- gate 5 of 5: deployability -------------------------------------------------------
+      # ---- gate 5 of 6: jar deployability ---------------------------------------------------
       # A repackaged jar names a start class in its manifest, and nothing earlier in this workflow
       # proves that the class is present in the artifact or that the context it starts can reach a
       # started state. Both are proven here, before the upload, so that the only artifact this
       # workflow publishes is one that was observed to start.
+      #
+      # A DATABASE IS STARTED AND THE AWS EMULATOR DELIBERATELY IS NOT. This gate is about the
+      # artifact, so it starts the one dependency the artifact cannot boot without and no more; the
+      # complete stack is gate 6's subject. The consequence is stated where it matters, at the
+      # assertion below: with the emulator absent the aggregate health endpoint is DOWN by design, so
+      # the group this step reads has to be one that does not consult it.
       #
       # The database is started with the container runtime already present on the runner rather than
       # through a job-level service block, so the job keeps its single-job shape and - importantly -
@@ -801,25 +832,50 @@ jobs:
           app_pid=$!
           echo "Started process ${app_pid}."
 
-          # Health reporting UP is the same signal the container image uses as its health check, so a
-          # jar that satisfies this step satisfies the image too.
+          # THE LIVENESS GROUP IS THE GATE, AND IT IS THE SAME SIGNAL THE IMAGE PROBES. The Dockerfile's
+          # HEALTHCHECK asks for /actuator/health/liveness, so asserting that group is what makes this
+          # step's long-standing claim true - that a jar satisfying it satisfies the image too. While this
+          # read the aggregate instead, the claim was simply false, because the two are different signals.
+          #
+          # READING THE AGGREGATE HERE COULD NEVER HAVE PASSED, WHATEVER THE ARTIFACT. The aggregate
+          # includes every contributor, and this step starts only the database on purpose: the AWS
+          # emulator is not started, so the object-store, queue and topic contributors are all DOWN and
+          # the aggregate answers DOWN with status 503. A 503 is a failure under `curl -fsS`, so the loop
+          # never even received a body to match and the step failed on every run. Measured directly, with
+          # the database up and the emulator absent: /actuator/health returns {"status":"DOWN"} 503 while
+          # /actuator/health/liveness returns {"status":"UP"} 200.
+          #
+          # NOTHING ABOUT THE DATABASE IS GIVEN UP BY NOT NAMING ITS CONTRIBUTOR. It is proven
+          # transitively and unavoidably: Flyway runs inside context refresh, so an unreachable database
+          # fails the flywayInitializer bean, cancels the refresh and ends the process - liveness never
+          # turns UP at all, and this loop reports the exit instead. Measured, pointed at a closed port:
+          # the process exits during start-up having reported nothing. That is why the database is started
+          # above, and why this one assertion is sufficient rather than needing a second. Decision log DL-183
+          # records the measurement and why starting the emulator here was rejected.
           started=0
           for _ in $(seq 1 60); do
-            if health="$(curl -fsS http://localhost:8080/actuator/health)"; then
-              case "${health}" in
+            if liveness="$(curl -fsS http://localhost:8080/actuator/health/liveness)"; then
+              case "${liveness}" in
                 *'"status":"UP"'*)
-                  echo "Health reported: ${health}"
+                  echo "Liveness reported: ${liveness}"
                   started=1
                   break
                   ;;
               esac
             fi
             if ! kill -0 "${app_pid}" 2>/dev/null; then
-              echo "Process ${app_pid} exited before reporting health."
+              echo "Process ${app_pid} exited before reporting liveness."
               break
             fi
             sleep 2
           done
+
+          # Recorded for the log, never asserted. The aggregate is expected to be DOWN here because the
+          # emulator is deliberately absent, and printing it keeps that expectation visible to whoever
+          # reads a failed run rather than leaving them to rediscover it. `-f` is omitted precisely
+          # because the expected 503 would otherwise end the step.
+          echo "---- aggregate health, expected DOWN without the emulator ----"
+          curl -sS -o - -w '\n' http://localhost:8080/actuator/health || :
 
           # Only the process this step started is signalled, by the identifier captured above.
           if kill "${app_pid}" 2>/dev/null; then
@@ -839,13 +895,18 @@ jobs:
           rm -f smoke.log
 
           test "${started}" -eq 1
-          echo "The artifact starts and reports healthy."
+          echo "The artifact starts and reports live on the group the container image probes."
 
+      # ---- gate 6 of 6: container, Compose and monitoring deployability ----------------------
+      # This banner is not decoration. Its absence is the reason the header of this file said five
+      # gates while the summary at the bottom listed six: every other gate announced itself and this
+      # one did not, so a reader counting banners counted one short of the steps that can fail.
+      #
       # The full operational boundary: build the image with the same identity as Maven, resolve and
       # start Compose without rebuilding, verify every service and monitoring contract, then scan the
       # application and both base images strictly. Third-party Compose images are scanned and archived
       # too; their upstream findings are inventory evidence rather than a claim this repository can
-      # patch inside someone else's binary.
+      # patch inside someone else's binary. No finding is filtered out of any of those scans.
       - name: Validate and scan the container and monitoring stack
         id: container_gate
         run: |
@@ -908,15 +969,44 @@ jobs:
             -u admin:admin http://127.0.0.1:3000/api/datasources/uid/carddemo-jaeger)"
           test "${jaeger_status}" = '404'
 
+          # THE DASHBOARD GRAFANA SERVES, NOT THE FILE IN THE REPOSITORY. A unit test already reads the
+          # file; only this step can prove that provisioning delivered that file rather than some other
+          # one, so every clause below is asserted against the served document.
+          #
+          # THE SELECTOR AND THE ASSERTION USED TO NAME DIFFERENT PANELS. This selected panels 11 and 12
+          # and then required their queries to carry the item-reader label names - which are panels 31 and
+          # 32's contract. Panels 11 and 12 read the application's own counters and carry six targets
+          # each, so the old filter failed twice over: `length == 2` was wrong against twelve targets, and
+          # every `contains` was false. Both contracts are now asserted, each against the panels that
+          # actually hold it, and the exact target counts are stated so that adding a counter has to be a
+          # deliberate edit here rather than a silent widening.
+          #
+          # THE LAST TWO CLAUSES CARRY THE GATE 3 HONESTY RULE ONTO THE SERVED DASHBOARD. A rolling
+          # PromQL rate divides by the rate window and a scraped maximum is not a process peak, so no
+          # panel may present itself as the Gate 3 figure; the quotable figures come from the run-scoped
+          # harness and are written up in docs/gate-evidence.md. Panels 11, 12 and 17 must therefore say
+          # what they are, and no panel anywhere may re-brand itself as the figure. Decision log DL-184
+          # records this; DL-182 records why the panels were relabelled.
           dashboard="$(curl -fsS -u admin:admin \
             http://127.0.0.1:3000/api/dashboards/uid/carddemo-overview)"
           printf '%s\n' "${dashboard}" | jq -e '
             .dashboard.title == "CardDemo Overview"
-            and (([.dashboard.panels[] | select(.id == 11 or .id == 12)
+            and (([.dashboard.panels[] | select(.id == 31 or .id == 32)
                 | .targets[].expr
                 | contains("spring_batch_item_read_job_name")
-                  and contains("spring_batch_item_read_step_name")]) as $queries
-              | ($queries | length) == 2 and ($queries | all))'
+                  and contains("spring_batch_item_read_step_name")]) as $itemRead
+              | ($itemRead | length) == 2 and ($itemRead | all))
+            and (([.dashboard.panels[] | select(.id == 11 or .id == 12)
+                | .targets[].expr
+                | contains("carddemo_batch_") and contains("_total")]) as $application
+              | ($application | length) == 12 and ($application | all))
+            and (([.dashboard.panels[] | select(.id == 11 or .id == 12 or .id == 17)
+                | .title | contains("visualization")]) as $labelled
+              | ($labelled | length) == 3 and ($labelled | all))
+            and ([.dashboard.panels[]
+                | (.title // "")
+                | contains("GATE 3 RECORDS PER SECOND")
+                  or contains("GATE 3 PEAK MEMORY")] | any | not)'
 
           targets_ready=0
           for _ in $(seq 1 60); do
@@ -941,9 +1031,30 @@ jobs:
           curl -fsS http://127.0.0.1:16686/api/services \
             | jq -e '.data | type == "array"'
 
+          # NOTHING IS FILTERED OUT OF THE SCAN, AND THAT IS THE CHANGE. This used to pass
+          # --ignore-unfixed, which does not merely soften the verdict: it removes those findings from the
+          # JSON as well, so the archived report - the durable record a reviewer signs the gate off from -
+          # could not show what had been dropped. A gate that calls itself a strict zero-HIGH/CRITICAL
+          # gate while a flag deletes an unbounded subset of the findings from both the verdict and the
+          # evidence is not strict, and its report cannot be audited. Every HIGH and CRITICAL is now
+          # retained, whether or not a fix exists upstream.
+          #
+          # THE VERDICT IS DECIDED HERE RATHER THAN BY THE SCANNER'S EXIT CODE, for one concrete reason:
+          # --exit-code 1 ends the scanner before the breakdown below is printed, so a failing run
+          # reported that it had failed and not what it had found. Scanning with --exit-code 0 and then
+          # deciding lets the same run print every finding it is failing on, with the fix status of each.
+          # The two can no longer disagree either, because the count that is printed is the count that is
+          # judged - previously one came from the report and the other from the scanner.
+          #
+          # WHAT TO DO WHEN A STRICT IMAGE FAILS ON A FINDING WITH NO FIX. There are exactly two honest
+          # actions and no mechanism here pre-empts either: move the digest pin to a rebuilt upstream
+          # image that no longer carries it, or record a reviewed acceptance for that specific
+          # identifier. There is deliberately no ignore file in this repository, so nothing is accepted
+          # today by default, and accepting something has to be a visible edit rather than a flag.
+          # Decision log DL-185 records the whole decision.
           scan_image() {
             image="$1"
-            exit_code="$2"
+            verdict="$2"
             name="$(printf '%s' "${image}" | sha256sum | cut -d ' ' -f 1)"
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
@@ -952,21 +1063,34 @@ jobs:
               "${scanner}" image \
               --scanners vuln \
               --severity HIGH,CRITICAL \
-              --ignore-unfixed \
               --format json \
               --output "/reports/${name}.json" \
-              --exit-code "${exit_code}" \
+              --exit-code 0 \
               "${image}"
             count="$(jq '[.Results[]?.Vulnerabilities[]?] | length' \
               "${report_dir}/${name}.json")"
-            printf 'Image %s: %s fixed HIGH/CRITICAL finding(s).\n' "${image}" "${count}"
+            unfixed="$(jq '[.Results[]?.Vulnerabilities[]?
+              | select((.FixedVersion // "") == "")] | length' \
+              "${report_dir}/${name}.json")"
+            printf 'Image %s (%s): %s HIGH/CRITICAL finding(s), %s of them with no fix available.\n' \
+              "${image}" "${verdict}" "${count}" "${unfixed}"
+            if [ "${verdict}" = 'strict' ] && [ "${count}" -ne 0 ]; then
+              printf 'This image is gated strictly and must carry no HIGH or CRITICAL finding:\n' >&2
+              jq -r '.Results[]?.Vulnerabilities[]?
+                | "  " + .VulnerabilityID + " " + .Severity + " " + .PkgName
+                  + " installed=" + (.InstalledVersion // "unknown")
+                  + " fixed_in=" + (if (.FixedVersion // "") == "" then "no fix available"
+                                    else .FixedVersion end)' \
+                "${report_dir}/${name}.json" >&2
+              return 1
+            fi
           }
 
           # The product and its two immutable bases are this repository's deployable supply chain.
           application_image_id="$(docker image inspect \
             --format '{{.Id}}' "${COMPOSE_PROJECT_NAME}-app:local")"
           case "${application_image_id}" in sha256:*) ;; *) exit 1 ;; esac
-          scan_image "${application_image_id}" 1
+          scan_image "${application_image_id}" strict
           while IFS= read -r image; do
             case "${image}" in
               *@sha256:*) ;;
@@ -975,7 +1099,7 @@ jobs:
                 exit 1
                 ;;
             esac
-            scan_image "${image}" 1
+            scan_image "${image}" strict
           done < <(awk '/^FROM / {print $2}' Dockerfile)
 
           # Every third-party service image is still scanned by its immutable reference and archived.
@@ -988,7 +1112,7 @@ jobs:
                 exit 1
                 ;;
             esac
-            scan_image "${image}" 0
+            scan_image "${image}" inventory
           done < <(docker compose config --images | sort -u)
 
           echo 'Container, Compose and monitoring validation passed.'
@@ -1007,7 +1131,7 @@ jobs:
       # that produced no artifact is a finding in its own right.
       #
       # THIS STEP CARRIES NO CONDITION, AND THAT IS THE POINT OF THE LINEAR MODEL. It used to
-      # enumerate all five gate outcomes, because every gate was allowed to continue past its own
+      # enumerate every gate outcome, because every gate was allowed to continue past its own
       # failure and so the run could reach this step with a gate already red. That enumeration was a
       # standing hazard: a gate added above and not added here would publish a jar from a run that
       # was going to fail anyway, and the artifact outlives the run. Now no gate continues past its
@@ -1025,7 +1149,7 @@ jobs:
       # ---- the summary ----------------------------------------------------------------------
       # THIS STEP NO LONGER DECIDES THE RUN, AND THAT IS THE WHOLE CHANGE. It used to: every gate
       # above was allowed to continue past its own failure, so the job's status came from a final
-      # step that read all five recorded outcomes back and exited non-zero if any was not a pass.
+      # step that read every recorded outcome back and exited non-zero if any was not a pass.
       # That design put the run's verdict at the end of a chain of recorded results rather than in
       # the gates themselves, and it had to run unconditionally to be reached at all - which is the
       # one thing this file may not do outside an evidence upload.
@@ -1037,12 +1161,16 @@ jobs:
       # a failed gate stops the job before it.
       #
       # A gate added above needs no change here.
+      # The six lines below are the same six gates, in the same order and under the same names, as the
+      # inventory in this file's header and the "gate N of 6" banner on each step. Three places name
+      # them and all three must agree; they did not, and that is what this list is now checked against
+      # by BuildAndCiContractTest.
       - name: Gate summary
         run: |
-          echo 'build, test, coverage and supply chain gate : passed'
-          echo 'locale-hostile re-execution gate            : passed'
-          echo 'bootstrap contract gate                     : passed'
-          echo 'reproducible artifact gate                  : passed'
-          echo 'jar and container deployability gate        : passed'
-          echo 'monitoring and container scan gate          : passed'
+          echo 'gate 1 of 6  build, test, coverage and supply chain          : passed'
+          echo 'gate 2 of 6  locale-hostile re-execution                     : passed'
+          echo 'gate 3 of 6  bootstrap contract                              : passed'
+          echo 'gate 4 of 6  reproducibility                                 : passed'
+          echo 'gate 5 of 6  jar deployability                               : passed'
+          echo 'gate 6 of 6  container, Compose and monitoring deployability : passed'
           echo 'Every gate passed.'

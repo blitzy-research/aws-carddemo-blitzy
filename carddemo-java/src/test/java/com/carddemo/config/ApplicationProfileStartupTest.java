@@ -343,7 +343,12 @@ final class ApplicationProfileStartupTest {
             new RequiredSecret("CARDDEMO_JWT_SECRET", "carddemo.security.jwt.secret",
                     SUPPLIED_JWT_SECRET),
             new RequiredSecret("CARDDEMO_FIELD_ENCRYPTION_KEY",
-                    "carddemo.security.field-encryption.key", SUPPLIED_ENCRYPTION_KEY));
+                    "carddemo.security.field-encryption.key", SUPPLIED_ENCRYPTION_KEY),
+            // The operator credential the management surface accepts. Required from the environment on
+            // the same terms as the signing and encryption material, and for the same reason: it is
+            // presented on every scrape, so a defaulted one would be a credential in the repository.
+            new RequiredSecret("CARDDEMO_MANAGEMENT_TOKEN",
+                    SecurityConfig.MANAGEMENT_TOKEN_PROPERTY, "supplied-operator-credential"));
 
     /** Registers the framework's own migration settings type, which the deployed application binds. */
     @Configuration(proxyBeanMethods = false)

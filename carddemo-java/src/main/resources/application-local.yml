@@ -334,16 +334,24 @@ spring:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
 # Observability, bound to the compose stack. Two paths are resolved literally by sibling files and
-# may not be narrowed here: /actuator/health is the HEALTHCHECK target of carddemo-java/Dockerfile,
-# and /actuator/prometheus is the scrape target of config/prometheus/prometheus.yml and the surface
-# every panel of config/grafana/dashboards/carddemo-overview.json reads.
+# may not be narrowed here: /actuator/health, because publishing it is what makes its groups reachable
+# and carddemo-java/Dockerfile's HEALTHCHECK asks for the /actuator/health/liveness group; and
+# /actuator/prometheus, which is the scrape target of
+# config/prometheus/prometheus.yml and the surface every panel of
+# config/grafana/dashboards/carddemo-overview.json reads.
 #
 # CROSS-FILE CONTRACTS - two paths here are resolved literally by sibling files and neither the
 # paths nor their reachability may be narrowed by this overlay:
 #
-#   /actuator/health      the HEALTHCHECK target of carddemo-java/Dockerfile and the readiness gate
-#                         anything waiting on this application depends upon. If it stops answering,
-#                         the container never reports healthy.
+#   /actuator/health      and its two groups. /actuator/health/liveness is the HEALTHCHECK target of
+#                         carddemo-java/Dockerfile - the liveness group specifically, because a
+#                         container probe asks whether the process should be restarted and that answer
+#                         must not depend on another service being reachable. /actuator/health/readiness
+#                         is the gate anything waiting on this application's DEPENDENCIES waits on, and
+#                         it is bounded on the contributor side rather than by its caller: every AWS
+#                         contributor in config/AwsResourceHealthConfig carries its own deadline. If
+#                         either stops answering, the container never reports healthy. The shared
+#                         baseline's health-group block develops the distinction.
 #   /actuator/prometheus  the scrape target of config/prometheus/prometheus.yml, whose one application
 #                         job reaches the application at app:8080 over the compose project network -
 #                         the one target that configuration declares, and the service this module's
@@ -600,3 +608,25 @@ carddemo:
     # the gate write-up would be empty. Opening it here is what makes local collection work, and it is
     # scoped to this profile alone. Production does not open it.
     anonymous-metrics-scrape: true
+    # -------------------------------------------------------------------------------------------
+    # OPERATOR CREDENTIAL FOR THE MANAGEMENT SURFACE. config/SecurityConfig matches the whole
+    # management base path with its own filter chain, permits exactly three anonymous paths - the
+    # aggregate health endpoint and its two probe groups - and requires the ROLE_MONITORING authority
+    # for everything else beneath it. That authority is held ONLY by a caller presenting this
+    # credential; neither of the two authorities a sign-on grants can satisfy it, which is the point:
+    # a collector is not a user of this application, and an ordinary signed-on cardholder must not be
+    # able to read per-endpoint latency, per-batch-step record counts, pool saturation or JVM
+    # internals.
+    #
+    # THIS VALUE IS A DEVELOPMENT LITERAL AND IS NOT A SECRET OF ANYTHING. It is committed for the
+    # same reason the local signing secret is: this profile has to work on a fresh clone with nothing
+    # exported. It grants nothing beyond reading this machine's own operational telemetry, and the
+    # published ports it would be presented on are bound to the loopback interface by
+    # docker-compose.yml. Never reuse it anywhere a port is reachable from another host.
+    #
+    # Overridable by CARDDEMO_MANAGEMENT_TOKEN so a developer machine can supply its own inert value. The
+    # setting is bound with an EMPTY default in the baseline, and empty is FAIL-CLOSED: no identity can
+    # hold the authority, so the surface admits nobody beyond the three probe paths. Production binds
+    # this to a bare environment reference with no fallback and is refused start-up without it.
+    management:
+      token: ${CARDDEMO_MANAGEMENT_TOKEN:local-development-only-management-token-do-not-reuse}

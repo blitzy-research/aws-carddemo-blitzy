@@ -26,6 +26,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -38,6 +39,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -62,8 +64,19 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * The module's HTTP request-authorization boundary: one explicit filter chain, least privilege by
- * default, and every anonymous surface named individually.
+ * The module's HTTP request-authorization boundary: two explicit filter chains - one for the application
+ * surface and one for the management surface - least privilege by default in both, and every anonymous
+ * surface named individually.
+ *
+ * <p><strong>Why two chains rather than one.</strong> The application surface and the management surface
+ * answer to different populations. A caller reaches the application surface by signing on, and the
+ * strongest thing a sign-on token can say is that its holder is an administrator of <em>cardholder
+ * data</em>. A caller reaches the management surface to collect telemetry about the running process, and
+ * nothing in the estate makes a cardholder administrator an operator of the process. Expressing both in
+ * one chain forced the operational surface to be described in the vocabulary of sign-on entitlements,
+ * which is how it came to be readable by any signed-on caller. The two chains are ordered
+ * {@code MANAGEMENT_CHAIN_ORDER} then {@code APPLICATION_CHAIN_ORDER}, so the management base path is
+ * decided by {@code managementSecurityFilterChain} and never falls through to the application rules.
  *
  * <p>The legacy estate decided reachability in the transaction manager's resource definitions: a
  * terminal user reached a transaction because a definition bound that transaction to a program, and the
@@ -100,9 +113,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <h2>Least privilege, and the surfaces that are anonymous</h2>
  *
- * <p>The last rule is {@code anyRequest().authenticated()}, so a route no rule mentions requires a
- * credential: a new endpoint is protected the moment it exists and becomes reachable only when someone
- * deliberately adds a rule for it. Against that default, at most four kinds of surface are anonymous - two
+ * <p>The application chain's last rule is {@code anyRequest().authenticated()} and the management chain's
+ * is {@code anyRequest().hasAuthority(}{@link #MANAGEMENT_AUTHORITY}{@code )} - or {@code denyAll()} where
+ * no operator identity is configured - so a route no rule mentions requires a credential on either chain:
+ * a new endpoint is protected the moment it exists and becomes reachable only when someone deliberately
+ * adds a rule for it. Against those two defaults, at most five kinds of surface are anonymous - three
  * unconditionally and two only where a profile opens them:
  * <p><strong>That default is sufficient for a screen transaction and was not sufficient for the one
  * surface that is not one.</strong> The batch-control surface starts jobs, and a job is not a screen: one
@@ -128,40 +143,66 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * be the same misreport by a different route. One entitlement, two independently reviewable rules, and a
  * census that stays honest.
  *
- * <p><strong>At most four kinds of surface are anonymous, two of them unconditionally and two only where
+ * <p><strong>At most five kinds of surface are anonymous, three of them unconditionally and two only where
  * a profile opens them, and each is anonymous for a reason that can be checked against a sibling
- * file.</strong>
+ * file.</strong> The first three are decided by {@code managementSecurityFilterChain} and the last two by
+ * {@code securityFilterChain}; the split is stated per bullet because a reader tracing one permit needs to
+ * know which chain to read.
  * <ul>
- *   <li>The health probe, because {@code carddemo-java/Dockerfile} names it as the image
- *       {@code HEALTHCHECK} and Compose services wait on it. Requiring a credential would break
- *       orchestration rather than protect anything: the aggregate body is a status word, and the shared
- *       baseline closes component detail so that it stays one.</li>
- *   <li>The metrics scrape endpoint, <strong>and only where the running profile opens it.</strong> The
+ *   <li><strong>Management chain.</strong> The aggregate health endpoint and the two probe groups -
+ *       {@code /actuator/health}, {@code /actuator/health/liveness} and
+ *       {@code /actuator/health/readiness} - because {@code carddemo-java/Dockerfile} names
+ *       a probe group as the image {@code HEALTHCHECK} and Compose services wait on it. Requiring a
+ *       credential would break orchestration rather than protect anything: each of the three bodies is a
+ *       status word, and the shared baseline closes component detail so that it stays one. These are
+ *       <em>three exact paths</em> and deliberately not the health subtree: the per-component paths beneath
+ *       it name each contributor and the database product behind it, and they are not status words.</li>
+ *   <li><strong>Management chain.</strong> The metrics scrape endpoint, <strong>and only where the running
+ *       profile opens it.</strong> The
  *       permit is conditional on {@code carddemo.security.anonymous-metrics-scrape}, which the shared
  *       baseline and production leave closed and only the local and test overlays open - the same two
  *       overlays that relax transport, and for the same reason: their collector is
  *       {@code config/prometheus/prometheus.yml} running in the Compose stack on the same machine.
  *       Production leaves it closed because the exposition is not a status word: it carries per-endpoint
  *       request counts and latency distributions, per-step batch record counts, data-source pool
- *       saturation and JVM internals. The endpoint stays PUBLISHED in production - a collector that
- *       presents a bearer token still collects, so the performance gate is unaffected - and what closes is
- *       collection by a client that presents nothing.</li>
- *   <li>The interface description, <strong>and only where the running profile publishes it.</strong> The
- *       permit is conditional on the same switch that decides whether the document is served at all. The
- *       shared baseline and production leave it unpublished; the local overlay publishes it.</li>
- *   <li>The sign-on route, because it is the route that issues tokens: a token-issuing route that required
- *       a token could never be reached, and no other route could be reached either. It is named by
- *       {@link #SIGN_ON_PATH} so the exemption is a single reviewable rule rather than a pattern that
- *       happens to match.</li>
+ *       saturation and JVM internals. The endpoint stays PUBLISHED in production - a collector presenting
+ *       the operator credential described below still collects, so the performance gate is unaffected - and
+ *       what closes is collection by a client that presents nothing.</li>
+ *   <li><strong>Application chain.</strong> The interface description, <strong>and only where the running
+ *       profile publishes it.</strong> The permit is conditional on the same switch that decides whether the
+ *       document is served at all. The shared baseline and production leave it unpublished; the local
+ *       overlay publishes it.</li>
+ *   <li><strong>Application chain.</strong> The sign-on route, because it is the route that issues tokens: a
+ *       token-issuing route that required a token could never be reached, and no other route could be
+ *       reached either. It is named by {@link #SIGN_ON_PATH} so the exemption is a single reviewable rule
+ *       rather than a pattern that happens to match.</li>
  * </ul>
  *
- * <p><strong>Every other management endpoint requires a credential, including the ones only the local
- * overlay publishes</strong> - the environment, configuration-property, bean, migration, request-mapping
- * and logger endpoints, which describe the configuration, the wiring and the schema history of the running
- * system. The rule authenticating the management base path is placed after the two permits and before the
- * catch-all, so widening the published set in a profile can never widen the anonymous set: a newly
- * published endpoint is authenticated by that rule the moment it appears. There is no blanket permit for
- * the management base path anywhere.
+ * <h2>The management surface, and the third kind of identity it requires</h2>
+ *
+ * <p><strong>Every management endpoint other than the three probe paths and the conditional scrape permit
+ * requires the {@link #MANAGEMENT_AUTHORITY} authority</strong> - the metrics endpoints, the exposition
+ * endpoint where a profile has not opened it, the build description, the per-component health paths, and the
+ * environment, configuration-property, bean, migration, request-mapping and logger endpoints that only the
+ * local overlay publishes. The authority is carried by exactly one identity, established by
+ * {@code ManagementTokenAuthenticationFilter} from {@value #MANAGEMENT_TOKEN_PROPERTY} and by nothing else.
+ *
+ * <p><strong>No sign-on token can carry it, and that is the point.</strong> The application chain's bearer
+ * filter is deliberately not installed on the management chain, so on that chain a sign-on token is not a
+ * credential at all - an ordinary cardholder and a cardholder administrator are refused identically, and
+ * neither refusal depends on an authority comparison happening to come out the right way. The earlier
+ * arrangement required only {@code authenticated()} here, which every signed-on cardholder satisfies; that
+ * is the defect this split closes.
+ *
+ * <p><strong>Absent configuration is the closed state, not the open one.</strong> Where
+ * {@value #MANAGEMENT_TOKEN_PROPERTY} resolves to blank, the chain's catch-all is {@code denyAll()} rather
+ * than an authority rule no caller could satisfy - the same outcome, said in a way that cannot be widened by
+ * a later edit. Production must therefore supply the credential, and
+ * {@link ProductionConfigurationValidator} refuses the start if it is missing, so the surface can be neither
+ * accidentally open nor accidentally unreachable. Ordering the permits before the catch-all means widening
+ * the published endpoint set in a profile can never widen the anonymous set: a newly published endpoint
+ * falls to the catch-all the moment it appears. There is no blanket permit for the management base path
+ * anywhere.
  *
  * <p><strong>The framework's generated-user path is removed rather than left dormant.</strong> Declaring
  * an {@link AuthenticationManager} bean withdraws the auto-configured in-memory user, and with it the
@@ -446,6 +487,58 @@ public class SecurityConfig {
      */
     private static final int PASSWORD_HASHING_STRENGTH = CredentialDigestService.HASHING_STRENGTH;
 
+    /**
+     * Authority that reads the operational surface, held by a machine and by nothing else.
+     *
+     * <h2>Why a third authority exists</h2>
+     *
+     * <p>This module grants exactly two authorities from a sign-on, because the legacy estate declares
+     * exactly two user types - and neither of them is an operator. The management surface was previously
+     * gated on bare {@code authenticated()}, which every signed-on cardholder satisfies, so any ordinary
+     * application user could read per-endpoint request counts and latency distributions, per-batch-step
+     * record counts, connection-pool saturation, and JVM heap, thread and garbage-collection internals.
+     * That set is enough to profile transaction volume, infer business activity from the batch counts and
+     * time an attack, and none of it is anything a cardholder's session needs.
+     *
+     * <p>So the fix is not a stricter role on the existing tokens, it is a <em>different kind of
+     * identity</em>. A collector is not a user of this application: it holds no account, signs on through
+     * no screen, and appears nowhere in the legacy user records. Granting it one of the two authorities
+     * derived from {@code SEC-USR-TYPE} would have meant either promoting every administrator to operator
+     * or inventing a legacy user type that does not exist. This authority is minted from a machine
+     * credential instead, is the only authority the management chain accepts, and is never carried by a
+     * token issued at sign-on.
+     *
+     * <p>{@code application-prod.yml} already promised "a scoped credential" for the collector. This is
+     * that credential's authority; before it existed the promise had nothing behind it.
+     */
+    public static final String MANAGEMENT_AUTHORITY = "ROLE_MONITORING";
+
+    /** Setting the machine credential for the management surface is supplied through. */
+    public static final String MANAGEMENT_TOKEN_PROPERTY = "carddemo.security.management.token";
+
+    /** Name the management identity is recorded under, which is a role and not a person. */
+    private static final String MANAGEMENT_PRINCIPAL = "carddemo-management-collector";
+
+    /**
+     * Precedence of the management chain, which must be consulted before the application chain.
+     *
+     * <p>Ordering is the mechanism, not a detail. The application chain carries no request matcher, so it
+     * matches everything; whichever chain the framework consults first therefore decides the management
+     * paths. Stating both orders explicitly - rather than relying on one being annotated and the other
+     * defaulting to lowest precedence - makes the relationship readable in one place and impossible to
+     * invert by adding an annotation later.
+     */
+    private static final int MANAGEMENT_CHAIN_ORDER = 1;
+
+    /** Precedence of the application chain, which matches everything the management chain did not. */
+    private static final int APPLICATION_CHAIN_ORDER = 2;
+
+    /** Name of the liveness probe group, as the framework publishes it beneath the health endpoint. */
+    private static final String LIVENESS_PROBE = "liveness";
+
+    /** Name of the readiness probe group, as the framework publishes it beneath the health endpoint. */
+    private static final String READINESS_PROBE = "readiness";
+
     /** Credential scheme name a challenge names, and the prefix a presented credential carries. */
     private static final String BEARER_SCHEME = "Bearer";
 
@@ -480,6 +573,18 @@ public class SecurityConfig {
     private final String servletPath;
 
     /**
+     * Machine credential the management surface accepts, or empty when no operator identity is configured.
+     *
+     * <p>Empty is a supported and <strong>fail-closed</strong> state rather than a gap: with no credential
+     * configured there is no identity that can hold {@link #MANAGEMENT_AUTHORITY}, so the management
+     * surface admits nobody beyond the three anonymous probe paths. That is the correct default for a
+     * setting whose absence must never widen anything - the alternative, a shipped literal, would be a
+     * credential in the repository, and the alternative to that, opening the surface when unset, would
+     * make a missing setting the most permissive configuration.
+     */
+    private final String managementToken;
+
+    /**
      * Binds the settings that decide reachability, so that each has exactly one home.
      *
      * <p>Every path below is bound rather than written twice. The management base path and the
@@ -502,6 +607,11 @@ public class SecurityConfig {
      * @param managementBasePath base path the management endpoints are served beneath
      * @param servletPath        path the dispatching servlet is mapped at; every rule below is expressed
      *                           relative to it, exactly as a request mapping is
+     * @param managementToken    machine credential the management surface accepts, empty when no operator
+     *                           identity is configured; bound with an EMPTY default rather than no default
+     *                           because empty is the fail-closed state - it admits nobody beyond the three
+     *                           anonymous probe paths - whereas a shipped literal would be a credential in
+     *                           the repository and a missing setting must never be the permissive case
      */
     public SecurityConfig(
             final JwtTokenProvider tokenProvider,
@@ -512,7 +622,8 @@ public class SecurityConfig {
                     final boolean anonymousMetricsScrape,
             @Value("${springdoc.api-docs.path:/v3/api-docs}") final String apiDocsPath,
             @Value("${management.endpoints.web.base-path:/actuator}") final String managementBasePath,
-            @Value("${spring.mvc.servlet.path:/}") final String servletPath) {
+            @Value("${spring.mvc.servlet.path:/}") final String servletPath,
+            @Value("${" + MANAGEMENT_TOKEN_PROPERTY + ":}") final String managementToken) {
         this.tokenProvider = Objects.requireNonNull(tokenProvider, "tokenProvider must not be null");
         this.refusalBodyRenderer =
                 Objects.requireNonNull(refusalBodyRenderer, "refusalBodyRenderer must not be null");
@@ -523,6 +634,8 @@ public class SecurityConfig {
         this.managementBasePath =
                 Objects.requireNonNull(managementBasePath, "managementBasePath must not be null");
         this.servletPath = Objects.requireNonNull(servletPath, "servletPath must not be null");
+        this.managementToken =
+                Objects.requireNonNull(managementToken, "managementToken must not be null").strip();
     }
 
     /**
@@ -559,14 +672,137 @@ public class SecurityConfig {
     }
 
     /**
-     * Builds the single filter chain that decides every request.
+     * Builds the higher-precedence filter chain that decides every request beneath the management base
+     * path, and nothing else.
      *
-     * <p>Rule order is the contract. The permits come first and name individual surfaces; the rule
-     * authenticating the management base path comes next, so it catches every management endpoint the two
-     * permits did not name, including any a profile publishes later; the administrative prefix follows;
-     * the batch-control prefix follows that; and the catch-all closes the chain. Reordering these changes
-     * behaviour, so the order is asserted by tests that exercise real responses rather than inspect the
-     * configuration.</p>
+     * <p><strong>This chain exists because the management surface answers to a different population than
+     * the application surface.</strong> Its predecessor was a pair of rules inside the application chain: a
+     * blanket permit for the health subtree, then bare {@code authenticated()} for everything else beneath
+     * the base path. The second of those is satisfied by every signed-on cardholder, which made
+     * per-endpoint latency distributions, per-batch-step record counts, connection-pool saturation and JVM
+     * internals readable by an ordinary application user. Neither of the two authorities a sign-on token
+     * can carry is an operator authority - the estate declares exactly two user types and neither of them
+     * operates the process - so the fix could not be a stricter rank of an existing role and had to be a
+     * third kind of identity on a chain of its own.</p>
+     *
+     * <p><strong>Matching is the whole base path and its descendants, and the base path itself is included
+     * deliberately</strong> - the endpoint index is served there and enumerates every published endpoint,
+     * which is a management answer like any other. Because this bean is ordered ahead of the application
+     * chain, a management request is decided here and never falls through to the application rules; there
+     * is consequently no management rule in the application chain at all, and its absence is the fix rather
+     * than an omission.</p>
+     *
+     * <p><strong>Rule order is the contract.</strong> Three exact permits come first - the aggregate health
+     * endpoint and the two probe groups, named individually rather than as a subtree so the per-component
+     * health paths stay closed; the conditional scrape permit follows, added only where the running profile
+     * opens it; and the catch-all closes the chain. Reordering these changes behaviour, so the order is
+     * asserted by tests that exercise real responses rather than inspect the configuration.</p>
+     *
+     * <p><strong>The catch-all is {@code denyAll()} where no operator identity is configured</strong> and
+     * {@code hasAuthority(}{@link #MANAGEMENT_AUTHORITY}{@code )} where one is. Both refuse every caller
+     * without the credential; stating the first as an outright denial rather than as an authority nobody
+     * can hold means an absent credential cannot be widened into an open surface by a later edit.</p>
+     *
+     * <p><strong>The application chain's bearer filter is deliberately not installed here.</strong> On this
+     * chain a sign-on token is not a credential at all, so an ordinary identity and an administrative one
+     * are refused by the same route rather than by an authority comparison that has to come out correctly.
+     * The only filter installed is {@link ManagementTokenAuthenticationFilter}, which mints
+     * {@link #MANAGEMENT_AUTHORITY} from {@value #MANAGEMENT_TOKEN_PROPERTY} and from nothing else.</p>
+     *
+     * @param http the chain builder supplied by the framework
+     * @return the configured management chain
+     * @throws Exception if the framework rejects the configuration
+     */
+    @Bean
+    @Order(MANAGEMENT_CHAIN_ORDER)
+    public SecurityFilterChain managementSecurityFilterChain(final HttpSecurity http) throws Exception {
+        final String healthPath = this.managementBasePath + "/health";
+        final String prometheusPath = this.managementBasePath + "/prometheus";
+        final boolean operatorIdentityConfigured = !this.managementToken.isEmpty();
+
+        http
+                // Both the base path itself and everything beneath it, because the endpoint index is
+                // served at the base path and is as much a management surface as any endpoint under it.
+                // Expressed through the plural configurer because the singular form accepts one matcher.
+                .securityMatchers(managed -> managed.requestMatchers(
+                        matcher(this.managementBasePath),
+                        matcher(this.managementBasePath + ANY_DESCENDANT)))
+                // Same posture as the application chain, and stated rather than inherited: a chain
+                // declares its own, and a management chain that silently picked up a session, a cookie or
+                // a login form from somewhere else would be a management chain with ambient authority.
+                .csrf(AbstractHttpConfigurer::disable)
+                .cors(Customizer.withDefaults())
+                .formLogin(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable)
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(requests -> {
+                    // THREE EXACT PATHS, NOT A SUBTREE. The previous rule permitted /actuator/health/**,
+                    // which is every present and future sub-path of the health endpoint - including the
+                    // per-component paths, whose bodies name each health contributor, the database product
+                    // and version and the validation query. Naming the three that are genuinely probes is
+                    // what keeps a path added by a framework upgrade from arriving anonymous.
+                    requests.requestMatchers(
+                            matcher(healthPath),
+                            matcher(healthPath + "/" + LIVENESS_PROBE),
+                            matcher(healthPath + "/" + READINESS_PROBE)).permitAll();
+                    if (this.anonymousMetricsScrape) {
+                        // Only where the collector runs on the same machine as the application, which is
+                        // the local and test overlays. The shared baseline and production leave it closed,
+                        // and the scrape path then falls to the operator rule below.
+                        requests.requestMatchers(matcher(prometheusPath)).permitAll();
+                    }
+                    if (operatorIdentityConfigured) {
+                        // Everything else beneath the base path, named or not, needs the OPERATOR
+                        // authority - not merely a credential. An ordinary sign-on token cannot satisfy
+                        // this, and that is the whole point of the rule.
+                        requests.anyRequest().hasAuthority(MANAGEMENT_AUTHORITY);
+                    } else {
+                        // Fail closed. With no operator credential configured, no identity can hold the
+                        // authority above, so the honest rule is to admit nobody rather than to fall back
+                        // on "any authenticated caller" - which is exactly the over-grant being removed.
+                        requests.anyRequest().denyAll();
+                    }
+                })
+                .exceptionHandling(handling -> handling
+                        .authenticationEntryPoint(unauthorizedEntryPoint())
+                        .accessDeniedHandler(forbiddenHandler()))
+                // The application chain's bearer filter is deliberately NOT installed here. It would
+                // establish an ordinary sign-on identity on this chain, which would then be refused by the
+                // authority rule above - the right outcome by a confusing route. Installing only the
+                // operator filter makes the surface's vocabulary explicit: on this chain, a sign-on token
+                // is not a credential at all.
+                .addFilterBefore(new ManagementTokenAuthenticationFilter(this.managementToken),
+                        UsernamePasswordAuthenticationFilter.class);
+
+        if (this.requireHttps) {
+            http.redirectToHttps(Customizer.withDefaults());
+        }
+
+        LOG.info("Management security configured: anonymous surfaces are {} and the two probe groups{};"
+                        + " every other management path requires the {} authority; operator identity"
+                        + " configured: {}; secure channel required: {}",
+                healthPath,
+                this.anonymousMetricsScrape ? ", plus the metrics scrape endpoint" : "",
+                MANAGEMENT_AUTHORITY,
+                operatorIdentityConfigured,
+                this.requireHttps);
+        return http.build();
+    }
+
+    /**
+     * Builds the filter chain that decides every request outside the management base path.
+     *
+     * <p>Rule order is the contract. The permits come first and name individual surfaces; the
+     * administrative prefix follows; the batch-control prefix follows that; and the catch-all closes the
+     * chain. Reordering these changes behaviour, so the order is asserted by tests that exercise real
+     * responses rather than inspect the configuration.</p>
+     *
+     * <p><strong>No management rule appears here, and its absence is deliberate.</strong> Every request
+     * beneath the management base path is matched by {@link #managementSecurityFilterChain(HttpSecurity)},
+     * which is ordered ahead of this one. Restating a management rule here would be dead code at best and,
+     * if the two ever disagreed, a second answer to a question that must have exactly one.</p>
      *
      * <p><strong>The two business rules are read out of {@link TransactionRoute} rather than written
      * here.</strong> The anonymous permit exists because exactly one registered transaction is classified
@@ -584,16 +820,12 @@ public class SecurityConfig {
      * before, so the catch-all cannot admit an ordinary signed-on identity to it.</p>
      *
      * @param http the chain builder supplied by the framework
-     * @return the configured chain
+     * @return the configured application chain
      * @throws Exception if the framework rejects the configuration
      */
     @Bean
+    @Order(APPLICATION_CHAIN_ORDER)
     public SecurityFilterChain securityFilterChain(final HttpSecurity http) throws Exception {
-        final String healthPath = this.managementBasePath + "/health";
-        final String healthSubPaths = healthPath + "/**";
-        final String prometheusPath = this.managementBasePath + "/prometheus";
-        final String managementSubPaths = this.managementBasePath + "/**";
-
         http
                 // A cross-site request cannot borrow authority that is never ambient: no session, no
                 // cookie, and a credential the caller must set as a header deliberately.
@@ -611,16 +843,15 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> {
-                    requests.requestMatchers(matcher(healthPath), matcher(healthSubPaths)).permitAll();
-                    if (this.anonymousMetricsScrape) {
-                        // Only where the collector runs on the same machine as the application. When
-                        // this is not set - the shared baseline and production - no permit is added and
-                        // the scrape path falls through to the management rule below, which
-                        // authenticates it. The endpoint stays PUBLISHED either way, so a collector
-                        // that presents a bearer token still collects; what changes is whether one that
-                        // presents nothing does.
-                        requests.requestMatchers(matcher(prometheusPath)).permitAll();
-                    }
+                    // NO MANAGEMENT RULE APPEARS HERE ANY MORE, and its absence is the fix rather than an
+                    // omission. This chain used to permit /actuator/health/** and then require bare
+                    // authenticated() for every other management path - a rule every signed-on cardholder
+                    // satisfies, which made per-endpoint latency, per-batch-step record counts, pool
+                    // saturation and JVM internals readable by an ordinary application user. The whole
+                    // management subtree is now matched by managementSecurityFilterChain above, which
+                    // requires an operator authority no sign-on token can carry. Restating a management
+                    // rule here would be dead code at best and, if the two ever disagreed, a second
+                    // answer to a question that must have one.
                     if (this.apiDocsPublished) {
                         requests.requestMatchers(matcher(this.apiDocsPath),
                                 matcher(this.apiDocsPath + "/**")).permitAll();
@@ -631,8 +862,6 @@ public class SecurityConfig {
                             : TransactionRoute.enforcementPatternsFor(Gating.ANONYMOUS)) {
                         requests.requestMatchers(matcher(anonymous)).permitAll();
                     }
-                    // Everything else under the management base path, named or not, needs a credential.
-                    requests.requestMatchers(matcher(managementSubPaths)).authenticated();
                     // The batch control surface, gated before the catch-all because the catch-all would
                     // admit any signed-on caller. Both of its operations are covered - the launch and the
                     // execution status - and so is anything added beneath the prefix later. See
@@ -673,15 +902,20 @@ public class SecurityConfig {
             http.redirectToHttps(Customizer.withDefaults());
         }
 
-        LOG.info("HTTP security configured: anonymous surfaces are the health probe{}{}, and the sign-on "
-                        + "route; every other route requires a bearer token, the metrics scrape endpoint "
-                        + "included unless named here; the administrative prefix {} and the batch-control "
-                        + "prefix {} additionally require the {} authority; secure channel required: {}",
-                this.anonymousMetricsScrape ? ", the metrics scrape endpoint" : "",
-                this.apiDocsPublished ? ", the interface description" : "",
+        // Names only what THIS chain decides. The management surface has its own chain and its own
+        // start-up line, and an earlier revision of this message listed the health probe and the scrape
+        // endpoint here - which was accurate when this chain carried those rules and became a second,
+        // stale description of them the moment it did not.
+        LOG.info("HTTP security configured: the anonymous surface is the sign-on route{}; every other "
+                        + "route requires a bearer token; the administrative prefix {} and the "
+                        + "batch-control prefix {} additionally require the {} authority; the management "
+                        + "base path {} is decided by managementSecurityFilterChain and not by this "
+                        + "chain; secure channel required: {}",
+                this.apiDocsPublished ? ", plus the interface description" : "",
                 ADMIN_PATH_PREFIX,
                 BATCH_CONTROL_PATH_PREFIX,
                 JwtTokenProvider.ADMIN_AUTHORITY,
+                this.managementBasePath,
                 this.requireHttps);
         // The census the rules were derived from, recorded once at start-up so that an operator reading a
         // log can reconcile the delivered gate against the resource definitions without reading this file.
@@ -1329,6 +1563,85 @@ public class SecurityConfig {
             final PreAuthenticatedAuthenticationToken authentication =
                     new PreAuthenticatedAuthenticationToken(subject, null,
                             List.of(new SimpleGrantedAuthority(JwtTokenProvider.authorityOf(userType))));
+            final SecurityContext context = SecurityContextHolder.createEmptyContext();
+            context.setAuthentication(authentication);
+            SecurityContextHolder.setContext(context);
+        }
+    }
+
+    /**
+     * Establishes the operator identity on the management chain, and only there.
+     *
+     * <h2>Why this is a separate filter from the sign-on one</h2>
+     *
+     * <p>The two credentials are different kinds of thing and are verified differently. A sign-on token is
+     * a signed assertion about a user of the application, carrying a subject, a user type and a
+     * fingerprint of the record it was minted from, and it is verified by checking the signature and
+     * re-reading that record. An operator credential asserts nothing about anybody: it is a shared machine
+     * secret a collector presents, and verifying it is a comparison. Running both filters on one chain
+     * would let a sign-on token establish an identity on the management surface - refused a moment later
+     * by the authority rule, but by a route that invites the belief that a cardholder's token is a
+     * management credential of insufficient rank. It is not a management credential at all.
+     *
+     * <p>The comparison is {@link MessageDigest#isEqual(byte[], byte[])} rather than
+     * {@link String#equals(Object)}. That is not decoration: string comparison returns at the first
+     * differing character, so its duration reveals how much of a guessed prefix was correct, and a shared
+     * secret compared that way is guessable one character at a time by an attacker who can time the
+     * response. The framework method is the constant-time comparison for exactly this case.
+     *
+     * <p>Nothing about a presented credential is logged, retained on the authentication, or reflected in a
+     * response - not on success, and not on failure. A failure simply establishes nothing, and the chain's
+     * authorization rule then refuses the request, which is what produces the 401.
+     */
+    private static final class ManagementTokenAuthenticationFilter extends OncePerRequestFilter {
+
+        /** The configured operator credential; empty when no operator identity exists. */
+        private final byte[] expected;
+
+        /**
+         * Creates the filter over the configured credential.
+         *
+         * @param managementToken configured operator credential, possibly empty
+         */
+        private ManagementTokenAuthenticationFilter(final String managementToken) {
+            this.expected = managementToken.getBytes(StandardCharsets.UTF_8);
+        }
+
+        /**
+         * Establishes the operator identity when the request carries the configured credential.
+         *
+         * @param request     the request
+         * @param response    the response
+         * @param filterChain the remainder of the chain, always continued
+         * @throws ServletException if the remainder of the chain fails
+         * @throws IOException      if the remainder of the chain fails
+         */
+        @Override
+        protected void doFilterInternal(final HttpServletRequest request,
+                final HttpServletResponse response, final FilterChain filterChain)
+                throws ServletException, IOException {
+            // An unconfigured credential matches nothing, including an empty presented one. Checked here
+            // rather than left to the comparison, because two empty arrays ARE equal and that would turn
+            // the fail-closed state into a surface any caller could enter by presenting "Bearer ".
+            if (this.expected.length > 0) {
+                final String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+                if (header != null
+                        && header.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length())) {
+                    final byte[] presented = header.substring(BEARER_PREFIX.length()).trim()
+                            .getBytes(StandardCharsets.UTF_8);
+                    if (MessageDigest.isEqual(this.expected, presented)) {
+                        establishOperator();
+                    }
+                }
+            }
+            filterChain.doFilter(request, response);
+        }
+
+        /** Establishes the operator identity in a context of its own, retaining no credential. */
+        private static void establishOperator() {
+            final PreAuthenticatedAuthenticationToken authentication =
+                    new PreAuthenticatedAuthenticationToken(MANAGEMENT_PRINCIPAL, null,
+                            List.of(new SimpleGrantedAuthority(MANAGEMENT_AUTHORITY)));
             final SecurityContext context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(authentication);
             SecurityContextHolder.setContext(context);

@@ -31,6 +31,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig.ConditionCodeGate;
 import com.carddemo.domain.Transaction;
@@ -217,6 +218,10 @@ final class BackupTransactionJobConfigTest {
         return new BackupTransactionJobConfig(jobRepository, transactionManager,
                 boundaryListener, incrementer, this.transactionRepository,
                 this.transactionScanRepository, this.objectStore,
+                // Runs each publication directly. This test drives one publication at a time from one
+                // thread, so there is nothing to serialize; the lock's acquisition ordering and its
+                // failure-to-acquire behaviour are asserted in its own test.
+                (bases, publication) -> publication.run(),
                 awsProperties, this.meterRegistry, fixed,
                 this.stagingDirectory.toString());
     }
@@ -520,6 +525,22 @@ final class BackupTransactionJobConfigTest {
                     .isEqualTo("AWS.M2.CARDDEMO.TRANSACT.BKUP/");
             assertThat(capturedKey())
                     .startsWith(BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX);
+        }
+
+        @Test
+        @DisplayName("is the same base the transaction-report job publishes to, spelled once and pruned "
+                + "to one depth")
+        void theSharedBackupBaseIsOneNameAndOneDepth() {
+            // Two jobs publish generations of this base: this job's archive step and the
+            // transaction-report job's unload step. The base is the unit retention counts, so two
+            // spellings of it would be two retention groups that only looked like one, and two depths
+            // would make the retained set depend on which job happened to run last. The report job now
+            // reads its default FROM this constant, so the name cannot drift; the depths are two
+            // independent measurements of the same LIMIT(5) declaration and are asserted to agree.
+            assertThat(TransactionReportJobConfig.TRANSACTION_BACKUP_GENERATION_LIMIT)
+                    .as("both publishers of %s must prune it to the same depth",
+                            BackupTransactionJobConfig.ARCHIVE_DATASET_BASE)
+                    .isEqualTo(StagedGenerationStore.STANDARD_RETENTION_LIMIT);
         }
 
         @Test

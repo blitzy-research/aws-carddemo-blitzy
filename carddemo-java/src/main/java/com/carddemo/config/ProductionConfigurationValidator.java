@@ -17,14 +17,21 @@
 package com.carddemo.config;
 
 import com.carddemo.util.SqsNamingRules;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.function.UnaryOperator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
+import software.amazon.awssdk.profiles.ProfileFile;
+import software.amazon.awssdk.profiles.ProfileFileSystemSetting;
 
 /**
  * Refuses to let the production profile start when a required deployment value is missing, empty or
@@ -115,6 +122,14 @@ public final class ProductionConfigurationValidator {
     public static final String PRODUCTION_PROFILE = "prod";
 
     /**
+     * Diagnostic channel for the one condition this class observes without refusing: a shared
+     * configuration file the SDK itself could not read. Logged at debug rather than raised, because a
+     * file the SDK cannot read redirects nothing.
+     */
+    private static final Logger LOGGER =
+            LoggerFactory.getLogger(ProductionConfigurationValidator.class);
+
+    /**
      * Opening of the placeholder syntax. A resolved value that still contains this has an environment
      * reference in it that nothing satisfied.
      */
@@ -140,7 +155,7 @@ public final class ProductionConfigurationValidator {
      * Every setting the production profile requires from its environment, in the order they appear in
      * {@code application-prod.yml} so that a failure message reads down the document.
      *
-     * <p>This list is the twelve values that are written as a bare environment reference with no
+     * <p>This list is the thirteen values that are written as a bare environment reference with no
      * fallback. The five that carry a fallback - the tracing sample rate, the staging bucket, the
      * message group, the notification topic and the token lifetime - are deliberately absent, because a
      * value that is allowed to default is by definition not required from the environment.
@@ -153,8 +168,10 @@ public final class ProductionConfigurationValidator {
      * and a test asserts against.
      *
      * <p>{@code ProductionConfigurationValidatorTest} compares this list against the document itself,
-     * so a thirteenth bare reference added to the profile without a matching entry here fails the build
-     * rather than going unguarded.
+     * so a fourteenth bare reference added to the profile without a matching entry here fails the build
+     * rather than going unguarded. That check is what carried the operator credential into this list: the
+     * management surface's machine credential is presented on every scrape and must no more be defaulted
+     * than the signing secret is.
      */
     static final List<RequiredSetting> REQUIRED_SETTINGS = List.of(
             new RequiredSetting("spring.datasource.url", "CARDDEMO_DB_URL"),
@@ -168,7 +185,9 @@ public final class ProductionConfigurationValidator {
             new RequiredSetting(REGION_KEY, "AWS_REGION"),
             new RequiredSetting(QUEUE_DESTINATION_KEY, "CARDDEMO_SQS_QUEUE"),
             new RequiredSetting("carddemo.security.jwt.secret", "CARDDEMO_JWT_SECRET"),
-            new RequiredSetting("carddemo.security.field-encryption.key", "CARDDEMO_FIELD_ENCRYPTION_KEY"));
+            new RequiredSetting("carddemo.security.field-encryption.key", "CARDDEMO_FIELD_ENCRYPTION_KEY"),
+            new RequiredSetting(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY,
+                    "CARDDEMO_MANAGEMENT_TOKEN"));
 
     /**
      * Every configuration key that redirects a cloud client away from the endpoint its region resolves
@@ -200,6 +219,109 @@ public final class ProductionConfigurationValidator {
             "spring.cloud.aws.sns.endpoint");
 
     /**
+     * Every environment variable the AWS SDK itself reads an endpoint redirection from.
+     *
+     * <h2>Why this list exists separately from {@link #FORBIDDEN_PRODUCTION_KEYS}</h2>
+     *
+     * <p>The list above closes the keys that reach a client <em>through this application</em> - the
+     * module's own setting and the cloud integration's four. Closing them is necessary and it is
+     * <strong>not sufficient</strong>, because the SDK resolves an endpoint from a chain of its own that
+     * no Spring property source participates in. Declaring no override, and validating that no override
+     * is declared, therefore does not mean no override is in force: with none of the five keys above
+     * present, {@link AwsConfig} calls no {@code endpointOverride(...)} at all, logs that the client is
+     * "resolving the endpoint of region ...", and the SDK then quietly applies the redirection it found
+     * in its own chain. The log line asserts a posture the code was not enforcing.
+     *
+     * <p>The variables below are that chain's environment half, as resolved by the
+     * {@code software.amazon.awssdk} 2.31.78 artifacts this module builds against: one global variable
+     * and one per service identifier, where the service half of the name is the SDK's own service
+     * identifier upper-cased. Only the three services this module uses are listed, because only three
+     * clients exist to redirect.
+     *
+     * <p>What a redirection costs here is specific rather than theoretical, and it is the same cost the
+     * list above records: the queue carries the eighty-column job-control cards of every batch
+     * submission, and the object store carries statements, reports and rejected records bearing account
+     * identifiers, card numbers and monetary balances.
+     *
+     * @see #FORBIDDEN_SDK_SYSTEM_PROPERTIES
+     */
+    static final List<String> FORBIDDEN_SDK_ENVIRONMENT_VARIABLES = List.of(
+            "AWS_ENDPOINT_URL",
+            "AWS_ENDPOINT_URL_S3",
+            "AWS_ENDPOINT_URL_SQS",
+            "AWS_ENDPOINT_URL_SNS");
+
+    /**
+     * Every JVM system property the AWS SDK itself reads an endpoint redirection from.
+     *
+     * <p>The system-property half of the same chain described on
+     * {@link #FORBIDDEN_SDK_ENVIRONMENT_VARIABLES}. It is listed separately from the environment half
+     * because the two are read from different places and a deployment can supply either: a container
+     * image sets variables, an orchestrator's launch arguments set properties, and a
+     * {@code JAVA_TOOL_OPTIONS} value sets properties without appearing on the command line at all.
+     * Refusing one half would leave the other open.
+     *
+     * <p>These are the camel-case forms the SDK's own setting definitions declare, not the
+     * upper-snake-case variable names above, so neither list can be derived from the other and both are
+     * stated literally.
+     */
+    static final List<String> FORBIDDEN_SDK_SYSTEM_PROPERTIES = List.of(
+            "aws.endpointUrl",
+            "aws.endpointUrlS3",
+            "aws.endpointUrlSqs",
+            "aws.endpointUrlSns");
+
+    /**
+     * The shared-configuration property that redirects every client, and the same property inside a
+     * per-service subsection.
+     *
+     * <p>The third arm of the SDK's chain is the shared configuration file - {@code ~/.aws/config} by
+     * default, relocatable by {@code AWS_CONFIG_FILE}. A deployment that mounts a configuration file
+     * carrying {@code endpoint_url} redirects every client without setting a single variable or
+     * property, which is why detecting the file's content is part of closing the channel rather than an
+     * optional extra.
+     *
+     * <p>The file is read through the SDK's own profile reader rather than parsed here, so the section
+     * selection, the profile precedence and the {@code services} indirection are resolved exactly as the
+     * client that would honour them resolves them. A hand-written scan would have to reimplement those
+     * rules and would then be wrong in a different way than the SDK.
+     */
+    static final String SDK_SHARED_CONFIG_ENDPOINT_PROPERTY = "endpoint_url";
+
+    /**
+     * The SDK switch that makes the shared configuration file's endpoint settings inert.
+     *
+     * <p>Recognised so the check can <em>stand down</em> rather than refuse: a deployment that has
+     * already told the SDK to ignore configured endpoint URLs has closed the file channel by the SDK's
+     * own mechanism, and refusing it as well would reject a correct posture. The variable and property
+     * forms are both honoured because the SDK honours both.
+     */
+    static final String SDK_IGNORE_ENDPOINTS_VARIABLE = "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS";
+
+    /** System-property form of {@link #SDK_IGNORE_ENDPOINTS_VARIABLE}. */
+    static final String SDK_IGNORE_ENDPOINTS_PROPERTY = "aws.ignoreConfiguredEndpointUrls";
+
+    /** Variable relocating the shared configuration file the SDK reads. */
+    static final String SDK_CONFIG_FILE_VARIABLE = "AWS_CONFIG_FILE";
+
+    /** Variable selecting which section of the shared configuration file applies. */
+    static final String SDK_PROFILE_VARIABLE = "AWS_PROFILE";
+
+    /** Section name used when no profile is selected. */
+    static final String SDK_DEFAULT_PROFILE = "default";
+
+    /** Shared-configuration key whose value names the per-service subsection to consult. */
+    static final String SDK_SERVICES_PROPERTY = "services";
+
+    /**
+     * The SDK service identifiers this module operates a client for, lower-case as the file uses them.
+     *
+     * <p>Used only to look inside a {@code services} subsection. A redirection declared for a service
+     * this module never calls redirects nothing and is not this deployment's business to refuse.
+     */
+    static final List<String> SDK_SERVICE_IDENTIFIERS = List.of("s3", "sqs", "sns");
+
+    /**
      * Creates the configuration class.
      *
      * <p>The container instantiates it in order to read the factory method below, even though that
@@ -217,9 +339,11 @@ public final class ProductionConfigurationValidator {
      * in a bean-creation failure, whereas one raised from the post-processor arrives as itself, which is
      * what a deployer reads in the log and what a test asserts on.
      *
-     * <p>Two checks run, in this order and for a reason. The required settings are validated first,
+     * <p>Three checks run, in this order and for a reason. The required settings are validated first,
      * because the outbound-trust check compares a destination against the configured region and a
      * missing region should be reported as a missing region rather than as an uncheckable destination.
+     * The native-channel check runs last because it is the one check that reads outside the environment
+     * abstraction, and a deployment with a missing region or an untrusted queue should learn that first.
      *
      * @param environment resolved environment for the active profiles, supplied by the container
      * @return a post-processor that validates the production posture and changes no bean definition
@@ -230,7 +354,298 @@ public final class ProductionConfigurationValidator {
         return beanFactory -> {
             validateRequiredSettings(environment);
             validateOutboundTrust(environment);
+            validateNativeSdkEndpointChannels(System::getenv, System::getProperty,
+                    ProductionConfigurationValidator::readSharedConfiguration);
         };
+    }
+
+    /**
+     * Refuses a production deployment in which the AWS SDK's own endpoint chain would redirect a client.
+     *
+     * <h2>The gap this closes</h2>
+     *
+     * <p>{@link #validateOutboundTrust(Environment)} closes the five configuration keys that reach a
+     * client through this application, and {@link AwsConfig} calls {@code endpointOverride(...)} only
+     * when one of them is present. Neither fact constrains the SDK, which resolves an endpoint from a
+     * chain of its own - environment variables, JVM system properties and the shared configuration file
+     * - that no Spring property source participates in. So with every key above absent, the previous
+     * posture was: no override applied by this module, a log line stating the client resolves its
+     * region's endpoint, and the SDK silently honouring a redirection from its own chain. The claim in
+     * the log was not the behaviour of the process.
+     *
+     * <p>All three arms are refused here, and refused rather than merely logged, because a redirected
+     * client is indistinguishable from a working one from inside the application: the queue is defined
+     * ignore-on-error, so a redirected submission reports success and no job ever runs, and a redirected
+     * object store accepts statements, reports and rejected records bearing account identifiers, card
+     * numbers and monetary balances. A deployment that cannot address its own account must not start.
+     *
+     * <h2>What is deliberately NOT refused</h2>
+     *
+     * <p>The SDK's regional-variant settings - the FIPS and dual-stack endpoint selectors - are absent
+     * from every list. They select a variant <em>of the region's own endpoint</em> rather than replacing
+     * it with an arbitrary host, so a deployment obliged to use validated cryptography or a dual-stack
+     * network is expressing a legitimate posture. Refusing them would reject correct deployments while
+     * closing nothing.
+     *
+     * <p>{@link #SDK_IGNORE_ENDPOINTS_VARIABLE} is likewise not a fault: it is the SDK's own switch for
+     * making the shared configuration file inert, so a deployment that sets it has closed the file
+     * channel by the supported mechanism and the file is not read at all.
+     *
+     * <h2>Why the readers are parameters</h2>
+     *
+     * <p>Process environment variables cannot be set from within a JVM, so a check that called
+     * {@link System#getenv()} directly could not be exercised for the variable half of the chain at all
+     * - which is the half a container image supplies. The three readers are therefore parameters, bound
+     * to the real sources by the guard above and to fakes by the tests, so every channel is proven
+     * closed rather than assumed closed.
+     *
+     * @param environmentReader     reads one process environment variable by name
+     * @param systemPropertyReader  reads one JVM system property by name
+     * @param sharedConfiguration   supplies the shared configuration file's endpoint declarations, given
+     *                              the resolved configuration file location and profile name
+     * @throws IllegalStateException when any arm of the SDK's endpoint chain supplies a redirection; the
+     *                               message names each offending channel and never repeats its value
+     * @throws NullPointerException  when any reader is {@code null}
+     */
+    static void validateNativeSdkEndpointChannels(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader,
+            final SharedConfigurationReader sharedConfiguration) {
+        Objects.requireNonNull(environmentReader, "environmentReader");
+        Objects.requireNonNull(systemPropertyReader, "systemPropertyReader");
+        Objects.requireNonNull(sharedConfiguration, "sharedConfiguration");
+
+        final List<String> faults = new ArrayList<>();
+        for (final String variable : FORBIDDEN_SDK_ENVIRONMENT_VARIABLES) {
+            if (isSuppliedExternalValue(environmentReader.apply(variable))) {
+                faults.add("  " + variable + " (process environment): the AWS SDK reads an endpoint"
+                        + " redirection from this variable directly, so declaring no application"
+                        + " endpoint setting does not stop it. Unset the variable");
+            }
+        }
+        for (final String property : FORBIDDEN_SDK_SYSTEM_PROPERTIES) {
+            if (isSuppliedExternalValue(systemPropertyReader.apply(property))) {
+                faults.add("  " + property + " (JVM system property): the AWS SDK reads an endpoint"
+                        + " redirection from this property directly, including when it arrives through"
+                        + " JAVA_TOOL_OPTIONS rather than the command line. Remove the property");
+            }
+        }
+        faults.addAll(sharedConfigurationFaults(environmentReader, systemPropertyReader,
+                sharedConfiguration));
+
+        if (!faults.isEmpty()) {
+            throw new IllegalStateException(nativeChannelFailureMessage(faults));
+        }
+    }
+
+    /**
+     * Reports the shared-configuration file's endpoint declarations, or nothing when the SDK is already
+     * told to ignore them.
+     *
+     * @param environmentReader    reads one process environment variable by name
+     * @param systemPropertyReader reads one JVM system property by name
+     * @param sharedConfiguration  supplies the file's endpoint declarations
+     * @return one indented fault line per declaration found, in a stable order
+     */
+    private static List<String> sharedConfigurationFaults(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader,
+            final SharedConfigurationReader sharedConfiguration) {
+
+        if (isIgnoringConfiguredEndpoints(environmentReader, systemPropertyReader)) {
+            return List.of();
+        }
+        final String configuredLocation = firstSupplied(
+                environmentReader.apply(SDK_CONFIG_FILE_VARIABLE),
+                systemPropertyReader.apply(ProfileFileSystemSetting.AWS_CONFIG_FILE.property()));
+        final String profileName = firstSupplied(
+                environmentReader.apply(SDK_PROFILE_VARIABLE),
+                systemPropertyReader.apply(ProfileFileSystemSetting.AWS_PROFILE.property()));
+        final String resolvedProfile = profileName == null ? SDK_DEFAULT_PROFILE : profileName;
+
+        final List<String> declarations =
+                sharedConfiguration.endpointDeclarations(configuredLocation, resolvedProfile);
+        final List<String> faults = new ArrayList<>(declarations.size());
+        for (final String declaration : declarations) {
+            faults.add("  " + declaration + " (AWS shared configuration, profile '" + resolvedProfile
+                    + "'): the AWS SDK reads an endpoint redirection from the shared configuration"
+                    + " file. Remove the declaration, or set " + SDK_IGNORE_ENDPOINTS_VARIABLE
+                    + "=true so the SDK ignores the file's endpoint settings");
+        }
+        return List.copyOf(faults);
+    }
+
+    /**
+     * Reports whether the deployment has told the SDK to ignore configured endpoint URLs.
+     *
+     * @param environmentReader    reads one process environment variable by name
+     * @param systemPropertyReader reads one JVM system property by name
+     * @return {@code true} when either form of the switch is set to a true value
+     */
+    private static boolean isIgnoringConfiguredEndpoints(
+            final UnaryOperator<String> environmentReader,
+            final UnaryOperator<String> systemPropertyReader) {
+        return isTrueValue(environmentReader.apply(SDK_IGNORE_ENDPOINTS_VARIABLE))
+                || isTrueValue(systemPropertyReader.apply(SDK_IGNORE_ENDPOINTS_PROPERTY));
+    }
+
+    /**
+     * Recognises the SDK's boolean spelling without importing a parser for one word.
+     *
+     * <p>Compared without regard to case and after trimming, because a deployment writes {@code TRUE},
+     * {@code True} or {@code true} and all three mean the same thing to the SDK.
+     *
+     * @param value the raw text, which may be {@code null}
+     * @return {@code true} only for the literal {@code true}
+     */
+    private static boolean isTrueValue(final String value) {
+        return value != null && "true".equalsIgnoreCase(value.strip());
+    }
+
+    /**
+     * Returns the first of two external readings that a deployment actually supplied.
+     *
+     * @param preferred the reading that wins when both are present
+     * @param fallback  the reading consulted when the preferred one is absent
+     * @return the stripped winning value, or {@code null} when neither was supplied
+     */
+    private static String firstSupplied(final String preferred, final String fallback) {
+        if (isSuppliedExternalValue(preferred)) {
+            return preferred.strip();
+        }
+        if (isSuppliedExternalValue(fallback)) {
+            return fallback.strip();
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether an environment variable or system property carries a value at all.
+     *
+     * <p>Distinct from {@link #isSuppliedValue(String, String)}, which additionally recognises Spring's
+     * placeholder syntax. A variable read straight from the process environment never contains a Spring
+     * placeholder, so only absence and blankness are non-values here - and an empty variable must count
+     * as absent, because {@code AWS_ENDPOINT_URL=} redirects nothing.
+     *
+     * @param value the raw reading, which may be {@code null}
+     * @return {@code true} when the value is present and not blank
+     */
+    private static boolean isSuppliedExternalValue(final String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /**
+     * Reads the AWS shared configuration file through the SDK's own profile reader.
+     *
+     * <p>Using the SDK's reader rather than parsing the file here is the point: the profile precedence,
+     * the section naming and the {@code services} indirection are resolved exactly as the client that
+     * would honour them resolves them, so this check cannot disagree with the SDK about what the file
+     * says. A missing or unreadable file declares nothing, which is the ordinary case and not a fault.
+     *
+     * @param configuredLocation the location named by the deployment, or {@code null} for the default
+     * @param profileName        the resolved profile section name
+     * @return one description per endpoint declaration found, empty when the file declares none
+     */
+    private static List<String> readSharedConfiguration(final String configuredLocation,
+            final String profileName) {
+        final ProfileFile profileFile;
+        try {
+            profileFile = configuredLocation == null
+                    ? ProfileFile.defaultProfileFile()
+                    : ProfileFile.builder()
+                            .type(ProfileFile.Type.CONFIGURATION)
+                            .content(Path.of(configuredLocation))
+                            .build();
+        } catch (final RuntimeException unreadable) {
+            // A file the SDK cannot read declares nothing to the SDK either, so it redirects nothing.
+            // The type is recorded rather than the path or the parser's message, so a diagnostic can
+            // never echo a mounted location.
+            LOGGER.debug("The AWS shared configuration file was not readable and declares no endpoint;"
+                    + " failureType={}", unreadable.getClass().getSimpleName());
+            return List.of();
+        }
+        // Fully qualified because the simple name Profile is already taken in this file by the Spring
+        // annotation that confines the whole class to the production profile.
+        final Optional<software.amazon.awssdk.profiles.Profile> profile =
+                profileFile.profile(profileName);
+        if (profile.isEmpty()) {
+            return List.of();
+        }
+        final software.amazon.awssdk.profiles.Profile resolved = profile.get();
+        final List<String> declarations = new ArrayList<>();
+        resolved.property(SDK_SHARED_CONFIG_ENDPOINT_PROPERTY)
+                .ifPresent(ignored -> declarations.add(SDK_SHARED_CONFIG_ENDPOINT_PROPERTY));
+        resolved.property(SDK_SERVICES_PROPERTY).ifPresent(section ->
+                declarations.addAll(serviceSectionDeclarations(profileFile, section)));
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Reports the per-service endpoint declarations of one {@code services} subsection.
+     *
+     * @param profileFile the parsed shared configuration
+     * @param sectionName the subsection named by the profile's {@code services} key
+     * @return one description per service identifier this module operates a client for
+     */
+    private static List<String> serviceSectionDeclarations(final ProfileFile profileFile,
+            final String sectionName) {
+        final Optional<software.amazon.awssdk.profiles.Profile> section =
+                profileFile.getSection(SDK_SERVICES_PROPERTY, sectionName);
+        if (section.isEmpty()) {
+            return List.of();
+        }
+        final software.amazon.awssdk.profiles.Profile services = section.get();
+        final List<String> declarations = new ArrayList<>();
+        for (final String service : SDK_SERVICE_IDENTIFIERS) {
+            final String key = service + '.' + SDK_SHARED_CONFIG_ENDPOINT_PROPERTY;
+            if (services.property(key).isPresent()) {
+                declarations.add(SDK_SERVICES_PROPERTY + '.' + sectionName + '.' + key);
+            }
+        }
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Assembles the native-channel failure text.
+     *
+     * @param faults one line per refusal, already indented
+     * @return a message that states the count, explains why the application's own settings could not
+     *         have caught it, lists every channel and points at the recorded decision
+     */
+    private static String nativeChannelFailureMessage(final List<String> faults) {
+        return "The '" + PRODUCTION_PROFILE + "' profile cannot start: " + faults.size()
+                + " AWS SDK endpoint redirection channel(s) outside this application's configuration"
+                + " would send data somewhere this deployment does not own." + System.lineSeparator()
+                + "These channels are read by the SDK itself, not by any Spring property source, so"
+                + " declaring no endpoint setting in a profile document does not close them and no"
+                + " property-based check can see them." + System.lineSeparator()
+                + String.join(System.lineSeparator(), faults)
+                + System.lineSeparator()
+                + "The FIPS and dual-stack selectors are NOT refused: they select a variant of the"
+                + " region's own endpoint rather than replacing it with another host."
+                + System.lineSeparator()
+                + "See docs/decision-log.md DL-105 and the variable list at the head of "
+                + "application-prod.yml.";
+    }
+
+    /**
+     * Supplies the AWS shared configuration file's endpoint declarations.
+     *
+     * <p>Named rather than expressed as a two-argument function so the parameters have names at the call
+     * site and a test double reads as what it stands in for.
+     */
+    @FunctionalInterface
+    interface SharedConfigurationReader {
+
+        /**
+         * Reports every endpoint declaration one profile of the shared configuration carries.
+         *
+         * @param configuredLocation the location named by the deployment, or {@code null} for the
+         *                           SDK's default location
+         * @param profileName        the resolved profile section name, never {@code null}
+         * @return one description per declaration, empty when the profile declares none
+         */
+        List<String> endpointDeclarations(String configuredLocation, String profileName);
     }
 
     /**

@@ -37,6 +37,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Set;
@@ -264,6 +265,15 @@ class SecurityConfigTest {
 
     /** Base path the probe management endpoints are published beneath. */
     private static final String MANAGEMENT_BASE = "/actuator";
+
+    /**
+     * The operator credential these slices configure, which is a fixture and not a secret of anything.
+     *
+     * <p>Long and obviously inert on purpose: it is compared byte for byte, so a short value would still
+     * pass and would read as though brevity were acceptable for the real thing.
+     */
+    private static final String OPERATOR_TOKEN =
+            "unit-test-operator-credential-not-a-real-credential-0123456789";
 
     /** Address the probe interface description is published at. */
     private static final String API_DOCS = "/v3/api-docs";
@@ -759,9 +769,26 @@ class SecurityConfigTest {
                         WebMvcConfig.MAX_REQUEST_BODY_SIZE_PROPERTY + "=64KB",
                         "carddemo.security.require-https=" + requireHttps,
                         "carddemo.security.anonymous-metrics-scrape=" + anonymousScrape,
+                        SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + "=" + OPERATOR_TOKEN,
                         "springdoc.api-docs.enabled=" + publishDocs,
                         "springdoc.api-docs.path=" + API_DOCS,
                         "management.endpoints.web.base-path=" + managementBase);
+    }
+
+    /**
+     * A runner with NO operator credential configured, which is the fail-closed posture.
+     *
+     * <p>Distinct from every other runner because it is the only one that can tell the difference between
+     * "the management surface requires an operator authority" and "the management surface requires an
+     * operator authority that happens to be configured here". With no credential configured no identity
+     * can hold the authority, so everything beyond the three anonymous probe paths must refuse - including
+     * a caller presenting the value that would otherwise have worked.
+     *
+     * @return the configured runner
+     */
+    private static WebApplicationContextRunner withoutOperatorIdentity() {
+        return runner(false, false, false)
+                .withPropertyValues(SecurityConfig.MANAGEMENT_TOKEN_PROPERTY + "=");
     }
 
     /** A runner in the posture the local and test overlays take: no transport requirement. */
@@ -913,20 +940,73 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("still answer the metrics scrape endpoint for a CREDENTIALED collector where the "
-                + "profile does not open it, so closing anonymity does not unpublish the endpoint and "
-                + "the performance gate keeps its data source")
+        @DisplayName("still answer the metrics scrape endpoint for a collector presenting the OPERATOR "
+                + "credential where the profile does not open it, so closing anonymity does not "
+                + "unpublish the endpoint and the performance gate keeps its data source")
         void answerTheScrapeEndpointForACredentialedCollector() throws Exception {
             closedScrape().run(context -> clientFor(context)
                     .perform(get(MANAGEMENT_BASE + "/prometheus").header(HttpHeaders.AUTHORIZATION,
-                            "Bearer " + tokenFor(context, UserType.USER)))
+                            "Bearer " + OPERATOR_TOKEN))
                     .andExpect(result -> {
                         assertThat(result.getResponse().getStatus())
-                                .as("a production collector authenticates and collects; that is the "
-                                        + "whole reason the endpoint stays in the exposure list")
+                                .as("a production collector authenticates with its scoped credential and "
+                                        + "collects; that is the whole reason the endpoint stays in the "
+                                        + "exposure list")
                                 .isEqualTo(200);
                         assertThat(result.getResponse().getContentAsString()).isEqualTo("prometheus");
                     }));
+        }
+
+        @Test
+        @DisplayName("refuse a collector presenting a credential that is close to the operator one, "
+                + "because the comparison is byte for byte and not a prefix match")
+        void refuseANearMissOperatorCredential() throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/prometheus").header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + OPERATOR_TOKEN.substring(0, OPERATOR_TOKEN.length() - 1)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .isEqualTo(401)));
+        }
+
+        @ParameterizedTest(name = "GET {0} is refused when no operator identity is configured")
+        @ValueSource(strings = {MANAGEMENT_BASE + "/prometheus", MANAGEMENT_BASE + "/metrics",
+            MANAGEMENT_BASE + "/info"})
+        @DisplayName("refuse the operational surface entirely when NO operator credential is configured, "
+                + "so an unset setting is the fail-closed case rather than the permissive one")
+        void refuseTheOperationalSurfaceWithoutAnOperatorIdentity(final String path) throws Exception {
+            withoutOperatorIdentity().run(context -> {
+                clientFor(context).perform(get(path))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("a missing credential setting must never widen anything")
+                                .isEqualTo(401));
+                clientFor(context)
+                        .perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + OPERATOR_TOKEN))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("with nothing configured there is no credential to present, so even "
+                                        + "the value that would otherwise work must be refused")
+                                .isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("keep the probe paths anonymous even with no operator identity configured, so a "
+                + "deployment that has not issued a collector credential still reports healthy")
+        void keepTheProbesAnonymousWithoutAnOperatorIdentity() throws Exception {
+            withoutOperatorIdentity().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/health"))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("refuse an empty presented credential where no operator identity is configured, "
+                + "because two empty values must not compare equal into an open surface")
+        void refuseAnEmptyPresentedCredential() throws Exception {
+            withoutOperatorIdentity().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/prometheus")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer "))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("an unconfigured credential matches nothing, INCLUDING an empty one")
+                            .isEqualTo(401)));
         }
 
         @Test
@@ -1629,11 +1709,29 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("is the only chain deciding requests, so the framework's default chain has stood "
-                + "down rather than sitting alongside this one")
-        void isTheOnlyChain() {
-            plainTransport().run(context -> assertThat(context)
-                    .hasSingleBean(SecurityFilterChain.class));
+        @DisplayName("publishes exactly the module's own two chains, so the framework's default chain has "
+                + "stood down rather than sitting alongside them")
+        void publishesExactlyTheModulesOwnChains() {
+            plainTransport().run(context -> assertThat(context.getBeansOfType(SecurityFilterChain.class))
+                    .as("the management surface is decided by its own chain because it needs a different "
+                            + "kind of identity from an application route; a third chain here would be "
+                            + "the framework's default sitting alongside them")
+                    .containsOnlyKeys("managementSecurityFilterChain", "securityFilterChain"));
+        }
+
+        @Test
+        @DisplayName("consults the management chain before the application chain, which is what makes "
+                + "the management rules decide the management paths at all")
+        void consultsTheManagementChainFirst() {
+            plainTransport().run(context -> {
+                final List<String> declared =
+                        new ArrayList<>(context.getBeansOfType(SecurityFilterChain.class).keySet());
+
+                assertThat(declared)
+                        .as("the application chain carries no request matcher, so it matches everything; "
+                                + "whichever chain is consulted first decides the management paths")
+                        .containsExactly("managementSecurityFilterChain", "securityFilterChain");
+            });
         }
 
         @Test
@@ -2201,18 +2299,58 @@ class SecurityConfigTest {
     @DisplayName("The management surface orchestration depends on")
     class ManagementSurfaceReachability {
 
-        @ParameterizedTest(name = "GET {0}")
-        @ValueSource(strings = {MANAGEMENT_BASE + "/health", MANAGEMENT_BASE + "/prometheus"})
-        @DisplayName("requires no administrative authority, so an ordinary identity reaches both the "
-                + "health probe and the scrape endpoint even where the profile closes the scrape")
-        void requiresNoAdministrativeAuthority(final String path) throws Exception {
+        @ParameterizedTest(name = "GET {0} with an ordinary sign-on token")
+        @ValueSource(strings = {MANAGEMENT_BASE + "/prometheus", MANAGEMENT_BASE + "/metrics",
+            MANAGEMENT_BASE + "/info"})
+        @DisplayName("REFUSES an ordinary sign-on identity on the operational surface, which is the "
+                + "least-privilege rule the previous bare authenticated() gate did not express")
+        void refusesAnOrdinarySignOnIdentity(final String path) throws Exception {
             closedScrape().run(context -> clientFor(context)
                     .perform(get(path).header(HttpHeaders.AUTHORIZATION,
                             "Bearer " + tokenFor(context, UserType.USER)))
                     .andExpect(result -> assertThat(result.getResponse().getStatus())
-                            .as("403 would mean an administrative authority had been required of a "
-                                    + "collector or a health check")
+                            .as("per-endpoint latency, per-batch-step record counts, pool saturation and "
+                                    + "JVM internals are not anything a cardholder's session needs")
+                            .isEqualTo(401)));
+        }
+
+        @ParameterizedTest(name = "GET {0} with an ADMINISTRATIVE sign-on token")
+        @ValueSource(strings = {MANAGEMENT_BASE + "/prometheus", MANAGEMENT_BASE + "/metrics"})
+        @DisplayName("REFUSES an administrative sign-on identity too, because the operator authority is "
+                + "a different kind of identity rather than a higher rank of the existing two")
+        void refusesAnAdministrativeSignOnIdentity(final String path) throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(path).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.ADMIN)))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("promoting every administrator to operator would have been the other way "
+                                    + "to close this, and it would have granted far more than asked")
+                            .isEqualTo(401)));
+        }
+
+        @ParameterizedTest(name = "GET {0} needs no administrative authority")
+        @ValueSource(strings = {MANAGEMENT_BASE + "/health", MANAGEMENT_BASE + "/health/liveness",
+            MANAGEMENT_BASE + "/health/readiness"})
+        @DisplayName("keeps the aggregate probe and both probe groups anonymous, because the container "
+                + "probe presents no credential and their bodies are a status word")
+        void keepsTheThreeProbePathsAnonymous(final String path) throws Exception {
+            closedScrape().run(context -> clientFor(context).perform(get(path))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("401 here would make the image report a healthy process unhealthy")
                             .isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("no longer permits the health subtree wholesale, so a per-component path naming the "
+                + "database product and the validation query is not anonymous")
+        void doesNotPermitTheHealthSubtreeWholesale() throws Exception {
+            closedScrape().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/health/db"))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("the previous rule permitted /actuator/health/** - every present and "
+                                    + "future sub-path - so a path added by a framework upgrade would "
+                                    + "have arrived anonymous")
+                            .isEqualTo(401)));
         }
 
         @Test

@@ -91,6 +91,22 @@
 #   network, certificates and credential store is outside this module's
 #   delivery scope, which is why this file carries the requirement rather than
 #   an inert second job block that no stack would ever run.
+#
+#   THE TOKEN THAT SENTENCE REFERS TO IS A NAMED SETTING, and it was not always.
+#   An earlier revision of this note asked for a "scoped read-only bearer token"
+#   while the security model offered no such thing: the management paths required
+#   only `authenticated()`, which every signed-on cardholder satisfies, so the
+#   strongest credential a collector could have presented was an ordinary user's
+#   session token - and that same token read the exposition. The scope was a
+#   description rather than a rule.
+#
+#   The credential is now carddemo.security.management.token, supplied to a
+#   production deployment as CARDDEMO_MANAGEMENT_TOKEN with no fallback and
+#   refused at start-up if absent. It mints the ROLE_MONITORING authority, which
+#   config/SecurityConfig requires for every management path except the aggregate
+#   health endpoint and its two probe groups, and which NO token issued at sign-on
+#   carries - an administrator's included. That is the value a production
+#   collector puts in its `credentials_file`.
 # ===========================================================================
 
 global:

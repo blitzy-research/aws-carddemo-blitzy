@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -25,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import io.awspring.cloud.sns.core.SnsNotification;
 import io.awspring.cloud.sns.core.SnsOperations;
@@ -36,9 +38,14 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 
@@ -229,6 +236,151 @@ class JobCompletionNotificationServiceTest {
                 3,
                 STARTED,
                 ENDED);
+    }
+
+    @Nested
+    @DisplayName("The listener path is non-blocking, so an optional channel cannot delay a finished job")
+    class TheListenerPathDoesNotBlock {
+
+        /**
+         * Far longer than any reasonable finalization pause, so a blocking handoff is unmistakable.
+         *
+         * <p>The assertions below compare against a fraction of this rather than against an absolute
+         * figure, so the test states "returned without waiting for the topic" rather than asserting a
+         * latency the machine has to meet.
+         */
+        private static final long TOPIC_STALL_MILLIS = 5_000L;
+
+        @AfterEach
+        void closeNotifier() {
+            service.close();
+        }
+
+        @Test
+        @DisplayName("a topic that stalls does not hold the listener callback, which is the defect: the "
+                + "publish used to run inside the batch afterJob callback")
+        void aStalledTopicDoesNotHoldTheCallback() throws Exception {
+            final CountDownLatch publishStarted = new CountDownLatch(1);
+            final CountDownLatch releaseTopic = new CountDownLatch(1);
+            doAnswer(invocation -> {
+                publishStarted.countDown();
+                releaseTopic.await(TOPIC_STALL_MILLIS, TimeUnit.MILLISECONDS);
+                return null;
+            }).when(operations).sendNotification(anyString(), any());
+
+            final long startedAt = System.nanoTime();
+            service.onApplicationEvent(completedEvent());
+            final long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+
+            assertThat(publishStarted.await(TOPIC_STALL_MILLIS, TimeUnit.MILLISECONDS))
+                    .as("the publish must still happen, just not on the caller's thread")
+                    .isTrue();
+            assertThat(elapsedMillis)
+                    .as("the listener returned in %d ms while the topic was still stalled", elapsedMillis)
+                    .isLessThan(TOPIC_STALL_MILLIS / 2);
+            releaseTopic.countDown();
+        }
+
+        @Test
+        @DisplayName("a topic that refuses does not escape the listener, so a completed job's verdict "
+                + "cannot be changed by operational fan-out")
+        void aRefusingTopicDoesNotEscape() {
+            doThrow(new IllegalStateException("topic refused"))
+                    .when(operations).sendNotification(anyString(), any());
+
+            assertThatCode(() -> service.onApplicationEvent(completedEvent()))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("the snapshot really is delivered off-thread, on the named daemon worker rather "
+                + "than on the caller's thread")
+        void theSnapshotIsDeliveredOnADaemonWorker() throws Exception {
+            final CompletableFuture<Thread> publishingThread = new CompletableFuture<>();
+            doAnswer(invocation -> {
+                publishingThread.complete(Thread.currentThread());
+                return null;
+            }).when(operations).sendNotification(anyString(), any());
+
+            service.onApplicationEvent(completedEvent());
+
+            final Thread worker = publishingThread.get(10, TimeUnit.SECONDS);
+            assertThat(worker).isNotSameAs(Thread.currentThread());
+            assertThat(worker.isDaemon())
+                    .as("a stuck publish must not keep the JVM alive at shutdown")
+                    .isTrue();
+            assertThat(worker.getName()).isEqualTo("job-completion-notifier");
+        }
+
+        @Test
+        @DisplayName("the pending queue is bounded, so a topic that is slow for longer than the batch "
+                + "tier produces work sheds notifications instead of accumulating them")
+        void thePendingQueueIsBounded() throws Exception {
+            final CountDownLatch releaseTopic = new CountDownLatch(1);
+            doAnswer(invocation -> {
+                releaseTopic.await(TOPIC_STALL_MILLIS, TimeUnit.MILLISECONDS);
+                return null;
+            }).when(operations).sendNotification(anyString(), any());
+
+            final int offered =
+                    JobCompletionNotificationService.PENDING_NOTIFICATION_CAPACITY * 3;
+            for (int notification = 0; notification < offered; notification++) {
+                service.onApplicationEvent(completedEvent());
+            }
+
+            assertThatCode(() -> service.onApplicationEvent(completedEvent()))
+                    .as("shedding must not surface as a failure to the caller")
+                    .doesNotThrowAnyException();
+            releaseTopic.countDown();
+            assertThat(JobCompletionNotificationService.PENDING_NOTIFICATION_CAPACITY)
+                    .as("an unbounded queue would trade a delay for a leak")
+                    .isPositive();
+        }
+
+        @Test
+        @DisplayName("the direct call stays synchronous and keeps returning its outcome, because a "
+                + "caller that invokes it has asked for the publish rather than the fan-out")
+        void theDirectCallStaysSynchronous() {
+            final CompletableFuture<Thread> publishingThread = new CompletableFuture<>();
+            doAnswer(invocation -> {
+                publishingThread.complete(Thread.currentThread());
+                return null;
+            }).when(operations).sendNotification(anyString(), any());
+
+            final boolean accepted = service.publishCompletion(completedEvent());
+
+            assertThat(accepted).isTrue();
+            assertThat(publishingThread.getNow(null))
+                    .as("the direct call must publish on the caller's own thread")
+                    .isSameAs(Thread.currentThread());
+        }
+
+        @Test
+        @DisplayName("a null snapshot is refused by name on the listener path too")
+        void aNullSnapshotIsRefusedOnTheListenerPath() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> service.onApplicationEvent(null))
+                    .withMessageContaining("event");
+        }
+
+        @Test
+        @DisplayName("after close the notifier accepts nothing and still does not throw at its caller")
+        void afterCloseNothingIsAcceptedAndNothingEscapes() {
+            service.close();
+
+            assertThatCode(() -> service.onApplicationEvent(completedEvent()))
+                    .doesNotThrowAnyException();
+            verifyNoInteractions(operations);
+        }
+
+        @Test
+        @DisplayName("close is idempotent, because the container may call it after a manual close")
+        void closeIsIdempotent() {
+            assertThatCode(() -> {
+                service.close();
+                service.close();
+            }).doesNotThrowAnyException();
+        }
     }
 
     private static String lowTag(final Observation.Context context, final String name) {

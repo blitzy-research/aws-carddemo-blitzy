@@ -441,6 +441,33 @@ spring:
   # config/ProductionConfigurationValidator, before any bean is instantiated, rather than merely left
   # out here. A deployment that sets one is told which one and why.
   #
+  # AND REFUSING THOSE FIVE KEYS IS STILL NOT SUFFICIENT, which is what the revision that added them
+  # missed. Those five are the keys that reach a client THROUGH THIS APPLICATION. The AWS SDK resolves
+  # an endpoint from a chain of ITS OWN that no Spring property source participates in, so a
+  # redirection can be in force while every key above is absent and every check over them passes:
+  #
+  #   AWS_ENDPOINT_URL / AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL_SQS / AWS_ENDPOINT_URL_SNS
+  #       process environment variables, which is how a container image supplies one
+  #   aws.endpointUrl / aws.endpointUrlS3 / aws.endpointUrlSqs / aws.endpointUrlSns
+  #       JVM system properties, including ones arriving through JAVA_TOOL_OPTIONS rather than the
+  #       command line, where they do not appear in the process arguments at all
+  #   endpoint_url in the AWS shared configuration file, globally or in a services.<name> subsection
+  #       which redirects every client without setting one variable or property
+  #
+  # ALL THREE ARMS ARE NOW REFUSED under this profile by the same validator, read from the process
+  # environment, the system properties and - through the SDK's own profile reader, so the section
+  # precedence and the services indirection resolve exactly as a client would resolve them - the shared
+  # configuration file. A deployment that supplies one is named the channel and told to remove it.
+  #
+  # TWO THINGS ARE DELIBERATELY NOT REFUSED. The FIPS and dual-stack selectors
+  # (AWS_USE_FIPS_ENDPOINT, AWS_USE_DUALSTACK_ENDPOINT) select a VARIANT of the region's own endpoint
+  # rather than replacing it with another host, so a deployment obliged to use validated cryptography
+  # or a dual-stack network is expressing a legitimate posture and is left alone. And
+  # AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true is treated as a correct posture rather than a fault: it is
+  # the SDK's own switch for making the shared configuration file's endpoint settings inert, so a
+  # deployment that sets it has closed the file channel by the supported mechanism and the file is then
+  # not read at all.
+  #
   # NO STATIC CREDENTIAL PROPERTY IS DECLARED EITHER. The reasoning is recorded in the environment
   # inventory above: with none present, the SDK's default provider chain resolves a role, and the
   # placeholder pair the local profile uses for the emulator must never be carried across to here.
@@ -548,34 +575,58 @@ server:
 # TWO ENDPOINTS MUST REMAIN PUBLISHED, AND NARROWING MUST NOT REACH THEM. Each is resolved literally
 # by a sibling file, and the same image runs under every profile:
 #
-#   /actuator/health      the HEALTHCHECK target of carddemo-java/Dockerfile and the readiness gate
-#                         anything waiting on this application depends upon
+#   /actuator/health      publishing this endpoint is what makes its GROUPS reachable, and the groups
+#                         are what the two callers actually read: carddemo-java/Dockerfile's
+#                         HEALTHCHECK asks for /actuator/health/liveness, and a Compose dependent or a
+#                         CI gate waits on /actuator/health/readiness. Narrowing the endpoint away
+#                         takes both groups with it, which is why it is named here
 #   /actuator/prometheus  the surface every panel of
 #                         config/grafana/dashboards/carddemo-overview.json reads, and where the
 #                         performance baseline is established
 #
-# PUBLISHED IS NOT THE SAME AS ANONYMOUS, and under this profile the two differ. Only the health probe
-# is anonymous here. The scrape endpoint requires a bearer token, because
-# carddemo.security.anonymous-metrics-scrape is closed in the shared baseline and restated closed
+# PUBLISHED IS NOT THE SAME AS ANONYMOUS, and under this profile the two differ. Exactly three paths are
+# anonymous here - the aggregate health endpoint and its two probe groups, /actuator/health/liveness and
+# /actuator/health/readiness - and nothing else beneath the management base path is. The scrape endpoint
+# requires the SCOPED OPERATOR CREDENTIAL at carddemo.security.management.token, documented further down,
+# because carddemo.security.anonymous-metrics-scrape is closed in the shared baseline and restated closed
 # further down - so the exposition, which carries per-endpoint latency distributions, per-batch-step
-# record counts, pool saturation and JVM internals, is not readable by a client that presents nothing.
-# Publishing it here and authenticating it there is deliberate: a credentialed collector keeps its
-# data and the performance gate keeps its source, while an uncredentialed one gets 401 from the rule
-# that authenticates everything under the management base path. config/prometheus/prometheus.yml is
-# the LOCAL stack's collector - it presents no credential and addresses Compose service names - so it
-# is not the collector for this profile and must not be pointed at one.
+# record counts, pool saturation and JVM internals, is readable by neither a client that presents nothing
+# NOR a client presenting a token issued at sign-on. Publishing it here and requiring that credential
+# there is deliberate: a collector holding it keeps its data and the performance gate keeps its source,
+# while anyone else gets 401 from the management filter chain's ROLE_MONITORING rule.
+# config/prometheus/prometheus.yml is the LOCAL stack's collector - it presents no credential and
+# addresses Compose service names - so it is not the collector for this profile and must not be pointed
+# at one.
 #
 # THE BASE PATH IS INHERITED AND DELIBERATELY NOT RESTATED. application.yml states /actuator once, and
 # those two sibling files resolve it literally. Repeating it here would create a second place for it to
 # drift; inheriting it means there is exactly one.
 #
-# ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break. The container health
-# check and the local scrape job both speak plaintext and present no credential, and the image ships
-# with the local profile selected, so they work as written for the profile they were built for. A
-# deployment that selects THIS profile enables in-JVM transport security above, so its probe must
-# address the same path over HTTPS - and its collector must additionally present a bearer token,
-# because this profile does not open anonymous scraping. The paths and the published set are unchanged
-# either way; what differs is the scheme, and for the scrape also the credential.
+# ONE INTERACTION WORTH RECORDING, because it is easy to misread as a break, and because an earlier
+# revision of this file recorded it as a REQUIREMENT ON THE DEPLOYMENT and then shipped nothing that
+# met it. This profile enables in-JVM transport security above, so a probe that speaks plaintext to
+# this port receives no status line at all and reports a perfectly healthy process as unhealthy - which
+# an orchestrator acts on by restarting it, indefinitely. Stating that the probe "must address the same
+# path over HTTPS" while the only shipped probe sent plaintext was a documented obligation with no
+# implementation behind it.
+#
+# THE SHIPPED PROBE NOW READS THE TRANSPORT RATHER THAN ASSUMING IT. The Dockerfile HEALTHCHECK
+# branches on SERVER_SSL_ENABLED - which is the relaxed-binding environment form of the very
+# server.ssl.enabled key that switches the listener above, so the server and its probe read ONE value
+# and cannot disagree. A deployment that selects this profile sets that variable as part of enabling
+# transport security, and the probe speaks TLS by the same act. It needs nothing installed: the runtime
+# image already carries openssl, so no HTTP client and no additional package enters the image.
+#
+# THE PROBE ASKS FOR THE LIVENESS GROUP, not the aggregate. Liveness answers "should this process be
+# restarted", which never depends on another service, so the probe makes no external call and is
+# bounded whatever this deployment's dependencies are doing. Readiness is the question a router or a
+# deployment gate wants, and it is bounded on the contributor side instead - every AWS contributor
+# carries its own deadline. The shared baseline develops both points at its health-group block.
+#
+# THE LOCAL SCRAPE JOB, by contrast, genuinely is the local stack's: it speaks plaintext and presents
+# no credential. A collector for THIS profile addresses the same path over HTTPS and must additionally
+# present a credential, because this profile does not open anonymous scraping. The paths and the
+# published set are unchanged either way.
 #
 # EVERYTHING ELSE IS CLOSED. Nothing that enumerates resolved configuration, the bean graph, the
 # request mappings or the applied migrations is published; nothing that dumps memory or threads is
@@ -601,6 +652,21 @@ server:
 # authorised caller, and it costs nothing operationally, because the same failure is already in the
 # structured log with far more context. Diagnosis belongs to the profile where diagnosis happens, and
 # the local overlay opens both settings there.
+#
+# AND "ALREADY IN THE STRUCTURED LOG" IS NOW TRUE, which is the correction this block needed. The two
+# settings below withhold the bounded detail from every caller, so under this profile an absorbed
+# provider failure previously left NO trace anywhere: the probe reported DOWN, the reason was suppressed
+# by design, and the contributor that had absorbed the failure carried no logger at all. The claim above
+# described an intention rather than a behaviour, and it was the one place a deployment would have gone
+# looking.
+#
+# config/AwsResourceHealthConfig now logs its own STATE TRANSITIONS - the move to DOWN at warn carrying
+# the bounded cause, the recovery to UP at info, and a change of reason while still down - so the
+# information this block withholds from the response body is genuinely available where this block says
+# it is. Transitions rather than every evaluation, because a probe runs every ten seconds and logging
+# each one would bury the change that matters. The permitted vocabulary of those lines is the same as
+# the withheld detail's: an authored component name and a bounded exception-type chain, never an
+# endpoint, a credential, a configured resource name, a provider message or a stack trace.
 #
 # THE SAMPLING FRACTION BELOW IS A SAMPLING DECISION AND NOT A PERFORMANCE TARGET. It governs how many
 # traces are exported, nothing more. It is not a threshold, it does not encode an expectation about
@@ -847,17 +913,46 @@ carddemo:
     # distributions, per-batch-step record counts, data-source pool saturation, and JVM heap, thread
     # and garbage-collection internals. That set is enough to profile transaction volume, infer
     # business activity from the batch counts, and time an attack - against a deployment the client
-    # holds no credential for. The health probe stays anonymous because its body is a status word;
-    # this is the shape of the workload, which is a different kind of answer.
+    # holds no credential for. The three probe paths stay anonymous because each body is a status
+    # word; this is the shape of the workload, which is a different kind of answer.
     #
     # THE ENDPOINT IS STILL PUBLISHED - see the exposure list above, which keeps prometheus in it.
-    # Closing this key does not unpublish it and does not disable a meter. A collector that presents
-    # a bearer token collects exactly what it collected before, so the performance gate keeps its
-    # data source; a client that presents nothing now gets 401 from the rule that authenticates
-    # everything under the management base path.
+    # Closing this key does not unpublish it and does not disable a meter. A collector presenting the
+    # operator credential documented immediately below collects exactly what it collected before, so
+    # the performance gate keeps its data source; anyone else - including a caller holding a valid
+    # sign-on token - now gets 401 from the management filter chain's ROLE_MONITORING rule.
     #
     # THE SHIPPED COLLECTOR CONFIGURATION AT config/prometheus/prometheus.yml IS THE LOCAL STACK'S,
     # NOT THIS PROFILE'S. It presents no credential and addresses Compose service names, so it
     # cannot and must not be pointed at a production deployment. A production collector authenticates
     # over TLS with a scoped credential; that file records the requirement and this key enforces it.
     anonymous-metrics-scrape: false
+    # -------------------------------------------------------------------------------------------
+    # THE SCOPED CREDENTIAL THE NOTE ABOVE PROMISES. Until this setting existed the promise had nothing
+    # behind it, and that gap was the defect: closing anonymous-metrics-scrape only meant the scrape
+    # path required A credential, and the strongest thing the security model could then ask for was
+    # bare authenticated() - which every signed-on cardholder satisfies. So the surface that carries
+    # per-endpoint request counts and latency distributions, per-batch-step record counts,
+    # connection-pool saturation and JVM heap, thread and garbage-collection internals was readable by
+    # any ordinary application user. "Scoped" described an intention rather than a rule.
+    #
+    # THE SCOPE IS A DIFFERENT KIND OF IDENTITY, NOT A HIGHER RANK OF THE EXISTING ONES.
+    # config/SecurityConfig matches the whole management base path with its own higher-precedence
+    # filter chain, permits exactly three anonymous paths - the aggregate health endpoint and its two
+    # probe groups - and requires the ROLE_MONITORING authority for everything else beneath it. That
+    # authority is minted ONLY from this credential and is never carried by a token issued at sign-on,
+    # so an administrator's token does not reach it either. It could not have been one of the two
+    # sign-on authorities: those derive from the legacy user-type field, the estate declares exactly
+    # two types, and neither of them is an operator - a collector holds no account, signs on through no
+    # screen and appears in no legacy user record.
+    #
+    # A BARE ENVIRONMENT REFERENCE WITH NO FALLBACK, on the same terms as the signing and encryption
+    # material and guarded by the same start-up check. A defaulted operator credential would be a
+    # credential in the repository, and this one is presented on every scrape.
+    #
+    # THE PROBES STAY ANONYMOUS AND THAT IS DELIBERATE. Their bodies are a status word - health detail
+    # and components are withheld under this profile - and the container's own probe presents no
+    # credential. What is closed here is the shape of the workload, which is a different kind of answer
+    # from whether the process is alive.
+    management:
+      token: ${CARDDEMO_MANAGEMENT_TOKEN}

@@ -253,6 +253,25 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
         }
 
         @Test
+        @DisplayName("and they are declared from dedicated variables, not from the default chain's own")
+        void declaresCredentialsFromDedicatedVariablesOnly() throws IOException {
+            // "Declared, so the chain is never consulted" is only true if the declaration does not itself
+            // read the chain's variables. The assertion above was satisfied by a value of
+            // ${AWS_ACCESS_KEY_ID:...}, which shut the chain out and then handed the ambient key back
+            // through the front door - and on a developer machine or a build agent that key is real. It
+            // would have been signed into every request aimed at an emulator that verifies nothing, so
+            // nothing would ever have failed. The value is read UNINTERPOLATED here, so what is asserted
+            // is the reference itself rather than whatever this particular machine resolves it to.
+            final Properties leaves = leavesOf(new ClassPathResource(TEST_PROFILE_DOCUMENT));
+
+            assertThat(leaves.getProperty("spring.cloud.aws.credentials.access-key"))
+                    .isEqualTo("${LOCALSTACK_ACCESS_KEY_ID:localstack-placeholder-not-a-real-key}");
+            assertThat(leaves.getProperty("spring.cloud.aws.credentials.secret-key"))
+                    .isEqualTo("${LOCALSTACK_SECRET_ACCESS_KEY:"
+                            + "localstack-placeholder-not-a-real-secret}");
+        }
+
+        @Test
         @DisplayName("the floor and the lift cover the same key set")
         void theFloorAndTheLiftCoverTheSameKeys() throws IOException {
             final Properties leaves = leavesOf(new ClassPathResource(TEST_PROFILE_DOCUMENT));

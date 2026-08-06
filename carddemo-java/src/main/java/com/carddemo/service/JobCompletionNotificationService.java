@@ -26,6 +26,10 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,10 +47,50 @@ import org.springframework.stereotype.Service;
  *
  * <p>Notification is best-effort. A topic refusal is observed and logged with a bounded failure chain
  * and then absorbed, so an optional operational channel cannot turn a completed job into a failed one.
+ *
+ * <h2>Best-effort has to mean not blocking, not merely not failing</h2>
+ *
+ * <p>Absorbing the failure was only half of the contract, and the missing half made the other half
+ * misleading. The event boundary Spring publishes on is synchronous, so this listener used to run
+ * <em>inside</em> the batch job-boundary listener's {@code afterJob} callback, and the outbound publish
+ * ran there with it. A topic that accepted a connection and then stopped answering therefore held job
+ * finalization open for as long as the transport allowed - the verdict was already decided and the
+ * durable artifacts were already published, and the job still could not finish. The errors were
+ * swallowed exactly as documented; what was not documented is that the job waited for them to be
+ * swallowed. A dependency described as optional cannot delay the thing it is optional to.
+ *
+ * <p>{@link #onApplicationEvent(JobCompletionEvent)} therefore hands the snapshot to a bounded worker
+ * and returns, so {@code afterJob} is released immediately. {@link
+ * #publishCompletion(JobCompletionEvent)} remains synchronous and keeps returning its outcome, because
+ * a caller that invokes it directly has asked for the publish rather than for the fan-out. Two entry
+ * points, one for each caller, rather than one entry point that serves neither well.
+ *
+ * <p>The handoff is bounded in both dimensions that can grow. One worker, so a slow topic cannot
+ * multiply into a thread per completed job; and a bounded queue, so a topic that is slow for longer than
+ * the batch tier takes to produce work sheds the oldest pending notification with a warning instead of
+ * accumulating snapshots until memory runs out. Shedding is the correct behaviour for this channel and
+ * the wrong behaviour for the queue bridge, which is why only this one does it: the job-submission queue
+ * carries work that must happen, while this carries an operational notice that something already has.
+ *
+ * <h2>The dependency is optional on every surface, not only on this one</h2>
+ *
+ * <p>A dependency cannot be optional here and required elsewhere, and it was: this class documented
+ * best effort while {@code application.yml} listed the topic contributor in the <em>required</em>
+ * readiness group, so an absent topic took the whole instance out of service - which is the treatment
+ * given to a dependency whose absence prevents work, and the topic's absence prevents none. The
+ * contributor is still published, so a deployment can see the topic's state at any time; it no longer
+ * decides whether this instance may receive traffic. The contrast that settles it is the
+ * job-submission queue, which stays in the group: a report request that cannot reach the queue never
+ * runs its job, so an instance that cannot reach the queue genuinely cannot serve.
+ *
+ * <p><strong>The batch verdict is never a function of this channel.</strong> A notification that is
+ * dropped, shed, refused or times out leaves the job's status and exit code exactly as the framework
+ * recorded them. That is the whole contract, stated here because it is the property a reader needs and
+ * the one an implementation could quietly break.
  */
 @Service
 public final class JobCompletionNotificationService
-        implements ApplicationListener<JobCompletionEvent> {
+        implements ApplicationListener<JobCompletionEvent>, AutoCloseable {
 
     public static final String TOPIC_PROPERTY =
             "carddemo.aws.sns.job-notification-topic";
@@ -92,6 +136,20 @@ public final class JobCompletionNotificationService
     private static final Set<String> SAFE_EXIT_CODES = Set.of(
             "COMPLETED", "EXECUTING", "NOOP", "FAILED", "STOPPED", UNKNOWN_TOKEN);
 
+    /**
+     * Snapshots that may wait for the single worker before the oldest is shed.
+     *
+     * <p>Sized for a burst rather than for a backlog. The batch tier completes jobs in ones, not
+     * hundreds, so a depth of this order absorbs every realistic burst while still being a bound: a
+     * topic that is slow for long enough to fill it is a topic this channel should be shedding to,
+     * because each snapshot describes a job that has already finished and whose verdict is already
+     * recorded. An unbounded queue would trade a delay for a leak.
+     */
+    static final int PENDING_NOTIFICATION_CAPACITY = 64;
+
+    /** How long {@link #close()} lets an in-flight publish finish before abandoning it. */
+    static final long SHUTDOWN_GRACE_MILLIS = 2_000L;
+
     private static final Logger LOGGER =
             LoggerFactory.getLogger(JobCompletionNotificationService.class);
 
@@ -100,6 +158,17 @@ public final class JobCompletionNotificationService
     private final String topic;
 
     private final ObservationRegistry observationRegistry;
+
+    /**
+     * The single worker the listener path hands off to.
+     *
+     * <p>Created here rather than injected because its bound is part of this class's contract rather
+     * than a deployment choice - a caller that could supply an unbounded executor could reintroduce
+     * exactly the defect this exists to close. It costs nothing while unused: the core size is zero, so
+     * no thread exists until the first notification is actually handed off, which keeps a directly
+     * constructed instance thread-free.
+     */
+    private final ThreadPoolExecutor deliveryWorker;
 
     /**
      * Creates the producer over the configured, pre-provisioned topic.
@@ -117,20 +186,95 @@ public final class JobCompletionNotificationService
         this.topic = requireTopic(topic);
         this.observationRegistry = Objects.requireNonNull(
                 observationRegistry, "observationRegistry must not be null");
+        this.deliveryWorker = new ThreadPoolExecutor(
+                0, 1,
+                SHUTDOWN_GRACE_MILLIS, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(PENDING_NOTIFICATION_CAPACITY),
+                runnable -> {
+                    final Thread worker = new Thread(runnable, "job-completion-notifier");
+                    worker.setDaemon(true);
+                    return worker;
+                },
+                new ThreadPoolExecutor.DiscardOldestPolicy());
+        // With a maximum of one thread and a core of zero, the worker must be allowed to be created on
+        // demand and to retire when idle; without this the pool would keep no thread at all.
+        this.deliveryWorker.allowCoreThreadTimeOut(true);
     }
 
     /**
-     * Receives the parameter-free completion snapshot published by the shared batch listener.
+     * Receives the parameter-free completion snapshot published by the shared batch listener and returns
+     * without waiting for the topic.
+     *
+     * <p>This is the boundary that makes "best effort" true. Spring's event boundary is synchronous, so
+     * whatever this method does, the batch job-boundary listener's {@code afterJob} callback does too -
+     * and it did the outbound publish, which meant a slow topic delayed job finalization even though
+     * every failure was already being absorbed. Handing the snapshot to the bounded worker and returning
+     * releases {@code afterJob} at once.
+     *
+     * <p>A snapshot that cannot even be queued is shed rather than published inline, because publishing
+     * it inline is the behaviour being removed. The shed is logged so an operator can see that a
+     * notification was lost, and it names only authored identifiers.
      *
      * @param event completed job snapshot
      */
     @Override
     public void onApplicationEvent(final JobCompletionEvent event) {
-        publishCompletion(event);
+        Objects.requireNonNull(event, "event must not be null");
+        final String jobName = token(event.jobName(), MAX_JOB_NAME_LENGTH, UNKNOWN_TOKEN);
+        final String executionId =
+                event.jobExecutionId() == null ? UNKNOWN_TOKEN : event.jobExecutionId().toString();
+        final int pendingBefore = this.deliveryWorker.getQueue().size();
+        try {
+            this.deliveryWorker.execute(() -> publishCompletion(event));
+        } catch (final RejectedExecutionException shuttingDown) {
+            LOGGER.warn("Job-completion notification was not handed off because the notifier is"
+                            + " closed: job={} jobExecutionId={} topic={}",
+                    jobName, executionId, this.topic);
+            return;
+        }
+        if (pendingBefore >= PENDING_NOTIFICATION_CAPACITY) {
+            // DiscardOldestPolicy accepted this snapshot by dropping the head of a full queue. Reported
+            // because a silently shed notification is indistinguishable from one that was never
+            // produced, and an operator reading the topic would draw the wrong conclusion.
+            LOGGER.warn("The job-completion notifier queue was full, so an older notification was shed"
+                            + " to accept this one: job={} jobExecutionId={} topic={} capacity={}",
+                    jobName, executionId, this.topic, PENDING_NOTIFICATION_CAPACITY);
+        }
+    }
+
+    /**
+     * Stops accepting notifications and lets an in-flight publish finish, briefly.
+     *
+     * <p>Called by the container as this bean's inferred destroy method. The grace period exists so a
+     * notification already on the wire is not cut off by an orderly shutdown, and it is short because the
+     * alternative to finishing it is losing an operational notice about a job that has already
+     * completed - which is exactly the trade this whole channel is defined to make.
+     */
+    @Override
+    public void close() {
+        this.deliveryWorker.shutdown();
+        try {
+            if (!this.deliveryWorker.awaitTermination(SHUTDOWN_GRACE_MILLIS, TimeUnit.MILLISECONDS)) {
+                final int abandoned = this.deliveryWorker.shutdownNow().size();
+                if (abandoned > 0) {
+                    LOGGER.warn("{} job-completion notification(s) were abandoned at shutdown;"
+                            + " topic={}", abandoned, this.topic);
+                }
+            }
+        } catch (final InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            this.deliveryWorker.shutdownNow();
+        }
     }
 
     /**
      * Publishes one completion notification without allowing a notification failure to escape.
+     *
+     * <p>Synchronous, and deliberately still so. This is the entry point for a caller that has asked for
+     * the publish itself and wants its outcome - which is why it returns one. The listener path above
+     * does not call it directly; it hands the snapshot to the bounded worker, which then calls this. So
+     * the network wait lives on the worker's thread rather than on the batch job's, and a caller that
+     * genuinely wants to wait still can.
      *
      * @param event completed job snapshot
      * @return {@code true} when SNS accepted the notification, otherwise {@code false}

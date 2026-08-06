@@ -4,6 +4,7 @@ nav:
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
   - Migration Decision Log: decision-log.md
+  - Gate Evidence: gate-evidence.md
 plugins:
   - techdocs-core
   - mermaid2

@@ -762,6 +762,18 @@ public final class BatchConfig {
          * Publishes every file a clean execution registered, upgrading the execution to failed if its
          * required durable boundary cannot be completed.
          *
+         * <p><strong>A failure here means nothing was published.</strong> The store treats its uploads and
+         * its fixed-name alias replacements as one compensated unit, so a failure anywhere in that unit
+         * deletes every object it uploaded and puts every alias it advanced back. The verdict this method
+         * writes is therefore honest in both directions: a FAILED job left no durable object and no local
+         * view naming a generation that was rolled back, and a COMPLETED job published all of them.</p>
+         *
+         * <p>The converse is equally deliberate. Enforcing generation retention happens after the store's
+         * commit point and cannot raise, because deleting a rolled-off object is irreversible and so cannot
+         * participate in any compensation. A retention problem leaves a base temporarily over depth, which
+         * the next successful publication of that base corrects; it is not a reason to fail a job whose
+         * artifacts are durable and visible.</p>
+         *
          * @param jobExecution terminal job execution
          */
         private void publishDurableArtifacts(final JobExecution jobExecution) {
@@ -814,6 +826,23 @@ public final class BatchConfig {
          * boundary has already been attempted, and changing the verdict because operational fan-out
          * failed would make a correctly completed job appear not to have run. The warning names only
          * authored identifiers and the exception type; it never emits the exception message.</p>
+         *
+         * <p><strong>Non-fatal, and also non-blocking.</strong> Absorbing the failure was only half of
+         * what "non-fatal" has to mean. Spring's event boundary is synchronous, so this call used to run
+         * the outbound publish inside this very callback: the verdict was decided, the artifacts were
+         * published, and a topic that accepted a connection and then stopped answering still held the
+         * job from finishing. The failures were swallowed exactly as this note said; the job waited for
+         * them to be swallowed, which it did not say.
+         *
+         * <p>{@code JobCompletionNotificationService} now hands the snapshot to a bounded worker and
+         * returns, so this callback is released immediately and the network wait happens off the job's
+         * thread. The {@code catch} below is kept rather than removed: this method must not depend on
+         * which side of that boundary a failure comes from, and a listener registered here later must
+         * not be able to fail a completed job either.
+         *
+         * <p>The resulting contract, stated once and here because this is where the verdict is finally
+         * observable: a notification that is dropped, shed, refused or timed out leaves the job's status
+         * and exit code exactly as the framework recorded them.</p>
          *
          * @param jobExecution terminal job execution
          * @param jobName registered job name

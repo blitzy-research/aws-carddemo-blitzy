@@ -65,6 +65,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
+import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.BatchConfig;
@@ -146,9 +147,13 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     @Configuration(proxyBeanMethods = false)
     @EnableJpaRepositories(basePackageClasses = TransactionCategoryBalanceRepository.class)
     @EntityScan(basePackageClasses = TransactionCategoryBalance.class)
+    // AdvisoryGenerationPublicationLock is imported because the generation store now requires the
+    // per-base publication lock, and this slice runs against a real PostgreSQL server, so the
+    // production lock is the faithful choice rather than a direct-run stand-in.
     @Import({BatchConfig.class, JpaAuditConfig.class, CategoryBalanceReportJobConfig.class,
             FixedWidthFlatFileReaderFactory.class, StagedGenerationStore.class,
-            FileMaintenanceService.class, AbendService.class})
+            AdvisoryGenerationPublicationLock.class, FileMaintenanceService.class,
+            AbendService.class})
     static class JobUnderTest {
 
         /** Creates the configuration. */

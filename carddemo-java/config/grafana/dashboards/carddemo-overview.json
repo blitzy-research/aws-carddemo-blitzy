@@ -653,7 +653,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Maximum and mean wall-clock duration per job. This is where the Gate 3 elapsed-time figure is read. Quote it with the fixture volumes recorded in this dashboard's description. Absent until a job has been launched.",
+      "description": "Maximum and mean wall-clock duration per job. This is where the Gate 3 elapsed-time figure is read. Quote it with the fixture volumes recorded in this dashboard's description. Absent until a job has been launched. This reads the framework's own per-execution job timer, so unlike the rate and peak panels it does measure a real run - but it is shown as a series over the display window, and the figure quoted for Gate 3 is taken from the measured run itself so that all three figures come from one run rather than three windows. Corroboration, not the source.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -752,7 +752,7 @@
           "refId": "B"
         }
       ],
-      "title": "Batch job elapsed time - GATE 3 ELAPSED TIME",
+      "title": "Batch job elapsed time - corroborates the Gate 3 elapsed figure",
       "type": "timeseries"
     },
     {
@@ -867,7 +867,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Exact application-owned record counters, divided by the explicit dashboard rate window. The interest job is tasklet-based and therefore appears through its own row counter rather than a Spring Batch item-reader timer. Every target is absent until its code path has run; absence is not treated as zero.",
+      "description": "Exact application-owned record counters, divided by the dashboard's RATE WINDOW. That divisor is what makes this a visualization rather than the Gate 3 records-per-second figure: Gate 3 asks for a run's records over that RUN's elapsed time, and a job that processes three hundred records in four seconds inside a one-minute rate window reads here as five per second rather than seventy-five. The shape of throughput while a job runs is what this panel is good for. The quotable figure is measured per run by the Gate 3 measurement in the test estate - see the 'How to read this dashboard' row - and recorded in docs/gate-evidence.md. The interest job is tasklet-based and therefore appears through its own row counter rather than a Spring Batch item-reader timer. Every target is absent until its code path has run; absence is not treated as zero.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1018,7 +1018,7 @@
           "refId": "F"
         }
       ],
-      "title": "Exact application records per second - GATE 3 RECORDS PER SECOND",
+      "title": "Application records per second (rolling rate) - visualization, not the Gate 3 figure",
       "type": "timeseries"
     },
     {
@@ -1026,7 +1026,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Exact application-owned record-counter increases across the selected dashboard window. These are observed volumes, never expected-volume thresholds.",
+      "description": "Exact application-owned record-counter increases across the selected dashboard window. These are observed volumes, never expected-volume thresholds. Not the Gate 3 record total either: the window is the time picker's, not a run's, and increase() extrapolates to the window edges, so a figure read here is an estimate over a display range rather than a count of what one job did. The per-run count comes from the run's own step execution and is recorded in docs/gate-evidence.md.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1152,7 +1152,7 @@
           "refId": "F"
         }
       ],
-      "title": "Exact application records over the selected window",
+      "title": "Application records over the selected window - visualization",
       "type": "stat"
     },
     {
@@ -1537,7 +1537,7 @@
       },
       "id": 15,
       "panels": [],
-      "title": "JVM and process - GATE 3 PEAK MEMORY is read from this row",
+      "title": "JVM and process - sampled; the Gate 3 peak is measured per run, not read from here",
       "type": "row"
     },
     {
@@ -1545,7 +1545,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Used against committed against the maximum the JVM reports. The maximum is a fact the runtime publishes about itself, not a limit asserted here; no heap sizing figure is set by this module.",
+      "description": "Used against committed against the maximum the JVM reports, as scraped. The maximum is a fact the runtime publishes about itself, not a limit asserted here; no heap sizing figure is set by this module. Every series here is a sample at the scrape interval, so occupancy between two scrapes is not shown - which is why the Gate 3 peak is not read from this row.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1665,7 +1665,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "The largest summed heap occupancy seen anywhere in the window the time picker is showing. This is where the Gate 3 peak-memory figure is read. It is a measurement over a chosen window, so widen the window before quoting it and record it beside the fixture volumes.",
+      "description": "The largest summed heap occupancy Prometheus HAPPENED TO OBSERVE in the window the time picker is showing. It is a maximum over samples, not the process's peak: a peak that rises and falls between two scrapes is invisible here, and a batch run short enough to fit between two scrapes can be invisible entirely. Useful for watching how occupancy moves; not the figure to quote. The Gate 3 peak is read from the JVM's own per-pool peak accounting, reset immediately before a measured run, by the Gate 3 measurement in the test estate, and recorded in docs/gate-evidence.md.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1726,7 +1726,7 @@
           "refId": "A"
         }
       ],
-      "title": "Peak heap over the selected window - GATE 3 PEAK MEMORY",
+      "title": "Peak heap across scraped samples - visualization, not the Gate 3 peak",
       "type": "stat"
     },
     {
@@ -2328,7 +2328,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Gate 3 establishes the first Java performance baseline. It asserts no threshold.\n\nNo numeric latency, throughput, availability or capacity figure exists anywhere in the\nlegacy estate - not in the COBOL, not in the job streams, not in the CICS resource\ndefinitions - so there is nothing here for a panel to be checked against. **These panels\nmeasure.** Recorded figures are written up in `docs/gate-evidence.md`.\n\n### Where each of the three figures the gate names is read\n\n| Gate 3 figure | Panel |\n| --- | --- |\n| Elapsed time | *Batch job elapsed time*, and *Batch step elapsed time* |\n| Peak memory | *Peak heap over the selected window* |\n| Records per second | *Records read per second* |\n\n### Quote every figure alongside the fixture volumes it was measured over\n\n- **Daily transactions - 300 records, 105,300 bytes.** 250 point-of-sale purchases and\n  50 operator-originated returns, so both signed directions of the balance computation\n  are exercised. All 300 carry the same processing date and the same timestamp, so\n  date-window filtering has to be exercised by a separately constructed fixture rather\n  than by this input.\n- **Accounts - 50 records.**\n- **Transaction-category balances - 50 records.** The interest run's driving set.\n- **Disclosure groups - 51 records.** Three complete groups, one of which is the default\n  group, which is what makes both the direct-hit and the fallback branch of the interest\n  lookup reachable from seeded data alone.\n\nA number taken from these panels without those volumes beside it is not a baseline.\n\n### Batch rows are empty until a job is launched\n\n`spring.batch.job.enabled` is `false`, so no job runs at application startup. Spring\nBatch series come into existence only once a job has been launched through the module's\nbatch job launch endpoint. The application-registered meters row behaves the same way,\nbecause a Micrometer meter is created on first use. **An empty panel before the first\nrun is expected, not a defect.**\n\n### Why there is no threshold, no limit line and no alert rule here\n\nPercentiles, rates and windowed peaks are instrumentation. A boundary drawn across one\nof them would be a service level, and this migration is expressly forbidden from\ninventing one. `refresh` and `time` are display cadence and display window - viewing\npreferences, not limits.\n\n### Provenance\n\nLegacy estate checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec`; upstream release\nstamp `CardDemo_v1.0-15-g27d6c6f-68` (2022-07-19), the designated provenance identifier\nfor this migration. Traceability is by citation - path and line number - and no legacy\nsource text is reproduced anywhere in this module.\n",
+        "content": "## Gate 3 establishes the first Java performance baseline. It asserts no threshold.\n\nNo numeric latency, throughput, availability or capacity figure exists anywhere in the\nlegacy estate - not in the COBOL, not in the job streams, not in the CICS resource\ndefinitions - so there is nothing here for a panel to be checked against. **These panels\nmeasure.** Recorded figures are written up in `docs/gate-evidence.md`.\n\n### Where each of the three figures the gate names is read\n\n| Gate 3 figure | Where the QUOTABLE figure comes from | What this dashboard shows instead |\n| --- | --- | --- |\n| Elapsed time | The run's own job execution, measured by the Gate 3 measurement | *Batch job elapsed time* and *Batch step elapsed time*, which read the same framework timer and are sound as corroboration |\n| Peak memory | The JVM's own per-pool peak accounting, reset immediately before the measured run | *Peak heap across scraped samples*, a maximum over scrapes - a peak between two scrapes is invisible to it |\n| Records per second | The run's record count divided by that run's own elapsed time | *Application records per second (rolling rate)*, which divides by the rate window instead, so a job that finishes inside the window reads low |\n\n**No panel on this dashboard is the Gate 3 figure.** Each of the three is measured per run by\n`InterestCalculationJobIT`'s Gate 3 measurement, through\n`support/RunScopedPerformanceRecorder`, which writes the figures to\n`target/gate-evidence/` for a person to copy into `docs/gate-evidence.md` beside the date and the\nmachine the run was taken on. The panels above corroborate a figure; they do not produce it.\n`docs/decision-log.md` DL-182 records why.\n\n### Quote every figure alongside the fixture volumes it was measured over\n\n- **Daily transactions - 300 records, 105,300 bytes.** 250 point-of-sale purchases and\n  50 operator-originated returns, so both signed directions of the balance computation\n  are exercised. All 300 carry the same processing date and the same timestamp, so\n  date-window filtering has to be exercised by a separately constructed fixture rather\n  than by this input.\n- **Accounts - 50 records.**\n- **Transaction-category balances - 50 records.** The interest run's driving set.\n- **Disclosure groups - 51 records.** Three complete groups, one of which is the default\n  group, which is what makes both the direct-hit and the fallback branch of the interest\n  lookup reachable from seeded data alone.\n\nA number taken from these panels without those volumes beside it is not a baseline.\n\n### Batch rows are empty until a job is launched\n\n`spring.batch.job.enabled` is `false`, so no job runs at application startup. Spring\nBatch series come into existence only once a job has been launched through the module's\nbatch job launch endpoint. The application-registered meters row behaves the same way,\nbecause a Micrometer meter is created on first use. **An empty panel before the first\nrun is expected, not a defect.**\n\n### Why there is no threshold, no limit line and no alert rule here\n\nPercentiles, rates and windowed peaks are instrumentation. A boundary drawn across one\nof them would be a service level, and this migration is expressly forbidden from\ninventing one. `refresh` and `time` are display cadence and display window - viewing\npreferences, not limits.\n\n### Provenance\n\nLegacy estate checkout SHA `7756d895ffeb65f7ea72aaa609e356d9899afcec`; upstream release\nstamp `CardDemo_v1.0-15-g27d6c6f-68` (2022-07-19), the designated provenance identifier\nfor this migration. Traceability is by citation - path and line number - and no legacy\nsource text is reproduced anywhere in this module.\n",
         "mode": "markdown"
       },
       "pluginVersion": "11.6.6",

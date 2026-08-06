@@ -28,6 +28,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -663,11 +664,17 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
      * Reproduces the legacy increment: read the sixteen-character maximum as a number, add one, and move
      * it back into a sixteen-character field, which zero-pads it.
      *
+     * <p>The locale is pinned for the same reason the production encoder pins it: the field is sixteen
+     * ASCII digits, and {@code String.formatted} would have taken its digits from
+     * {@code Locale.getDefault(Locale.Category.FORMAT)} instead, because that method accepts no locale.
+     * A default locale whose numbering system is not Latin would have produced sixteen characters that
+     * are digits to a reader and not digits to the column.
+     *
      * @param maximum the current maximum, or the zero seed when the table is empty
-     * @return the next identifier, always sixteen digits
+     * @return the next identifier, always sixteen ASCII digits
      */
     private static String successorOf(final String maximum) {
-        return "%016d".formatted(Long.parseLong(maximum) + 1L);
+        return String.format(Locale.ROOT, "%016d", Long.parseLong(maximum) + 1L);
     }
 
     /**

@@ -1309,6 +1309,30 @@ final class ObservabilityConfigTest {
         }
 
         @Test
+        @DisplayName("keeps both persistence categories at a level that cannot emit a statement or the "
+                + "values it was bound with")
+        void keepsBothPersistenceCategoriesAboveTheirEmittingLevel() {
+            // The ORM half of one rule whose other half lives in docker-compose.yml, where the database's
+            // slow-statement diagnostic is barred from printing bind values. A bound parameter in this
+            // estate is a social security number, a card primary account number, a card verification code,
+            // a balance or a credential digest, so both halves have to hold: closing the database channel
+            // while the provider printed the same values would be one channel closed and two believed.
+            // Neither category may be declared INHERITED either - an inherited level rises with the
+            // application tree, so raising com.carddemo to DEBUG for a diagnostic session would start
+            // printing statements, and to TRACE would start printing values.
+            final Map<String, String> pinned = pinnedCategories();
+
+            for (final String category
+                    : List.of("org.hibernate.SQL", "org.hibernate.orm.jdbc.bind")) {
+                assertThat(pinned.get(category))
+                        .as("%s must be named in %s and fixed at %s: the statement text emits at DEBUG and "
+                                        + "the bound values at TRACE, so anything looser is a data channel",
+                                category, LOGGING_DOCUMENT, INFORMATIONAL_LEVEL)
+                        .isEqualTo(INFORMATIONAL_LEVEL);
+            }
+        }
+
+        @Test
         @DisplayName("carries the name that makes profile blocks apply, because under the other name they "
                 + "would be ignored without a word of complaint")
         void carriesTheNameThatMakesProfileBlocksApply() {

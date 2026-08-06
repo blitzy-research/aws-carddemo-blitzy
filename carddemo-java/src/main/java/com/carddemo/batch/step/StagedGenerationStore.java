@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,7 +75,7 @@ import org.springframework.stereotype.Component;
  * the retention scan. Another execution therefore cannot upload, prune or consume a file that is still
  * being written.
  *
- * <h2>Retention is applied to the durable store</h2>
+ * <h2>Retention is applied to the durable store, one base at a time</h2>
  *
  * <p>The measured default depth is {@value #STANDARD_RETENTION_LIMIT}; the transaction-report base is
  * the one measured exception at {@value #REPORT_RETENTION_LIMIT}. After all artifacts of a completed job
@@ -83,14 +84,37 @@ import org.springframework.stereotype.Component;
  * Local completed files are deliberately not pruned here: another concurrently running job may still be
  * reading one of its own intermediate files, while the durable object store is the retention authority.
  *
- * <h2>All-or-failed publication</h2>
+ * <p><strong>The whole of upload-then-retention is serialized per base</strong> through
+ * {@link GenerationPublicationLock}. Retention is a read-decide-delete sequence, so performing it while
+ * another publication is still uploading measures depth against a set that is still changing. That is not
+ * hypothetical here: the transaction-backup base is published both by the backup job and by the
+ * transaction-report job's unload step, and those are differently named jobs whose launches the
+ * per-job launch lock does not serialize against each other. Two such publications could each observe a
+ * set missing the other's upload, each conclude nothing had rolled off, and leave the base permanently one
+ * generation over its declared depth.
  *
- * <p>Every registered source is validated before the first upload. If a later upload fails, objects
- * uploaded by that publication pass are deleted best-effort and the exception is returned to the
- * boundary listener, which marks the job failed before the framework persists its terminal status.
- * Fixed-name local aliases are replaced only after every upload succeeds, through a private temporary
- * sibling and an atomic rename, so a reader sees either the previous complete file or the new complete
- * file and never a partly copied one.
+ * <h2>All-or-failed publication, with one commit point</h2>
+ *
+ * <p>Every registered source is validated before the first upload. Uploads and fixed-name alias
+ * replacements then run as a single compensated unit: if any of them fails, every alias this publication
+ * advanced is put back, every object it uploaded is deleted, and the exception is returned to the boundary
+ * listener, which marks the job failed before the framework persists its terminal status. <strong>A failed
+ * job therefore leaves nothing externally visible</strong> - neither a durable object nor a fixed-name
+ * local view naming a generation that was never published.
+ *
+ * <p>The commit point is the moment every upload and every alias replacement has succeeded. Only two acts
+ * follow it, and both are deliberately incapable of failing the job. Clearing the registry marks the
+ * publication done so a repeated callback cannot publish twice. Enforcing retention deletes rolled-off
+ * objects, which is irreversible and so cannot be part of any compensation; a failure there is reported
+ * and leaves the base temporarily over depth, which the next successful publication for that base
+ * corrects. Failing the job at that point would mean either marking a job failed whose artifacts are
+ * correctly published, or compensating by deleting artifacts that are correct - both worse than a warning.
+ *
+ * <p>Alias replacement itself goes through a private temporary sibling and an atomic rename, so a reader
+ * sees either the previous complete file or the new complete file and never a partly copied one.
+ *
+ * <p>See {@code docs/decision-log.md} entry DL-180 for the commit boundary and DL-181 for why exclusion is
+ * per base rather than per job.
  */
 @Component
 public final class StagedGenerationStore {
@@ -149,13 +173,18 @@ public final class StagedGenerationStore {
     /** Validated destination bucket, captured once so every operation addresses the same resource. */
     private final String bucket;
 
+    /** Serializes publication per generation base so two publications cannot interleave. */
+    private final GenerationPublicationLock publicationLock;
+
     /**
      * @param objectStore object-store operations; must not be {@code null}
      * @param configuredBucket configured batch-staging bucket; must not be blank
+     * @param publicationLock per-base publication lock; must not be {@code null}
      */
     public StagedGenerationStore(final S3Operations objectStore,
             @Value("${" + BATCH_STAGING_BUCKET_PROPERTY + "}")
-            final String configuredBucket) {
+            final String configuredBucket,
+            final GenerationPublicationLock publicationLock) {
         this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
         final String requiredBucket =
                 Objects.requireNonNull(configuredBucket, BATCH_STAGING_BUCKET_PROPERTY);
@@ -164,6 +193,7 @@ public final class StagedGenerationStore {
                     BATCH_STAGING_BUCKET_PROPERTY + " must not be blank");
         }
         this.bucket = requiredBucket;
+        this.publicationLock = Objects.requireNonNull(publicationLock, "publicationLock");
     }
 
     /**
@@ -293,6 +323,10 @@ public final class StagedGenerationStore {
     /**
      * Publishes every artifact registered by a successfully completed job.
      *
+     * <p>The whole sequence runs with every touched base held, and everything that can fail runs before
+     * one commit point. See the class comment for what that boundary guarantees and why retention sits
+     * outside it.</p>
+     *
      * @param jobExecution completed job execution
      * @return published artifacts in registration order
      */
@@ -309,34 +343,82 @@ public final class StagedGenerationStore {
         }
         registrations.forEach(StagedGenerationStore::requireCompletedSource);
 
-        final String bucket = this.bucket;
+        // Filled by the locked body and read back once it returns. The lock takes a body that yields
+        // nothing, so that it stays expressible as a lambda at every call site; the publication's result
+        // therefore travels out in this list rather than as a return value.
         final List<PublishedGeneration> published = new ArrayList<>();
+        this.publicationLock.whileHolding(basesOf(registrations),
+                () -> commitPublication(jobExecution, registrations, published));
+        return List.copyOf(published);
+    }
+
+    /**
+     * Uploads, advances aliases, and only then commits - with one compensation path covering the whole
+     * of what precedes the commit.
+     *
+     * <p>Both irreversible acts are deliberately positioned relative to that point. Retention deletion
+     * cannot be undone, so it runs after the commit and cannot fail the job. Registry clearing must
+     * happen exactly once for a publication that succeeded, so it runs after the commit too, before the
+     * retention pass, so that a retention warning cannot be mistaken for an unpublished job.</p>
+     *
+     * @param jobExecution the completed job whose registrations are being published
+     * @param registrations the validated registrations
+     * @param published filled with one entry per uploaded object, in registration order
+     */
+    private void commitPublication(final JobExecution jobExecution,
+            final List<ArtifactRegistration> registrations,
+            final List<PublishedGeneration> published) {
+        final String bucket = this.bucket;
+        final List<AliasSnapshot> advancedAliases = new ArrayList<>();
         try {
             for (final ArtifactRegistration registration : registrations) {
                 published.add(upload(bucket, registration));
             }
+            for (final ArtifactRegistration registration : registrations) {
+                final AliasSnapshot snapshot = replaceAlias(registration);
+                if (snapshot != null) {
+                    advancedAliases.add(snapshot);
+                }
+            }
         } catch (final RuntimeException failure) {
+            // Compensation now spans every step that precedes the commit, not just the uploads. An
+            // earlier revision rolled back uploads only, so an alias that failed on the third artifact
+            // left the first two objects in the bucket and the first two fixed-name views advanced,
+            // while the job was marked FAILED - a failed job with externally visible output.
+            restoreAliases(advancedAliases);
             rollbackUploads(bucket, published);
+            published.clear();
             throw failure;
         }
 
-        for (final ArtifactRegistration registration : registrations) {
-            replaceAlias(registration);
-        }
+        // ---- COMMIT POINT. Every artifact is durable and every fixed-name view names it. ----
+        discardAliasSnapshots(advancedAliases);
+        clearRegistrations(jobExecution, registrations.size());
+        LOGGER.info("Published {} completed batch artifact(s) for jobExecutionId={} to bucket {}",
+                published.size(), jobExecution.getId(), bucket);
+        enforceRetentionQuietly(bucket, retentionPoliciesOf(registrations));
+    }
 
+    /** The distinct bases one publication touches, which are the bases it must hold. */
+    private static List<String> basesOf(final List<ArtifactRegistration> registrations) {
+        final List<String> bases = new ArrayList<>(registrations.size());
+        for (final ArtifactRegistration registration : registrations) {
+            if (!bases.contains(registration.logicalBase())) {
+                bases.add(registration.logicalBase());
+            }
+        }
+        return List.copyOf(bases);
+    }
+
+    /** The distinct retention policies one publication must enforce. */
+    private static Set<RetentionPolicy> retentionPoliciesOf(
+            final List<ArtifactRegistration> registrations) {
         final Set<RetentionPolicy> policies = new HashSet<>();
         for (final ArtifactRegistration registration : registrations) {
             policies.add(new RetentionPolicy(registration.logicalBase(),
                     registration.retentionLimit()));
         }
-        for (final RetentionPolicy policy : policies) {
-            enforceRetention(bucket, policy);
-        }
-
-        clearRegistrations(jobExecution, registrations.size());
-        LOGGER.info("Published {} completed batch artifact(s) for jobExecutionId={} to bucket {}",
-                published.size(), jobExecution.getId(), bucket);
-        return List.copyOf(published);
+        return policies;
     }
 
     /**
@@ -375,18 +457,29 @@ public final class StagedGenerationStore {
         }
         final String bucket = this.bucket;
         final String key = objectKey(base, executionId);
-        final long size;
-        try {
-            size = Files.size(source);
-            try (InputStream body = Files.newInputStream(source)) {
-                this.objectStore.upload(bucket, key, body);
+        // Held for the whole of upload-then-retention, exactly as the registered path is, and for the
+        // same reason: this base is shared with the transaction-report job's unload step, so a per-job
+        // lock would leave precisely this pair concurrent.
+        final AtomicReference<PublishedGeneration> result = new AtomicReference<>();
+        this.publicationLock.whileHolding(List.of(base), () -> {
+            final long size;
+            try {
+                size = Files.size(source);
+                try (InputStream body = Files.newInputStream(source)) {
+                    this.objectStore.upload(bucket, key, body);
+                }
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("completed batch artifact could not be published for "
+                        + base, failure);
             }
-        } catch (final IOException failure) {
-            throw new UncheckedIOException("completed batch artifact could not be published for "
-                    + base, failure);
-        }
-        enforceRetention(bucket, new RetentionPolicy(base, retentionLimit));
-        return new PublishedGeneration(bucket, key, size);
+            // Nothing after this line may fail the step: the object is durable and visible, so a
+            // retention problem is an over-depth base to be corrected next run, not an unpublished
+            // artifact. There is no compensation to perform because a failed upload uploaded nothing.
+            result.set(new PublishedGeneration(bucket, key, size));
+            enforceRetentionQuietly(bucket, Set.of(new RetentionPolicy(base, retentionLimit)));
+        });
+        return Objects.requireNonNull(result.get(),
+                "publication completed without recording its published generation");
     }
 
     /**
@@ -500,19 +593,42 @@ public final class StagedGenerationStore {
         }
     }
 
-    /** Replaces a fixed-name local alias through a private, execution-specific sibling. */
-    private static void replaceAlias(final ArtifactRegistration registration) {
+    /**
+     * Replaces a fixed-name local alias through a private, execution-specific sibling, preserving what
+     * the alias named beforehand so the replacement can be undone.
+     *
+     * <p>Advancing a fixed-name view is a publication act: a consumer that reads the alias reads whatever
+     * it last named. If a later step of the same publication fails and the durable objects are rolled
+     * back, an alias left naming the new generation would be an externally visible artifact of a job that
+     * failed - the local half of exactly the defect the upload rollback closes. So the previous content
+     * is set aside first and the caller is handed what it needs to put it back.</p>
+     *
+     * @param registration the artifact whose alias is being advanced
+     * @return a snapshot the caller must either discard on commit or restore on failure, or {@code null}
+     *         when this artifact has no alias to advance
+     */
+    private static AliasSnapshot replaceAlias(final ArtifactRegistration registration) {
         final Path alias = registration.alias();
         if (alias == null || alias.equals(registration.completedPath())) {
-            return;
+            return null;
         }
         final Path aliasContainer = alias.getParent();
         final Path aliasName = Objects.requireNonNull(alias.getFileName(), "alias file name");
-        final Path temporaryAlias = alias.resolveSibling(aliasName + ".publish-"
-                + generationToken(registration.executionId()));
+        final String generation = generationToken(registration.executionId());
+        final Path temporaryAlias = alias.resolveSibling(aliasName + ".publish-" + generation);
+        final Path preservedAlias = alias.resolveSibling(aliasName + ".pre-publish-" + generation);
+        boolean aliasPreExisted = false;
         try {
             if (aliasContainer != null) {
                 SecureStagedFiles.prepareDirectory(aliasContainer);
+            }
+            // Set the previous view aside by copy rather than by move, so that a failure between here
+            // and the atomic replacement below leaves the alias itself untouched and complete.
+            if (Files.isRegularFile(alias)) {
+                Files.copy(alias, preservedAlias, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.COPY_ATTRIBUTES);
+                SecureStagedFiles.applyOwnerOnly(preservedAlias);
+                aliasPreExisted = true;
             }
             Files.copy(registration.completedPath(), temporaryAlias,
                     StandardCopyOption.REPLACE_EXISTING);
@@ -524,15 +640,89 @@ public final class StagedGenerationStore {
             Files.move(temporaryAlias, alias, StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
         } catch (final IOException failure) {
+            deleteQuietly(preservedAlias, registration.logicalBase());
             throw new UncheckedIOException("fixed-name batch artifact alias could not be atomically"
                     + " replaced for " + registration.logicalBase(), failure);
         } finally {
+            deleteQuietly(temporaryAlias, registration.logicalBase());
+        }
+        return new AliasSnapshot(registration.logicalBase(), alias,
+                aliasPreExisted ? preservedAlias : null);
+    }
+
+    /**
+     * Puts every advanced alias back the way the publication found it.
+     *
+     * <p>Best-effort by necessity - the publication is already failing and this cannot be allowed to
+     * replace the reason it failed - but each outcome is reported rather than absorbed silently, because
+     * an alias that could not be restored is a local view naming a generation the durable store no
+     * longer holds, and an operator has to be able to see that.</p>
+     *
+     * @param advancedAliases snapshots taken by {@link #replaceAlias(ArtifactRegistration)}
+     */
+    private static void restoreAliases(final List<AliasSnapshot> advancedAliases) {
+        for (final AliasSnapshot snapshot : advancedAliases) {
             try {
-                Files.deleteIfExists(temporaryAlias);
-            } catch (final IOException cleanupFailure) {
-                LOGGER.warn("Could not remove temporary alias for {}; cleanupFailure={}",
-                        registration.logicalBase(),
-                        cleanupFailure.getClass().getSimpleName());
+                if (snapshot.preservedContent() == null) {
+                    // The alias did not exist before this publication created it, so putting it back
+                    // means removing it.
+                    Files.deleteIfExists(snapshot.alias());
+                } else {
+                    Files.move(snapshot.preservedContent(), snapshot.alias(),
+                            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (final IOException restoreFailure) {
+                LOGGER.warn("Could not restore the previous fixed-name view of {} after batch artifact"
+                                + " publication failed; it still names the unpublished generation."
+                                + " restoreFailure={}", snapshot.logicalBase(),
+                        restoreFailure.getClass().getSimpleName());
+            }
+        }
+    }
+
+    /** Drops the preserved previous views once the publication has committed. */
+    private static void discardAliasSnapshots(final List<AliasSnapshot> advancedAliases) {
+        for (final AliasSnapshot snapshot : advancedAliases) {
+            if (snapshot.preservedContent() != null) {
+                deleteQuietly(snapshot.preservedContent(), snapshot.logicalBase());
+            }
+        }
+    }
+
+    /** Removes one of this class's own temporary siblings, reporting rather than raising on failure. */
+    private static void deleteQuietly(final Path temporary, final String logicalBase) {
+        try {
+            Files.deleteIfExists(temporary);
+        } catch (final IOException cleanupFailure) {
+            LOGGER.warn("Could not remove temporary alias file for {}; cleanupFailure={}",
+                    logicalBase, cleanupFailure.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Enforces every policy of a committed publication without being able to fail it.
+     *
+     * <p>Retention deletion is irreversible, so it cannot participate in the compensation that protects
+     * everything before the commit point, and it must therefore run after it. Raising from here would
+     * leave only bad choices: mark a job FAILED whose artifacts are correctly published and visible, or
+     * compensate by deleting those correct artifacts. A base left one generation over depth is a smaller
+     * and self-correcting problem - the next successful publication for that base measures depth from the
+     * state it inherits and prunes what this pass could not - so the failure is reported and the
+     * publication stands.</p>
+     *
+     * @param bucket destination bucket
+     * @param policies the distinct policies this publication is responsible for
+     */
+    private void enforceRetentionQuietly(final String bucket, final Set<RetentionPolicy> policies) {
+        for (final RetentionPolicy policy : policies) {
+            try {
+                enforceRetention(bucket, policy);
+            } catch (final RuntimeException retentionFailure) {
+                LOGGER.warn("Retention could not be enforced for generation base {} at depth {} after a"
+                                + " successful publication; the base may hold more than {} generation(s)"
+                                + " until the next successful publication. retentionFailure={}",
+                        policy.logicalBase(), policy.retentionLimit(), policy.retentionLimit(),
+                        retentionFailure.getClass().getSimpleName());
             }
         }
     }
@@ -685,6 +875,17 @@ public final class StagedGenerationStore {
 
     /** A generation base and the number of its newest objects to retain. */
     private record RetentionPolicy(String logicalBase, int retentionLimit) {
+    }
+
+    /**
+     * What one fixed-name alias named before a publication advanced it.
+     *
+     * @param logicalBase the base whose alias was advanced, for diagnostics only
+     * @param alias the fixed-name view that now names the new generation
+     * @param preservedContent the set-aside previous content, or {@code null} when the alias did not
+     *                         exist before this publication created it
+     */
+    private record AliasSnapshot(String logicalBase, Path alias, Path preservedContent) {
     }
 
     /** One generation discovered beneath a durable prefix. */

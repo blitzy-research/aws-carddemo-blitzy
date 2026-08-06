@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import com.carddemo.service.MessageCatalogService;
@@ -1645,10 +1646,14 @@ class SignOnResponseTest {
         @Test
         @DisplayName("tolerates an unknown incoming property instead of rejecting the body")
         void toleratesAnUnknownIncomingProperty() throws JsonProcessingException {
-            String bodyWithAnUnknownKey = """
+            // Written as String.format with an explicit locale rather than the String.formatted
+            // shorthand. Only %s appears here, so nothing in this particular body depends on the ambient
+            // locale - but the shorthand accepts no locale at all, and LocaleDeterminismAuditTest
+            // forbids it module-wide precisely so that nobody has to make that judgement per call site.
+            String bodyWithAnUnknownKey = String.format(Locale.ROOT, """
                     {"message":"%s","generalError":false,"userId":"%s",\
-                    "aKeyThisContractDoesNotDeclare":"ignored"}"""
-                    .formatted(ORACLE_MSG_COMPARISON_FAILED, SAMPLE_USER_ID);
+                    "aKeyThisContractDoesNotDeclare":"ignored"}""",
+                    ORACLE_MSG_COMPARISON_FAILED, SAMPLE_USER_ID);
 
             SignOnResponse rebuilt = moduleEquivalentMapper()
                     .readValue(bodyWithAnUnknownKey, SignOnResponse.class);
