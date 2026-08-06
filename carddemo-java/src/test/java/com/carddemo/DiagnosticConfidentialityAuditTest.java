@@ -16,6 +16,7 @@
  */
 package com.carddemo;
 
+import com.carddemo.util.SensitiveLogRedactor;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -678,6 +679,220 @@ class DiagnosticConfidentialityAuditTest {
                     .as("a second spelling would leave one of the two unsearchable")
                     .hasSizeGreaterThan(20)
                     .allSatisfy(spelling -> assertThat(spelling).isEqualTo("***REDACTED***"));
+        }
+    }
+
+    @Nested
+    @DisplayName("no diagnostic on the batch tier's record paths carries a raw record identifier")
+    class RecordIdentifierAudit {
+
+        /**
+         * The four sources whose diagnostics stand between the fixed-width datasets and the log.
+         *
+         * <p>These are the paths that read a record straight out of a 350-byte or 50-byte image and then
+         * report on it. That makes their diagnostics doubly exposed: the identifier they would name
+         * belongs to a cardholder's transaction or account, and its bytes are whatever the record held,
+         * so a corrupt image could carry a line terminator, a delimiter or a terminal control sequence
+         * into a log record through them.
+         *
+         * <p>Scoped to these four rather than to the whole module, because the module's other tiers
+         * legitimately key on an account identifier - a browse reports which page it served, a keyed read
+         * reports which key it was given - and a detector wide enough to cover them would need an
+         * enrolment set large enough to hide a real leak inside.
+         */
+        private static final List<Path> RECORD_PATH_SOURCES = List.of(
+                PRODUCTION_SOURCE_ROOT.resolve(Path.of("batch", "step",
+                        "TransactionValidationProcessor.java")),
+                PRODUCTION_SOURCE_ROOT.resolve(Path.of("batch", "step",
+                        "CombineTransactionsProcessor.java")),
+                PRODUCTION_SOURCE_ROOT.resolve(Path.of("batch", "step",
+                        "InterestCalculationProcessor.java")),
+                PRODUCTION_SOURCE_ROOT.resolve(Path.of("service", "InterestCalculationService.java")));
+
+        /**
+         * The expressions that carry a record identifier on those four paths.
+         *
+         * <p>Written as an alternation of the exact forms the sources use, so a rename that keeps the
+         * value still has to be enrolled here rather than slipping past a heuristic. The composite key is
+         * included because its own {@code toString} renders the account identifier as its first
+         * component.
+         */
+        private static final String RECORD_IDENTIFIERS =
+                "tranId|accountId|rowKey|transactionId|result\\.accountId\\(\\)"
+                        + "|row\\.getTrancatAcctId\\(\\)|item\\.getDalytranId\\(\\)"
+                        + "|source\\.getDalytranId\\(\\)|\\w*\\.getTranId\\(\\)"
+                        + "|\\w*\\.getAcctId\\(\\)|\\w*\\.getCustId\\(\\)"
+                        + "|\\w*\\.getDalytranId\\(\\)|\\w*\\.getTrancatAcctId\\(\\)";
+
+        /** One of those expressions rendered into a message by concatenation, either side of the plus. */
+        private static final Pattern IDENTIFIER_CONCATENATED = Pattern.compile(
+                "(?<![\\w.])(?:" + RECORD_IDENTIFIERS + ")\\s*\\+"
+                        + "|\\+\\s*(?:" + RECORD_IDENTIFIERS + ")(?![\\w(.])");
+
+        /** One of those expressions handed to a logger as an argument in its own right. */
+        private static final Pattern IDENTIFIER_ARGUMENT =
+                Pattern.compile("(?<![\\w.])(?:" + RECORD_IDENTIFIERS + ")(?![\\w(.])");
+
+        /** The sanctioned form, whose whole call is removed before either detector reads the source. */
+        private static final String REDACTION_CALL = "SensitiveLogRedactor.redact(";
+
+        /**
+         * Fewest redaction sites the four sources must hold between them.
+         *
+         * <p>Both rules below are satisfied by deleting the diagnostics rather than sanitising them. This
+         * floor closes that route: the identifier has to still be reported, as a reference. The figure is
+         * a count of call sites and is not a coverage or a threshold.
+         */
+        private static final int MINIMUM_IDENTIFIER_REDACTION_SITES = 13;
+
+        /**
+         * Removes every redaction call, whole, so what remains is what the source renders as itself.
+         *
+         * <p>The call is removed rather than its argument, and the argument is removed with it: a value
+         * inside {@code redact(...)} never reaches the message, so leaving the argument behind would make
+         * the sanctioned form indistinguishable from the leak it replaces. The scan is balanced-paren
+         * aware, so a nested accessor call inside the argument is removed with the rest of it.
+         *
+         * @param  source the file text
+         * @return the text with every redaction call replaced by a placeholder token
+         */
+        private static String withoutRedactionCalls(final String source) {
+            final StringBuilder kept = new StringBuilder(source.length());
+            int cursor = 0;
+            while (true) {
+                final int call = source.indexOf(REDACTION_CALL, cursor);
+                if (call < 0) {
+                    kept.append(source, cursor, source.length());
+                    return kept.toString();
+                }
+                kept.append(source, cursor, call).append("REDACTED_REFERENCE");
+                cursor = endOfCall(source, call + REDACTION_CALL.length() - 1);
+            }
+        }
+
+        /**
+         * Reports where a pattern still matches, after the sanctioned form has been removed.
+         *
+         * @param  detector the pattern to apply
+         * @param  wholeCallsOnly whether to read only the text of diagnostic calls
+         * @return one description per finding, naming the file, the line and the text
+         */
+        private static List<String> findings(final Pattern detector, final boolean wholeCallsOnly) {
+            final List<String> found = new ArrayList<>();
+            for (final Path file : RECORD_PATH_SOURCES) {
+                final String source = withoutRedactionCalls(textOf(file));
+                if (wholeCallsOnly) {
+                    for (final Diagnostic diagnostic : diagnosticsIn(file, source)) {
+                        final String structure =
+                                STRING_LITERAL.matcher(diagnostic.text()).replaceAll("\"\"");
+                        final Matcher leak = detector.matcher(structure);
+                        while (leak.find()) {
+                            found.add(diagnostic.location() + " -> " + leak.group());
+                        }
+                    }
+                    continue;
+                }
+                final Matcher leak = detector.matcher(source);
+                while (leak.find()) {
+                    found.add(file.getFileName() + ":" + lineOf(source, leak.start())
+                            + " -> " + leak.group().trim());
+                }
+            }
+            return found;
+        }
+
+        @Test
+        @DisplayName("not concatenated into an exception message, which is where the identifier used to "
+                + "travel on every postcondition these paths state")
+        void noIdentifierIsConcatenatedIntoAMessage() {
+            assertThat(findings(IDENTIFIER_CONCATENATED, false))
+                    .as("an identifier read out of a fixed-width image, rendered into a message: the "
+                            + "value identifies a cardholder's record and its bytes are the record's, so "
+                            + "a corrupt image could carry a control byte into the message with it")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and not handed to a logger as an argument either, so a structured log record cannot "
+                + "carry one in a field of its own")
+        void noIdentifierReachesALoggerAsAnArgument() {
+            assertThat(findings(IDENTIFIER_ARGUMENT, true))
+                    .as("an identifier as a logging argument is the same disclosure as one inside a "
+                            + "message, and in a structured record it is the more searchable of the two")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("and the identifier is still reported, as a reference, so the audit is not satisfied "
+                + "by a path that says nothing when it fails")
+        void theIdentifierIsStillReportedAsAReference() {
+            final long sites = RECORD_PATH_SOURCES.stream()
+                    .map(DiagnosticConfidentialityAuditTest::textOf)
+                    .mapToLong(source -> countOccurrences(source, REDACTION_CALL))
+                    .sum();
+
+            assertThat(sites)
+                    .as("a record that fails a postcondition still has to be findable through a "
+                            + "re-presented chunk, which is what the reference is for")
+                    .isGreaterThanOrEqualTo(MINIMUM_IDENTIFIER_REDACTION_SITES);
+        }
+
+        /**
+         * Counts non-overlapping occurrences of a fixed string.
+         *
+         * @param  source the text to search
+         * @param  fragment the fragment to count
+         * @return how many times it occurs
+         */
+        private static long countOccurrences(final String source, final String fragment) {
+            long total = 0;
+            int cursor = source.indexOf(fragment);
+            while (cursor >= 0) {
+                total++;
+                cursor = source.indexOf(fragment, cursor + fragment.length());
+            }
+            return total;
+        }
+
+        @Test
+        @DisplayName("and both detectors fire on a planted leak, so a clean scan is a finding and not a "
+                + "blind spot")
+        void bothDetectorsFireOnAPlantedLeak() {
+            final String plantedConcatenation =
+                    "throw new IllegalStateException(\"record \" + tranId + \" is malformed\");";
+            final String plantedArgument =
+                    "LOGGER.warn(\"refused {}\", accountId);";
+            final String sanctioned =
+                    "LOGGER.warn(\"refused {}\", SensitiveLogRedactor.redact(accountId));";
+
+            assertThat(IDENTIFIER_CONCATENATED.matcher(plantedConcatenation).find())
+                    .as("the concatenation detector must see a plain identifier beside a plus")
+                    .isTrue();
+            assertThat(IDENTIFIER_ARGUMENT.matcher(
+                    STRING_LITERAL.matcher(plantedArgument).replaceAll("\"\"")).find())
+                    .as("the argument detector must see a plain identifier as an argument")
+                    .isTrue();
+            assertThat(IDENTIFIER_ARGUMENT.matcher(STRING_LITERAL
+                    .matcher(withoutRedactionCalls(sanctioned)).replaceAll("\"\"")).find())
+                    .as("and must stay silent on the sanctioned form, whose argument never reaches the "
+                            + "record")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("and the reference is stable within a run, so the several messages one failing "
+                + "record produces still name the same record")
+        void theReferenceIsStableWithinARun() {
+            final String first = SensitiveLogRedactor.redact("00000000001");
+            final String second = SensitiveLogRedactor.redact("00000000001");
+            final String other = SensitiveLogRedactor.redact("00000000002");
+
+            assertThat(first)
+                    .as("the value itself is never rendered")
+                    .doesNotContain("00000000001")
+                    .startsWith(SensitiveLogRedactor.REDACTED)
+                    .isEqualTo(second)
+                    .isNotEqualTo(other);
         }
     }
 }

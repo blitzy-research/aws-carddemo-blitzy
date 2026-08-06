@@ -27,10 +27,12 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.AbstractList;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,10 +73,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Parity tests for {@link InterestCalculationService}, the translation of the batch interest
@@ -188,14 +186,54 @@ final class InterestCalculationServiceTest {
 
     private InterestCalculationService service;
 
+    /**
+     * Every record the service handed to the writer it was given, in the order it handed them over.
+     *
+     * <p>The service writes each synthesized record at the point {@code app/cbl/CBACT04C.cbl:L500}
+     * writes it, which is inside the group's unit of work and ahead of that group's account rewrite. This
+     * list is where those writes land, so a test can assert both what was written and when relative to
+     * the rewrite. It is cleared for every test by the fixture below.
+     */
+    private final List<Transaction> writtenRecords = new ArrayList<>();
+
     private Logger serviceLogger;
 
     private Level originalServiceLevel;
 
     private ListAppender<ILoggingEvent> logCapture;
 
+    /**
+     * The writer the group operation is given, which records what it was handed and in what order.
+     *
+     * @return a writer appending to {@link #writtenRecords}
+     */
+    private Consumer<Transaction> recordSink() {
+        return this.writtenRecords::add;
+    }
+
+    /**
+     * The closed account groups a whole-run operation handed over, in the order it closed them.
+     *
+     * <p>The run offers each group to a destination as its control break closes it and carries none of
+     * them in its result, so collecting them is the <em>test's</em> choice; see
+     * {@code docs/decision-log.md} entry DL-176.
+     */
+    private final List<InterestCalculationService.GroupInterestResult> closedGroups =
+            new ArrayList<>();
+
+    /**
+     * The group destination a whole-run operation is given.
+     *
+     * @return a destination appending to {@link #closedGroups}
+     */
+    private Consumer<InterestCalculationService.GroupInterestResult> groupSink() {
+        return this.closedGroups::add;
+    }
+
     @BeforeEach
     void setUp() {
+        this.writtenRecords.clear();
+        this.closedGroups.clear();
         this.transactionCategoryBalanceRepository = org.mockito.Mockito.mock(
                 TransactionCategoryBalanceRepository.class, invocation -> {
                     if (invocation.getMethod().getName().equals("findAfterKey")) {
@@ -282,7 +320,8 @@ final class InterestCalculationServiceTest {
                 .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "0.00")));
 
         this.service.calculateInterest(ORACLE_RUN_DATE,
-                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "987654321.99")));
+                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "987654321.99")), recordSink(),
+                groupSink());
 
         final List<String> messages =
                 this.logCapture.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
@@ -317,7 +356,7 @@ final class InterestCalculationServiceTest {
                 .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "0.00")));
 
         this.service.calculateInterest(ORACLE_RUN_DATE,
-                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "98765.43")));
+                List.of(categoryBalance(ORACLE_ACCOUNT_ID, "98765.43")), recordSink(), groupSink());
 
         assertThat(loggedMessages())
                 .anyMatch(message -> message.matches(
@@ -338,8 +377,8 @@ final class InterestCalculationServiceTest {
     private void givenGroupReadsResolve(final String accountId, final Account existing) {
         when(this.accountRepository.findById(accountId)).thenReturn(Optional.of(existing));
         when(this.cardCrossReferenceRepository
-                .findByXrefAcctId(accountId))
-                .thenReturn(List.of(crossReference(accountId)));
+                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountId))
+                .thenReturn(Optional.of(crossReference(accountId)));
     }
 
     /** Wires the account rewrite the control break performs, echoing back what was saved. */
@@ -350,6 +389,119 @@ final class InterestCalculationServiceTest {
 
     /* ========================================================================================== */
 
+    @Nested
+    @DisplayName("(a0) every synthesized record is written before the group's account rewrite")
+    class TheRecordsAreWrittenBeforeTheRewrite {
+
+        /** Creates the nest. */
+        TheRecordsAreWrittenBeforeTheRewrite() {
+        }
+
+        @Test
+        @DisplayName("the writer receives every record of the group, in synthesis order, and receives "
+                + "them all before the account rewrite is issued")
+        void everyRecordIsWrittenBeforeTheRewrite() {
+            final List<String> sequence = new ArrayList<>();
+            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "100.00"));
+            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
+                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
+            when(InterestCalculationServiceTest.this.accountRepository.save(any(Account.class)))
+                    .thenAnswer(invocation -> {
+                        sequence.add("rewrite");
+                        return invocation.getArgument(0);
+                    });
+
+            InterestCalculationServiceTest.this.service.calculateGroupInterest(ORACLE_RUN_DATE,
+                    ORACLE_ACCOUNT_ID,
+                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.00"),
+                            categoryBalance(ORACLE_ACCOUNT_ID, "200.00")),
+                    0L,
+                    synthesized -> sequence.add("write:" + synthesized.getTranId()));
+
+            assertThat(sequence)
+                    .as("both writes happen first, in synthesis order, and the rewrite happens last -"
+                            + " which is CBACT04C L468 inside the loop against L353 at the break")
+                    .containsExactly("write:" + ORACLE_RUN_DATE + "000001",
+                            "write:" + ORACLE_RUN_DATE + "000002",
+                            "rewrite");
+        }
+
+        @Test
+        @DisplayName("a writer that fails stops the group before the account is rewritten, which is "
+                + "the legacy's write-error arm abending with the balance untouched")
+        void aFailingWriterPreventsTheRewrite() {
+            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "100.00"));
+            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
+                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
+            final AbendException writeFailure = new AbendException("CBACT04C",
+                    "ERROR WRITING TRANSACTION RECORD");
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> InterestCalculationServiceTest.this.service
+                            .calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
+                                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.00")), 0L,
+                                    synthesized -> {
+                                        throw writeFailure;
+                                    }))
+                    .isSameAs(writeFailure);
+
+            verify(InterestCalculationServiceTest.this.accountRepository, never())
+                    .save(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a row the zero-rate gate skipped writes nothing, so a group of only skipped rows "
+                + "still rewrites its account and hands the writer nothing at all")
+        void aSkippedRowWritesNothing() {
+            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "100.00"));
+            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
+                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "0.00")));
+            givenAccountRewriteEchoes();
+
+            InterestCalculationServiceTest.this.service.calculateGroupInterest(ORACLE_RUN_DATE,
+                    ORACLE_ACCOUNT_ID,
+                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.00")), 0L, recordSink());
+
+            assertThat(InterestCalculationServiceTest.this.writtenRecords).isEmpty();
+            verify(InterestCalculationServiceTest.this.accountRepository).save(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("the writer is mandatory, because the legacy has no path that synthesizes a record "
+                + "with nowhere to write it")
+        void theWriterIsMandatory() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> InterestCalculationServiceTest.this.service
+                            .calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
+                                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.00")), 0L, null))
+                    .withMessageContaining("synthesizedWriter");
+        }
+
+        @Test
+        @DisplayName("the whole-file driver's run result carries exactly what its groups wrote, in the "
+                + "same order, because the result is filled by the same writer")
+        void theRunResultIsFilledByTheWriter() {
+            givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
+                    account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "100.00"));
+            when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
+                    .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
+            givenAccountRewriteEchoes();
+
+            final InterestCalculationService.InterestRunResult run =
+                    InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.00"),
+                                    categoryBalance(ORACLE_ACCOUNT_ID, "200.00")),
+                            recordSink(), groupSink());
+
+            assertThat(InterestCalculationServiceTest.this.writtenRecords)
+                    .extracting(Transaction::getTranId)
+                    .containsExactly(ORACLE_RUN_DATE + "000001", ORACLE_RUN_DATE + "000002");
+            assertThat(run.transactionCount()).isEqualTo(2);
+        }
+    }
     @Nested
     @DisplayName("(a) the interest expression: multiply first, then divide, then truncate")
     final class InterestArithmetic {
@@ -419,7 +571,7 @@ final class InterestCalculationServiceTest {
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
                             List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70"),
                                     categoryBalance(ORACLE_ACCOUNT_ID, "100.70")),
-                            0L);
+                            0L, recordSink());
 
             // Two rows at 1.00 each: the truncation happens per row, not once on the sum.
             assertThat(result.totalInterest()).isEqualByComparingTo("2.00");
@@ -444,7 +596,7 @@ final class InterestCalculationServiceTest {
             final InterestCalculationService.GroupInterestResult result =
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             assertThat(result.rateGateSkipped()).isFalse();
             assertThat(result.interestTransactions()).hasSize(1);
@@ -462,7 +614,7 @@ final class InterestCalculationServiceTest {
             verify(InterestCalculationServiceTest.this.accountRepository)
                     .findById(ORACLE_ACCOUNT_ID);
             verify(InterestCalculationServiceTest.this.cardCrossReferenceRepository)
-                    .findByXrefAcctId(ORACLE_ACCOUNT_ID);
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID);
             verify(InterestCalculationServiceTest.this.disclosureGroupRepository, times(1))
                     .findById(any());
             verify(InterestCalculationServiceTest.this.accountRepository, times(1))
@@ -487,7 +639,7 @@ final class InterestCalculationServiceTest {
             final InterestCalculationService.GroupInterestResult result =
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             assertThat(result.rateGateSkipped()).isTrue();
             assertThat(result.totalInterest()).isEqualByComparingTo("0.00");
@@ -514,7 +666,7 @@ final class InterestCalculationServiceTest {
             final InterestCalculationService.GroupInterestResult result =
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             assertThat(result.rateGateSkipped()).isTrue();
             assertThat(result.interestTransactions()).isEmpty();
@@ -535,7 +687,7 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
 
             InterestCalculationServiceTest.this.service.calculateGroupInterest(ORACLE_RUN_DATE,
-                    ORACLE_ACCOUNT_ID, List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                    ORACLE_ACCOUNT_ID, List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             final ArgumentCaptor<DisclosureGroupId> key =
                     ArgumentCaptor.forClass(DisclosureGroupId.class);
@@ -564,7 +716,7 @@ final class InterestCalculationServiceTest {
             final InterestCalculationService.GroupInterestResult result =
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             assertThat(result.defaultGroupUsed()).isTrue();
             assertThat(result.categoryInterests()).singleElement()
@@ -601,7 +753,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L))
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()))
                     .satisfies(abend -> {
                         assertThat(abend.culprit()).isEqualTo("CBACT04C");
                         assertThat(abend.reason()).contains("23");
@@ -626,7 +778,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             final InOrder ordered = inOrder(InterestCalculationServiceTest.this.abendService);
             ordered.verify(InterestCalculationServiceTest.this.abendService)
@@ -646,7 +798,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             // A failure is not a miss: exactly one probe, and no fallback attempt.
             verify(InterestCalculationServiceTest.this.disclosureGroupRepository, times(1))
@@ -675,7 +827,7 @@ final class InterestCalculationServiceTest {
             final InterestCalculationService.GroupInterestResult result =
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L);
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink());
 
             final Transaction written = result.interestTransactions().get(0);
 
@@ -716,7 +868,7 @@ final class InterestCalculationServiceTest {
 
             final Transaction written = InterestCalculationServiceTest.this.service
                     .calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L)
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink())
                     .interestTransactions()
                     .get(0);
 
@@ -747,7 +899,7 @@ final class InterestCalculationServiceTest {
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
                             List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70"),
                                     categoryBalance(ORACLE_ACCOUNT_ID, "100.70")),
-                            41L);
+                            41L, recordSink());
 
             assertThat(result.lastTranIdSuffix()).isEqualTo(43L);
             assertThat(result.interestTransactions())
@@ -775,7 +927,7 @@ final class InterestCalculationServiceTest {
 
             final Account updated = InterestCalculationServiceTest.this.service
                     .calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L)
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink())
                     .updatedAccount();
 
             assertThat(updated.getAcctCurrBal()).isEqualByComparingTo("501.00");
@@ -798,18 +950,20 @@ final class InterestCalculationServiceTest {
                     InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
                             List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70"),
                                     categoryBalance(ORACLE_ACCOUNT_ID, "100.70"),
-                                    categoryBalance(ORACLE_SECOND_ACCOUNT_ID, "100.70")));
+                                    categoryBalance(ORACLE_SECOND_ACCOUNT_ID, "100.70")),
+                            recordSink(), groupSink());
 
             // Two groups, both closed. A loop that only breaks on a key change would report one.
             assertThat(result.groupCount()).isEqualTo(2);
             assertThat(result.recordCount()).isEqualTo(3);
-            assertThat(result.groups()).extracting(
+            assertThat(InterestCalculationServiceTest.this.closedGroups).extracting(
                             InterestCalculationService.GroupInterestResult::accountId)
                     .containsExactly(ORACLE_ACCOUNT_ID, ORACLE_SECOND_ACCOUNT_ID);
             // The last account's interest was genuinely posted, which is the point of the flush.
-            assertThat(result.groups().get(1).updatedAccount().getAcctCurrBal())
+            assertThat(InterestCalculationServiceTest.this.closedGroups.get(1).updatedAccount().getAcctCurrBal())
                     .isEqualByComparingTo("701.00");
-            assertThat(result.interestTransactions()).hasSize(3);
+            assertThat(InterestCalculationServiceTest.this.writtenRecords).hasSize(3);
+            assertThat(result.transactionCount()).isEqualTo(3);
             assertThat(result.lastTranIdSuffix()).isEqualTo(3L);
             verify(InterestCalculationServiceTest.this.accountRepository, times(2))
                     .save(any(Account.class));
@@ -820,12 +974,13 @@ final class InterestCalculationServiceTest {
         void emptySourceClosesNoGroup() {
             final InterestCalculationService.InterestRunResult result =
                     InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
-                            List.of());
+                            List.of(), recordSink(), groupSink());
 
             assertThat(result.groupCount()).isZero();
             assertThat(result.recordCount()).isZero();
-            assertThat(result.groups()).isEmpty();
-            assertThat(result.interestTransactions()).isEmpty();
+            assertThat(InterestCalculationServiceTest.this.closedGroups).isEmpty();
+            assertThat(InterestCalculationServiceTest.this.writtenRecords).isEmpty();
+            assertThat(result.transactionCount()).isZero();
             assertThat(result.rateGateSkipped()).isFalse();
             assertThat(result.defaultGroupUsed()).isFalse();
             verify(InterestCalculationServiceTest.this.accountRepository, never())
@@ -839,8 +994,8 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
             when(InterestCalculationServiceTest.this.accountRepository.save(any(Account.class)))
@@ -849,7 +1004,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(OptimisticLockingFailureException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             // Deliberately not reported as a file status: this member has no conflict-handling arm.
             verify(InterestCalculationServiceTest.this.abendService, never())
@@ -867,7 +1022,8 @@ final class InterestCalculationServiceTest {
             when(InterestCalculationServiceTest.this.transactionCategoryBalanceRepository
                     .findAll(any(Sort.class))).thenReturn(List.of());
 
-            InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE);
+            InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
+                    recordSink(), groupSink());
 
             final ArgumentCaptor<Sort> order = ArgumentCaptor.forClass(Sort.class);
             verify(InterestCalculationServiceTest.this.transactionCategoryBalanceRepository)
@@ -886,7 +1042,8 @@ final class InterestCalculationServiceTest {
                     .thenThrow(new QueryTimeoutException("the store did not answer"));
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
-                    InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE));
+                    InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
+                            recordSink(), groupSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("31", "READ", "TCATBALF");
@@ -901,12 +1058,12 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("23", "READ", "ACCTFILE");
             verify(InterestCalculationServiceTest.this.cardCrossReferenceRepository, never())
-                    .findByXrefAcctId(any());
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(any());
         }
 
         @Test
@@ -916,13 +1073,13 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
-                    .thenReturn(List.of());
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("23", "READ", "XREFFILE");
@@ -935,8 +1092,8 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
             when(InterestCalculationServiceTest.this.disclosureGroupRepository.findById(any()))
                     .thenReturn(Optional.of(disclosureGroup(ORACLE_DIRECT_GROUP_ID, "12.00")));
             when(InterestCalculationServiceTest.this.accountRepository.save(any(Account.class)))
@@ -945,7 +1102,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("31", "REWRITE", "ACCTFILE");
@@ -955,10 +1112,12 @@ final class InterestCalculationServiceTest {
         @DisplayName("the run date must be present and exactly ten characters")
         void runDateIsValidated() {
             assertThatIllegalArgumentException().isThrownBy(() ->
-                            InterestCalculationServiceTest.this.service.calculateInterest(null))
+                            InterestCalculationServiceTest.this.service.calculateInterest(null,
+                                    recordSink(), groupSink()))
                     .withMessageContaining("required");
             assertThatIllegalArgumentException().isThrownBy(() ->
-                            InterestCalculationServiceTest.this.service.calculateInterest("2022-07"))
+                            InterestCalculationServiceTest.this.service.calculateInterest("2022-07",
+                                    recordSink(), groupSink()))
                     .withMessageContaining("exactly 10");
         }
 
@@ -967,25 +1126,26 @@ final class InterestCalculationServiceTest {
         void groupArgumentsAreValidated() {
             assertThatIllegalArgumentException().isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
-                            ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID, List.of(), 0L))
+                            ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID, List.of(), 0L, recordSink()))
                     .withMessageContaining("at least one");
 
             assertThatIllegalArgumentException().isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "1.00")), -1L))
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "1.00")), -1L, recordSink()))
                     .withMessageContaining("counts upward");
 
             assertThatIllegalArgumentException().isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_SECOND_ACCOUNT_ID, "1.00")), 0L))
+                            List.of(categoryBalance(ORACLE_SECOND_ACCOUNT_ID, "1.00")), 0L, recordSink()))
                     .withMessageContaining("account identifier");
         }
 
         @Test
-        @DisplayName("the results defend their collections against later mutation")
-        void resultCollectionsAreUnmodifiable() {
+        @DisplayName("a whole run carries no collection at all, so there is nothing for a later caller "
+                + "to mutate, and each group it hands over defends its own")
+        void aRunCarriesNoCollectionAndEachGroupDefendsItsOwn() {
             givenGroupReadsResolve(ORACLE_ACCOUNT_ID,
                     account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00"));
             givenAccountRewriteEchoes();
@@ -994,14 +1154,32 @@ final class InterestCalculationServiceTest {
 
             final InterestCalculationService.InterestRunResult run =
                     InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")),
+                            recordSink(), groupSink());
 
+            assertThat(InterestCalculationService.InterestRunResult.class.getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .containsExactly("groupCount", "transactionCount", "recordCount",
+                            "rateGateSkipped", "defaultGroupUsed", "lastTranIdSuffix");
+            assertThat(run.groupCount()).isOne();
             assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.groups().clear());
+                    .isThrownBy(() -> InterestCalculationServiceTest.this.closedGroups.get(0).categoryInterests().clear());
             assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.interestTransactions().clear());
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> run.groups().get(0).categoryInterests().clear());
+                    .isThrownBy(() -> InterestCalculationServiceTest.this.closedGroups.get(0).interestTransactions().clear());
+        }
+
+        @Test
+        @DisplayName("a whole run refuses to start without a destination for its groups and its "
+                + "transactions")
+        void aRunRefusesToStartWithoutItsDestinations() {
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                            InterestCalculationServiceTest.this.service.calculateInterest(
+                                    ORACLE_RUN_DATE, List.of(), null, groupSink()))
+                    .withMessageContaining("transactionSink");
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                            InterestCalculationServiceTest.this.service.calculateInterest(
+                                    ORACLE_RUN_DATE, List.of(), recordSink(), null))
+                    .withMessageContaining("groupSink");
         }
     }
 
@@ -1014,7 +1192,7 @@ final class InterestCalculationServiceTest {
         void failingSequentialReadIsTheErrorArmNotEndOfFile() {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateInterest(ORACLE_RUN_DATE,
-                            new FailingSource()));
+                            new FailingSource(), recordSink(), groupSink()));
 
             // The failure is reported as the permanent-error code and abends. Had it been folded into
             // the end-of-file arm the run would have ended quietly, reporting zero records.
@@ -1033,7 +1211,7 @@ final class InterestCalculationServiceTest {
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("31", "READ", "ACCTFILE");
@@ -1046,13 +1224,13 @@ final class InterestCalculationServiceTest {
                     .thenReturn(Optional.of(
                             account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
             when(InterestCalculationServiceTest.this.cardCrossReferenceRepository
-                    .findByXrefAcctId(ORACLE_ACCOUNT_ID))
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
                     .thenThrow(new QueryTimeoutException("the store did not answer"));
 
             assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
                     InterestCalculationServiceTest.this.service.calculateGroupInterest(
                             ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L));
+                            List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()));
 
             verify(InterestCalculationServiceTest.this.abendService)
                     .displayIoStatus("31", "READ", "XREFFILE");
@@ -1079,7 +1257,7 @@ final class InterestCalculationServiceTest {
             // outright rather than rendered.
             assertThatIllegalArgumentException().isThrownBy(() ->
                             farFuture.calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
-                                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L))
+                                    List.of(categoryBalance(ORACLE_ACCOUNT_ID, "100.70")), 0L, recordSink()))
                     .withMessageContaining("four-character year field");
         }
     }
@@ -1133,8 +1311,8 @@ final class InterestCalculationServiceTest {
         when(this.accountRepository.findById(ORACLE_ACCOUNT_ID)).thenReturn(
                 Optional.of(account(ORACLE_ACCOUNT_ID, ORACLE_DIRECT_GROUP_ID, "500.00")));
         when(this.cardCrossReferenceRepository
-                .findByXrefAcctId(ORACLE_ACCOUNT_ID))
-                .thenReturn(List.of(crossReference(ORACLE_ACCOUNT_ID)));
+                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ORACLE_ACCOUNT_ID))
+                .thenReturn(Optional.of(crossReference(ORACLE_ACCOUNT_ID)));
         when(this.accountRepository.save(any(Account.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(this.disclosureGroupRepository.findById(any())).thenReturn(Optional.of(
@@ -1145,7 +1323,7 @@ final class InterestCalculationServiceTest {
                 this.service.calculateGroupInterest(ORACLE_RUN_DATE, ORACLE_ACCOUNT_ID,
                         List.of(new TransactionCategoryBalance(ORACLE_ACCOUNT_ID,
                                 ORACLE_TRAN_TYPE_CD, ORACLE_TRAN_CAT_CD, balance)),
-                        0L);
+                        0L, recordSink());
 
         return result.categoryInterests().get(0).monthlyInterest();
     }

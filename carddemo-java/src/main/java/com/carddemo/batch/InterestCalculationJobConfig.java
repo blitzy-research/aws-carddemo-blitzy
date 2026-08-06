@@ -19,7 +19,6 @@ package com.carddemo.batch;
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.batch.step.AbstractCobolStep.ExecutionSummary;
 import com.carddemo.batch.step.InterestCalculationProcessor;
-import com.carddemo.batch.step.InterestCalculationProcessor.AccruedAccountGroup;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.TransactionCategoryBalance;
@@ -29,13 +28,13 @@ import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.InterestCalculationService;
 import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
+import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.Iterator;
@@ -302,10 +301,6 @@ public final class InterestCalculationJobConfig {
     private static final String DEFAULT_TRANSACT_DATASET_BASE = "AWS.M2.CARDDEMO.SYSTRAN";
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
-
-    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
-
-    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
 
     /**
      * Prevents the tasklet adapter from opening one transaction around the complete file pass.
@@ -721,12 +716,21 @@ public final class InterestCalculationJobConfig {
          * operation, the resource and a raw status, in that order, by the one failure path the template
          * owns. The other three legacy inputs are opened by the service that owns them, whose open
          * paragraphs issue no call because a relational store has no dataset to open.
+         *
+         * <p>The generation writer is bound last, once there is a generation to write to, and before any
+         * row has been read. The control break cannot synthesize a record before that point, so nothing
+         * can be written into an unopened generation and nothing can be synthesized with the writer
+         * absent.
          */
         @Override
         protected void openResources() {
             this.accrual.beforeStep(this.stepExecution);
             openResource(DD_TCATBALF, this::openCategoryBalanceMaster);
             openResource(DD_TRANSACT, this::openGeneration);
+            // Bound after the generation is open and before the first row is read, so every record is
+            // written at the point line 500 writes it - inside its group's unit of work and ahead of
+            // that group's account rewrite - rather than after the group has committed.
+            this.accrual.bindSynthesizedTransactionWriter(this::writeSynthesizedTransaction);
         }
 
         /**
@@ -735,9 +739,9 @@ public final class InterestCalculationJobConfig {
          * @return the status a successful open reports
          */
         private String openCategoryBalanceMaster() {
-            this.master = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+            this.master = new BoundedKeysetIterator<>(TransactionCategoryBalanceKeyCodec.LOW_VALUES, KEYSET_PAGE_SIZE,
                     this::loadCategoryBalancePage,
-                    InterestCalculationJobConfig::categoryBalanceKey,
+                    TransactionCategoryBalanceKeyCodec::image,
                     Comparator.naturalOrder());
             this.master.hasNext();
             return FileStatus.SUCCESS.getCode();
@@ -745,14 +749,10 @@ public final class InterestCalculationJobConfig {
 
         private List<TransactionCategoryBalance> loadCategoryBalancePage(
                 final String cursor, final Integer pageSize) {
-            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
-            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
-            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
-            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
-            final String categoryCode = cursor.length() <= categoryOffset
-                    ? ""
-                    : cursor.substring(categoryOffset);
-            return this.categoryBalances.findAfterKey(accountId, typeCode, categoryCode,
+            return this.categoryBalances.findAfterKey(
+                    TransactionCategoryBalanceKeyCodec.accountIdOf(cursor),
+                    TransactionCategoryBalanceKeyCodec.typeCodeOf(cursor),
+                    TransactionCategoryBalanceKeyCodec.categoryCodeOf(cursor),
                     PageRequest.of(0, pageSize.intValue()));
         }
 
@@ -768,13 +768,10 @@ public final class InterestCalculationJobConfig {
          *         turns into the one ordered failure path
          */
         private String openGeneration() throws IOException {
-            final Path container = this.generation.getParent();
-            if (container != null) {
-                Files.createDirectories(container);
-            }
-            this.generationStream = Files.newOutputStream(this.generation,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
+            // Owner-only from the first byte: every 350-byte record of this generation is a posted
+            // transaction carrying a primary account number.
+            // See docs/decision-log.md entry DL-178.
+            this.generationStream = SecureStagedFiles.newOutputStream(this.generation);
             LOG.debug("Opened generation {} for legacy definition {} at {} bytes per record",
                     this.generation, DD_TRANSACT, TRANSACT_RECORD_LENGTH);
             return FileStatus.SUCCESS.getCode();
@@ -809,36 +806,38 @@ public final class InterestCalculationJobConfig {
         }
 
         /**
-         * The per-row work: hand the row to the control break and render whatever group its arrival
-         * closed.
+         * The per-row work: hand the row to the control break.
          *
-         * <p>The control break reports the group a row's arrival closed, or nothing while the group the
-         * row belongs to is still filling, so a row that closes no group produces no output here and
-         * loses nothing: its accrual is emitted with the group that contains it. Everything the row is
-         * judged by - the account-key comparison, the rate lookup and its single default-group probe,
-         * the interest expression, the fee paragraph, the account rewrite and the transaction assembly -
-         * happens inside that call and none of it is reproduced here.
+         * <p>Everything the row is judged by - the account-key comparison, the rate lookup and its
+         * single default-group probe, the interest expression, the fee paragraph, the transaction
+         * assembly, <strong>the write of each assembled record</strong> and only then the account
+         * rewrite - happens inside that one call, in that order, and none of it is reproduced here.
+         *
+         * <p>Nothing is written here on purpose. The records of the group a row's arrival closes were
+         * written by the bound writer while that group was still open, which is what keeps them ahead of
+         * the group's account rewrite; writing them from this method would necessarily be after it. The
+         * group the call reports is therefore not rendered - it is only observed, and this stage has
+         * nothing left to do with it.
          *
          * @param categoryBalanceRow the row just read
          */
         @Override
         protected void processRecord(final TransactionCategoryBalance categoryBalanceRow) {
-            final AccruedAccountGroup closed = this.accrual.process(categoryBalanceRow);
-            if (closed != null) {
-                writeAccruedGroup(closed);
-            }
+            this.accrual.process(categoryBalanceRow);
         }
 
         /**
          * The close family, in the order the program closes: <strong>the final control break first</strong>,
-         * then the records it produced, then the resources.
+         * then the writer it wrote through, then the resources.
          *
          * <p>The final break is what posts the last account. It has no successor row to trigger it, so
          * without this call the account would be read, accrued and never posted while every other figure
          * of the run still looked correct. It runs before anything is closed because the program's
          * end-of-file arm precedes its close paragraphs, and it is reached only on the completing path
          * because a legacy abend never reaches the closes at all - which is exactly what the template
-         * guarantees by invoking this method on the completing path only.
+         * guarantees by invoking this method on the completing path only. It writes its own records
+         * through the bound writer while it runs, like every earlier break, which is why the writer is
+         * released only after it has returned and before the generation is closed.
          *
          * <p>The driving input is closed before the output, matching the order the program closes its
          * files in.
@@ -846,7 +845,7 @@ public final class InterestCalculationJobConfig {
         @Override
         protected void closeResources() {
             this.accrual.afterStep(this.stepExecution);
-            this.accrual.finalAccruedGroup().ifPresent(this::writeAccruedGroup);
+            this.accrual.unbindSynthesizedTransactionWriter();
 
             closeResource(DD_TCATBALF, this::closeCategoryBalanceMaster);
             closeResource(DD_TRANSACT, this::closeGeneration);
@@ -856,20 +855,23 @@ public final class InterestCalculationJobConfig {
         }
 
         /**
-         * Renders one closed account group as fixed-width records of the output generation.
+         * Writes one synthesized transaction as one fixed-width record of the output generation.
          *
-         * <p>One record per synthesized transaction, in the order the group synthesized them, each
-         * written through the guarded write so that a failure is diagnosed and abended by the one
-         * ordered failure path rather than by this method. A group whose every row was skipped by the
-         * zero-rate gate synthesized nothing and therefore writes nothing, which is the legacy outcome
-         * for such a group.
+         * <p>This is the write at {@code app/cbl/CBACT04C.cbl:L500}, and it is invoked by the control
+         * break's service <em>while the group that synthesized the record is still open</em> - so it
+         * runs before that group's account rewrite, exactly as the legacy's does. It goes through the
+         * guarded write, so a failure is diagnosed with its operation, resource and raw status and then
+         * abended by the one ordered failure path; that abend propagates back through the group's
+         * transaction boundary and the account is not rewritten, which is the legacy outcome at lines
+         * 508 to 512.
          *
-         * @param group the group the control break closed
+         * <p>A group whose every row was skipped by the zero-rate gate synthesizes nothing, so nothing
+         * is written for it - the legacy outcome for such a group.
+         *
+         * @param synthesized the record the control break has just assembled
          */
-        private void writeAccruedGroup(final AccruedAccountGroup group) {
-            for (final Transaction synthesized : group.interestTransactions()) {
-                writeRecord(DD_TRANSACT, () -> writeGenerationRecord(synthesized));
-            }
+        private void writeSynthesizedTransaction(final Transaction synthesized) {
+            writeRecord(DD_TRANSACT, () -> writeGenerationRecord(synthesized));
         }
 
         /**
@@ -956,14 +958,4 @@ public final class InterestCalculationJobConfig {
         }
     }
 
-    private static String keyPart(final String key, final int offset, final int width) {
-        if (key.length() <= offset) {
-            return "";
-        }
-        return key.substring(offset, Math.min(key.length(), offset + width));
-    }
-
-    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
-        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
-    }
 }

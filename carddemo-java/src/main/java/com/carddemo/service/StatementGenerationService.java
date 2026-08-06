@@ -393,6 +393,12 @@ public final class StatementGenerationService {
      * image composer rejects a stored envelope for overflowing a nine-byte field, and the entity rejects
      * cleartext outright.
      *
+     * <p>The run's sequential walk of the cross-reference cluster is obtained from the file-handling
+     * collaborator rather than passed in, because that cluster has no snapshot: the legacy member reads it
+     * directly, one record at a time, in key order. The transaction work resource does have one - the
+     * job's sort and projection steps produce it - which is why exactly one of the two sequential inputs
+     * is a parameter here.
+     *
      * @param transactionSource      the frozen projected transaction-work snapshot materialised by the
      *                               preceding statement-job steps; must not be {@code null}
      * @param regulatedFieldRevealer recovers the cleartext of the two regulated customer identifiers, so
@@ -416,9 +422,16 @@ public final class StatementGenerationService {
         Objects.requireNonNull(transactionSource, "transactionSource must not be null");
         Objects.requireNonNull(regulatedFieldRevealer, "regulatedFieldRevealer must not be null");
         Objects.requireNonNull(regulatedFieldSealer, "regulatedFieldSealer must not be null");
+        // The cross-reference cluster is read live from its own file, with no sort step and no work
+        // resource between it and this member, so the run acquires its own sequential walk of it here
+        // rather than being handed a snapshot as it is for the transaction work resource. One walk per
+        // run: the collaborator holds no position, so two concurrent runs cannot share one.
+        final StatementCrossReferenceSource crossReferenceSource = Objects.requireNonNull(
+                this.statementDataAccessService.openCrossReferenceSource(),
+                "the file handler reported no cross-reference source for this run");
         final StatementRunContext context =
-                new StatementRunContext(transactionSource, regulatedFieldRevealer,
-                        regulatedFieldSealer);
+                new StatementRunContext(transactionSource, crossReferenceSource,
+                        regulatedFieldRevealer, regulatedFieldSealer);
         openOutputFilesAndInitialiseTables(context);
         startDispatcher(context);
         return new StatementRun(context.stmtFileRecords, context.htmlFileRecords,
@@ -1471,8 +1484,8 @@ public final class StatementGenerationService {
                 new StatementDataAccessService.StatementFileRequest(ddName, operation, context.m03bRc,
                         key, keyLength, BLANK_PAYLOAD, sequentialPosition,
                         context.regulatedFieldRevealer);
-        final StatementDataAccessService.StatementFileResponse response =
-                this.statementDataAccessService.execute(request, context.transactionSource);
+        final StatementDataAccessService.StatementFileResponse response = this.statementDataAccessService
+                .execute(request, context.transactionSource, context.crossReferenceSource);
         context.m03bRc = response.returnCode();
         context.m03bFldt = response.payload();
         return response;
@@ -2094,16 +2107,29 @@ public final class StatementGenerationService {
         private final StatementTransactionSource transactionSource;
 
         /**
+         * This run's sequential walk of the cross-reference cluster, one bounded page at a time.
+         *
+         * <p>Held here and nowhere else. The file-handling collaborator is a stateless singleton and a
+         * file position is state, so the position lives in the run that owns it, exactly as
+         * {@link #trnxFilePosition} and {@link #xrefFilePosition} do.
+         */
+        private final StatementCrossReferenceSource crossReferenceSource;
+
+        /**
          * Creates one run's storage.
          *
          * @param transactionSource      the frozen transaction-work snapshot; must not be {@code null}
+         * @param crossReferenceSource   this run's sequential cross-reference walk; must not be
+         *                               {@code null}
          * @param regulatedFieldRevealer the caller's revealing operation; must not be {@code null}
          * @param regulatedFieldSealer   the caller's sealing operation; must not be {@code null}
          */
         private StatementRunContext(final StatementTransactionSource transactionSource,
+                                    final StatementCrossReferenceSource crossReferenceSource,
                                     final UnaryOperator<String> regulatedFieldRevealer,
                                     final UnaryOperator<String> regulatedFieldSealer) {
             this.transactionSource = transactionSource;
+            this.crossReferenceSource = crossReferenceSource;
             this.regulatedFieldRevealer = regulatedFieldRevealer;
             this.regulatedFieldSealer = regulatedFieldSealer;
         }

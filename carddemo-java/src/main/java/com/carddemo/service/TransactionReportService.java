@@ -18,13 +18,15 @@ package com.carddemo.service;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +40,7 @@ import com.carddemo.exception.FileStatusException;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionTypeRepository;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.ReportLineFormatter;
 import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.ZonedDecimalCodec;
@@ -114,7 +117,7 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <p>A stateless singleton. The class declares <strong>no mutable field of any kind</strong>: the
  * three accumulators, the line counter, the page count, the account-break count, the current card
- * number, the first-time flag, the input cursor, the resolved lookups and the report accumulator
+ * number, the first-time flag, the input cursor, the resolved lookups and the report destination
  * all live in a {@code ReportRun} holder created fresh for each invocation. A field would let one
  * run corrupt a concurrent run and would let a completed run leak into the next one, and neither
  * failure would break compilation or fail a test that did not look for it.
@@ -293,10 +296,13 @@ public class TransactionReportService {
     /**
      * The outcome of one report run.
      *
-     * <p>{@code reportLines} is the whole report in emission order, each element exactly
-     * {@code ReportLineFormatter.REPORT_RECORD_WIDTH} encoded bytes wide, including the blank line
-     * of the header block and the hyphen rule lines. The remaining components are the run's
-     * observations, not report content: no byte of {@code reportLines} depends on any of them.
+     * <p>{@code reportRecordCount} is how many records the run offered to its sink, in emission
+     * order, each exactly {@code ReportLineFormatter.REPORT_RECORD_WIDTH} encoded bytes wide and
+     * including the blank line of the header block and the hyphen rule lines. The report content
+     * itself is <strong>not</strong> carried here: every record reached the caller's sink as it was
+     * composed, so nothing accumulates and the result is an observation of the run rather than a copy
+     * of its output. The remaining components are likewise observations: no report byte depends on any
+     * of them. See {@code docs/decision-log.md} entry DL-176.
      *
      * <p>{@code grandTotal} is the value the grand-total line carried, which the legacy program
      * feeds <strong>only</strong> from page totals. {@code lineCount} is the final value of the
@@ -305,25 +311,27 @@ public class TransactionReportService {
      * routine ran; neither counter exists in the legacy program, and both are present because the
      * target contract asks for them.
      *
-     * @param reportLines       the ordered report records; defensively copied and unmodifiable
+     * @param reportRecordCount how many records the run offered to its sink
      * @param grandTotal        the grand total at scale two
      * @param pageCount         the number of page-total emissions
      * @param lineCount         the final line-counter value
      * @param accountBreakCount the number of account-total emissions
      */
-    public record TransactionReportResult(List<String> reportLines,
+    public record TransactionReportResult(long reportRecordCount,
                                           BigDecimal grandTotal,
                                           int pageCount,
                                           long lineCount,
                                           int accountBreakCount) {
 
         /**
-         * Seals the line list and rejects an absent component, so a result can never be handed on
-         * in a half-built state.
+         * Rejects an absent or impossible component, so a result can never be handed on in a
+         * half-built state.
          */
         public TransactionReportResult {
-            reportLines = List.copyOf(Objects.requireNonNull(reportLines,
-                    "reportLines must not be null"));
+            if (reportRecordCount < 0L) {
+                throw new IllegalArgumentException(
+                        "reportRecordCount must not be negative: " + reportRecordCount);
+            }
             Objects.requireNonNull(grandTotal, "grandTotal must not be null");
         }
     }
@@ -342,17 +350,18 @@ public class TransactionReportService {
      * whole of the run. No temporal type is constructed anywhere.
      *
      * @param transactionSource the frozen ordered generation produced by the report job's sort step
+     * @param reportRecordSink  the destination each report record is offered to, in emission order
      * @param startDate the inclusive lower bound, ten characters
      * @param endDate   the inclusive upper bound, ten characters
-     * @return the ordered report content and the run's observations
-     * @throws NullPointerException     if the source or either bound is absent
+     * @return the run's observations; the report itself reached the sink as it was composed
+     * @throws NullPointerException     if the source, the sink or either bound is absent
      * @throws IllegalArgumentException if either bound is not printable US-ASCII
      */
     @Transactional(readOnly = true)
     public TransactionReportResult generateReport(final ReportTransactionSource transactionSource,
-            final String startDate, final String endDate) {
+            final Consumer<String> reportRecordSink, final String startDate, final String endDate) {
         return runProcedureDivision(ReportLineFormatter.buildDateParameterRecord(startDate, endDate),
-                transactionSource);
+                transactionSource, reportRecordSink);
     }
 
     /**
@@ -364,17 +373,19 @@ public class TransactionReportService {
      * empty, which is precisely what the legacy program produces in that case.
      *
      * @param transactionSource the frozen ordered generation produced by the report job's sort step
+     * @param reportRecordSink  the destination each report record is offered to, in emission order
      * @param dateParameterCard the twenty-one-byte structured record or the eighty-byte card image;
      *                          {@code null} for an empty parameter dataset
-     * @return the ordered report content and the run's observations
-     * @throws NullPointerException if {@code transactionSource} is absent
+     * @return the run's observations; the report itself reached the sink as it was composed
+     * @throws NullPointerException if {@code transactionSource} or {@code reportRecordSink} is absent
      * @throws IllegalArgumentException if the card is present but measures neither of the two legal
      *                                  widths, or is not printable US-ASCII
      */
     @Transactional(readOnly = true)
     public TransactionReportResult generateReportFromDateParameterCard(
-            final ReportTransactionSource transactionSource, final String dateParameterCard) {
-        return runProcedureDivision(dateParameterCard, transactionSource);
+            final ReportTransactionSource transactionSource,
+            final Consumer<String> reportRecordSink, final String dateParameterCard) {
+        return runProcedureDivision(dateParameterCard, transactionSource, reportRecordSink);
     }
 
     /**
@@ -386,13 +397,16 @@ public class TransactionReportService {
      *
      * @param dateParameterCard the parameter card, possibly {@code null}
      * @param transactionSource the frozen ordered generation; must not be {@code null}
+     * @param reportRecordSink  the destination each report record is offered to; must not be
+     *                          {@code null}
      * @return the sealed result
      */
     private TransactionReportResult runProcedureDivision(final String dateParameterCard,
-            final ReportTransactionSource transactionSource) {
+            final ReportTransactionSource transactionSource,
+            final Consumer<String> reportRecordSink) {
         LOG.info("START OF EXECUTION OF PROGRAM {}", PROGRAM_NAME);
 
-        final ReportRun run = new ReportRun(dateParameterCard, transactionSource);
+        final ReportRun run = new ReportRun(dateParameterCard, transactionSource, reportRecordSink);
 
         tranfileOpen(run);
         reptfileOpen(run);
@@ -422,8 +436,8 @@ public class TransactionReportService {
 
         LOG.info("END OF EXECUTION OF PROGRAM {}", PROGRAM_NAME);
 
-        return new TransactionReportResult(run.reportLines(), run.grandTotal(), run.pageCount(),
-                run.lineCounter(), run.accountBreakCount());
+        return new TransactionReportResult(run.reportRecordCount(), run.grandTotal(),
+                run.pageCount(), run.lineCounter(), run.accountBreakCount());
     }
 
     /**
@@ -947,8 +961,8 @@ public class TransactionReportService {
      * Paragraph unit 12 of 27: {@code 0100-REPTFILE-OPEN} at line 394.
      *
      * <p>Opens the report output. This is the one open with genuine work to do: the legacy statement
-     * opens the sequential report dataset for output, and here it creates the run's ordered record
-     * accumulator, which is what the report is written into and what the run finally returns.
+     * opens the sequential report dataset for output, and here it arms the run's record count against
+     * the destination the caller supplied, which is what every composed record is offered to.
      *
      * @param run the per-invocation state
      */
@@ -1020,19 +1034,33 @@ public class TransactionReportService {
      * @param run the per-invocation state
      */
     private void lookupXref(final ReportRun run) {
-        final CardCrossReference crossReference = this.cardCrossReferenceRepository
-                .findById(run.xrefCardNumberKey())
-                .orElse(null);
-
-        if (crossReference == null) {
-            LOG.error("{} cardRef={}", DIAG_INVALID_CARDXREF,
-                    redactedCardNumber(run.xrefCardNumberKey(), REDACTED_CARD_NUMBER));
-            displayIoStatus(STATUS_RECORD_NOT_FOUND, OPERATION_READ, DD_CARDXREF);
-            abendProgram(DIAG_INVALID_CARDXREF, STATUS_RECORD_NOT_FOUND, OPERATION_READ,
-                    DD_CARDXREF);
+        final String memoized = run.memoizedXrefAccountId(run.xrefCardNumberKey());
+        if (memoized != null) {
+            run.xrefAccountId(memoized);
             return;
         }
 
+        CardCrossReference crossReference = null;
+        String failureStatus;
+        try {
+            crossReference = this.cardCrossReferenceRepository
+                    .findById(run.xrefCardNumberKey())
+                    .orElse(null);
+            failureStatus = crossReference == null ? STATUS_RECORD_NOT_FOUND : null;
+        } catch (DataAccessException failure) {
+            failureStatus = STATUS_PERMANENT_ERROR;
+            logReferenceReadFailure(DD_CARDXREF, failure);
+        }
+
+        if (failureStatus != null) {
+            LOG.error("{} cardRef={}", DIAG_INVALID_CARDXREF,
+                    redactedCardNumber(run.xrefCardNumberKey(), REDACTED_CARD_NUMBER));
+            displayIoStatus(failureStatus, OPERATION_READ, DD_CARDXREF);
+            abendProgram(DIAG_INVALID_CARDXREF, failureStatus, OPERATION_READ, DD_CARDXREF);
+            return;
+        }
+
+        run.memoizeXrefAccountId(run.xrefCardNumberKey(), crossReference.getXrefAcctId());
         run.xrefAccountId(crossReference.getXrefAcctId());
     }
 
@@ -1046,18 +1074,31 @@ public class TransactionReportService {
      * @param run the per-invocation state
      */
     private void lookupTrantype(final ReportRun run) {
-        final TransactionType transactionType = this.transactionTypeRepository
-                .findById(run.transactionTypeKey())
-                .orElse(null);
-
-        if (transactionType == null) {
-            LOG.error("{} key={}", DIAG_INVALID_TRANTYPE, run.transactionTypeKey());
-            displayIoStatus(STATUS_RECORD_NOT_FOUND, OPERATION_READ, DD_TRANTYPE);
-            abendProgram(DIAG_INVALID_TRANTYPE, STATUS_RECORD_NOT_FOUND, OPERATION_READ,
-                    DD_TRANTYPE);
+        final String typeKey = run.transactionTypeKey();
+        final String memoized = run.memoizedTransactionTypeDescription(typeKey);
+        if (memoized != null) {
+            run.transactionTypeDescription(memoized);
             return;
         }
 
+        TransactionType transactionType = null;
+        String failureStatus;
+        try {
+            transactionType = this.transactionTypeRepository.findById(typeKey).orElse(null);
+            failureStatus = transactionType == null ? STATUS_RECORD_NOT_FOUND : null;
+        } catch (DataAccessException failure) {
+            failureStatus = STATUS_PERMANENT_ERROR;
+            logReferenceReadFailure(DD_TRANTYPE, failure);
+        }
+
+        if (failureStatus != null) {
+            LOG.error("{} key={}", DIAG_INVALID_TRANTYPE, typeKey);
+            displayIoStatus(failureStatus, OPERATION_READ, DD_TRANTYPE);
+            abendProgram(DIAG_INVALID_TRANTYPE, failureStatus, OPERATION_READ, DD_TRANTYPE);
+            return;
+        }
+
+        run.memoizeTransactionTypeDescription(typeKey, transactionType.getTranTypeDesc());
         run.transactionTypeDescription(transactionType.getTranTypeDesc());
     }
 
@@ -1072,20 +1113,62 @@ public class TransactionReportService {
      */
     private void lookupTrancatg(final ReportRun run) {
         final TransactionCategoryId key = run.transactionCategoryKey();
-        final TransactionCategory category = this.transactionCategoryRepository
-                .findById(key)
-                .orElse(null);
-
-        if (category == null) {
-            LOG.error("{} typeCode={} categoryCode={}", DIAG_INVALID_TRANCATG,
-                    key.getTranTypeCd(), key.getTranCatCd());
-            displayIoStatus(STATUS_RECORD_NOT_FOUND, OPERATION_READ, DD_TRANCATG);
-            abendProgram(DIAG_INVALID_TRANCATG, STATUS_RECORD_NOT_FOUND, OPERATION_READ,
-                    DD_TRANCATG);
+        final String memoized = run.memoizedTransactionCategoryDescription(key);
+        if (memoized != null) {
+            run.transactionCategoryDescription(memoized);
             return;
         }
 
+        TransactionCategory category = null;
+        String failureStatus;
+        try {
+            category = this.transactionCategoryRepository.findById(key).orElse(null);
+            failureStatus = category == null ? STATUS_RECORD_NOT_FOUND : null;
+        } catch (DataAccessException failure) {
+            failureStatus = STATUS_PERMANENT_ERROR;
+            logReferenceReadFailure(DD_TRANCATG, failure);
+        }
+
+        if (failureStatus != null) {
+            LOG.error("{} typeCode={} categoryCode={}", DIAG_INVALID_TRANCATG,
+                    key.getTranTypeCd(), key.getTranCatCd());
+            displayIoStatus(failureStatus, OPERATION_READ, DD_TRANCATG);
+            abendProgram(DIAG_INVALID_TRANCATG, failureStatus, OPERATION_READ, DD_TRANCATG);
+            return;
+        }
+
+        run.memoizeTransactionCategoryDescription(key, category.getTranCatTypeDesc());
         run.transactionCategoryDescription(category.getTranCatTypeDesc());
+    }
+
+    /**
+     * Reports that a reference read failed for a technical reason rather than for want of a record.
+     *
+     * <p>Each of the three reference paragraphs at lines 484, 494 and 504 has exactly one failure arm:
+     * the {@code INVALID KEY} arm, which displays the paragraph's own literal, moves 23 into the status
+     * field, performs the status display and then performs the abend, in that order. That sequence is
+     * unchanged for both kinds of failure; what changes is the raw status the sequence carries.
+     *
+     * <p>A relational store can fail in a way a random read of a key-sequenced cluster cannot: the query
+     * itself can fail. Such a failure used to escape as an exception, so the literal was never displayed,
+     * the status display never ran, and the abend carried a Java message rather than the member's own
+     * reason. It now takes the paragraph's own sequence and carries {@code '31'} rather than {@code '23'}.
+     * The distinction is the point: {@code '23'} says the cluster was read and held no such record, which
+     * is a data condition an operator fixes in the reference data, while {@code '31'} says the read did
+     * not complete, which is an operational one. Reporting one as the other would send an operator to the
+     * wrong place.
+     *
+     * <p>The store's own failure is reduced to its failure-type chain before it reaches the logger, never
+     * handed over whole, because a data-access failure's narrative is where a statement and its bound
+     * parameters appear.
+     *
+     * @param resourceName the DD name of the reference cluster whose read failed
+     * @param failure      the store's own failure
+     */
+    private static void logReferenceReadFailure(final String resourceName,
+            final DataAccessException failure) {
+        LOG.error("Reference read of {} did not complete; reporting raw file status {} failureChain={}",
+                resourceName, STATUS_PERMANENT_ERROR, FailureDiagnostics.failureChainOf(failure));
     }
 
     private static String reportRangeReference(final ReportRun run) {
@@ -1115,9 +1198,8 @@ public class TransactionReportService {
     /**
      * Paragraph unit 21 of 27: {@code 9100-REPTFILE-CLOSE} at line 532.
      *
-     * <p>Closes the report output by sealing the accumulator, after which no further record can be
-     * appended. That is what makes the returned line list a completed report rather than a live
-     * buffer.
+     * <p>Closes the report output, after which no further record can be offered to the sink. That is
+     * what makes the record count a completed report's count rather than a running one.
      *
      * @param run the per-invocation state
      */
@@ -1409,7 +1491,19 @@ public class TransactionReportService {
 
         private final ReportTransactionSource transactionSource;
 
-        private final List<String> reportOutput = new ArrayList<>();
+        /**
+         * The destination every report record is offered to, in emission order.
+         *
+         * <p>The run holds a destination rather than a report. One record is in hand at a time, so the
+         * report's size is bounded by the record width and never by the run's length.
+         */
+        private final Consumer<String> reportRecordSink;
+
+        /** How many records this run has offered to its sink. */
+        private long reportRecordCount;
+
+        /** Whether the report output has been closed, after which no record may be offered. */
+        private boolean reportOutputSealed;
 
         private String startDate;
 
@@ -1449,20 +1543,110 @@ public class TransactionReportService {
 
         private String transactionCategoryDescription;
 
-        private List<String> sealedReportLines;
-
         private int pageCount;
 
         private int accountBreakCount;
 
-        ReportRun(final String card, final ReportTransactionSource source) {
+        /**
+         * Reference reads this run has already resolved, keyed by the reference key each paragraph
+         * presents. One entry per <em>distinct</em> key, so the number of reference queries a run issues
+         * is bounded by the cardinality of the reference clusters and is independent of how many
+         * transaction records the run reports.
+         *
+         * <p>This is what removes the one-query-per-row shape. The legacy performs a random read of a
+         * key-sequenced cluster per record, which on the mainframe is an index probe against a cluster
+         * held open for the whole step; its relational equivalent issued per record is a separate
+         * round trip per record, and a report over the seeded daily-transaction input issued several
+         * hundred of them to resolve seven distinct transaction types and eighteen distinct categories.
+         *
+         * <p>Absence is deliberately <strong>not</strong> memoized, because an absent reference abends
+         * on the record that first presents it and the run does not continue. The first missing reference
+         * is therefore still the one that fails, with its own literal, its own status and its own
+         * resource, exactly as before.
+         *
+         * <p>Held per run and never shared. A cache that outlived a run would make one run's reference
+         * data visible to the next, which is a snapshot the legacy step never had. Recorded as DL-175 in
+         * {@code docs/decision-log.md}.
+         */
+        private final Map<String, String> xrefAccountIds = new HashMap<>();
+
+        private final Map<String, String> transactionTypeDescriptions = new HashMap<>();
+
+        private final Map<TransactionCategoryId, String> transactionCategoryDescriptions =
+                new HashMap<>();
+
+        ReportRun(final String card, final ReportTransactionSource source,
+                final Consumer<String> sink) {
             this.dateParameterCard = card;
             this.transactionSource = Objects.requireNonNull(source,
                     "transactionSource must not be null");
+            this.reportRecordSink = Objects.requireNonNull(sink,
+                    "reportRecordSink must not be null");
         }
 
         String dateParameterCard() {
             return this.dateParameterCard;
+        }
+
+        /**
+         * Returns the account identifier this run already resolved for a card number.
+         *
+         * @param cardNumberKey the cross-reference record key
+         * @return the resolved account identifier, or {@code null} when this run has not resolved it
+         */
+        String memoizedXrefAccountId(final String cardNumberKey) {
+            return this.xrefAccountIds.get(cardNumberKey);
+        }
+
+        /**
+         * Records one resolved account identifier for the remainder of this run.
+         *
+         * @param cardNumberKey the cross-reference record key
+         * @param accountId     the account identifier the cluster held for it
+         */
+        void memoizeXrefAccountId(final String cardNumberKey, final String accountId) {
+            this.xrefAccountIds.put(cardNumberKey, accountId);
+        }
+
+        /**
+         * Returns the type description this run already resolved for a type code.
+         *
+         * @param typeKey the two-character transaction type code
+         * @return the resolved description, or {@code null} when this run has not resolved it
+         */
+        String memoizedTransactionTypeDescription(final String typeKey) {
+            return this.transactionTypeDescriptions.get(typeKey);
+        }
+
+        /**
+         * Records one resolved type description for the remainder of this run.
+         *
+         * @param typeKey     the two-character transaction type code
+         * @param description the description the cluster held for it
+         */
+        void memoizeTransactionTypeDescription(final String typeKey, final String description) {
+            this.transactionTypeDescriptions.put(typeKey, description);
+        }
+
+        /**
+         * Returns the category description this run already resolved for a composite category key.
+         *
+         * @param key the composite type-and-category key
+         * @return the resolved description, or {@code null} when this run has not resolved it
+         */
+        String memoizedTransactionCategoryDescription(final TransactionCategoryId key) {
+            return this.transactionCategoryDescriptions.get(key);
+        }
+
+        /**
+         * Records one resolved category description for the remainder of this run.
+         *
+         * @param key         the composite type-and-category key
+         * @param description the description the cluster held for it
+         */
+        void memoizeTransactionCategoryDescription(final TransactionCategoryId key,
+                final String description) {
+            this.transactionCategoryDescriptions.put(key, description);
         }
 
         void bounds(final String lowerBound, final String upperBound) {
@@ -1663,23 +1847,24 @@ public class TransactionReportService {
 
         /**
          * Opens the report output. A sequential open for output starts an empty dataset, discarding
-         * anything a previous run left, so the accumulator is cleared rather than merely acquired.
+         * anything a previous run left; the destination itself is allocated by the caller that
+         * supplied the sink, and what this arms is the run's own record count.
          */
         void openReportOutput() {
-            this.reportOutput.clear();
-            this.sealedReportLines = null;
+            this.reportRecordCount = 0L;
+            this.reportOutputSealed = false;
         }
 
-        /** Closes the report output by sealing the accumulator into an unmodifiable list. */
+        /** Closes the report output, after which no further record may be offered to the sink. */
         void closeReportOutput() {
-            this.sealedReportLines = List.copyOf(this.reportOutput);
+            this.reportOutputSealed = true;
         }
 
         /**
-         * @return the accumulator, which is the target's stand-in for the open report dataset
+         * @return the destination, which is the target's stand-in for the open report dataset
          */
         Object reportOutputHandle() {
-            return this.reportOutput;
+            return this.reportRecordSink;
         }
 
         /**
@@ -1694,19 +1879,25 @@ public class TransactionReportService {
          * @return the raw two-byte status
          */
         String appendReportLine(final String record) {
+            if (this.reportOutputSealed) {
+                throw new IllegalStateException("a record was offered to the " + DD_TRANREPT
+                        + " report output after it was closed; the report is complete once the close"
+                        + " paragraph has run");
+            }
             if (record == null
                     || encodedWidthOf(record) != ReportLineFormatter.REPORT_RECORD_WIDTH) {
                 return STATUS_RECORD_LENGTH_MISMATCH;
             }
-            this.reportOutput.add(record);
+            this.reportRecordSink.accept(record);
+            this.reportRecordCount++;
             return FileStatusException.STATUS_SUCCESS;
         }
 
         /**
-         * @return the sealed report, available once the report output has been closed
+         * @return how many records this run has offered to its sink
          */
-        List<String> reportLines() {
-            return this.sealedReportLines;
+        long reportRecordCount() {
+            return this.reportRecordCount;
         }
 
         /** Counts one page-total emission. Not a legacy field; no emitted byte depends on it. */

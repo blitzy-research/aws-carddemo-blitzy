@@ -19,7 +19,6 @@ package com.carddemo.service;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -2167,14 +2166,15 @@ public class CardDetailService {
      * because wiring it would add a flow the legacy does not have. Package-private rather than public
      * for the same reason: it is exercisable without becoming part of this service's contract.
      *
-     * <p><strong>The alternate index is non-unique, so first-match selection is the contract, and it
-     * is applied here rather than in the query.</strong> The legacy direct read of a duplicate-bearing
-     * path returns one record, not a set, and never raises a too-many-results condition; the record it
-     * returns is the first in ascending BASE-key order, and the base key of this cluster is the card
-     * number. That rule is a property of the READ being reproduced rather than of the index, so the
-     * repository returns every matching row and {@link #firstByBaseKey(java.util.List)} selects the one
-     * with the lowest card number. An absent result is the analogue of the legacy not-found response and
-     * is not an error.
+     * <p><strong>The alternate index is non-unique, so first-match selection is the contract, and the
+     * repository states it.</strong> The legacy direct read of a duplicate-bearing path returns one
+     * record, not a set, and never raises a too-many-results condition; the record it returns is the
+     * first in ascending BASE-key order, and the base key of this cluster is the card number. The
+     * repository's ordered-first finder is that read - bounded to one row and ordered explicitly - so
+     * this service asks for one row and presents it, and nothing is fetched that the read would have
+     * discarded. Placing the rule in one finder rather than in each of the seven services that reproduce
+     * this read is recorded as {@code DL-164} in {@code docs/decision-log.md}. An absent result is the
+     * analogue of the legacy not-found response and is not an error.
      *
      * <p><strong>This not-found arm is deliberately different from the card-number read's.</strong> At
      * lines 796 to 799 it faults <em>only</em> the account filter and it sets its message
@@ -2192,10 +2192,11 @@ public class CardDetailService {
         state.errorOperation = OPERATION_READ;
 
         // EXEC CICS READ FILE(LIT-CARDFILENAME-ACCT-PATH) RIDFLD(WS-CARD-RID-ACCT-ID), 783 to 791.
-        // A keyed read of the non-unique path yields the first record in ascending base-key order, so
-        // every matching row is fetched and the lowest card number selected here.
+        // A keyed read of the non-unique path yields the first record in ascending base-key order, which
+        // is exactly what the repository's ordered-first finder reads: one row, ordered on the base key,
+        // with no row fetched that the read would have discarded.
         final Optional<Card> found =
-                firstByBaseKey(cardRepository.findByCardAcctId(state.cardAccountKey));
+                cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(state.cardAccountKey);
 
         if (found.isEmpty()) {
             // WHEN DFHRESP(NOTFND) at lines 796 to 799. Ungated message, single field faulted.
@@ -2235,26 +2236,6 @@ public class CardDetailService {
      */
     private void getCardByAcctExit(final TurnState state) {
         paragraphExit(state, "9150-GETCARD-BYACCT-EXIT", 810);
-    }
-
-    /**
-     * Selects the record a keyed read of the non-unique account path would have returned: the one with
-     * the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the card cluster is the card number. That
-     * rule belongs to the read rather than to the index, which is why the repository returns every
-     * matching row and the selection happens here, at the site whose behaviour depends on it.
-     *
-     * <p>The comparison is on the raw sixteen-character value and is neither trimmed nor numeric:
-     * every stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric
-     * order coincide, and trimming would change the order of a value the mapper never trims.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or {@link Optional#empty()} when there is none
-     */
-    private static Optional<Card> firstByBaseKey(final List<Card> candidates) {
-        return candidates.stream().min(Comparator.comparing(Card::getCardNum));
     }
 
     // ==============================================================================================

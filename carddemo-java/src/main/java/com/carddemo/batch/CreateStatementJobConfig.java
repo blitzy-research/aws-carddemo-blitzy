@@ -16,7 +16,6 @@
  */
 package com.carddemo.batch;
 
-import com.carddemo.service.BatchJobCatalog;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -24,7 +23,6 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -32,8 +30,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.SortedMap;
-import java.util.TreeMap;
+import java.util.function.Consumer;
 
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -75,6 +72,7 @@ import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.FixedWidthFieldReader;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StatementWorkRecordMapper;
 import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TransactionRecordMapper;
@@ -210,6 +208,12 @@ import com.carddemo.util.TransactionRecordMapper;
  * representation, it is scoped to one job execution, and the third step of the pipeline is an ordinary
  * read-and-write step: <strong>no process is spawned, no command is composed and no external utility
  * is invoked anywhere in this file.</strong>
+ *
+ * <p>Its representation is a sequential file in the staging root and not a heap collection, because the
+ * cluster it stands in for is a disk cluster whose size is bounded by the transaction master rather
+ * than by available memory. One record is in hand at a time when it is loaded and one when it is read,
+ * and the file is scratched with the execution that minted it - which is the deletion the absorbed step
+ * declares. See {@code docs/decision-log.md} entry DL-176.
  *
  * <p>Because an indexed cluster is held in key sequence, the ordered result is keyed by the same
  * {@value #WORK_RESOURCE_KEY_LENGTH} bytes the projection places at the front of every record, and the
@@ -426,7 +430,7 @@ public final class CreateStatementJobConfig {
 
     /** Zero-based offset of the work resource's key, as its cluster definition declares it. */
     public static final int WORK_RESOURCE_KEY_OFFSET =
-            TransactionRecordMapper.STATEMENT_WORK_CARD_NUM_OFFSET;
+            StatementWorkRecordMapper.CARD_NUMBER_OFFSET;
 
     /** Declared key length of the work resource: the card number then the transaction identifier. */
     public static final int WORK_RESOURCE_KEY_LENGTH = StatementWorkRecordMapper.KEY_LENGTH;
@@ -439,7 +443,7 @@ public final class CreateStatementJobConfig {
      * timestamp's own declared length is the truncation. Two bytes, at input positions 329 and 330.
      */
     public static final int TRUNCATED_PROCESSING_TIMESTAMP_BYTES =
-            TransactionRecordMapper.STATEMENT_WORK_TRUNCATED_PROCESSING_TIMESTAMP_LENGTH;
+            StatementWorkRecordMapper.TRUNCATED_PROCESSING_TIMESTAMP_LENGTH;
 
     /** Trailing filler run the reprojection drops entirely. */
     public static final int DROPPED_TRAILING_FILLER_LENGTH = TransactionRecordMapper.FILLER_LENGTH;
@@ -489,7 +493,7 @@ public final class CreateStatementJobConfig {
     private static final String DD_LOAD_OUTPUT = "OUTFILE";
 
     /** Layout name the projected record reports in diagnostics. */
-    private static final String WORK_ARTEFACT = TransactionRecordMapper.STATEMENT_WORK_ARTEFACT;
+    private static final String WORK_ARTEFACT = StatementWorkRecordMapper.ARTEFACT;
 
     /** Legacy field name of the first ordering key. */
     private static final String FIELD_TRAN_CARD_NUM = "TRAN-CARD-NUM";
@@ -675,12 +679,17 @@ public final class CreateStatementJobConfig {
      * no subclass of an implementation type is generated, and this path stays clear of the class
      * generation the module's reflection budget rules out.
      *
+     * <p>Its sequential resource is minted within the configured staging root under a name unique to
+     * the instance, and the destroy callback scratches it. That is the second half of the lifetime the
+     * absorbed definition step declares: the artefact is created and deleted entirely within one
+     * submission, so nothing it held survives the execution that minted it.
+     *
      * @return the per-execution transient work resource, never {@code null}
      */
-    @Bean(WORK_RESOURCE_BEAN_NAME)
+    @Bean(name = WORK_RESOURCE_BEAN_NAME, destroyMethod = "discard")
     @JobScope
     public TransactionWorkResource createStatementTransactionWorkResource() {
-        return new InMemoryTransactionWorkResource();
+        return new FileBackedTransactionWorkResource(Path.of(this.stagingDirectory));
     }
 
     /**
@@ -1340,13 +1349,11 @@ public final class CreateStatementJobConfig {
      */
     private static BufferedWriter openForWriting(final Path target) throws IOException {
         Objects.requireNonNull(target, "target");
-        final Path container = target.getParent();
-        if (container != null) {
-            Files.createDirectories(container);
-        }
-        return Files.newBufferedWriter(target, StandardCharsets.US_ASCII,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        // Owner-only from the first byte, never through a planted link, and never onto a file a
+        // previous run left: a statement generation carries a cardholder's name, address and every
+        // transaction on their account, and a default umask would stage all of it world-readable.
+        // See docs/decision-log.md entry DL-178.
+        return SecureStagedFiles.newWriter(target, StandardCharsets.US_ASCII);
     }
 
     /**
@@ -1451,24 +1458,25 @@ public final class CreateStatementJobConfig {
          * @param projectedRecord the projected record image, exactly {@value #WORK_RECORD_LENGTH}
          *                        encoded bytes; must not be {@code null}
          * @throws NullPointerException if {@code projectedRecord} is {@code null}
-         * @throws IllegalStateException if the record is not the declared width, or if its key is
-         *                               already held - an indexed cluster admits one record per key
+         * @throws IllegalStateException if the record is not the declared width, if its key repeats the
+         *                               key last admitted - an indexed cluster admits one record per key
+         *                               - if its key falls below the key last admitted, or if the
+         *                               resource has already been frozen for generation
          */
         void load(String projectedRecord);
 
         /**
-         * Every loaded record, in key sequence.
+         * Applies an action to every loaded record, in key sequence, one record at a time.
          *
-         * @return the records in key sequence, unmodifiable, never {@code null}
-         */
-        List<String> orderedRecords();
-
-        /**
-         * Every loaded key, in key sequence.
+         * <p>Bounded by construction: the traversal holds the record it is presenting and nothing else,
+         * so a caller that wants a count, a width proof or a sequence check pays for one record rather
+         * than for the whole cluster. It freezes the resource exactly as {@link #snapshot()} does,
+         * because reading a sequential resource requires that nothing is still writing to it.
          *
-         * @return the keys in key sequence, unmodifiable, never {@code null}
+         * @param consumer the action to apply to each record in key sequence; must not be {@code null}
+         * @throws NullPointerException if {@code consumer} is {@code null}
          */
-        List<String> orderedKeys();
+        void forEachRecordInKeySequence(Consumer<String> consumer);
 
         /**
          * How many records the resource holds.
@@ -1478,77 +1486,324 @@ public final class CreateStatementJobConfig {
         int recordCount();
 
         /**
-         * Freezes the current key-sequenced contents for statement generation.
+         * Freezes the key-sequenced contents for statement generation and opens one forward walk over
+         * them.
          *
-         * <p>The returned source is detached from subsequent loads, so STEP040 observes exactly the
-         * snapshot materialised by STEP020 even if the mutable work-resource object is later changed by
-         * a test or a faulty caller.
+         * <p>Freezing is what detaches the fourth step from the second: once the resource is frozen no
+         * further record may be loaded, so STEP040 observes exactly the sequence STEP020 built and a
+         * faulty caller is refused rather than silently changing what generation sees. Freezing is
+         * idempotent, so several walks may be opened over the same frozen sequence and each advances
+         * independently.
          *
-         * @return an immutable-position source over the projected records currently held
+         * @return a forward source over the frozen projected records, never {@code null}
          */
         StatementTransactionSource snapshot();
+
+        /**
+         * Deletes the transient resource, which is the second half of the lifetime the absorbed
+         * definition step declares.
+         *
+         * <p>The measured step deletes the cluster and defines it again within one submission, so the
+         * artefact exists for exactly one job execution and no longer. This is the deletion: it is
+         * invoked when the job-scoped bean is destroyed, it is idempotent, and it never raises - a
+         * cluster that cannot be scratched is a diagnostic, not a job failure, exactly as a deallocation
+         * disposition is.
+         */
+        void discard();
     }
 
     /**
-     * The in-memory realisation of the transient work resource.
+     * The sequential-file realisation of the transient work resource.
      *
-     * <p>Ordered by key rather than by arrival, which is what an indexed cluster does. Arrival order
-     * already equals key order because the step that loads it reads a resource the previous step
-     * ordered, so the key ordering here confirms that agreement instead of imposing a different one.
+     * <p>Held on disk rather than in the heap, because the cluster it stands in for is a disk cluster
+     * whose size is bounded by the transaction master rather than by available memory. One record is in
+     * hand at a time in both directions: the load writes each record as it arrives and the generation
+     * walk serves each record as it is asked for, so neither the loaded dataset nor a copy of it is ever
+     * resident.
+     *
+     * <p>Ordered by arrival, and the arrival order is <em>proved</em> to be key order rather than
+     * imposed on top of it. Every record's key must strictly exceed the key last admitted, which is the
+     * same rule a keyed load into an empty cluster enforces: the copy utility the second step replaces
+     * requires its input in ascending key sequence and refuses a record that breaks it. The first step
+     * already establishes that sequence, so the rule confirms the two agree and reports it loudly if
+     * they ever do not - where a sorted map would have silently repaired the disagreement and hidden a
+     * defect in the ordering step.
      *
      * <p>Per-execution state on a per-execution object. It is never a field of a singleton, and it is
      * not thread safe because nothing in this job is concurrent.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-176 for the staged-file substitution and for why the
+     * resource is deleted with the execution that minted it.
      */
-    static final class InMemoryTransactionWorkResource implements TransactionWorkResource {
+    static final class FileBackedTransactionWorkResource implements TransactionWorkResource {
 
-        /** The loaded records, held in key sequence. */
-        private final SortedMap<String, String> records = new TreeMap<>();
+        /** Name prefix of the sequential file one execution's cluster is held in. */
+        private static final String RESOURCE_NAME_PREFIX = "createStatementJob.workResource.";
+
+        /** Name suffix of the sequential file one execution's cluster is held in. */
+        private static final String RESOURCE_NAME_SUFFIX = ".dat";
+
+        /** The staging root the resource is minted within. */
+        private final Path stagingDirectory;
+
+        /** The sequential resource, or {@code null} until the first record is admitted. */
+        private Path resource;
+
+        /** Handle on the resource while it is being loaded, or {@code null}. */
+        private BufferedWriter composer;
+
+        /** The key last admitted, or {@code null} before the first record. */
+        private String lastKeyAdmitted;
+
+        /** Records admitted so far. */
+        private int records;
+
+        /** Whether the resource has been frozen for generation. */
+        private boolean frozen;
+
+        /**
+         * @param stagingDirectory the staging root the resource is minted within; must not be
+         *                         {@code null}
+         */
+        FileBackedTransactionWorkResource(final Path stagingDirectory) {
+            this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
+        }
 
         @Override
         public void load(final String projectedRecord) {
             Objects.requireNonNull(projectedRecord, "projectedRecord");
             requireEncodedWidth(projectedRecord, WORK_RECORD_LENGTH, DD_LOAD_OUTPUT);
+            requireStillLoading();
 
+            // Every refusal is decided before a byte is written, so a refused record leaves the
+            // resource exactly as it was - the same guarantee the key check gave when the records were
+            // held in a map.
             final String key = workResourceKey(projectedRecord);
-            if (this.records.containsKey(key)) {
-                // The key is checked before the record is admitted, so a refusal leaves the resource
-                // exactly as it was. The key itself is withheld from the diagnostic because it opens
-                // with a card number.
+            requireAscendingKey(key);
+
+            try {
+                if (this.composer == null) {
+                    beginLoad();
+                }
+                this.composer.write(projectedRecord);
+                this.composer.write(RECORD_SEPARATOR);
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("unable to write a record to the "
+                        + TRANSIENT_WORK_RESOURCE_NAME + " work resource", failure);
+            }
+            this.lastKeyAdmitted = key;
+            this.records++;
+        }
+
+        @Override
+        public void forEachRecordInKeySequence(final Consumer<String> consumer) {
+            Objects.requireNonNull(consumer, "consumer");
+            final StatementTransactionSource walk = snapshot();
+            for (int position = 0;; position++) {
+                final Optional<String> record = walk.readAt(position);
+                if (record.isEmpty()) {
+                    return;
+                }
+                consumer.accept(record.get());
+            }
+        }
+
+        @Override
+        public int recordCount() {
+            return this.records;
+        }
+
+        @Override
+        public StatementTransactionSource snapshot() {
+            freeze();
+            return new SequentialWorkResourceWalk(this.resource);
+        }
+
+        @Override
+        public void discard() {
+            closeComposerQuietly();
+            this.frozen = true;
+            final Path scratched = this.resource;
+            this.resource = null;
+            if (scratched == null) {
+                return;
+            }
+            try {
+                Files.deleteIfExists(scratched);
+            } catch (final IOException failure) {
+                LOGGER.warn("THE {} WORK RESOURCE COULD NOT BE SCRATCHED; THE EXECUTION THAT MINTED"
+                        + " IT HAS ALREADY FINISHED AND ITS RESULT IS UNAFFECTED; failureChain={}",
+                        TRANSIENT_WORK_RESOURCE_NAME, FailureDiagnostics.failureChainOf(failure));
+            }
+        }
+
+        /** Refuses a record presented after the resource was frozen for generation. */
+        private void requireStillLoading() {
+            if (this.frozen) {
+                throw new IllegalStateException("a record was presented to the "
+                        + TRANSIENT_WORK_RESOURCE_NAME + " work resource after it was frozen for"
+                        + " generation; the load step completes before the generation step opens it,"
+                        + " so what generation reads is exactly what the load step built");
+            }
+        }
+
+        /**
+         * Refuses a key that repeats or falls below the key last admitted.
+         *
+         * <p>Neither diagnostic carries the key, because a key opens with a card number.
+         *
+         * @param key the key of the record being presented
+         */
+        private void requireAscendingKey(final String key) {
+            if (this.lastKeyAdmitted == null) {
+                return;
+            }
+            final int order = key.compareTo(this.lastKeyAdmitted);
+            if (order == 0) {
                 throw new IllegalStateException("a second record was presented for a key the "
                         + TRANSIENT_WORK_RESOURCE_NAME + " work resource already holds; an indexed"
                         + " cluster keyed at " + WORK_RESOURCE_KEY_LENGTH + " byte(s) admits one"
                         + " record per key, so the ordering step cannot have produced this pair");
             }
-            this.records.put(key, projectedRecord);
+            if (order < 0) {
+                throw new IllegalStateException("a record was presented out of key sequence to the "
+                        + TRANSIENT_WORK_RESOURCE_NAME + " work resource; a keyed load into an empty"
+                        + " cluster admits ascending keys only, so the ordering step cannot have"
+                        + " produced this pair");
+            }
         }
 
-        @Override
-        public List<String> orderedRecords() {
-            return List.copyOf(this.records.values());
+        /** Mints the sequential resource for this execution and opens it for loading. */
+        private void beginLoad() throws IOException {
+            // Minted rather than named: the artefact belongs to one execution, a unique name is what
+            // makes that true without a job parameter, and the utility that mints it creates both the
+            // directory and the file owner-only.
+            this.resource = SecureStagedFiles.newTemporaryFile(this.stagingDirectory,
+                    RESOURCE_NAME_PREFIX, RESOURCE_NAME_SUFFIX);
+            this.composer = openForWriting(this.resource);
         }
 
-        @Override
-        public List<String> orderedKeys() {
-            return List.copyOf(this.records.keySet());
-        }
-
-        @Override
-        public int recordCount() {
-            return this.records.size();
-        }
-
-        @Override
-        public StatementTransactionSource snapshot() {
-            final List<String> frozenRecords = List.copyOf(this.records.values());
-            return position -> {
-                if (position < 0) {
-                    throw new IllegalArgumentException(
-                            "statement transaction position must not be negative: " + position);
+        /** Closes the load handle so the resource can be read, once. */
+        private void freeze() {
+            if (this.frozen) {
+                return;
+            }
+            if (this.composer != null) {
+                try {
+                    this.composer.flush();
+                    this.composer.close();
+                } catch (final IOException failure) {
+                    throw new UncheckedIOException("unable to close the "
+                            + TRANSIENT_WORK_RESOURCE_NAME + " work resource for reading", failure);
+                } finally {
+                    this.composer = null;
                 }
-                return position < frozenRecords.size()
-                        ? Optional.of(frozenRecords.get(position))
-                        : Optional.empty();
-            };
+            }
+            this.frozen = true;
+        }
+
+        /** Closes the load handle without raising, for the scratch path. */
+        private void closeComposerQuietly() {
+            releaseQuietly(this.composer, TRANSIENT_WORK_RESOURCE_NAME);
+            this.composer = null;
+        }
+    }
+
+    /**
+     * One forward walk over the frozen transient work resource.
+     *
+     * <p>Sequential and forward-only, which is exactly how the generation step reads it: the position it
+     * asks for advances by one for every record it consumes, and it never returns to a position it has
+     * left. The position most recently served may be asked for again and is served from the record in
+     * hand without touching the resource, which is what lets an open position at the first record
+     * without consuming it. A position below the one last served is refused, because serving it would
+     * require re-reading the resource from its start.
+     *
+     * <p>The handle is opened on the first read rather than in the constructor, and closed the moment
+     * the resource is exhausted - so a walk that is created and never read holds nothing, and a walk
+     * that is read to end of file leaves nothing open.
+     */
+    private static final class SequentialWorkResourceWalk implements StatementTransactionSource {
+
+        /** Position value standing for "no record has been served yet". */
+        private static final int BEFORE_FIRST_RECORD_POSITION = -1;
+
+        /** The frozen resource, or {@code null} when the cluster was never written. */
+        private final Path resource;
+
+        /** Handle on the resource while records remain, or {@code null}. */
+        private BufferedReader reader;
+
+        /** Position of the record in hand. */
+        private int servedPosition = BEFORE_FIRST_RECORD_POSITION;
+
+        /** The record in hand, or {@code null} before the first read and after exhaustion. */
+        private String served;
+
+        /** Whether the resource has been read to end of file. */
+        private boolean exhausted;
+
+        /**
+         * @param resource the frozen resource, or {@code null} for a cluster that holds nothing
+         */
+        SequentialWorkResourceWalk(final Path resource) {
+            this.resource = resource;
+        }
+
+        @Override
+        public Optional<String> readAt(final int position) {
+            if (position < 0) {
+                throw new IllegalArgumentException(
+                        "statement transaction position must not be negative: " + position);
+            }
+            if (position == this.servedPosition) {
+                return Optional.ofNullable(this.served);
+            }
+            if (position < this.servedPosition) {
+                throw new IllegalStateException("the " + TRANSIENT_WORK_RESOURCE_NAME
+                        + " work resource is read forward: position " + position
+                        + " was asked for after position " + this.servedPosition
+                        + " had already been served");
+            }
+            while (this.servedPosition < position && advance()) {
+                // Advancing is the whole of the loop body; the guard performs it.
+            }
+            return this.servedPosition == position ? Optional.ofNullable(this.served)
+                    : Optional.empty();
+        }
+
+        /**
+         * Serves the next record, if there is one.
+         *
+         * @return {@code true} when a record was served, {@code false} at end of file
+         */
+        private boolean advance() {
+            if (this.exhausted) {
+                return false;
+            }
+            if (this.resource == null) {
+                this.exhausted = true;
+                return false;
+            }
+            try {
+                if (this.reader == null) {
+                    this.reader = openForReading(this.resource);
+                }
+                final String next = this.reader.readLine();
+                if (next == null) {
+                    this.exhausted = true;
+                    this.served = null;
+                    this.reader.close();
+                    this.reader = null;
+                    return false;
+                }
+                this.served = next;
+                this.servedPosition++;
+                return true;
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("unable to read the "
+                        + TRANSIENT_WORK_RESOURCE_NAME + " work resource", failure);
+            }
         }
     }
 
@@ -1721,14 +1976,25 @@ public final class CreateStatementJobConfig {
         }
 
         /**
-         * The ordered, projected record images of this pass, for a caller that drives the lifecycle
-         * directly.
+         * Applies an action to each ordered, projected record image, one at a time, for a caller that
+         * drives the lifecycle directly.
          *
-         * @return the images in ordering sequence, never {@code null}
+         * <p>Bounded by construction: the traversal holds the record it is presenting and nothing else,
+         * so a caller that wants a count, a width proof or a sequence check pays for one record rather
+         * than for the whole generation. See {@code docs/decision-log.md} entry DL-176.
+         *
+         * @param consumer the action to apply to each image in ordering sequence; must not be
+         *                 {@code null}
+         * @throws NullPointerException if {@code consumer} is {@code null}
          */
-        List<String> orderedRecords() {
-            try {
-                return Files.readAllLines(this.projectedResource, StandardCharsets.US_ASCII);
+        void forEachOrderedRecord(final Consumer<String> consumer) {
+            Objects.requireNonNull(consumer, "consumer");
+            try (BufferedReader ordered = openForReading(this.projectedResource)) {
+                String image = ordered.readLine();
+                while (image != null) {
+                    consumer.accept(image);
+                    image = ordered.readLine();
+                }
             } catch (final IOException failure) {
                 throw new UncheckedIOException(
                         "unable to read the projected statement work generation", failure);
@@ -1918,10 +2184,7 @@ public final class CreateStatementJobConfig {
                 openResource(allocation.ddName(), () -> {
                     // The allocation, which is the whole of what the null program does on the way in:
                     // the container has to exist for the resource to be allocatable within it.
-                    final Path container = allocation.resource().getParent();
-                    if (container != null) {
-                        Files.createDirectories(container);
-                    }
+                    SecureStagedFiles.prepareContainerOf(allocation.resource());
                     return FileStatus.SUCCESS.getCode();
                 });
             }

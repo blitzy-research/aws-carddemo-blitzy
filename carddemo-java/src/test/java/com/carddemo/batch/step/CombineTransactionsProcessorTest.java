@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 import com.carddemo.domain.Transaction;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.TransactionRecordMapper;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -489,7 +490,8 @@ class CombineTransactionsProcessorTest {
         }
 
         @Test
-        @DisplayName("rejects an image one byte short, naming both widths and the identifier")
+        @DisplayName("rejects an image one byte short, naming both widths and a redacted reference to "
+                + "the record rather than its identifier")
         void rejectsAnImageOneByteShort() {
             byte[] tooShort = new byte[RECORD_WIDTH - 1];
 
@@ -499,7 +501,31 @@ class CombineTransactionsProcessorTest {
                     .hasMessageContaining(TransactionRecordMapper.ARTEFACT)
                     .hasMessageContaining(String.valueOf(RECORD_WIDTH - 1))
                     .hasMessageContaining(String.valueOf(RECORD_WIDTH))
-                    .hasMessageContaining("0000000000000020");
+                    // The identifier itself is withheld: it names a cardholder's transaction and its
+                    // bytes are whatever the record held. What survives is a reference that singles the
+                    // record out through a re-presented chunk without disclosing it.
+                    .hasMessageContaining(SensitiveLogRedactor.REDACTED)
+                    .hasMessageNotContaining("0000000000000020");
+        }
+
+        @Test
+        @DisplayName("the reference the message carries is the one a second failure on the same record "
+                + "carries, so a re-presented chunk is still traceable to one record")
+        void theReferenceIsStableForOneRecord() {
+            byte[] tooShort = new byte[RECORD_WIDTH - 1];
+            byte[] tooLong = new byte[RECORD_WIDTH + 1];
+
+            String first = catchThrowable(() -> CombineTransactionsProcessor
+                    .requireCombinedRecordWidth(tooShort, "0000000000000022")).getMessage();
+            String second = catchThrowable(() -> CombineTransactionsProcessor
+                    .requireCombinedRecordWidth(tooLong, "0000000000000022")).getMessage();
+            String other = catchThrowable(() -> CombineTransactionsProcessor
+                    .requireCombinedRecordWidth(tooShort, "0000000000000023")).getMessage();
+
+            String reference = SensitiveLogRedactor.redact("0000000000000022");
+            assertThat(first).contains(reference);
+            assertThat(second).contains(reference);
+            assertThat(other).doesNotContain(reference);
         }
 
         @Test

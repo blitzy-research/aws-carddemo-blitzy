@@ -29,12 +29,12 @@ import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Transaction;
@@ -53,16 +53,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Verifies {@link TransactionReportService}, the translation of the transaction detail report program
@@ -160,6 +158,29 @@ class TransactionReportServiceParityTest {
                 card, processed + "-00.00.00.000000", processed + "-00.00.00.000000");
     }
 
+    /** Repeats one transaction under a different transaction-type code. */
+    private static Transaction ofType(final Transaction original, final String typeCode) {
+        return new Transaction(original.getTranId(), typeCode, original.getTranCatCd(),
+                original.getTranSource(), original.getTranDesc(), original.getTranAmt(),
+                original.getMerchantId(), original.getMerchantName(),
+                original.getMerchantCity(), original.getMerchantZip(),
+                original.getTranCardNum(), original.getTranOrigTs(), original.getTranProcTs());
+    }
+
+    /** Repeats one transaction under a different transaction-category code. */
+    private static Transaction inCategory(final Transaction original, final String categoryCode) {
+        return new Transaction(original.getTranId(), original.getTranTypeCd(), categoryCode,
+                original.getTranSource(), original.getTranDesc(), original.getTranAmt(),
+                original.getMerchantId(), original.getMerchantName(),
+                original.getMerchantCity(), original.getMerchantZip(),
+                original.getTranCardNum(), original.getTranOrigTs(), original.getTranProcTs());
+    }
+
+    /** The failure a store raises when its cluster cannot be reached. */
+    private static DataAccessResourceFailureException unreachable() {
+        return new DataAccessResourceFailureException("the cluster could not be reached");
+    }
+
     private static String identifier(int ordinal) {
         StringBuilder digits = new StringBuilder(Integer.toString(ordinal));
         while (digits.length() < 16) {
@@ -197,17 +218,56 @@ class TransactionReportServiceParityTest {
         };
     }
 
+    /**
+     * One generated report, assembled by the harness for assertion purposes only.
+     *
+     * <p>The service streams each record to a sink as it composes it and never holds the report, so
+     * collecting the records into a list is the <em>test's</em> choice. Production writes each record
+     * straight to its destination; see {@code docs/decision-log.md} entry DL-176.
+     *
+     * @param reportLines       the records the run offered to the sink, in emission order
+     * @param grandTotal        the grand total the run reported
+     * @param pageCount         the page-total emissions the run reported
+     * @param lineCount         the final line-counter value the run reported
+     * @param accountBreakCount the account-total emissions the run reported
+     */
+    private record GeneratedReport(List<String> reportLines,
+                                   BigDecimal grandTotal,
+                                   int pageCount,
+                                   long lineCount,
+                                   int accountBreakCount) {
+
+        /**
+         * Pairs a run's observations with the records its sink collected, and proves the two agree.
+         *
+         * @param collected the records the sink received, in emission order
+         * @param observed  the run's own observations
+         * @return the paired report
+         */
+        static GeneratedReport of(final List<String> collected,
+                final TransactionReportService.TransactionReportResult observed) {
+            assertThat(observed.reportRecordCount())
+                    .as("the run's own record count must agree with what its sink received")
+                    .isEqualTo(collected.size());
+            return new GeneratedReport(List.copyOf(collected), observed.grandTotal(),
+                    observed.pageCount(), observed.lineCount(), observed.accountBreakCount());
+        }
+    }
+
     /** Keeps existing parity assertions focused on report semantics while supplying the frozen input. */
     private final class ReportHarness {
 
-        TransactionReportService.TransactionReportResult generateReport(
-                final String startDate, final String endDate) {
-            return reportService.generateReport(transactionSource, startDate, endDate);
+        GeneratedReport generateReport(final String startDate, final String endDate) {
+            final List<String> collected = new ArrayList<>();
+            return GeneratedReport.of(collected, reportService.generateReport(transactionSource,
+                    collected::add, startDate, endDate));
         }
 
-        TransactionReportService.TransactionReportResult generateReportFromDateParameterCard(
-                final String card) {
-            return reportService.generateReportFromDateParameterCard(transactionSource, card);
+        GeneratedReport generateReportFromDateParameterCard(final String card) {
+            final List<String> collected = new ArrayList<>();
+            return GeneratedReport.of(collected,
+                    reportService.generateReportFromDateParameterCard(transactionSource,
+                            collected::add, card));
         }
     }
 
@@ -286,7 +346,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(twentyAcrossTwoCards());
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // Twenty details of one unit each. A detail-fed grand total would read 20.00. The legacy
@@ -310,7 +370,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(twentyAcrossTwoCards());
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // One card change over the fixture, so one account total is written. Its ten units are
@@ -327,7 +387,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(twentyAcrossTwoCards());
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             assertThat(result.pageCount()).isEqualTo(2);
@@ -351,7 +411,7 @@ class TransactionReportServiceParityTest {
             }
             stubRange(seventeen);
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // The page size is a legacy formatting contract, not a tuning value.
@@ -375,7 +435,7 @@ class TransactionReportServiceParityTest {
             }
             stubRange(seventeen);
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // Thirty records are emitted but only twenty-nine are counted. The one difference is the
@@ -392,7 +452,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // The header block runs before the page test, so the counter is four and not zero when
@@ -415,7 +475,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(twentyAcrossTwoCards());
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             assertThat(result.reportLines()).isNotEmpty();
@@ -434,7 +494,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
             List<String> lines = result.reportLines();
 
@@ -466,7 +526,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             String detail = result.reportLines().get(4);
@@ -493,7 +553,7 @@ class TransactionReportServiceParityTest {
                     transaction(identifier(1), CARD_A, "1.00", START),
                     transaction(identifier(2), CARD_A, "2.00", END)));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // Both survived the guard, so the loop was never truncated: four headers, two details,
@@ -511,7 +571,7 @@ class TransactionReportServiceParityTest {
             String card = ReportLineFormatter.buildDateParameterRecord(START, END) + " ".repeat(59);
             assertThat(card).hasSize(ReportLineFormatter.DATE_PARAMETER_CARD_WIDTH);
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReportFromDateParameterCard(card);
 
             assertThat(result.reportLines()).hasSize(8);
@@ -522,8 +582,10 @@ class TransactionReportServiceParityTest {
         void absentParameterCardProducesAnEmptyReport() {
             final ReportTransactionSource untouched = mock(ReportTransactionSource.class);
 
-            TransactionReportService.TransactionReportResult result =
-                    reportService.generateReportFromDateParameterCard(untouched, null);
+            final List<String> collected = new ArrayList<>();
+            final GeneratedReport result = GeneratedReport.of(collected,
+                    reportService.generateReportFromDateParameterCard(untouched, collected::add,
+                            null));
 
             assertThat(result.reportLines()).isEmpty();
             assertThat(result.lineCount()).isZero();
@@ -545,7 +607,7 @@ class TransactionReportServiceParityTest {
             when(source.readAt(0)).thenReturn(Optional.of(first));
             when(source.readAt(1)).thenReturn(Optional.empty());
 
-            reportService.generateReport(source, START, END);
+            reportService.generateReport(source, record -> { }, START, END);
 
             InOrder reads = inOrder(source);
             reads.verify(source).readAt(0);
@@ -564,7 +626,7 @@ class TransactionReportServiceParityTest {
                     transaction(identifier(9), CARD_B, "1.00", "2022-07-05"),
                     transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             List<String> emittedIdentifiers = new ArrayList<>();
@@ -583,7 +645,8 @@ class TransactionReportServiceParityTest {
             final ReportTransactionSource broken = position -> null;
 
             assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> reportService.generateReport(broken, START, END))
+                    .isThrownBy(() -> reportService.generateReport(broken, record -> { },
+                            START, END))
                     .withMessageContaining("Optional");
         }
     }
@@ -598,7 +661,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             assertThat(ReportLineFormatter.HEADER_BLOCK_RECORD_COUNT).isEqualTo(4);
@@ -616,7 +679,7 @@ class TransactionReportServiceParityTest {
             }
             stubRange(seventeen);
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             assertThat(result.reportLines().subList(22, 26))
@@ -636,7 +699,7 @@ class TransactionReportServiceParityTest {
                     transaction(identifier(1), CARD_A, "1.00", "2022-07-05"),
                     transaction(identifier(2), CARD_A, "9.00", "2030-01-01")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // Four headers and one detail, and then nothing at all: no page total, no rule line and
@@ -657,7 +720,7 @@ class TransactionReportServiceParityTest {
                     transaction(identifier(1), CARD_A, "10.00", "2022-07-05"),
                     transaction(identifier(2), CARD_A, "5.00", "2022-07-05")));
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // Ten and five is fifteen; the stale five is added again at end of file.
@@ -670,7 +733,7 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(List.of());
 
-            TransactionReportService.TransactionReportResult result =
+            GeneratedReport result =
                     service.generateReport(START, END);
 
             // No record was ever read, so there is no stale amount to re-add and no header block was
@@ -756,6 +819,222 @@ class TransactionReportServiceParityTest {
     }
 
     @Nested
+    @DisplayName("the reference reads: bounded by distinct references, never by record count")
+    class TheBoundedReferenceReads {
+
+        @Test
+        @DisplayName("twenty records over two cards, one type and one category issue two, one and one "
+                + "reference reads - not twenty each, which is the one-query-per-row shape this replaces")
+        void referenceReadsAreBoundedByDistinctReferences() {
+            stubLookups();
+            stubRange(twentyAcrossTwoCards());
+
+            service.generateReport(START, END);
+
+            assertAll(
+                    () -> verify(crossReferences, times(1)).findById(CARD_A),
+                    () -> verify(crossReferences, times(1)).findById(CARD_B),
+                    () -> verify(types, times(1)).findById("01"),
+                    () -> verify(categories, times(1))
+                            .findById(any(TransactionCategoryId.class)));
+        }
+
+        @Test
+        @DisplayName("doubling the record count does not change the number of reference reads, which is "
+                + "what makes the cost independent of the input size")
+        void referenceReadCountDoesNotGrowWithRecordCount() {
+            stubLookups();
+            stubRange(twentyAcrossTwoCards());
+            service.generateReport(START, END);
+            final int afterTwenty = referenceReadCount();
+
+            stubRange(twentyAcrossTwoCards());
+            service.generateReport(START, END);
+            final int afterForty = referenceReadCount();
+
+            // Two runs, not one long one: each run resolves its own references, so the second run's four
+            // reads are the only growth and no run's cost depends on how many records it reported.
+            assertThat(afterForty - afterTwenty).isEqualTo(afterTwenty);
+        }
+
+        @Test
+        @DisplayName("a distinct category key is resolved on its own, so memoization keys on the whole "
+                + "composite key and not on the type code alone")
+        void eachDistinctCategoryKeyIsResolvedOnItsOwn() {
+            when(crossReferences.findById(CARD_A)).thenReturn(
+                    Optional.of(new CardCrossReference(CARD_A, "000000001", "00000000011")));
+            when(types.findById("01")).thenReturn(Optional.of(new TransactionType("01", "PURCHASE")));
+            when(categories.findById(new TransactionCategoryId("01", "0005")))
+                    .thenReturn(Optional.of(new TransactionCategory("01", "0005", "RESTAURANT")));
+            when(categories.findById(new TransactionCategoryId("01", "0006")))
+                    .thenReturn(Optional.of(new TransactionCategory("01", "0006", "GROCERY")));
+            stubRange(List.of(
+                    transaction(identifier(1), CARD_A, "1.00", "2022-07-05"),
+                    inCategory(transaction(identifier(2), CARD_A, "1.00", "2022-07-05"), "0006"),
+                    transaction(identifier(3), CARD_A, "1.00", "2022-07-05")));
+
+            service.generateReport(START, END);
+
+            assertAll(
+                    () -> verify(categories, times(1))
+                            .findById(new TransactionCategoryId("01", "0005")),
+                    () -> verify(categories, times(1))
+                            .findById(new TransactionCategoryId("01", "0006")));
+        }
+
+        @Test
+        @DisplayName("one run's resolved references are invisible to the next, because a cache that "
+                + "outlived a run would be a snapshot the legacy step never had")
+        void resolvedReferencesDoNotOutliveTheirRun() {
+            stubLookups();
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            service.generateReport(START, END);
+
+            stubRange(List.of(transaction(identifier(2), CARD_A, "1.00", "2022-07-05")));
+            service.generateReport(START, END);
+
+            assertAll(
+                    () -> verify(crossReferences, times(2)).findById(CARD_A),
+                    () -> verify(types, times(2)).findById("01"));
+        }
+
+        @Test
+        @DisplayName("the FIRST missing reference is still the one that fails, on the record that first "
+                + "presents it, so memoization has not deferred or masked an absent row")
+        void theFirstMissingReferenceIsStillTheOneThatFails() {
+            when(crossReferences.findById(CARD_A)).thenReturn(
+                    Optional.of(new CardCrossReference(CARD_A, "000000001", "00000000011")));
+            when(types.findById("01")).thenReturn(Optional.of(new TransactionType("01", "PURCHASE")));
+            when(types.findById("02")).thenReturn(Optional.empty());
+            when(categories.findById(any(TransactionCategoryId.class))).thenReturn(
+                    Optional.of(new TransactionCategory("01", "0005", "RESTAURANT")));
+            stubRange(List.of(
+                    transaction(identifier(1), CARD_A, "1.00", "2022-07-05"),
+                    ofType(transaction(identifier(2), CARD_A, "1.00", "2022-07-05"), "02"),
+                    ofType(transaction(identifier(3), CARD_A, "1.00", "2022-07-05"), "02")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 23"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            assertAll(
+                    () -> verify(abendService, times(1))
+                            .displayIoStatus("23", "READ", "TRANTYPE"),
+                    () -> verify(types, times(1)).findById("02"));
+        }
+
+        /** Counts every reference read the three mocked lookups have received so far. */
+        private int referenceReadCount() {
+            return (int) Mockito.mockingDetails(crossReferences).getInvocations().stream().count()
+                    + (int) Mockito.mockingDetails(types).getInvocations().stream().count()
+                    + (int) Mockito.mockingDetails(categories).getInvocations().stream().count();
+        }
+    }
+
+    @Nested
+    @DisplayName("a reference read that does not complete: raw status 31, then the paragraph's own "
+            + "display-then-abend sequence")
+    class ATechnicalReferenceFailure {
+
+        @Test
+        @DisplayName("the cross-reference read reports 31, displays the status and then abends, and the "
+                + "card number still never reaches a diagnostic")
+        void crossReferenceFailureReportsThirtyOne() {
+            when(types.findById("01")).thenReturn(Optional.of(new TransactionType("01", "PURCHASE")));
+            when(crossReferences.findById(CARD_A)).thenThrow(unreachable());
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 31"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            InOrder order = inOrder(abendService);
+            order.verify(abendService).displayIoStatus("31", "READ", "CARDXREF");
+            order.verify(abendService).abendBatch(eq("CBTRN03C"), eq("INVALID CARD NUMBER"), eq("31"),
+                    eq("READ"), eq("CARDXREF"));
+            assertThat(loggedMessages())
+                    .anyMatch(message -> message.contains("Reference read of CARDXREF did not complete")
+                            && message.contains("failureChain="))
+                    .anyMatch(message -> message.matches(
+                            "INVALID CARD NUMBER cardRef=\\[REDACTED] ref=[0-9a-f]{24}"))
+                    .noneMatch(message -> message.contains(CARD_A));
+        }
+
+        @Test
+        @DisplayName("the transaction-type read reports 31, displays the status and then abends")
+        void transactionTypeFailureReportsThirtyOne() {
+            when(crossReferences.findById(CARD_A)).thenReturn(
+                    Optional.of(new CardCrossReference(CARD_A, "000000001", "00000000011")));
+            when(types.findById("01")).thenThrow(unreachable());
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 31"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            InOrder order = inOrder(abendService);
+            order.verify(abendService).displayIoStatus("31", "READ", "TRANTYPE");
+            order.verify(abendService).abendBatch(eq("CBTRN03C"), eq("INVALID TRANSACTION TYPE"),
+                    eq("31"), eq("READ"), eq("TRANTYPE"));
+        }
+
+        @Test
+        @DisplayName("the transaction-category read reports 31, displays the status and then abends")
+        void transactionCategoryFailureReportsThirtyOne() {
+            when(crossReferences.findById(CARD_A)).thenReturn(
+                    Optional.of(new CardCrossReference(CARD_A, "000000001", "00000000011")));
+            when(types.findById("01")).thenReturn(Optional.of(new TransactionType("01", "PURCHASE")));
+            when(categories.findById(any(TransactionCategoryId.class))).thenThrow(unreachable());
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 31"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            InOrder order = inOrder(abendService);
+            order.verify(abendService).displayIoStatus("31", "READ", "TRANCATG");
+            order.verify(abendService).abendBatch(eq("CBTRN03C"), eq("INVALID TRAN CATG KEY"),
+                    eq("31"), eq("READ"), eq("TRANCATG"));
+        }
+
+        @Test
+        @DisplayName("a read that did not complete is NOT reported as a missing record, because the two "
+                + "conditions send an operator to different places")
+        void aFailedReadIsNotReportedAsAMissingRecord() {
+            when(crossReferences.findById(CARD_A)).thenThrow(unreachable());
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 31"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            verify(abendService, never()).displayIoStatus(eq("23"), any(), any());
+        }
+
+        @Test
+        @DisplayName("the failure narrative never reaches a diagnostic whole; only its type chain does")
+        void theFailureNarrativeNeverReachesADiagnostic() {
+            when(crossReferences.findById(CARD_A))
+                    .thenThrow(new DataAccessResourceFailureException(
+                            "select * from card_xref_record where xref_card_num = '" + CARD_A + "'"));
+            stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
+            doThrow(new AbendException("CBTRN03C", "FILE STATUS 31"))
+                    .when(abendService).abendBatch(any(), any(), any(), any(), any());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service.generateReport(START, END));
+
+            assertThat(loggedMessages())
+                    .noneMatch(message -> message.contains("select * from"))
+                    .noneMatch(message -> message.contains(CARD_A));
+        }
+    }
+    @Nested
     @DisplayName("statelessness: no run can influence another")
     class Statelessness {
 
@@ -765,10 +1044,8 @@ class TransactionReportServiceParityTest {
             stubLookups();
             stubRange(twentyAcrossTwoCards());
 
-            TransactionReportService.TransactionReportResult first =
-                    service.generateReport(START, END);
-            TransactionReportService.TransactionReportResult second =
-                    service.generateReport(START, END);
+            final GeneratedReport first = service.generateReport(START, END);
+            final GeneratedReport second = service.generateReport(START, END);
 
             // A counter or accumulator held as a field would make the second run differ from the
             // first, which is precisely the defect this asserts against.
@@ -797,14 +1074,29 @@ class TransactionReportServiceParityTest {
         }
 
         @Test
-        @DisplayName("the result refuses an absent line list or grand total")
+        @DisplayName("the result refuses an absent grand total or an impossible record count")
         void resultRefusesAnAbsentComponent() {
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService.TransactionReportResult(null, BigDecimal.ZERO,
+                    new TransactionReportService.TransactionReportResult(0L, null,
                             0, 0L, 0));
+            assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() ->
+                    new TransactionReportService.TransactionReportResult(-1L, BigDecimal.ZERO,
+                            0, 0L, 0));
+        }
+
+        @Test
+        @DisplayName("a run refuses to start without a destination for its records")
+        void aRunRefusesToStartWithoutADestination() {
+            final ReportTransactionSource untouched = mock(ReportTransactionSource.class);
+
             assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new TransactionReportService.TransactionReportResult(List.of(), null,
-                            0, 0L, 0));
+                    reportService.generateReport(untouched, null, START, END))
+                    .withMessageContaining("reportRecordSink");
+            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
+                    reportService.generateReportFromDateParameterCard(untouched, null,
+                            ReportLineFormatter.buildDateParameterRecord(START, END)))
+                    .withMessageContaining("reportRecordSink");
+            verifyNoInteractions(untouched);
         }
     }
 }

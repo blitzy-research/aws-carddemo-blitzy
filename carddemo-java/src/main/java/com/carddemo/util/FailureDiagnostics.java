@@ -130,6 +130,53 @@ public final class FailureDiagnostics {
     public static final int MAX_TYPE_NAME_LENGTH = 64;
 
     /**
+     * Stand-in for an absent value, so a diagnostic never reads {@code null} where a value belongs.
+     *
+     * <p>Distinguishable from a value that is present and empty, which renders as nothing at all.
+     */
+    public static final String ABSENT_VALUE = "<absent>";
+
+    /**
+     * Marker appended to a rendered value that was cut.
+     *
+     * <p>Present so that a reader can tell a value that was cut from one that ended where it appears to.
+     */
+    public static final String RENDERED_VALUE_TRUNCATION_MARKER = "...";
+
+    /**
+     * Most characters of a caller-supplied value that a diagnostic renders.
+     *
+     * <p>Bounds the amount of centralised logging one oversized value can consume. Set well above every
+     * field width the estate declares - the widest is the 100-byte statement record - so that a value a
+     * diagnostic is genuinely about is rendered whole, and only a value that could not be a legitimate
+     * field at all is cut.
+     */
+    public static final int MAX_RENDERED_VALUE_LENGTH = 200;
+
+    /** Lowest printable ASCII character, the space. */
+    private static final char FIRST_PRINTABLE_ASCII = ' ';
+
+    /** Highest printable ASCII character, the tilde. */
+    private static final char LAST_PRINTABLE_ASCII = '~';
+
+    /**
+     * Upper-case hexadecimal digits, indexed rather than formatted so that no locale participates.
+     */
+    private static final char[] HEX_DIGITS = "0123456789ABCDEF".toCharArray();
+
+    /** Hexadecimal digits in the rendering of one UTF-16 code unit. */
+    private static final int HEX_DIGITS_PER_CODE_UNIT = 4;
+
+    /** Bits one hexadecimal digit carries. */
+    private static final int BITS_PER_HEX_DIGIT = 4;
+
+    /** Mask selecting the low-order hexadecimal digit. */
+    private static final int LOW_HEX_DIGIT_MASK = 0xF;
+
+    /** Characters in the {@code U+XXXX} rendering of one code unit. */
+    private static final int CODE_POINT_RENDERING_LENGTH = 2 + HEX_DIGITS_PER_CODE_UNIT;
+
+    /**
      * Character every inadmissible character in a type name is replaced by.
      *
      * <p>Chosen because it is itself admissible in a Java type name, so a sanitised name still reads as
@@ -270,5 +317,117 @@ public final class FailureDiagnostics {
                 || (character >= '0' && character <= '9')
                 || character == '$'
                 || character == TYPE_NAME_REPLACEMENT;
+    }
+
+    /**
+     * Renders a caller-supplied value inert for a diagnostic, keeping every printable character and
+     * naming every other one by its code point.
+     *
+     * <h2>Why a value read out of a record needs this and a value this module authored does not</h2>
+     *
+     * <p>Some diagnostics have to render the value itself: a job parameter that is not a date, a
+     * fixed-width field that is not the width it must be, a character found where a digit belongs. In
+     * each of those the value <em>is</em> the diagnosis, so withholding it - as
+     * {@link SensitiveLogRedactor#redact(String)} does for an identifier - would leave the reader with
+     * nothing to act on. The value is nevertheless not this module's text. It arrived in a 350-byte,
+     * 50-byte or 80-byte image, or on a job parameter card, and its bytes are whatever the producer
+     * wrote.
+     *
+     * <p>A control byte among those bytes is not a cosmetic problem. A line terminator ends the record
+     * early and makes the remainder of the message read as a record of its own; a carriage return
+     * overwrites what a terminal has already drawn; an escape byte begins a sequence a terminal obeys;
+     * and a code point that renders as nothing hides the difference between two values that a reader is
+     * comparing by eye. Each of those is a caller deciding what a log reader sees, which is the whole of
+     * what this class exists to prevent.
+     *
+     * <h2>What is kept and what is named</h2>
+     *
+     * <p>Printable ASCII - {@code ' '} through {@code '~'} - is kept exactly, so an ordinary value reads
+     * as itself and a comparison against an expected value still works. Everything else, control bytes
+     * and every character above the seven-bit range alike, is replaced by {@code U+XXXX}: four
+     * upper-case hexadecimal digits naming the UTF-16 code unit. The rendering is therefore reversible
+     * by a reader, which is what a diagnostic needs, and inert, which is what a log record needs.
+     *
+     * <p>The result is bounded at {@link #MAX_RENDERED_VALUE_LENGTH} <em>source</em> characters, after
+     * which {@value #RENDERED_VALUE_TRUNCATION_MARKER} is appended. The bound is on the input rather
+     * than the output so that the count a reader sees is a count of the value's characters. An absent
+     * value renders as {@value #ABSENT_VALUE}, so a diagnostic never reads {@code null} where a value
+     * belongs.
+     *
+     * <p>No locale participates: the hexadecimal digits are indexed out of a fixed table rather than
+     * formatted, because a locale-sensitive conversion renders the same character differently under a
+     * locale whose default numbering system is not Western Arabic, and a diagnostic that changes with
+     * the locale is not a diagnostic.
+     *
+     * @param  value the value to render, which may be {@code null}
+     * @return the rendering, never {@code null}, holding only printable ASCII
+     */
+    // See docs/decision-log.md entry DL-177.
+    public static String printableForm(final String value) {
+        if (value == null) {
+            return ABSENT_VALUE;
+        }
+        final int retained = Math.min(value.length(), MAX_RENDERED_VALUE_LENGTH);
+        final StringBuilder rendered = new StringBuilder(retained);
+        for (int index = 0; index < retained; index++) {
+            appendPrintable(rendered, value.charAt(index));
+        }
+        if (value.length() > retained) {
+            rendered.append(RENDERED_VALUE_TRUNCATION_MARKER);
+        }
+        return rendered.toString();
+    }
+
+    /**
+     * Renders one caller-supplied character inert for a diagnostic, in quotes when it is printable.
+     *
+     * <p>The quotes are what a positional comparison needs: they mark where the character begins and
+     * ends, so a space found where a hyphen belongs is visible as a space rather than as a gap. A
+     * character that is not printable ASCII is named by its code point instead and is not quoted, so the
+     * two renderings cannot be confused with one another.
+     *
+     * @param  value the character to render
+     * @return the character in single quotes when printable ASCII, otherwise {@code U+XXXX}
+     */
+    public static String printableForm(final char value) {
+        if (isPrintableAscii(value)) {
+            return "'" + value + "'";
+        }
+        final StringBuilder rendered = new StringBuilder(CODE_POINT_RENDERING_LENGTH);
+        appendPrintable(rendered, value);
+        return rendered.toString();
+    }
+
+    /**
+     * Appends one character, kept when printable ASCII and named by its code point when not.
+     *
+     * @param target    the builder to append to
+     * @param character the character to render
+     */
+    private static void appendPrintable(final StringBuilder target, final char character) {
+        if (isPrintableAscii(character)) {
+            target.append(character);
+            return;
+        }
+        target.append('U').append('+');
+        for (int digit = HEX_DIGITS_PER_CODE_UNIT - 1; digit >= 0; digit--) {
+            target.append(HEX_DIGITS[(character >> (digit * BITS_PER_HEX_DIGIT)) & LOW_HEX_DIGIT_MASK]);
+        }
+    }
+
+    /**
+     * Reports whether a character may be written into a diagnostic as itself.
+     *
+     * <p>The admissible range is printable seven-bit ASCII and nothing else. Deliberately narrower than
+     * {@link Character#isISOControl(char)} negated, which would admit every character above the
+     * seven-bit range - among them the zero-width and bidirectional formatting code points, which render
+     * as nothing or reorder what follows them, and either of which lets a value disguise itself in a
+     * record a human is reading.
+     *
+     * @param  character the character being examined
+     * @return {@code true} when the character may be kept as itself
+     */
+    private static boolean isPrintableAscii(final char character) {
+        return character >= FIRST_PRINTABLE_ASCII && character <= LAST_PRINTABLE_ASCII;
     }
 }

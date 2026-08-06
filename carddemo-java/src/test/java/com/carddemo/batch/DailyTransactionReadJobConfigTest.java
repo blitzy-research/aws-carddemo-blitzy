@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import ch.qos.logback.classic.Level;
@@ -40,8 +41,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
@@ -69,6 +69,7 @@ import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.exception.AbendException;
 import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
+import com.carddemo.service.DailyTransactionReadService.DailyTransactionVerification;
 import com.carddemo.util.SensitiveFieldCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,7 +77,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
@@ -204,10 +204,6 @@ final class DailyTransactionReadJobConfigTest {
     @Mock
     private FixedWidthFlatFileReaderFactory scriptedReaderFactory;
 
-    /** Captures the ordered records the step hands to the translated program. */
-    @Captor
-    private ArgumentCaptor<List<DailyTransaction>> handedOverRecords;
-
     /** The real reader factory: this suite proves the bindings, so nothing about them is simulated. */
     private FixedWidthFlatFileReaderFactory readerFactory;
 
@@ -276,12 +272,47 @@ final class DailyTransactionReadJobConfigTest {
     }
 
     /**
+     * Matches any per-record verification destination.
+     *
+     * @return the matcher
+     */
+    private static Consumer<DailyTransactionVerification> anySink() {
+        return ArgumentMatchers.any();
+    }
+
+    /**
+     * Matches any streamed ordered source.
+     *
+     * @return the matcher
+     */
+    private static Iterable<DailyTransaction> anyOrderedSource() {
+        return ArgumentMatchers.any();
+    }
+
+    /**
+     * Stubs the pass to walk the ordered source it is given, which is what the real pass does.
+     *
+     * <p>The source is a live forward walk over the open staged handle rather than a materialised list,
+     * so a stub that ignored it would never read the dataset and a defect in a record would go
+     * unobserved. See {@code docs/decision-log.md} entry DL-176.
+     *
+     * @param walked where each record the pass walks is recorded, in dataset order
+     */
+    private void stubPassWalkingItsSource(final List<DailyTransaction> walked) {
+        when(readService.execute(anyOrderedSource(), anySink())).thenAnswer(invocation -> {
+            final Iterable<DailyTransaction> streamed = invocation.getArgument(0);
+            streamed.forEach(walked::add);
+            return emptyPass();
+        });
+    }
+
+    /**
      * A pass outcome that reports nothing read, which is what an empty or unstaged input produces.
      *
      * @return the outcome
      */
     private static DailyTransactionReadResult emptyPass() {
-        return new DailyTransactionReadResult(0, 0, 1, 0, 0, List.of(), 0);
+        return new DailyTransactionReadResult(0, 0, 1, 0, 0, 0);
     }
 
     /**
@@ -493,19 +524,19 @@ final class DailyTransactionReadJobConfigTest {
         @Test
         @DisplayName("the step's tasklet runs one complete pass and reports that it is finished")
         void theStepsTaskletRunsOnePassAndReportsFinished() throws Exception {
-            when(readService.execute()).thenReturn(emptyPass());
+            when(readService.execute(anySink())).thenReturn(emptyPass());
             final TaskletStep step = (TaskletStep) nothingStaged().dailyTransactionExtractStep();
 
             final RepeatStatus status = step.getTasklet().execute(null, null);
 
             assertThat(status).isEqualTo(RepeatStatus.FINISHED);
-            verify(readService).execute();
+            verify(readService).execute(anySink());
         }
 
         @Test
         @DisplayName("the tasklet is reachable on its own, so the pass can be driven without a launcher")
         void theTaskletIsReachableOnItsOwn() throws Exception {
-            when(readService.execute()).thenReturn(emptyPass());
+            when(readService.execute(anySink())).thenReturn(emptyPass());
 
             final RepeatStatus status =
                     nothingStaged().dailyTransactionExtractTasklet().execute(null, null);
@@ -523,35 +554,36 @@ final class DailyTransactionReadJobConfigTest {
                 + "step supplies no order of its own")
         void withNothingStagedTheProgramResolvesItsOwnOrderedInput() {
             final DailyTransactionReadResult expected = emptyPass();
-            when(readService.execute()).thenReturn(expected);
+            when(readService.execute(anySink())).thenReturn(expected);
 
             final DailyTransactionReadResult actual = nothingStaged().runExtractPass();
 
             assertThat(actual).isSameAs(expected);
-            verify(readService, never()).execute(anyList());
+            verify(readService, never()).execute(anyOrderedSource(), anySink());
         }
 
         @Test
         @DisplayName("with a dataset staged every record is handed over in the dataset's own order, which "
                 + "is the order the legacy physical sequential read returned them in")
         void withADatasetStagedTheRecordsAreHandedOverInDatasetOrder() {
-            when(readService.execute(anyList())).thenReturn(emptyPass());
+            // The pass walks its source itself, one record at a time, so the records are observed as
+            // the pass pulls them rather than captured from a materialised argument.
+            final List<DailyTransaction> records = new ArrayList<>();
+            stubPassWalkingItsSource(records);
 
             staged(DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED).runExtractPass();
 
-            verify(readService).execute(handedOverRecords.capture());
-            final List<DailyTransaction> records = handedOverRecords.getValue();
             assertThat(records).hasSize(DALYTRAN_RECORDS);
             assertThat(records.get(0).getDalytranId()).isEqualTo(FIRST_DALYTRAN_ID);
             assertThat(records.get(records.size() - 1).getDalytranId()).isEqualTo(LAST_DALYTRAN_ID);
-            verify(readService, never()).execute();
+            verify(readService, never()).execute(anySink());
         }
 
         @Test
         @DisplayName("a completed pass is timed on the batch tier's shared program-lifecycle timer, so "
                 + "this program joins one metric family beside the wired ones")
         void aCompletedPassIsTimedOnTheSharedTimer() {
-            when(readService.execute()).thenReturn(emptyPass());
+            when(readService.execute(anySink())).thenReturn(emptyPass());
 
             nothingStaged().runExtractPass();
 
@@ -565,7 +597,7 @@ final class DailyTransactionReadJobConfigTest {
         void anAbendIsTimedAndRethrownUntouched() {
             final AbendException raised = new AbendException(
                     DailyTransactionReadJobConfig.PROGRAM_NAME, "STATUS 31 READING DALYTRAN");
-            when(readService.execute()).thenThrow(raised);
+            when(readService.execute(anySink())).thenThrow(raised);
             final DailyTransactionReadJobConfig configuration = nothingStaged();
 
             final AbendException thrown =
@@ -583,8 +615,8 @@ final class DailyTransactionReadJobConfigTest {
         @DisplayName("the completed pass reports its counts, which is the whole product of a program that "
                 + "writes nothing")
         void theCompletedPassReportsItsCounts() {
-            when(readService.execute()).thenReturn(new DailyTransactionReadResult(
-                    DALYTRAN_RECORDS, DALYTRAN_RECORDS, DALYTRAN_RECORDS + 1, 2, 1, List.of(), 0));
+            when(readService.execute(anySink())).thenReturn(new DailyTransactionReadResult(
+                    DALYTRAN_RECORDS, DALYTRAN_RECORDS, DALYTRAN_RECORDS + 1, 2, 1, 0));
 
             nothingStaged().runExtractPass();
 
@@ -598,7 +630,7 @@ final class DailyTransactionReadJobConfigTest {
         @DisplayName("an unstaged input is announced, so a reader of the log knows which of the two input "
                 + "resolutions ran")
         void anUnstagedInputIsAnnounced() {
-            when(readService.execute()).thenReturn(emptyPass());
+            when(readService.execute(anySink())).thenReturn(emptyPass());
 
             nothingStaged().runExtractPass();
 
@@ -764,8 +796,8 @@ final class DailyTransactionReadJobConfigTest {
             assertThat(errorDiagnostics().get(1))
                     .contains(AbendException.BATCH_ABEND_CODE)
                     .contains(DailyTransactionReadJobConfig.PROGRAM_NAME);
-            verify(readService, never()).execute();
-            verify(readService, never()).execute(anyList());
+            verify(readService, never()).execute(anySink());
+            verify(readService, never()).execute(anyOrderedSource(), anySink());
             assertThat(timedPasses(DailyTransactionReadJobConfig.OUTCOME_ABENDED)).isEqualTo(1L);
         }
 
@@ -778,6 +810,10 @@ final class DailyTransactionReadJobConfigTest {
             final DailyTransactionReadJobConfig configuration = staged("file:" + malformed,
                     UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED, UNSTAGED);
 
+            // The record is read as the pass pulls it, which is where the legacy read loop reads it,
+            // so the abend arises from within the walk the pass drives.
+            stubPassWalkingItsSource(new ArrayList<>());
+
             final AbendException thrown =
                     catchThrowableOfType(AbendException.class, configuration::runExtractPass);
 
@@ -787,7 +823,7 @@ final class DailyTransactionReadJobConfigTest {
             assertThat(errorDiagnostics()).hasSize(2);
             assertThat(errorDiagnostics().get(0)).contains(FileStatus.PERMANENT_ERROR.getCode());
             assertThat(errorDiagnostics().get(1)).contains(AbendException.BATCH_ABEND_CODE);
-            verify(readService, never()).execute(anyList());
+            verify(readService, never()).execute(anySink());
         }
 
         @Test
@@ -797,7 +833,7 @@ final class DailyTransactionReadJobConfigTest {
             when(stagedReader.read()).thenReturn(null);
             doThrow(new ItemStreamException("handle refused")).when(stagedReader).close();
             when(scriptedReaderFactory.dailyTransactionReader(any())).thenReturn(stagedReader);
-            when(readService.execute(anyList())).thenReturn(emptyPass());
+            stubPassWalkingItsSource(new ArrayList<>());
             final DailyTransactionReadJobConfig configuration = new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, scriptedReaderFactory, readService, meterRegistry,
                     resourceLoader, stagingArea, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED,
@@ -823,6 +859,7 @@ final class DailyTransactionReadJobConfigTest {
                     DailyTransactionReadJobConfig.PROGRAM_NAME, "STATUS 31 READING DALYTRAN");
             when(stagedReader.read()).thenThrow(raised);
             when(scriptedReaderFactory.dailyTransactionReader(any())).thenReturn(stagedReader);
+            stubPassWalkingItsSource(new ArrayList<>());
             final DailyTransactionReadJobConfig configuration = new DailyTransactionReadJobConfig(
                     jobRepository, transactionManager, scriptedReaderFactory, readService, meterRegistry,
                     resourceLoader, stagingArea, DALYTRAN_FIXTURE, UNSTAGED, UNSTAGED, UNSTAGED,
@@ -836,7 +873,7 @@ final class DailyTransactionReadJobConfigTest {
                     .as("an abend already diagnosed beneath this call must not be reported a second time")
                     .isEmpty();
             assertThat(timedPasses(DailyTransactionReadJobConfig.OUTCOME_ABENDED)).isEqualTo(1L);
-            verify(readService, never()).execute(anyList());
+            verify(readService, never()).execute(anySink());
         }
     }
 

@@ -859,8 +859,8 @@ class CardUpdateServiceTest {
                 + "line 254, and an absent row is the not-found outcome")
         void accountOnlyResolvesThroughTheAccountPath() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findByCardAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI", "COCRDLIC", null, null,
                     "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001", "ANIYA", null,
@@ -874,7 +874,7 @@ class CardUpdateServiceTest {
             assertThat(result.errorFlag()).isTrue();
             assertThat(result.card()).isNull();
             Mockito.verify(CardUpdateServiceTest.this.cardRepository)
-                    .findByCardAcctId(ACCOUNT_ID);
+                    .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
         }
@@ -1330,8 +1330,8 @@ class CardUpdateServiceTest {
                 + "finder, whose name carries the take-the-first-row semantic")
         void theAccountPathResolvesThroughTheNonUniqueFinder() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findByCardAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(storedCard(STORED_NAME_FOLDED)));
+                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
 
             // Arrival from the card-list screen takes both keys from the echoed state without editing
             // them, per lines 490 to 491, so a state carrying an account and no card reaches the
@@ -1348,7 +1348,7 @@ class CardUpdateServiceTest {
                             CardUpdateService.CarriedCardImage.empty()));
 
             Mockito.verify(CardUpdateServiceTest.this.cardRepository)
-                    .findByCardAcctId(ACCOUNT_ID);
+                    .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
             assertThat(result.card()).isNotNull();
@@ -1362,7 +1362,7 @@ class CardUpdateServiceTest {
                 + "file")
         void anAccountPathFailureNamesTheAccountPath() {
             Mockito.when(CardUpdateServiceTest.this.cardRepository
-                            .findByCardAcctId(ACCOUNT_ID))
+                            .findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT_ID))
                     .thenThrow(new RecoverableDataAccessException("alternate index unavailable"));
 
             final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI",

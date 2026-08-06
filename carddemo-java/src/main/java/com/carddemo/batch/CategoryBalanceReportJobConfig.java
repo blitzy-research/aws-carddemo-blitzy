@@ -16,19 +16,14 @@
  */
 package com.carddemo.batch;
 
-import com.carddemo.service.BatchJobCatalog;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Clock;
-import java.util.Arrays;
 import java.util.Comparator;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -55,7 +50,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.PathResource;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.AbstractCobolStep;
@@ -64,12 +58,11 @@ import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
-import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.FileMaintenanceService;
-import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FixedWidthFieldReader;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TranCatBalRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
@@ -119,13 +112,19 @@ import com.carddemo.util.ZonedDecimalCodec;
  *
  * <p><strong>How {@link FileMaintenanceService} is used.</strong> It owns the shared sequential-read and
  * two-level file-status discipline that every sequential listing in this estate follows, and this job is
- * a sequential listing. Two entry points are used: the category-balance sequential read, which performs
- * the whole open, read-to-end and close pass and reports the terminal status and the record count, and
- * the operator-facing status display, which emits and returns without raising so that a caller which has
- * not yet decided to abend may use it. No cross-reference method of that service is called from here, and
- * the read this job uses now announces the legacy unload step rather than a program - so a log line from
- * that pass and a log line from this job name the same step and no longer disagree about which member
- * ran.
+ * a sequential listing. Exactly one entry point is used: the category-balance sequential pass, which opens
+ * the cluster, reads it to end of file in composite key order, hands each record to the destination this
+ * job supplies as it reads it, and closes the cluster - so the cluster is traversed once for a utility
+ * invocation that traverses it once, and the count this job reports is the count of that traversal. Its own
+ * emit-then-abend path owns any open or read failure, so this job neither pre-checks a terminal status nor
+ * re-diagnoses one, and no count is reconciled against a second pass because there is no second pass. No
+ * cross-reference method of that service is called from here, and the pass announces the legacy unload step
+ * rather than a program - so a log line from that pass and a log line from this job name the same step and
+ * cannot disagree about which member ran.
+ *
+ * <p>Because the pass owns the read, this job holds no repository of its own: the only persistence access
+ * it needs is that pass, and the report step reads the staged generation the unload wrote rather than the
+ * cluster.
  *
  * <h2>The measured job stream: three steps, zero condition-code gates</h2>
  *
@@ -419,17 +418,11 @@ public final class CategoryBalanceReportJobConfig {
     private static final int BALANCE_FIRST_FRACTION_POSITION =
             BALANCE_DECIMAL_POINT_POSITION + BALANCE_DECIMAL_POINT_LENGTH;
 
-    /** The blank the reprojection inserts, and the byte every filler run of the report line carries. */
-    private static final char BLANK = ' ';
-
-    /** The digit the edit mask suppresses when it appears in a leading integer position. */
+    /** The digit that left pads a magnitude to the mask's width; the mask never suppresses it. */
     private static final char ZERO_DIGIT = '0';
 
     /** The decimal point the edit mask inserts. */
     private static final char DECIMAL_POINT = '.';
-
-    /** Sentinel for "the integer part carries no significant digit". */
-    private static final int NO_SIGNIFICANT_DIGIT = -1;
 
     /**
      * Separator written after each fixed-length record of a staged dataset. Stated as a literal rather
@@ -485,12 +478,6 @@ public final class CategoryBalanceReportJobConfig {
      */
     private static final int KEY_SCALE = 0;
 
-    private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
-
-    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
-
-    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
-
     // -----------------------------------------------------------------------------------------------
     // The fourth sort specification. PRIVATE to this class by necessity - see the class documentation.
     // -----------------------------------------------------------------------------------------------
@@ -543,9 +530,6 @@ public final class CategoryBalanceReportJobConfig {
      */
     private final FileMaintenanceService fileMaintenanceService;
 
-    /** Access to the category-balance cluster, which the unload reads in key sequence. */
-    private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
-
     /** Source of the fixed-width reader over the unloaded generation. */
     private final FixedWidthFlatFileReaderFactory readerFactory;
 
@@ -575,8 +559,6 @@ public final class CategoryBalanceReportJobConfig {
      * @param jobRunIncrementer the shared run incrementer; must not be {@code null}
      * @param fileMaintenanceService owner of the sequential-read and status discipline; must not be
      *                               {@code null}
-     * @param transactionCategoryBalanceRepository access to the category-balance cluster; must not be
-     *                                             {@code null}
      * @param readerFactory source of the fixed-width reader; must not be {@code null}
      * @param meterRegistry the metric registry; must not be {@code null}
      * @param clock the module's clock; must not be {@code null}
@@ -592,7 +574,6 @@ public final class CategoryBalanceReportJobConfig {
             @Qualifier("batchJobRunIncrementer")
                     final JobParametersIncrementer jobRunIncrementer,
             final FileMaintenanceService fileMaintenanceService,
-            final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
             final FixedWidthFlatFileReaderFactory readerFactory,
             final MeterRegistry meterRegistry,
             final Clock clock,
@@ -610,8 +591,6 @@ public final class CategoryBalanceReportJobConfig {
         this.jobRunIncrementer = Objects.requireNonNull(jobRunIncrementer, "jobRunIncrementer");
         this.fileMaintenanceService =
                 Objects.requireNonNull(fileMaintenanceService, "fileMaintenanceService");
-        this.transactionCategoryBalanceRepository = Objects.requireNonNull(
-                transactionCategoryBalanceRepository, "transactionCategoryBalanceRepository");
         this.readerFactory = Objects.requireNonNull(readerFactory, "readerFactory");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -752,8 +731,7 @@ public final class CategoryBalanceReportJobConfig {
         final long executionId = jobExecutionIdOf(chunkContext);
         final Path generation = backupGeneration(executionId);
         final Path working = StagedGenerationStore.workingPath(generation);
-        new UnloadStep(this.meterRegistry, this.clock, this.fileMaintenanceService,
-                this.transactionCategoryBalanceRepository, working).run();
+        new UnloadStep(this.meterRegistry, this.clock, this.fileMaintenanceService, working).run();
         StagedGenerationStore.completeWorkingFile(working, generation);
         StagedGenerationStore.register(stepExecutionOf(chunkContext), this.backupDatasetBase,
                 generation, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
@@ -927,10 +905,18 @@ public final class CategoryBalanceReportJobConfig {
      * positions, a decimal point and {@link ZonedDecimalCodec#MONETARY_SCALE} fractional digit
      * positions, always exactly {@link #BALANCE_MASK_WIDTH} characters.
      *
-     * <p>Leading integer zeros are suppressed to blanks and a value of exactly zero blanks the whole
-     * field, which is the convention the module's existing amount masks follow. The specification
-     * requests no sign character, so the magnitude is rendered; a negative balance is therefore
-     * indistinguishable from its positive counterpart in this report, which is a property of the
+     * <p><strong>Every declared digit position carries a digit, including a leading zero.</strong> The
+     * specification at {@code app/jcl/PRTCATBL.jcl} lines 53 to 56 is written entirely from the
+     * always-printed digit selector and uses the zero-suppressing selector nowhere, so all nine integer
+     * positions and both fractional positions are printed for every value and a balance of exactly zero
+     * renders as nine zeros, a point and two zeros. Suppressing leading zeros to blanks - the convention
+     * the module's <em>other</em> amount masks follow, because their own specifications ask for it - would
+     * differ from this one by up to nine bytes per line of a fixed-width external dataset, which is
+     * exactly the class of difference only a byte comparison detects. The reasoning is recorded in
+     * {@code docs/decision-log.md} entry DL-159.
+     *
+     * <p>The specification requests no sign character, so the magnitude is rendered; a negative balance is
+     * therefore indistinguishable from its positive counterpart in this report, which is a property of the
      * specification rather than a translation choice.
      *
      * @param balance the stored balance; must not be {@code null}
@@ -941,23 +927,16 @@ public final class CategoryBalanceReportJobConfig {
 
         // The codec owns the scale and the truncating rounding rule; no scaling is performed here.
         final BigDecimal scaled = ZonedDecimalCodec.toMonetaryScale(balance);
+        final String digits = magnitudeDigits(scaled);
 
         final char[] mask = new char[BALANCE_MASK_WIDTH];
-        Arrays.fill(mask, BLANK);
-
-        if (scaled.signum() != 0) {
-            final String digits = magnitudeDigits(scaled);
-            mask[BALANCE_DECIMAL_POINT_POSITION] = DECIMAL_POINT;
-            for (int fraction = 0; fraction < ZonedDecimalCodec.MONETARY_SCALE; fraction++) {
-                mask[BALANCE_FIRST_FRACTION_POSITION + fraction] =
-                        digits.charAt(BALANCE_INTEGER_DIGITS + fraction);
-            }
-            final int firstSignificant = firstSignificantIntegerDigit(digits);
-            if (firstSignificant != NO_SIGNIFICANT_DIGIT) {
-                for (int position = firstSignificant; position < BALANCE_INTEGER_DIGITS; position++) {
-                    mask[position] = digits.charAt(position);
-                }
-            }
+        for (int position = 0; position < BALANCE_INTEGER_DIGITS; position++) {
+            mask[position] = digits.charAt(position);
+        }
+        mask[BALANCE_DECIMAL_POINT_POSITION] = DECIMAL_POINT;
+        for (int fraction = 0; fraction < ZonedDecimalCodec.MONETARY_SCALE; fraction++) {
+            mask[BALANCE_FIRST_FRACTION_POSITION + fraction] =
+                    digits.charAt(BALANCE_INTEGER_DIGITS + fraction);
         }
 
         return new String(mask);
@@ -982,22 +961,6 @@ public final class CategoryBalanceReportJobConfig {
         }
         return String.valueOf(ZERO_DIGIT)
                 .repeat(ZonedDecimalCodec.CATEGORY_BALANCE_WIDTH - digits.length()) + digits;
-    }
-
-    /**
-     * Index of the first significant integer digit, or {@link #NO_SIGNIFICANT_DIGIT} when every integer
-     * position is a leading zero.
-     *
-     * @param digits the magnitude digits
-     * @return the index, or the sentinel
-     */
-    private static int firstSignificantIntegerDigit(final String digits) {
-        for (int position = 0; position < BALANCE_INTEGER_DIGITS; position++) {
-            if (digits.charAt(position) != ZERO_DIGIT) {
-                return position;
-            }
-        }
-        return NO_SIGNIFICANT_DIGIT;
     }
 
     /**
@@ -1061,10 +1024,7 @@ public final class CategoryBalanceReportJobConfig {
      * @throws IOException if the directory cannot be created
      */
     private static void prepareContainingDirectory(final Path target) throws IOException {
-        final Path container = target.getParent();
-        if (container != null) {
-            Files.createDirectories(container);
-        }
+        SecureStagedFiles.prepareContainerOf(target);
     }
 
     /**
@@ -1076,10 +1036,10 @@ public final class CategoryBalanceReportJobConfig {
      * @throws IOException if the dataset cannot be opened
      */
     private static BufferedWriter openForWriting(final Path target) throws IOException {
-        prepareContainingDirectory(target);
-        return Files.newBufferedWriter(target, StandardCharsets.US_ASCII,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        // Owner-only from the first byte, and the allocate-new disposition honoured by removing what a
+        // previous run left rather than truncating it in place, which would keep that run's mode.
+        // See docs/decision-log.md entry DL-178.
+        return SecureStagedFiles.newWriter(target, StandardCharsets.US_ASCII);
     }
 
     /**
@@ -1178,33 +1138,37 @@ public final class CategoryBalanceReportJobConfig {
      * utility whose sole executable control statement copies input to output, so this is one ordinary
      * read-and-write step.
      *
-     * <p>The input side runs through the shared sequential-read discipline first, which performs the
-     * whole open, read-to-end and close pass and reports the terminal status and the record count. The
-     * unload then reads the cluster in key sequence, which is the order a sequential unload of a
-     * key-sequenced cluster emits, and the counts are reconciled before the step completes - the copy
-     * utility's own record-count listing, not an invented check.
+     * <p><strong>The cluster is read exactly once, and the write is the destination of that one
+     * read.</strong> The wrapper's control member holds a single {@code REPRO INFILE(FILEIN)
+     * OUTFILE(FILEOUT)} - one statement that reads its input and writes its output in one traversal - so
+     * this step opens its output, hands the shared sequential-read discipline that output as the
+     * destination of its pass, and closes it. The discipline owns the open, the ordered read to end of
+     * file, the two-level status model in which end of file is normal, the emit-then-abend ordering on a
+     * failure and the close; this step owns the guarded write of each record it is handed.
+     *
+     * <p>Two things that were here are deliberately gone. The cluster is no longer read a second time:
+     * a validating pass followed by a writing pass traversed it twice for one utility invocation. And the
+     * two passes' record counts are no longer compared: that comparison abended whenever a commit landed
+     * between the passes, which is a failure the utility has no notion of and this step has no arm for.
+     * The count the closing diagnostic reports is the count of the one pass that produced the output, so
+     * it cannot disagree with itself. Recorded in {@code docs/decision-log.md} entry DL-172.
+     *
+     * <p>The step therefore has no read loop of its own, exactly as the allocation step above has none:
+     * the whole effect of the utility it stands for completes within one call, and the skeleton's loop
+     * ends at once rather than reproducing a record-at-a-time structure the utility does not have.
      */
-    private static final class UnloadStep extends AbstractCobolStep<TransactionCategoryBalance> {
+    private static final class UnloadStep extends AbstractCobolStep<Void> {
 
-        /** Owner of the sequential-read and status discipline. */
+        /** Owner of the sequential-read and status discipline, which performs the one pass. */
         private final FileMaintenanceService fileMaintenanceService;
-
-        /** Access to the cluster being unloaded. */
-        private final TransactionCategoryBalanceRepository repository;
 
         /** The generation this job execution owns. */
         private final Path generation;
 
-        /** Terminal status and record count the input-side pass reported. */
-        private FileMaintenanceService.FileReadSummary inputSummary;
-
-        /** Cursor over the cluster in key sequence. */
-        private Iterator<TransactionCategoryBalance> unloadCursor;
-
         /** Handle on the generation being written. */
         private BufferedWriter writer;
 
-        /** Records written, reconciled against the input-side count before the step completes. */
+        /** Records written, reported by the closing diagnostic. */
         private long recordsUnloaded;
 
         /**
@@ -1212,64 +1176,62 @@ public final class CategoryBalanceReportJobConfig {
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
          * @param fileMaintenanceService owner of the read and status discipline; must not be
          *                               {@code null}
-         * @param repository access to the cluster; must not be {@code null}
          * @param generation the generation to write; must not be {@code null}
          */
         private UnloadStep(final MeterRegistry meterRegistry, final Clock clock,
-                final FileMaintenanceService fileMaintenanceService,
-                final TransactionCategoryBalanceRepository repository, final Path generation) {
+                final FileMaintenanceService fileMaintenanceService, final Path generation) {
 
             super(LEGACY_STEP_UNLOAD, meterRegistry, clock);
             this.fileMaintenanceService =
                     Objects.requireNonNull(fileMaintenanceService, "fileMaintenanceService");
-            this.repository = Objects.requireNonNull(repository, "repository");
             this.generation = Objects.requireNonNull(generation, "generation");
         }
 
         @Override
         protected void openResources() {
-            // The shared discipline owns the input-side pass. It announces this job's own unload step
-            // rather than a program, because no application program reads this cluster sequentially - so
-            // the service's line and this step's lines name the same step and cannot disagree about which
-            // member ran.
-            this.inputSummary = this.fileMaintenanceService.readTransactionCategoryBalanceFile();
-
-            if (!this.inputSummary.endedAtEndOfFile()) {
-                // Status first, abend second. The display belongs to the service whose pass produced the
-                // status - it emits and returns without raising - and the abend follows it, which is the
-                // order the legacy diagnostic uses and the order verified against that display.
-                this.fileMaintenanceService.displayIoStatus(this.inputSummary.terminalFileStatus(),
-                        IoOperation.READ.legacyGerund(), DD_COPY_INPUT);
-                abendOnIoFailure(IoOperation.READ, DD_COPY_INPUT,
-                        this.inputSummary.terminalFileStatus());
-            }
-
-            openResource(DD_COPY_INPUT, () -> {
-                this.unloadCursor = new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
-                        this::loadCategoryBalancePage,
-                        CategoryBalanceReportJobConfig::categoryBalanceKey,
-                        Comparator.naturalOrder());
-                return FileStatus.SUCCESS.getCode();
-            });
-
+            // The output is opened first, because it is the destination the pass below writes into and
+            // there is no point reading a record that has nowhere to go.
             openResource(DD_COPY_OUTPUT, () -> {
                 this.writer = openForWriting(this.generation);
                 return FileStatus.SUCCESS.getCode();
             });
+
+            // The one pass. The shared discipline opens the cluster, reads it to end of file in composite
+            // key order, hands each record to the write below as it reads it, and closes the cluster -
+            // announcing this job's own unload step rather than a program, because no application program
+            // reads this cluster sequentially. Its own emit-then-abend path owns any read or open failure,
+            // so this step neither pre-checks a terminal status nor re-diagnoses one.
+            this.fileMaintenanceService.readTransactionCategoryBalanceFile(this::writeUnloadRecord);
         }
 
         @Override
-        protected Optional<TransactionCategoryBalance> readNextRecord() {
-            return this.<TransactionCategoryBalance>readRecord(DD_COPY_INPUT, () -> {
-                if (this.unloadCursor.hasNext()) {
-                    return IoResult.of(FileStatus.SUCCESS.getCode(), this.unloadCursor.next());
-                }
-                return IoResult.endOfFile();
-            });
+        protected Optional<Void> readNextRecord() {
+            // The utility this step stands for is one control statement, and it has already run inside
+            // the resource phase above, so the skeleton's read loop terminates at once - the same shape
+            // the allocation step of this job has, and for the same reason.
+            return Optional.empty();
         }
 
         @Override
-        protected void processRecord(final TransactionCategoryBalance record) {
+        protected void processRecord(final Void record) {
+            throw new IllegalStateException("the " + LEGACY_STEP_UNLOAD + " equivalent drives its copy"
+                    + " from the sequential pass rather than from the skeleton's read loop, so no record"
+                    + " can reach processing; reaching here means the read loop was changed to report a"
+                    + " record that does not exist");
+        }
+
+        /**
+         * Writes one record of the unload generation, as the destination of the one sequential pass.
+         *
+         * <p>This is the write half of the copy utility's single control statement, and it runs while the
+         * pass is still traversing the cluster - the record is written as it is read, not after the whole
+         * cluster has been read. It goes through the guarded write, so a failure is diagnosed with its
+         * operation, resource and raw status and then abended by the one ordered failure path the
+         * template owns.
+         *
+         * @param record the record the pass has just read, in composite key order
+         */
+        private void writeUnloadRecord(final TransactionCategoryBalance record) {
             writeRecord(DD_COPY_OUTPUT, () -> {
                 final String image = TranCatBalRecordMapper.toRecord(record);
                 requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_COPY_OUTPUT);
@@ -1290,15 +1252,7 @@ public final class CategoryBalanceReportJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
 
-            // The input side holds nothing open: the service's pass opened and closed the cluster within
-            // itself, and the cursor this step iterated is an in-memory sequence over its result.
-            this.unloadCursor = null;
-
-            if (this.recordsUnloaded != this.inputSummary.recordsRead()) {
-                abendOnIoFailure(IoOperation.CLOSE, DD_COPY_OUTPUT,
-                        FileStatus.PERMANENT_ERROR.getCode());
-            }
-
+            // The input side holds nothing open: the pass opened and closed the cluster within itself.
             LOGGER.info("{} UNLOADED {} RECORD(S) OF {} BYTE(S) TO {}", LEGACY_STEP_UNLOAD,
                     this.recordsUnloaded, UNLOAD_RECORD_LENGTH, DD_COPY_OUTPUT);
         }
@@ -1306,19 +1260,6 @@ public final class CategoryBalanceReportJobConfig {
         @Override
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_COPY_OUTPUT);
-        }
-
-        private List<TransactionCategoryBalance> loadCategoryBalancePage(
-                final String cursor, final Integer pageSize) {
-            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
-            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
-            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
-            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
-            final String categoryCode = cursor.length() <= categoryOffset
-                    ? ""
-                    : cursor.substring(categoryOffset);
-            return this.repository.findAfterKey(accountId, typeCode, categoryCode,
-                    PageRequest.of(0, pageSize.intValue()));
         }
     }
 
@@ -1444,16 +1385,5 @@ public final class CategoryBalanceReportJobConfig {
                     TranCatBalRecordMapper.fromRecord(left),
                     TranCatBalRecordMapper.fromRecord(right));
         }
-    }
-
-    private static String keyPart(final String key, final int offset, final int width) {
-        if (key.length() <= offset) {
-            return "";
-        }
-        return key.substring(offset, Math.min(key.length(), offset + width));
-    }
-
-    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
-        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 }

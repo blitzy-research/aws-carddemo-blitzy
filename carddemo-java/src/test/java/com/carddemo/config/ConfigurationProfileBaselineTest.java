@@ -141,9 +141,19 @@ final class ConfigurationProfileBaselineTest {
     private static final String KEY_BATCH_STAGING_DIRECTORY =
             "carddemo.batch.staging-directory";
 
-    /** The shared staging root remains environment-overridable and otherwise uses the JVM temp root. */
+    /**
+     * The shared staging root remains environment-overridable, and otherwise resolves to a NAMED
+     * SUBDIRECTORY of the JVM temporary root rather than to that root itself.
+     *
+     * <p>The distinction is the control, not a tidiness preference. The platform temporary directory is
+     * world-writable and sticky by design and is shared with the rest of the host, so a staging root
+     * placed directly in it cannot be made owner-only without the module changing the mode of a path it
+     * does not own. A named subdirectory is created by the module, which is what lets
+     * {@code com.carddemo.util.SecureStagedFiles} create it owner-only and keep the generation names
+     * within it unreadable to other accounts.
+     */
     private static final String EXPECTED_BATCH_STAGING_DIRECTORY =
-            "${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}}";
+            "${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}/carddemo-batch-staging}";
 
     /** The overlay bound to the local Docker Compose stack. */
     private static final String LOCAL = "application-local.yml";
@@ -1366,6 +1376,19 @@ final class ConfigurationProfileBaselineTest {
                     .as("the container mount is supplied through CARDDEMO_BATCH_STAGING_DIRECTORY,"
                             + " while a non-container process must retain a usable local fallback")
                     .isEqualTo(EXPECTED_BATCH_STAGING_DIRECTORY);
+        }
+
+        @Test
+        @DisplayName("and the fallback names a subdirectory of the temporary root rather than the "
+                + "temporary root itself, which no process can make owner-only")
+        void theFallbackStagingRootIsAModuleOwnedSubdirectory() {
+            final String declared = text(SHARED, KEY_BATCH_STAGING_DIRECTORY);
+
+            assertThat(declared)
+                    .as("staging directly in the shared, world-writable platform temporary directory "
+                            + "would leave the generation listing readable by every account on the host")
+                    .doesNotEndWith("${java.io.tmpdir}}")
+                    .contains("${java.io.tmpdir}/");
         }
 
         @ParameterizedTest(name = "{0} does not move the description path")

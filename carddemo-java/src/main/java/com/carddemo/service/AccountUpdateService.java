@@ -22,7 +22,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +33,7 @@ import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
 import com.carddemo.domain.Account;
@@ -165,11 +165,13 @@ import com.carddemo.util.ZonedDecimalCodec;
  * card-database message constants at lines 514, 516 and 526 are declared-but-unexercised in this member
  * for the same reason.
  *
- * <p><strong>The cross-reference finder returns a {@code List}, and the take-the-first-element rule is
- * applied here.</strong> {@code CardCrossReferenceRepository} declares {@code findByXrefAcctId}, which
- * returns every row of a non-unique access path; this service selects the lowest card number, which is
- * the record a keyed read of that path would have returned, because the card number is the cluster's
- * base key. An empty result is the legacy not-found condition.
+ * <p><strong>The cross-reference read is bounded to the one row a keyed read returns.</strong>
+ * {@code CardCrossReferenceRepository} publishes two forms of the non-unique access path: one that
+ * returns every row of an account, and an ordered-first form bounded to a single row in ascending
+ * base-key order. This service reproduces a keyed {@code READ}, so it uses the ordered-first form; the
+ * lowest card number is the record that read would have returned, because the card number is the
+ * cluster's base key. The rule lives in the repository rather than being restated here and in four
+ * sibling services. An empty result is the legacy not-found condition.
  *
  * <h2>Rules</h2>
  *
@@ -247,6 +249,43 @@ public final class AccountUpdateService {
 
     /** {@code LIT-CARDXREFNAME-ACCT-PATH}, line 582: the alternate-index path actually read. */
     static final String RESOURCE_CARD_XREF_PATH = "CXACAIX";
+
+    // ==============================================================================================
+    // WS-FILE-ERROR-MESSAGE, lines 389 to 408: the text every catch-all read arm composes
+    // ==============================================================================================
+
+    /** {@code ERROR-OPNAME} as every catch-all arm sets it, lines 3687, 3737 and 3786. */
+    static final String OPERATION_READ = "READ";
+
+    /** Segment one, {@code FILLER PIC X(12) VALUE 'File Error: '}, lines 390 to 391. */
+    private static final String FILE_ERROR_PREFIX = "File Error: ";
+
+    /** Segment three, {@code FILLER PIC X(4) VALUE ' on '}, lines 394 to 395. */
+    private static final String FILE_ERROR_ON = " on ";
+
+    /** Segment five, {@code FILLER PIC X(15) VALUE ' returned RESP '}, lines 398 to 400. */
+    private static final String FILE_ERROR_RETURNED_RESP = " returned RESP ";
+
+    /** Segment seven, {@code FILLER PIC X(7) VALUE ',RESP2 '}, lines 403 to 404. */
+    private static final String FILE_ERROR_RESP2 = ",RESP2 ";
+
+    /** {@code ERROR-OPNAME}, {@code PIC X(8)} at lines 392 to 393. */
+    private static final int OPERATION_NAME_WIDTH = 8;
+
+    /** {@code ERROR-FILE}, {@code PIC X(9)} at lines 396 to 397. */
+    private static final int ERROR_FILE_NAME_WIDTH = 9;
+
+    /** {@code ERROR-RESP} and {@code ERROR-RESP2}, each {@code PIC X(10)}. */
+    private static final int RESPONSE_CODE_WIDTH = 10;
+
+    /**
+     * {@code WS-RETURN-MSG}, {@code PIC X(75)} at line 479.
+     *
+     * <p>The eight composed segments sum to exactly 12 + 8 + 4 + 9 + 15 + 10 + 7 + 10 = 75, so the
+     * assembled text fills this field precisely and the five-character trailing filler at lines 407 to
+     * 408 falls outside it. The legacy truncation is therefore reproduced by construction.
+     */
+    private static final int RETURN_MESSAGE_WIDTH = 75;
 
     /** {@code ABEND-CODE} written by the dispatch selection's otherwise branch, line 2635. */
     private static final String ABEND_CODE_UNEXPECTED_DATA = "0001";
@@ -3052,6 +3091,51 @@ public final class AccountUpdateService {
     }
 
     /**
+     * The part of the three catch-all read arms that is identical in all three: raise the input error,
+     * name the operation and the resource, and move the composed file-error text into the message slot.
+     *
+     * <p>Not a paragraph and it owes no traceability row: the three paragraphs that call it own their
+     * rows, and each supplies the resource it named and raises its own filter flag afterwards, which is
+     * where the three arms genuinely differ.
+     *
+     * <p><strong>The move is ungated.</strong> The source composes this text into {@code WS-RETURN-MSG}
+     * with no {@code IF WS-RETURN-MSG-OFF} around it, unlike every not-found arm, so it replaces whatever
+     * an earlier edit had claimed. That asymmetry is reproduced by assigning the slot directly rather
+     * than claiming it through the gate.
+     *
+     * @param state        the per-turn state
+     * @param resourceName the cluster or path the failed read named
+     * @param readFailure  the failure the read raised
+     */
+    private static void recordReadFailure(final EditState state, final String resourceName,
+            final DataAccessException readFailure) {
+        state.markInputError();
+        state.returnMessage = fileErrorMessage(resourceName);
+        LOG.error("transaction={} operation={} resource={}: the read failed; failureChain={}",
+                LEGACY_TRANSACTION_ID, OPERATION_READ, resourceName,
+                FailureDiagnostics.failureChainOf(readFailure));
+    }
+
+    /**
+     * Records a read-for-update that returned a non-normal response.
+     *
+     * <p>Separate from {@link #recordReadFailure(EditState, String, DataAccessException)} because the
+     * write range's own arms are separate: they compose no file-error text at all, they claim the
+     * could-not-lock text through the message gate, and they leave the range immediately. Only the
+     * diagnostic is shared in spirit, so only the diagnostic is factored.
+     *
+     * @param resourceName the cluster the hold was attempted on
+     * @param holdFailure  the failure the read raised
+     */
+    private static void logHoldFailure(final String resourceName,
+            final DataAccessException holdFailure) {
+        LOG.warn("transaction={} operation={} resource={}: the read for update returned a non-normal"
+                        + " response, so the write range was left; failureChain={}",
+                LEGACY_TRANSACTION_ID, OPERATION_READ, resourceName,
+                FailureDiagnostics.failureChainOf(holdFailure));
+    }
+
+    /**
      * {@code 9200-GETCARDXREF-BYACCT}, lines 3650 to 3697: the cross-reference read.
      *
      * <p>The legacy reads the cross-reference through its account-identifier alternate index, which is a
@@ -3064,10 +3148,30 @@ public final class AccountUpdateService {
      * response and reason codes; neither code exists here and a business key does not belong in
      * operator-visible text, so the condition name's own declared text is claimed instead. That is
      * recorded as a divergence.
+     *
+     * <p><strong>The catch-all arm at lines 3686 to 3695 is a third arm and not a variant of the
+     * second.</strong> A read that fails is not a read that found nothing: the legacy distinguishes them
+     * and reports the failure with the operation name, the resource name and the response pair rather
+     * than with the business text, and it moves that composition into the message slot
+     * <em>ungated</em> - so it overwrites a message an earlier edit had already claimed, which the
+     * not-found arm does not. Here a repository failure is that arm. Letting it propagate instead would
+     * abend a transaction the legacy leaves on the screen with a message.
      */
     private void getCardXrefByAccount(final EditState state) {
-        final Optional<CardCrossReference> located = firstXrefByBaseKey(
-                this.cardCrossReferenceRepository.findByXrefAcctId(state.accountId));
+        // Lines 3654 to 3661: one keyed READ of the alternate-index path. The repository's
+        // ordered-first finder is that read: bounded to one row and ordered on the base key, which is
+        // what a keyed read of a duplicate-bearing path returns.
+        final Optional<CardCrossReference> located;
+        try {
+            located = this.cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.accountId);
+        } catch (final DataAccessException readFailure) {
+            // Lines 3686 to 3695: WHEN OTHER.
+            recordReadFailure(state, RESOURCE_CARD_XREF_PATH, readFailure);
+            state.accountFilter = FieldFlag.NOT_OK;
+            getCardXrefByAccountExit();
+            return;
+        }
         if (located.isEmpty()) {
             state.markInputError();
             state.accountFilter = FieldFlag.NOT_OK;
@@ -3099,9 +3203,23 @@ public final class AccountUpdateService {
      * master with an unresolved key. This translation claims the declared text, which makes that guard
      * reachable and stops the flow. The divergence is deliberate and fail-safe: it prevents a screen
      * being built from records that were never fetched.
+     *
+     * <p>The catch-all arm at lines 3736 to 3745 is reproduced as its own arm for the reason given on the
+     * cross-reference read: a failing read is not a missing row, it names the resource rather than the
+     * business condition, and its composition overwrites a claimed message where the not-found arm
+     * would not.
      */
     private void getAccountDataByAccount(final EditState state) {
-        final Optional<Account> located = this.accountRepository.findById(state.accountId);
+        final Optional<Account> located;
+        try {
+            located = this.accountRepository.findById(state.accountId);
+        } catch (final DataAccessException readFailure) {
+            // Lines 3736 to 3745: WHEN OTHER.
+            recordReadFailure(state, RESOURCE_ACCOUNT_MASTER, readFailure);
+            state.accountFilter = FieldFlag.NOT_OK;
+            getAccountDataByAccountExit();
+            return;
+        }
         if (located.isEmpty()) {
             state.markInputError();
             state.accountFilter = FieldFlag.NOT_OK;
@@ -3126,9 +3244,23 @@ public final class AccountUpdateService {
     /**
      * {@code 9400-GETCUSTDATA-BYCUST}, lines 3752 to 3796: the customer master read, keyed by the
      * identifier the cross-reference supplied.
+     *
+     * <p>Three arms, as the source declares them. The catch-all at lines 3785 to 3794 raises the
+     * <em>customer</em> filter flag rather than the account one - which is the only structural difference
+     * between this paragraph's failing arms and the two above - and composes the file-error text naming
+     * the customer master.
      */
     private void getCustomerDataByCustomer(final EditState state) {
-        final Optional<Customer> located = this.customerRepository.findById(state.customerId);
+        final Optional<Customer> located;
+        try {
+            located = this.customerRepository.findById(state.customerId);
+        } catch (final DataAccessException readFailure) {
+            // Lines 3785 to 3794: WHEN OTHER.
+            recordReadFailure(state, RESOURCE_CUSTOMER_MASTER, readFailure);
+            state.customerFilter = FieldFlag.NOT_OK;
+            getCustomerDataByCustomerExit();
+            return;
+        }
         if (located.isEmpty()) {
             state.markInputError();
             state.customerFilter = FieldFlag.NOT_OK;
@@ -3213,12 +3345,31 @@ public final class AccountUpdateService {
      * <p>Concurrency control is declarative on the entity - a version column that the provider checks on
      * flush - so no lock mode, no lock hint and no pessimistic read appears anywhere. Where the provider
      * reports a conflict, this method translates it.
+     *
+     * <p><strong>Both holds test for the normal response and treat everything else alike.</strong> The
+     * source writes {@code IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE}, not a three-arm evaluation,
+     * so a missing row and a failing read reach one arm: the input error is raised, the could-not-lock
+     * text is claimed through the message gate, and the range is left. A read that raised instead of
+     * returning nothing is therefore mapped onto that arm rather than escaping, because escaping would
+     * abend a turn the legacy leaves on the screen with a message.
      */
     private void writeProcessing(final EditState state, final AccountUpdateCommand request) {
         writeRange:
         while (true) {
-            // Lines 3892 to 3915: hold the account. An absent row is the failure to hold it.
-            final Optional<Account> heldAccount = this.accountRepository.findById(state.accountId);
+            // Lines 3892 to 3915: hold the account. The source's test is
+            // IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE, so EVERY non-normal response is the
+            // failure to hold it - not only the missing row. An absent result and a failing read are
+            // therefore the same arm here, which is what makes the arm reachable for both.
+            final Optional<Account> heldAccount;
+            try {
+                heldAccount = this.accountRepository.findById(state.accountId);
+            } catch (final DataAccessException holdFailure) {
+                logHoldFailure(RESOURCE_ACCOUNT_MASTER, holdFailure);
+                state.markInputError();
+                state.claimMessage(
+                        OptimisticLockConflictException.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+                break writeRange;
+            }
             if (heldAccount.isEmpty()) {
                 state.markInputError();
                 state.claimMessage(
@@ -3227,9 +3378,17 @@ public final class AccountUpdateService {
             }
             final Account account = heldAccount.get();
 
-            // Lines 3919 to 3942: hold the customer.
-            final Optional<Customer> heldCustomer =
-                    this.customerRepository.findById(state.customerId);
+            // Lines 3919 to 3942: hold the customer, over the same all-non-normal-responses test.
+            final Optional<Customer> heldCustomer;
+            try {
+                heldCustomer = this.customerRepository.findById(state.customerId);
+            } catch (final DataAccessException holdFailure) {
+                logHoldFailure(RESOURCE_CUSTOMER_MASTER, holdFailure);
+                state.markInputError();
+                state.claimMessage(
+                        OptimisticLockConflictException.MSG_COULD_NOT_LOCK_CUST_FOR_UPDATE);
+                break writeRange;
+            }
             if (heldCustomer.isEmpty()) {
                 state.markInputError();
                 state.claimMessage(
@@ -3672,6 +3831,50 @@ public final class AccountUpdateService {
         return value == null ? "" : value;
     }
 
+    /**
+     * One value as a fixed-width alphanumeric field: left justified, space filled, truncated on the
+     * right.
+     *
+     * <p>The three moves that assemble the file-error text are moves into declared alphanumeric items,
+     * and a move into such an item pads or truncates on the right. Doing that arithmetically here means
+     * the composed text is the declared width by construction rather than by the caller remembering.
+     *
+     * @param value the value to place in the field
+     * @param width the field's declared width
+     * @return exactly {@code width} characters
+     */
+    private static String fieldImage(final String value, final int width) {
+        final String supplied = orEmpty(value);
+        if (supplied.length() >= width) {
+            return supplied.substring(0, width);
+        }
+        return supplied + " ".repeat(width - supplied.length());
+    }
+
+    /**
+     * Composes {@code WS-FILE-ERROR-MESSAGE}, lines 389 to 408, at exactly the width of the field the
+     * catch-all arms move it into.
+     *
+     * <p><strong>The two response slots are left blank rather than filled with an invented pair.</strong>
+     * They hold a CICS response and reason code in the legacy, and a relational store reports neither, so
+     * nothing is fabricated to occupy them; their declared width and blank initial value are what the
+     * composition carries. That is the same convention the read-only twin of this transaction uses, so an
+     * operator sees one shape of file-error text across the account screens rather than two.
+     *
+     * @param resourceName the cluster or path the failed read named
+     * @return the composed message, exactly {@value #RETURN_MESSAGE_WIDTH} characters
+     */
+    private static String fileErrorMessage(final String resourceName) {
+        return fieldImage(FILE_ERROR_PREFIX
+                + fieldImage(OPERATION_READ, OPERATION_NAME_WIDTH)
+                + FILE_ERROR_ON
+                + fieldImage(resourceName, ERROR_FILE_NAME_WIDTH)
+                + FILE_ERROR_RETURNED_RESP
+                + fieldImage("", RESPONSE_CODE_WIDTH)
+                + FILE_ERROR_RESP2
+                + fieldImage("", RESPONSE_CODE_WIDTH), RETURN_MESSAGE_WIDTH);
+    }
+
     /** The empty string becomes absent, which is how the cleared screen state is represented. */
     private static String emptyToNull(final String value) {
         return (value == null || value.isEmpty()) ? null : value;
@@ -4109,27 +4312,5 @@ public final class AccountUpdateService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
-    }
-
-    /**
-     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
-     * with the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
-     * number. That is a property of the read being reproduced rather than of the index, so
-     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
-     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
-     *
-     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
-     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
-     * coincide.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or an empty result when the account has none
-     */
-    private static Optional<CardCrossReference> firstXrefByBaseKey(
-            final List<CardCrossReference> candidates) {
-        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

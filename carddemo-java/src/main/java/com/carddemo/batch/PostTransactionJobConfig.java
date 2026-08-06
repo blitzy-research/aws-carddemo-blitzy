@@ -24,12 +24,12 @@ import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.TransactionPostingService;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -818,7 +818,7 @@ public final class PostTransactionJobConfig {
      */
     private void prepareStagingDirectory() {
         try {
-            Files.createDirectories(Path.of(this.stagingDirectory));
+            SecureStagedFiles.prepareDirectory(Path.of(this.stagingDirectory));
         } catch (IOException failure) {
             throw new UncheckedIOException("the staging directory the "
                     + TransactionPostingService.DALYREJS_DD + " generation is written into could not be"

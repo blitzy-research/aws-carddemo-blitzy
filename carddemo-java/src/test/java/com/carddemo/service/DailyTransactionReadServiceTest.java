@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -210,6 +211,27 @@ final class DailyTransactionReadServiceTest {
         when(accountRepository.findById(accountId)).thenReturn(Optional.of(account(accountId)));
     }
 
+    /** The outcomes the pass under test offered to its destination, in the order they were produced. */
+    private final List<DailyTransactionReadService.DailyTransactionVerification>
+            streamedVerifications = new ArrayList<>();
+
+    /**
+     * Runs one pass over the supplied ordered records, collecting the outcomes it streams.
+     *
+     * <p>The pass offers each outcome to a destination as it is produced and carries none of them in
+     * its result, so collecting them is the <em>test's</em> choice; see {@code docs/decision-log.md}
+     * entry DL-176.
+     *
+     * @param orderedDailyTransactions the records to walk, in order
+     * @return the pass's counts and terminal result value
+     */
+    private DailyTransactionReadService.DailyTransactionReadResult runPass(
+            final Iterable<com.carddemo.domain.DailyTransaction> orderedDailyTransactions) {
+
+        streamedVerifications.clear();
+        return service.execute(orderedDailyTransactions, streamedVerifications::add);
+    }
+
     @Nested
     @DisplayName("End of file terminates the read loop normally and never abends")
     final class EndOfFileIsNotAnError {
@@ -220,7 +242,7 @@ final class DailyTransactionReadServiceTest {
             givenResolvable("0000000000000001", "00000000001");
             List<DailyTransaction> input = List.of(transaction("1", "0000000000000001"));
 
-            assertThatNoException().isThrownBy(() -> service.execute(input));
+            assertThatNoException().isThrownBy(() -> runPass(input));
         }
 
         @Test
@@ -229,7 +251,7 @@ final class DailyTransactionReadServiceTest {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
             DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of());
+                    runPass(List.of());
 
             assertAll(
                     () -> assertThat(result.recordsRead()).isZero(),
@@ -243,7 +265,7 @@ final class DailyTransactionReadServiceTest {
             givenResolvable("0000000000000001", "00000000001");
 
             DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of(transaction("1", "0000000000000001")));
+                    runPass(List.of(transaction("1", "0000000000000001")));
 
             assertThat(result.returnCode()).isZero();
         }
@@ -264,7 +286,7 @@ final class DailyTransactionReadServiceTest {
                     transaction("2", "0000000000000002"),
                     transaction("3", "0000000000000003"));
 
-            DailyTransactionReadService.DailyTransactionReadResult result = service.execute(input);
+            DailyTransactionReadService.DailyTransactionReadResult result = runPass(input);
 
             assertAll(
                     () -> assertThat(result.recordsRead()).isEqualTo(input.size()),
@@ -286,16 +308,16 @@ final class DailyTransactionReadServiceTest {
                     transaction("1", "0000000000000001"),
                     transaction("2", "0000000000000002"));
 
-            DailyTransactionReadService.DailyTransactionReadResult result = service.execute(input);
+            DailyTransactionReadService.DailyTransactionReadResult result = runPass(input);
 
             DailyTransactionReadService.DailyTransactionVerification trailing =
-                    result.verifications().get(result.verifications().size() - 1);
+                    streamedVerifications.get(streamedVerifications.size() - 1);
             assertAll(
                     () -> assertThat(result.verificationPasses()).isEqualTo(input.size() + 1),
                     () -> assertThat(result.recordsRead()).isEqualTo(input.size()),
                     () -> assertThat(trailing.afterEndOfFile()).isTrue(),
                     () -> assertThat(trailing.dalytranId()).isEqualTo("2"),
-                    () -> assertThat(result.verifications()).hasSize(input.size() + 1));
+                    () -> assertThat(streamedVerifications).hasSize(input.size() + 1));
         }
 
         @Test
@@ -304,12 +326,12 @@ final class DailyTransactionReadServiceTest {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
             DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of());
+                    runPass(List.of());
 
             assertAll(
                     () -> assertThat(result.verificationPasses()).isEqualTo(1),
                     () -> assertThat(result.cardsNotVerified()).isEqualTo(1),
-                    () -> assertThat(result.verifications()).hasSize(1));
+                    () -> assertThat(streamedVerifications).hasSize(1));
         }
 
         @Test
@@ -318,7 +340,7 @@ final class DailyTransactionReadServiceTest {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
             DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of(transaction("1", "0000000000000009")));
+                    runPass(List.of(transaction("1", "0000000000000009")));
 
             assertAll(
                     () -> assertThat(result.allRecordsVerified()).isFalse(),
@@ -335,7 +357,7 @@ final class DailyTransactionReadServiceTest {
             when(accountRepository.findById("00000000001")).thenReturn(Optional.empty());
 
             DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of(transaction("1", "0000000000000001")));
+                    runPass(List.of(transaction("1", "0000000000000001")));
 
             assertAll(
                     () -> assertThat(result.allRecordsVerified()).isFalse(),
@@ -344,15 +366,31 @@ final class DailyTransactionReadServiceTest {
         }
 
         @Test
-        @DisplayName("the returned verification list is immutable")
-        void verificationListIsImmutable() {
+        @DisplayName("the outcomes reach the destination one at a time and the result carries none of "
+                + "them, so a pass never holds a whole dataset's detail")
+        void outcomesAreStreamedAndNotCarried() {
             givenResolvable("0000000000000001", "00000000001");
+            givenResolvable("0000000000000002", "00000000002");
+            final List<Integer> sizeWhenOffered = new ArrayList<>();
 
-            DailyTransactionReadService.DailyTransactionReadResult result =
-                    service.execute(List.of(transaction("1", "0000000000000001")));
+            final DailyTransactionReadService.DailyTransactionReadResult result =
+                    service.execute(List.of(transaction("1", "0000000000000001"),
+                            transaction("2", "0000000000000002")),
+                            outcome -> {
+                                streamedVerifications.add(outcome);
+                                sizeWhenOffered.add(streamedVerifications.size());
+                            });
 
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> result.verifications().clear());
+            assertAll(
+                    // One outcome per pass, offered as it was produced rather than at the end.
+                    () -> assertThat(sizeWhenOffered).containsExactly(1, 2, 3),
+                    () -> assertThat(result.verificationPasses())
+                            .isEqualTo(streamedVerifications.size()),
+                    // The record carries counts only; there is no list on it to be mutated.
+                    () -> assertThat(DailyTransactionReadService.DailyTransactionReadResult.class
+                            .getRecordComponents())
+                            .extracting(java.lang.reflect.RecordComponent::getName)
+                            .doesNotContain("verifications"));
         }
     }
 
@@ -481,7 +519,7 @@ final class DailyTransactionReadServiceTest {
         void allTwelveOpenAndCloseParagraphsRun() {
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(transaction("1", "0000000000000001")));
+            runPass(List.of(transaction("1", "0000000000000001")));
 
             // The three files this layer holds a gateway for are probed twice each: once by the open
             // paragraph and once by the close. The three the member opens but never reads have no
@@ -497,7 +535,7 @@ final class DailyTransactionReadServiceTest {
         void noArgumentFormScansWithABoundedKeysetPage() {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
-            service.execute();
+            service.execute(streamedVerifications::add);
 
             final ArgumentCaptor<Limit> limit = ArgumentCaptor.forClass(Limit.class);
             verify(dailyTransactionRepository)
@@ -511,7 +549,7 @@ final class DailyTransactionReadServiceTest {
         void readAndBothLookupParagraphsRunPerRecord() {
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(transaction("1", "0000000000000001")));
+            runPass(List.of(transaction("1", "0000000000000001")));
 
             assertAll(
                     // Twice: once for the record itself and once for the trailing pass the loop makes
@@ -550,8 +588,20 @@ final class DailyTransactionReadServiceTest {
         @DisplayName("the supplied-source form refuses a null source")
         void suppliedSourceFormRefusesNull() {
             assertThatThrownBy(() ->
-                    service.execute((Iterable<DailyTransaction>) null))
+                    service.execute((Iterable<DailyTransaction>) null, outcome -> { }))
                     .isInstanceOf(NullPointerException.class);
+        }
+
+        @Test
+        @DisplayName("every form refuses a pass with no destination for its per-record outcomes")
+        void everyFormRefusesAnAbsentVerificationSink() {
+            assertAll(
+                    () -> assertThatThrownBy(() -> service.execute(null))
+                            .isInstanceOf(NullPointerException.class)
+                            .hasMessageContaining("verificationSink"),
+                    () -> assertThatThrownBy(() -> service.execute(List.of(), null))
+                            .isInstanceOf(NullPointerException.class)
+                            .hasMessageContaining("verificationSink"));
         }
     }
 
@@ -563,7 +613,7 @@ final class DailyTransactionReadServiceTest {
         @DisplayName("negative counts are rejected")
         void negativeCountsAreRejected() {
             assertThatThrownBy(() -> new DailyTransactionReadService.DailyTransactionReadResult(
-                    -1, 0, 0, 0, 0, List.of(), 0))
+                    -1, 0, 0, 0, 0, 0))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("recordsRead");
         }
@@ -572,7 +622,7 @@ final class DailyTransactionReadServiceTest {
         @DisplayName("more records verified than read is rejected")
         void moreVerifiedThanReadIsRejected() {
             assertThatThrownBy(() -> new DailyTransactionReadService.DailyTransactionReadResult(
-                    1, 2, 2, 0, 0, List.of(), 0))
+                    1, 2, 2, 0, 0, 0))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("recordsVerified");
         }
@@ -581,17 +631,20 @@ final class DailyTransactionReadServiceTest {
         @DisplayName("fewer verification passes than records verified is rejected")
         void fewerPassesThanVerifiedIsRejected() {
             assertThatThrownBy(() -> new DailyTransactionReadService.DailyTransactionReadResult(
-                    2, 2, 1, 0, 0, List.of(), 0))
+                    2, 2, 1, 0, 0, 0))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("verificationPasses");
         }
 
         @Test
-        @DisplayName("a null verification list is rejected")
-        void nullVerificationListIsRejected() {
-            assertThatThrownBy(() -> new DailyTransactionReadService.DailyTransactionReadResult(
-                    0, 0, 0, 0, 0, null, 0))
-                    .isInstanceOf(NullPointerException.class);
+        @DisplayName("the result carries no per-record list to reject, because every outcome reached "
+                + "its destination as it was produced")
+        void theResultCarriesNoPerRecordList() {
+            assertThat(DailyTransactionReadService.DailyTransactionReadResult.class
+                    .getRecordComponents())
+                    .extracting(java.lang.reflect.RecordComponent::getName)
+                    .containsExactly("recordsRead", "recordsVerified", "verificationPasses",
+                            "cardsNotVerified", "accountsNotFound", "returnCode");
         }
 
         @Test
@@ -672,7 +725,7 @@ final class DailyTransactionReadServiceTest {
         void startAndEndLiteralsBracketTheRun() {
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(transaction("1", "0000000000000001")));
+            runPass(List.of(transaction("1", "0000000000000001")));
 
             assertAll(
                     () -> assertThat(recorded()).contains(ORACLE_START, ORACLE_END),
@@ -760,7 +813,7 @@ final class DailyTransactionReadServiceTest {
                     .thenThrow(new DataAccessResourceFailureException("gateway unavailable"));
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.execute(List.of()));
+                    .isThrownBy(() -> runPass(List.of()));
 
             int literal = indexOfContaining(ORACLE_ERROR_OPENING_DALYTRAN);
             int status = indexOfContaining(ORACLE_STATUS_PREFIX);
@@ -780,7 +833,7 @@ final class DailyTransactionReadServiceTest {
                     .thenThrow(new DataAccessResourceFailureException("gateway unavailable"));
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.execute(List.of()));
+                    .isThrownBy(() -> runPass(List.of()));
 
             assertThat(recorded())
                     .anySatisfy(message -> assertThat(message)
@@ -794,7 +847,7 @@ final class DailyTransactionReadServiceTest {
             when(dailyTransactionRepository.count())
                     .thenThrow(new DataAccessResourceFailureException("gateway unavailable"));
 
-            assertThatThrownBy(() -> service.execute(List.of()))
+            assertThatThrownBy(() -> runPass(List.of()))
                     .isInstanceOf(AbendException.class);
 
             assertThat(recorded())
@@ -811,7 +864,7 @@ final class DailyTransactionReadServiceTest {
                     .thenThrow(new DataAccessResourceFailureException("gateway unavailable"));
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.execute(List.of()));
+                    .isThrownBy(() -> runPass(List.of()));
 
             assertThat(recorded()).contains(ORACLE_ERROR_OPENING_XREF);
         }
@@ -830,7 +883,7 @@ final class DailyTransactionReadServiceTest {
             when(cardCrossReferenceRepository.findById(any())).thenReturn(Optional.empty());
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.execute(List.of()));
+                    .isThrownBy(() -> runPass(List.of()));
 
             assertAll(
                     () -> assertThat(recorded()).contains(ORACLE_ERROR_CLOSING_CUSTOMER),
@@ -842,7 +895,7 @@ final class DailyTransactionReadServiceTest {
         void recordDiagnosticWithholdsProtectedFields() {
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(
+            runPass(List.of(
                     transaction("1234567890123456", "0000000000000001",
                             new BigDecimal("12.3499"))));
 
@@ -869,7 +922,7 @@ final class DailyTransactionReadServiceTest {
             givenResolvable("0000000000000001", "00000000001");
             givenResolvable("0000000000000002", "00000000002");
 
-            service.execute(List.of(
+            runPass(List.of(
                     transaction("1", "0000000000000001"),
                     transaction("2", "0000000000000002")));
 
@@ -883,7 +936,7 @@ final class DailyTransactionReadServiceTest {
             serviceLogger.setLevel(Level.WARN);
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(transaction("1", "0000000000000001")));
+            runPass(List.of(transaction("1", "0000000000000001")));
 
             assertThat(recorded()).noneSatisfy(message -> assertThat(message)
                     .contains("DALYTRAN-RECORD"));
@@ -894,7 +947,7 @@ final class DailyTransactionReadServiceTest {
         void absentAmountDoesNotChangeTheStatusDiagnostic() {
             givenResolvable("0000000000000001", "00000000001");
 
-            service.execute(List.of(transaction("1", "0000000000000001", null)));
+            runPass(List.of(transaction("1", "0000000000000001", null)));
 
             assertThat(recorded()).contains(ORACLE_RECORD_READ_STATUS);
         }
@@ -910,7 +963,7 @@ final class DailyTransactionReadServiceTest {
             List<DailyTransaction> input = java.util.Arrays.asList((DailyTransaction) null);
 
             assertThatExceptionOfType(AbendException.class)
-                    .isThrownBy(() -> service.execute(input));
+                    .isThrownBy(() -> runPass(input));
 
             assertThat(recorded()).contains("ERROR READING DAILY TRANSACTION FILE");
         }

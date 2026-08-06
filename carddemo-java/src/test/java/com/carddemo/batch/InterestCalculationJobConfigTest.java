@@ -47,6 +47,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -397,7 +399,7 @@ class InterestCalculationJobConfigTest {
             assertThat(config.runAccrualPass(execution).recordsRead()).isZero();
 
             verify(interestCalculationService, never())
-                    .calculateGroupInterest(anyString(), anyString(), any(), anyLong());
+                    .calculateGroupInterest(anyString(), anyString(), any(), anyLong(), any());
 
             final Path generation = config.transactGeneration(11L);
             assertThat(generation).exists();
@@ -421,8 +423,15 @@ class InterestCalculationJobConfigTest {
                 + "at the layout's own width")
         void theFinalGroupIsClosedAtEndOfFile() throws IOException {
             when(categoryBalances.findAll(any(Sort.class))).thenReturn(List.of(row("0005")));
+            // The service writes each record through the writer it is given, at the point the legacy
+            // writes it, so the stub must do the same or the wiring under test is never exercised.
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
-                    anyLong())).thenReturn(oneGroupResult());
+                    anyLong(), any())).thenAnswer(invocation -> {
+                        final InterestCalculationService.GroupInterestResult group = oneGroupResult();
+                        final Consumer<Transaction> writer = invocation.getArgument(4);
+                        group.interestTransactions().forEach(writer);
+                        return group;
+                    });
 
             final StepExecution execution = stepExecution(13L, RUN_DATE);
             assertThat(config.runAccrualPass(execution).recordsRead()).isEqualTo(1L);
@@ -438,6 +447,38 @@ class InterestCalculationJobConfigTest {
                     .as("the last account has no successor row, so only the end-of-file break "
                             + "closes it")
                     .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a group that closes mid-stream reaches the generation too, which is what proves "
+                + "the writer is bound before the first row rather than at end of file")
+        void aMidStreamGroupAlsoReachesTheGeneration() throws IOException {
+            final TransactionCategoryBalance otherAccount = new TransactionCategoryBalance(
+                    "00000000043", "01", "0005", new BigDecimal("1000.00"));
+            when(categoryBalances.findAll(any(Sort.class)))
+                    .thenReturn(List.of(row("0005"), otherAccount));
+            final AtomicLong suffix = new AtomicLong();
+            when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
+                    anyLong(), any())).thenAnswer(invocation -> {
+                        final InterestCalculationService.GroupInterestResult group =
+                                oneGroupResult(invocation.getArgument(1), suffix.incrementAndGet());
+                        final Consumer<Transaction> writer = invocation.getArgument(4);
+                        group.interestTransactions().forEach(writer);
+                        return group;
+                    });
+
+            final StepExecution execution = stepExecution(23L, RUN_DATE);
+            assertThat(config.runAccrualPass(execution).recordsRead()).isEqualTo(2L);
+
+            final byte[] artefact = Files.readAllBytes(config.transactGeneration(23L));
+            assertThat(artefact)
+                    .as("the mid-stream break's record and the end-of-file break's record, both of them")
+                    .hasSize(2 * InterestCalculationJobConfig.TRANSACT_RECORD_LENGTH);
+            final String rendered = new String(artefact, StandardCharsets.US_ASCII);
+            assertThat(rendered)
+                    .startsWith(InterestCalculationProcessor.interestTranId(RUN_DATE, 1L));
+            assertThat(rendered.substring(InterestCalculationJobConfig.TRANSACT_RECORD_LENGTH))
+                    .startsWith(InterestCalculationProcessor.interestTranId(RUN_DATE, 2L));
         }
 
         @Test
@@ -480,7 +521,7 @@ class InterestCalculationJobConfigTest {
             when(categoryBalances.findAll(any(Sort.class)))
                     .thenReturn(List.of(row("0005"), row("0006")));
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
-                    anyLong())).thenThrow(new AbendException(AbendException.BATCH_ABEND_CODE,
+                    anyLong(), any())).thenThrow(new AbendException(AbendException.BATCH_ABEND_CODE,
                             InterestCalculationJobConfig.LEGACY_PROGRAM_NAME,
                             "FILE STATUS 23 operation=READ resource="
                                     + InterestCalculationJobConfig.DD_DISCGRP,
@@ -626,26 +667,39 @@ class InterestCalculationJobConfigTest {
      * @return a group that synthesized one transaction from one row
      */
     private InterestCalculationService.GroupInterestResult oneGroupResult() {
+        return oneGroupResult(ACCOUNT_ID, 1L);
+    }
+
+    /**
+     * One accruing group for the named account, whose single record carries the given identifier suffix,
+     * so a stream with more than one group renders more than one distinguishable record.
+     *
+     * @param  accountId the account the group keys on, which the stage checks against the key it closed
+     * @param  suffix    the identifier suffix this group's record carries
+     * @return the group result the stubbed service reports
+     */
+    private InterestCalculationService.GroupInterestResult oneGroupResult(final String accountId,
+            final long suffix) {
         final BigDecimal interest = new BigDecimal("0.83");
         final Transaction synthesized = new Transaction(
-                InterestCalculationProcessor.interestTranId(RUN_DATE, 1L),
+                InterestCalculationProcessor.interestTranId(RUN_DATE, suffix),
                 InterestCalculationProcessor.INTEREST_TRAN_TYPE_CD,
                 InterestCalculationProcessor.INTEREST_TRAN_CAT_CD,
                 InterestCalculationProcessor.INTEREST_TRAN_SOURCE,
-                pad(InterestCalculationProcessor.INTEREST_DESCRIPTION_PREFIX + ACCOUNT_ID, 100),
+                pad(InterestCalculationProcessor.INTEREST_DESCRIPTION_PREFIX + accountId, 100),
                 interest, InterestCalculationProcessor.INTEREST_MERCHANT_ID, pad("", 50),
                 pad("", 50), pad("", 10), "4111111111111111",
                 "2022-07-19-23.23.05.000000", "2022-07-19-23.23.05.000000");
-        final Account updated = new Account(ACCOUNT_ID, "Y", new BigDecimal("100.83"),
+        final Account updated = new Account(accountId, "Y", new BigDecimal("100.83"),
                 new BigDecimal("5000.00"), new BigDecimal("1000.00"), "2014-11-20", "2025-05-20",
                 "2025-05-20", BigDecimal.ZERO, BigDecimal.ZERO, pad("98101", 10), "DEFAULT   ");
         final InterestCalculationService.CategoryInterest categoryInterest =
-                new InterestCalculationService.CategoryInterest(ACCOUNT_ID, "01", "0005",
+                new InterestCalculationService.CategoryInterest(accountId, "01", "0005",
                         new BigDecimal("1000.00"), new BigDecimal("1.00"), interest, false, false,
                         synthesized);
 
-        return new InterestCalculationService.GroupInterestResult(ACCOUNT_ID, interest,
-                List.of(categoryInterest), List.of(synthesized), updated, false, false, 1, 1L);
+        return new InterestCalculationService.GroupInterestResult(accountId, interest,
+                List.of(categoryInterest), List.of(synthesized), updated, false, false, 1, suffix);
     }
 
     /** Left-justifies a value into a field of the given width, space padded as the layout is. */

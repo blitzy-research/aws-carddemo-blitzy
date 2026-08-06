@@ -25,8 +25,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.CreateStatementJobConfig.ClearStatementOutputsProgram;
+import com.carddemo.batch.CreateStatementJobConfig.FileBackedTransactionWorkResource;
 import com.carddemo.batch.CreateStatementJobConfig.GenerateStatementsProgram;
-import com.carddemo.batch.CreateStatementJobConfig.InMemoryTransactionWorkResource;
 import com.carddemo.batch.CreateStatementJobConfig.LoadWorkResourceProgram;
 import com.carddemo.batch.CreateStatementJobConfig.OrderAndReprojectProgram;
 import com.carddemo.batch.CreateStatementJobConfig.StatementOutput;
@@ -40,7 +40,10 @@ import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
 import com.carddemo.service.StatementLineSummary;
 import com.carddemo.service.StatementTransactionSource;
+import com.carddemo.util.SecureStagedFiles;
+import com.carddemo.util.StatementWorkRecordMapper;
 import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.support.OrderedTransactionScan;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -115,6 +118,31 @@ class CreateStatementJobConfigTest {
     private static final Path CONFIGURATION_SOURCE =
             Path.of("src/main/java/com/carddemo/batch/CreateStatementJobConfig.java");
 
+    /**
+     * Collects a work resource's records through its bounded traversal.
+     *
+     * <p>The traversal presents one record at a time; assembling them into a list is the <em>test's</em>
+     * choice and not the resource's, which is the whole point of the accessor it replaced.
+     *
+     * @param resource the resource to walk
+     * @return its records in key sequence
+     */
+    private static List<String> recordsOf(final TransactionWorkResource resource) {
+        final List<String> collected = new ArrayList<>();
+        resource.forEachRecordInKeySequence(collected::add);
+        return collected;
+    }
+
+    /**
+     * Collects a work resource's keys through its bounded traversal.
+     *
+     * @param resource the resource to walk
+     * @return its keys in key sequence
+     */
+    private static List<String> keysOf(final TransactionWorkResource resource) {
+        return recordsOf(resource).stream().map(CreateStatementJobConfig::workResourceKey).toList();
+    }
+
     /** The framework's metadata repository, mocked because no step is executed through a launcher. */
     private final JobRepository jobRepository = mock(JobRepository.class);
 
@@ -132,14 +160,9 @@ class CreateStatementJobConfigTest {
     private final com.carddemo.repository.TransactionRepository transactionRepository =
             mock(com.carddemo.repository.TransactionRepository.class);
 
-    /** Bounded scan adapter over the existing repository double. */
-    private final TransactionScanRepository transactionScanRepository = (cursor, limit) ->
-            transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId"))
-                    .stream()
-                    .filter(record -> record.getTranId().compareTo(cursor) > 0)
-                    .sorted(java.util.Comparator.comparing(Transaction::getTranId))
-                    .limit(limit.max())
-                    .toList();
+    /** Bounded ordered scan adapter over the existing repository double. */
+    private final TransactionScanRepository transactionScanRepository = new OrderedTransactionScan(
+            () -> transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId")));
 
     /** The statement generator, mocked so one whole run can be handed back as a fixture. */
     private final StatementGenerationService generationService =
@@ -418,7 +441,9 @@ class CreateStatementJobConfigTest {
                     config.newOrderAndReprojectProgram(config.transactionWorkSequentialResource());
             program.run();
 
-            final List<String> orderedKeys = program.orderedRecords().stream()
+            final List<String> projected = new ArrayList<>();
+            program.forEachOrderedRecord(projected::add);
+            final List<String> orderedKeys = projected.stream()
                     .map(image -> image.substring(0, 32))
                     .toList();
             assertThat(orderedKeys).containsExactly(
@@ -459,7 +484,9 @@ class CreateStatementJobConfigTest {
             program.run();
 
             assertThat(program.recordsProjected()).isZero();
-            assertThat(program.orderedRecords()).isEmpty();
+            final List<String> projected = new ArrayList<>();
+            program.forEachOrderedRecord(projected::add);
+            assertThat(projected).isEmpty();
             assertThat(Files.readAllLines(written, StandardCharsets.US_ASCII)).isEmpty();
         }
     }
@@ -470,47 +497,153 @@ class CreateStatementJobConfigTest {
 
         @Test
         @DisplayName("records come back in key sequence, keyed at thirty-two bytes")
-        void recordsComeBackInKeySequence() {
-            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
-            resource.load(CreateStatementJobConfig.reproject(TransactionRecordMapper.toRecord(
-                    record("TRAN000000000002", "9111111111111111"))));
+        void recordsComeBackInKeySequence(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
             resource.load(CreateStatementJobConfig.reproject(TransactionRecordMapper.toRecord(
                     record("TRAN000000000001", "4111111111111111"))));
+            resource.load(CreateStatementJobConfig.reproject(TransactionRecordMapper.toRecord(
+                    record("TRAN000000000002", "9111111111111111"))));
 
             assertThat(resource.recordCount()).isEqualTo(2);
-            assertThat(resource.orderedKeys()).containsExactly(
+            assertThat(keysOf(resource)).containsExactly(
                     "4111111111111111TRAN000000000001", "9111111111111111TRAN000000000002");
-            assertThat(resource.orderedKeys())
+            assertThat(keysOf(resource))
                     .allSatisfy(key -> assertThat(encoded(key)).isEqualTo(32));
-            assertThat(resource.orderedRecords())
+            assertThat(recordsOf(resource))
                     .allSatisfy(image -> assertThat(encoded(image)).isEqualTo(350));
         }
 
         @Test
-        @DisplayName("a generation snapshot is frozen even if the mutable work resource is loaded "
-                + "again afterwards")
-        void generationSnapshotIsFrozen() {
-            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
-            final String first = TransactionRecordMapper.toStatementWorkRecord(
+        @DisplayName("a record presented out of key sequence is refused and nothing is admitted")
+        void anOutOfSequenceRecordIsRefused(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            resource.load(CreateStatementJobConfig.reproject(TransactionRecordMapper.toRecord(
+                    record("TRAN000000000002", "9111111111111111"))));
+
+            assertThatThrownBy(() -> resource.load(CreateStatementJobConfig.reproject(
+                    TransactionRecordMapper.toRecord(record("TRAN000000000001", "4111111111111111")))))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining(CreateStatementJobConfig.TRANSIENT_WORK_RESOURCE_NAME)
+                    .hasMessageContaining("ascending keys only")
+                    // The key opens with a card number, so it is withheld from the diagnostic.
+                    .hasMessageNotContaining("4111111111111111");
+            assertThat(resource.recordCount()).isOne();
+            assertThat(keysOf(resource)).containsExactly("9111111111111111TRAN000000000002");
+        }
+
+        @Test
+        @DisplayName("the cluster is a sequential file in the staging root, not a heap collection")
+        void theClusterIsASequentialFile(@TempDir final Path staging) throws IOException {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            final String projected = StatementWorkRecordMapper.toRecord(
                     record("TRAN000000000001", "4111111111111111"));
-            final String later = TransactionRecordMapper.toStatementWorkRecord(
+            resource.load(projected);
+            // Freezing is what flushes the load handle, so the file is measured after the traversal
+            // that the generation step's own capture performs.
+            assertThat(recordsOf(resource)).containsExactly(projected);
+
+            try (var minted = Files.list(staging)) {
+                final List<Path> held = minted.toList();
+                assertThat(held).hasSize(1);
+                assertThat(Files.size(held.get(0)))
+                        .isEqualTo(CreateStatementJobConfig.WORK_RECORD_LENGTH + 1L);
+            }
+
+            final String source = Files.readString(CONFIGURATION_SOURCE, StandardCharsets.UTF_8);
+            assertThat(source)
+                    .doesNotContain("SortedMap", "TreeMap", "List.copyOf(this.records")
+                    .contains("SecureStagedFiles.newTemporaryFile(this.stagingDirectory");
+        }
+
+        @Test
+        @DisplayName("and the cluster is created readable by its owner and by nobody else, because it "
+                + "holds every transaction of every statement in the run")
+        void theClusterIsOwnerOnly(@TempDir final Path staging) throws IOException {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            resource.load(StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000001", "4111111111111111")));
+
+            try (var minted = Files.list(staging)) {
+                final Path held = minted.toList().get(0);
+                assertThat(SecureStagedFiles.isOwnerOnly(held))
+                        .as("a default umask stages this world-readable for the whole of the run")
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("scratching the cluster removes its file and tolerates being asked twice")
+        void scratchingRemovesTheFile(@TempDir final Path staging) throws IOException {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            resource.load(StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000001", "4111111111111111")));
+
+            resource.discard();
+            resource.discard();
+
+            try (var remaining = Files.list(staging)) {
+                assertThat(remaining.toList()).isEmpty();
+            }
+            assertThat(resource.snapshot().readAt(0)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a walk is forward only: a position already left behind is refused")
+        void aWalkIsForwardOnly(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            resource.load(StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000001", "4111111111111111")));
+            resource.load(StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000002", "9111111111111111")));
+
+            final StatementTransactionSource walk = resource.snapshot();
+            assertThat(walk.readAt(0)).isPresent();
+            // The position in hand may be asked for again and is served without a further read.
+            assertThat(walk.readAt(0)).isPresent();
+            assertThat(walk.readAt(1)).isPresent();
+            assertThatThrownBy(() -> walk.readAt(0))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("read forward");
+            assertThat(walk.readAt(2)).isEmpty();
+            // Exhaustion is sticky rather than a second read of the resource.
+            assertThat(walk.readAt(2)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a generation snapshot freezes the resource, so a later load is refused rather "
+                + "than silently changing what generation reads")
+        void generationSnapshotIsFrozen(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            final String first = StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000001", "4111111111111111"));
+            final String later = StatementWorkRecordMapper.toRecord(
                     record("TRAN000000000002", "9111111111111111"));
             resource.load(first);
 
             final StatementTransactionSource frozen = resource.snapshot();
-            resource.load(later);
+            assertThatThrownBy(() -> resource.load(later))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("after it was frozen");
 
             assertThat(frozen.readAt(0)).contains(first);
             assertThat(frozen.readAt(1)).isEmpty();
-            assertThat(resource.recordCount()).isEqualTo(2);
+            assertThat(resource.recordCount()).isOne();
             assertThatThrownBy(() -> frozen.readAt(-1))
                     .isInstanceOf(IllegalArgumentException.class);
         }
 
         @Test
         @DisplayName("a second record for one key is refused and the resource keeps what it held")
-        void aDuplicateKeyIsRefused() {
-            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
+        void aDuplicateKeyIsRefused(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
             final String projected = CreateStatementJobConfig.reproject(
                     TransactionRecordMapper.toRecord(record("TRAN000000000001", "4111111111111111")));
             resource.load(projected);
@@ -525,8 +658,9 @@ class CreateStatementJobConfigTest {
 
         @Test
         @DisplayName("a mis-sized record is refused before it is admitted")
-        void aMisSizedRecordIsRefused() {
-            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
+        void aMisSizedRecordIsRefused(@TempDir final Path staging) {
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
             assertThatThrownBy(() -> resource.load("short"))
                     .isInstanceOf(IllegalStateException.class);
             assertThat(resource.recordCount()).isZero();
@@ -543,14 +677,15 @@ class CreateStatementJobConfigTest {
             final Path projected = config.transactionWorkSequentialResource();
             config.newOrderAndReprojectProgram(projected).run();
 
-            final TransactionWorkResource resource = new InMemoryTransactionWorkResource();
+            final TransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
             final LoadWorkResourceProgram load = config.newLoadWorkResourceProgram(projected,
                     resource);
             load.run();
 
             assertThat(load.recordsLoaded()).isEqualTo(2L);
             assertThat(resource.recordCount()).isEqualTo(2);
-            assertThat(resource.orderedKeys()).containsExactly(
+            assertThat(keysOf(resource)).containsExactly(
                     "4111111111111111TRAN000000000001", "9111111111111111TRAN000000000002");
         }
 
@@ -564,7 +699,8 @@ class CreateStatementJobConfigTest {
             Files.createDirectories(projected.getParent());
             Files.writeString(projected, "", StandardCharsets.US_ASCII);
 
-            final InMemoryTransactionWorkResource resource = new InMemoryTransactionWorkResource();
+            final FileBackedTransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
             resource.load(CreateStatementJobConfig.reproject(TransactionRecordMapper.toRecord(
                     record("TRAN000000000001", "4111111111111111"))));
 
@@ -640,14 +776,17 @@ class CreateStatementJobConfigTest {
             when(generationService.generate(any(), any(), any())).thenReturn(completedRun());
 
             final CreateStatementJobConfig config = config(staging);
-            final TransactionWorkResource resource = new InMemoryTransactionWorkResource();
-            final String projected = TransactionRecordMapper.toStatementWorkRecord(
+            final TransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
+            final String projected = StatementWorkRecordMapper.toRecord(
                     record("TRAN000000000001", "4111111111111111"));
             resource.load(projected);
             final GenerateStatementsProgram program = config.newGenerateStatementsProgram(
                     config.createStatementProcessor(), resource);
-            resource.load(TransactionRecordMapper.toStatementWorkRecord(
-                    record("TRAN000000000002", "9111111111111111")));
+            assertThatThrownBy(() -> resource.load(StatementWorkRecordMapper.toRecord(
+                    record("TRAN000000000002", "9111111111111111"))))
+                    .as("the program froze the resource when it captured its source")
+                    .isInstanceOf(IllegalStateException.class);
             program.run();
 
             assertThat(program.statementRecordsWritten()).isEqualTo(2L);
@@ -677,8 +816,8 @@ class CreateStatementJobConfigTest {
             assertThat(source.getValue().readAt(0)).contains(projected);
             assertThat(source.getValue().readAt(1)).isEmpty();
             assertThat(resource.recordCount())
-                    .as("the program captured its source before this later load")
-                    .isEqualTo(2);
+                    .as("the refused load left the resource exactly as the load step built it")
+                    .isOne();
         }
 
         @Test
@@ -692,7 +831,8 @@ class CreateStatementJobConfigTest {
 
             final CreateStatementJobConfig config = config(staging);
             final GenerateStatementsProgram program = config.newGenerateStatementsProgram(
-                    config.createStatementProcessor(), new InMemoryTransactionWorkResource());
+                    config.createStatementProcessor(),
+                    new FileBackedTransactionWorkResource(staging));
             program.run();
 
             assertThat(program.statementRecordsWritten()).isZero();
@@ -712,7 +852,8 @@ class CreateStatementJobConfigTest {
         @DisplayName("four steps are registered under their stable names and the job under its own")
         void fourStepsAreRegisteredUnderTheirNames(@TempDir final Path staging) {
             final CreateStatementJobConfig config = config(staging);
-            final TransactionWorkResource resource = new InMemoryTransactionWorkResource();
+            final TransactionWorkResource resource =
+                    new FileBackedTransactionWorkResource(staging);
 
             final Step order = config.createStatementOrderAndReprojectStep();
             final Step load = config.createStatementLoadWorkResourceStep(resource);
@@ -768,8 +909,8 @@ class CreateStatementJobConfigTest {
                     config(staging).createStatementTransactionWorkResource();
 
             assertThat(first.recordCount()).isZero();
-            assertThat(first.orderedRecords()).isEmpty();
-            assertThat(first.orderedKeys()).isEmpty();
+            assertThat(recordsOf(first)).isEmpty();
+            assertThat(keysOf(first)).isEmpty();
             assertThat(first).isNotSameAs(second);
         }
     }

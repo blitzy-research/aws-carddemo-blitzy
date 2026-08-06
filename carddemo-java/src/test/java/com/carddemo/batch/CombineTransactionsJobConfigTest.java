@@ -19,7 +19,9 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyIterable;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -30,7 +32,6 @@ import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.step.CombineTransactionsProcessor;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
-import com.carddemo.config.AwsProperties;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.DateValidationService;
@@ -41,7 +42,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -144,6 +149,34 @@ class CombineTransactionsJobConfigTest {
 
     /** Local fallback root; file-URI fixtures bypass it while logical-name tests exercise it. */
     private static final String STAGING_DIRECTORY = System.getProperty("java.io.tmpdir");
+
+    /**
+     * Removes any combined generation a test left in the shared staging root.
+     *
+     * <p>The production path removes its own local copy once the load step has served it, but a test
+     * that stops half way through the two roles deliberately does not reach that point, so the suite
+     * cleans up after itself rather than accumulating one file per run.
+     *
+     * @throws IOException if a leftover file cannot be removed
+     */
+    @AfterEach
+    void removeStagedGenerations() throws IOException {
+        for (long identifier : new long[] {JOB_EXECUTION_ID, JOB_EXECUTION_ID + 1}) {
+            final Path generation = generationFile(identifier);
+            Files.deleteIfExists(generation);
+            Files.deleteIfExists(generation.resolveSibling(generation.getFileName() + ".part"));
+        }
+    }
+
+    /**
+     * @param  jobExecutionId the execution whose generation is being named
+     * @return the local file that execution's combined generation occupies
+     */
+    private static Path generationFile(final long jobExecutionId) {
+        return Path.of(STAGING_DIRECTORY).toAbsolutePath().normalize()
+                .resolve(CombineTransactionsJobConfig.JOB_NAME + ".combined." + jobExecutionId
+                        + ".dat");
+    }
 
     /** The configuration under test. */
     private final CombineTransactionsJobConfig config = new CombineTransactionsJobConfig(
@@ -644,9 +677,51 @@ class CombineTransactionsJobConfigTest {
             combined.write(Chunk.of(first));
             combined.write(Chunk.of(second));
 
-            assertThat(combined.read()).isSameAs(first);
-            assertThat(combined.read()).isSameAs(second);
+            // Value equality and not identity: the generation is a sequential file, so a served record
+            // is the record image parsed back, exactly as the legacy load step read the dataset the
+            // ordering step wrote. Every field must survive that round trip, which is more than
+            // identity would have proved.
+            assertThat(combined.read()).isEqualTo(first);
+            assertThat(combined.read()).isEqualTo(second);
             assertThat(combined.read()).isNull();
+        }
+
+        @Test
+        @DisplayName("every field of a record survives the round trip through the generation, so the "
+                + "sequential file is a faithful stand-in for holding the entity")
+        void everyFieldSurvivesTheRoundTrip() throws Exception {
+            final CombineTransactionsJobConfig.CombinedGeneration combined =
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+            final Transaction written = record("0000000000000042", BACKUP_MARKER);
+
+            combined.write(Chunk.of(written));
+            final Transaction served = combined.read();
+
+            assertThat(served).usingRecursiveComparison().isEqualTo(written);
+        }
+
+        @Test
+        @DisplayName("the generation is composed in a file and never held as a list, so the job's cost "
+                + "does not grow with the size of the master it combines")
+        void theGenerationIsComposedInAFile() throws Exception {
+            final CombineTransactionsJobConfig.CombinedGeneration combined =
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+            combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
+            combined.close();
+
+            final Path generation = generationFile(JOB_EXECUTION_ID);
+            assertThat(generation).exists();
+            assertThat(Files.readAllBytes(generation))
+                    .as("one record image and one separator byte, and nothing else")
+                    .hasSize(CombineTransactionsProcessor.COMBINED_RECORD_LENGTH + 1);
+
+            final String source = Files.readString(
+                    Path.of("src", "main", "java", "com", "carddemo", "batch",
+                            "CombineTransactionsJobConfig.java"),
+                    StandardCharsets.UTF_8);
+            assertThat(source)
+                    .doesNotContain("ByteArrayOutputStream")
+                    .doesNotContain("List<Transaction> records");
         }
 
         @Test
@@ -680,7 +755,8 @@ class CombineTransactionsJobConfigTest {
         }
 
         @Test
-        @DisplayName("closing publishes the execution generation once through the shared staging area")
+        @DisplayName("closing publishes the execution generation once through the shared staging area, "
+                + "streaming it from the sealed file rather than from an array")
         void closingPublishesTheExecutionGenerationOnce() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
                     config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
@@ -691,7 +767,27 @@ class CombineTransactionsJobConfigTest {
 
             verify(stagingArea, times(1)).publish(
                     eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + JOB_EXECUTION_ID),
-                    any(byte[].class));
+                    eq(generationFile(JOB_EXECUTION_ID)));
+            verify(stagingArea, never()).publish(anyString(), any(byte[].class));
+        }
+
+        @Test
+        @DisplayName("the local copy is removed once the load step has served every record, so a "
+                + "submission leaves nothing behind in the staging root")
+        void theLocalCopyIsRemovedAfterItHasBeenServed() throws Exception {
+            final CombineTransactionsJobConfig.CombinedGeneration combined =
+                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+            combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
+            combined.close();
+            assertThat(generationFile(JOB_EXECUTION_ID)).exists();
+
+            combined.open(new ExecutionContext());
+            while (combined.read() != null) {
+                // Drain, exactly as the load step does.
+            }
+            combined.close();
+
+            assertThat(generationFile(JOB_EXECUTION_ID)).doesNotExist();
         }
 
         @Test
@@ -834,6 +930,143 @@ class CombineTransactionsJobConfigTest {
                     .isNull();
             reader.close();
         }
+
+        @Test
+        @DisplayName("the ordered work file and the per-execution directory minted to hold it are both "
+                + "removed, so a run leaves nothing behind on the host")
+        void bothTheWorkFileAndItsDirectoryAreRemoved() throws Exception {
+            final Set<Path> before = orderingWorkAreas();
+            final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
+            when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
+            final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
+                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
+
+            reader.open(new ExecutionContext());
+            final Set<Path> during = orderingWorkAreas();
+            reader.close();
+
+            assertThat(during)
+                    .as("the pass mints exactly one work area of its own")
+                    .hasSize(before.size() + 1);
+            assertThat(orderingWorkAreas())
+                    .as("a work area minted per execution and never removed accumulates one empty "
+                            + "directory per run for the life of the host")
+                    .isEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("and closing twice releases nothing a second time and raises nothing, because the "
+                + "framework may close a stream it has already closed")
+        void closingTwiceIsSilent() throws Exception {
+            final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
+            when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
+            final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
+                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
+            reader.open(new ExecutionContext());
+            reader.close();
+
+            assertThatNoException().isThrownBy(reader::close);
+        }
+
+        @Test
+        @DisplayName("a cleanup that cannot complete reports its first failure and carries the later one "
+                + "beneath it, having attempted both rather than stopping at the first")
+        void aCleanupFailureCarriesTheLaterOneBeneathIt() throws Exception {
+            final Set<Path> before = orderingWorkAreas();
+            final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
+            when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
+            final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
+                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
+            reader.open(new ExecutionContext());
+            final Set<Path> minted = new HashSet<>(orderingWorkAreas());
+            minted.removeAll(before);
+            final Path area = minted.iterator().next();
+            final Path work = onlyEntryOf(area);
+            // The work file's path is made undeletable by making it a non-empty directory, which every
+            // account including a privileged one is refused. The work area then cannot be removed
+            // either, because it still holds that directory - and the second failure exists at all only
+            // if the release carried on past the first, which is the property under test.
+            Files.delete(work);
+            Files.createDirectory(work);
+            Files.writeString(work.resolve("occupant"), "x", StandardCharsets.US_ASCII);
+            try {
+                final Throwable reported = catchThrowable(reader::close);
+
+                assertThat(reported)
+                        .isInstanceOf(ItemStreamException.class)
+                        .hasMessageContaining("could not be fully released");
+                assertThat(reported.getCause())
+                        .as("the first cleanup failure is the one reported")
+                        .isInstanceOf(IOException.class);
+                assertThat(reported.getSuppressed())
+                        .as("the release carried on past the first failure and the second is attached "
+                                + "beneath the first rather than replacing it or being discarded")
+                        .hasSize(1);
+                assertThat(reported.getSuppressed()[0]).isInstanceOf(IOException.class);
+                assertThat(catchThrowable(reader::close))
+                        .as("every handle was cleared, so a later close finds nothing")
+                        .isNull();
+            } finally {
+                Files.deleteIfExists(work.resolve("occupant"));
+                Files.deleteIfExists(work);
+                Files.deleteIfExists(area);
+            }
+        }
+
+        /**
+         * @param  directory the directory to read
+         * @return the single entry it holds
+         * @throws IOException if it cannot be listed
+         */
+        private Path onlyEntryOf(final Path directory) throws IOException {
+            try (var held = Files.list(directory)) {
+                final List<Path> entries = held.toList();
+                assertThat(entries).as("the work area holds exactly the ordered work file").hasSize(1);
+                return entries.get(0);
+            }
+        }
+
+        @Test
+        @DisplayName("and a preparation failure is reported as itself, never replaced by whatever the "
+                + "cleanup that follows it happens to find")
+        void aPreparationFailureIsNotReplacedByACleanupFailure() throws Exception {
+            final Set<Path> before = orderingWorkAreas();
+            final FixedWidthFlatFileReaderFactory refuses =
+                    mock(FixedWidthFlatFileReaderFactory.class);
+            when(refuses.fixedTransactionReader(any()))
+                    .thenThrow(new IllegalStateException("the input could not be allocated"));
+            final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(refuses,
+                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
+
+            assertThatThrownBy(() -> reader.open(new ExecutionContext()))
+                    .as("the reason the step failed is the preparation failure and not the release")
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("could not be allocated");
+
+            assertThat(orderingWorkAreas())
+                    .as("a failed preparation still releases what it had minted")
+                    .isEqualTo(before);
+        }
+
+        /**
+         * The ordering work areas currently present in the shared staging root.
+         *
+         * @return their paths, which the pass mints and removes one per execution
+         * @throws IOException if the root cannot be listed
+         */
+        private Set<Path> orderingWorkAreas() throws IOException {
+            final Path root = Path.of(System.getProperty("java.io.tmpdir"));
+            try (var held = Files.list(root)) {
+                return held.filter(Files::isDirectory)
+                        .filter(path -> path.getFileName().toString()
+                                .startsWith("carddemo-combine-order-"))
+                        .collect(Collectors.toCollection(HashSet::new));
+            }
+        }
     }
 
     // ----------------------------------------------------------------------------------------
@@ -902,17 +1135,19 @@ class CombineTransactionsJobConfigTest {
         }
 
         @Test
-        @DisplayName("the only configuration type this file names is the bound cloud settings, which is "
-                + "the edge the module's layering permits and the staged-input allow-list needs")
-        void theOnlyConfigurationTypeNamedIsTheBoundSettings() throws IOException {
+        @DisplayName("this file names no configuration type at all, which is stricter than the one edge "
+                + "the module's layering would have permitted")
+        void theFileNamesNoConfigurationType() throws IOException {
             final List<String> configurationImports = source().lines()
                     .filter(line -> line.startsWith("import com.carddemo.config"))
                     .toList();
 
             assertThat(configurationImports)
-                    .as("a job configuration reads the bucket the deployment provisioned rather than "
-                            + "configuring a second copy of it, and it names nothing else from that layer")
-                    .containsExactly("import com.carddemo.config.AwsProperties;");
+                    .as("the staged-input allow-list is owned by JobParameterValidators, which resolves "
+                            + "the provisioned bucket itself, so this file has no reason to name the "
+                            + "bound cloud settings and does not - and a configuration import that no "
+                            + "declaration uses is exactly the dead reference this assertion now forbids")
+                    .isEmpty();
         }
     }
 

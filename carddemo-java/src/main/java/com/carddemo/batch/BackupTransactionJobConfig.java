@@ -27,18 +27,24 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.util.BatchCancellation;
 import com.carddemo.util.BoundedKeysetIterator;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.TransactionRecordMapper;
 import io.awspring.cloud.s3.S3Operations;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
+import java.util.function.LongFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
@@ -53,6 +59,7 @@ import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.core.step.tasklet.Tasklet;
 import org.springframework.batch.repeat.RepeatStatus;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.Limit;
@@ -426,6 +433,15 @@ public final class BackupTransactionJobConfig {
     private final Clock clock;
 
     /**
+     * Local root the archive generation is composed within before it is published.
+     *
+     * <p>The archive is written to a file and streamed from it, never held in memory, because the
+     * legacy unload wrote a sequential dataset of unbounded size and a translation that composes the
+     * whole of it in heap first is bounded by heap rather than by disk.
+     */
+    private final Path stagingDirectory;
+
+    /**
      * @param jobRepository the repository the framework records executions in
      * @param transactionManager the manager each step's unit of work is bounded by
      * @param jobBoundaryListener the shared job-boundary diagnostic published by the batch
@@ -452,7 +468,10 @@ public final class BackupTransactionJobConfig {
             final S3Operations objectStore,
             final AwsProperties awsProperties,
             final MeterRegistry meterRegistry,
-            final Clock clock) {
+            final Clock clock,
+            @Value("${carddemo.batch.backup-transaction.staging-directory:${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}") final String stagingDirectory) {
         this.jobRepository = Objects.requireNonNull(jobRepository, "jobRepository");
         this.transactionManager = Objects.requireNonNull(transactionManager, "transactionManager");
         this.jobBoundaryListener = Objects.requireNonNull(jobBoundaryListener, "jobBoundaryListener");
@@ -467,6 +486,35 @@ public final class BackupTransactionJobConfig {
                 this.awsProperties.s3().batchStagingBucket());
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.stagingDirectory = Path.of(requireStagingDirectory(stagingDirectory))
+                .toAbsolutePath().normalize();
+    }
+
+    /**
+     * Refuses a staging root that was configured to nothing.
+     *
+     * <p>A blank root would resolve the archive to a relative path under whatever directory the process
+     * happens to be started in, which is not a place an operator can find it.
+     *
+     * @param  configured               the configured value
+     * @return that value
+     * @throws IllegalArgumentException if it is blank
+     */
+    private static String requireStagingDirectory(final String configured) {
+        final String value = Objects.requireNonNull(configured, "stagingDirectory");
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("stagingDirectory must not be blank");
+        }
+        return value;
+    }
+
+    /**
+     * @param jobExecutionId the execution whose archive generation is being named
+     * @return the local path the archive of that execution is composed at
+     */
+    private Path archiveGenerationPath(final long jobExecutionId) {
+        return StagedGenerationStore.generationPath(this.stagingDirectory, ARCHIVE_DATASET_BASE,
+                jobExecutionId);
     }
 
     // ----------------------------------------------------------------------------------------
@@ -532,7 +580,8 @@ public final class BackupTransactionJobConfig {
      */
     private Step archiveTransactionMasterStep() {
         final Tasklet archive = new TransactionArchiveTasklet(this.transactionScanRepository,
-                this.generationStore, this.awsProperties, this.meterRegistry, this.clock);
+                this.generationStore, this.awsProperties, this.meterRegistry, this.clock,
+                this::archiveGenerationPath);
         return new StepBuilder(ARCHIVE_STEP_NAME, this.jobRepository)
                 .tasklet(timed(ARCHIVE_STEP_NAME, archive), this.transactionManager)
                 .build();
@@ -634,23 +683,31 @@ public final class BackupTransactionJobConfig {
 
         private final Clock clock;
 
+        /** Resolves the local path this execution's archive is composed at, from its execution id. */
+        private final LongFunction<Path> generationPathResolver;
+
         TransactionArchiveTasklet(final TransactionScanRepository transactionScanRepository,
                 final StagedGenerationStore generationStore, final AwsProperties awsProperties,
-                final MeterRegistry meterRegistry, final Clock clock) {
+                final MeterRegistry meterRegistry, final Clock clock,
+                final LongFunction<Path> generationPathResolver) {
             this.transactionScanRepository = Objects.requireNonNull(
                     transactionScanRepository, "transactionScanRepository");
             this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
             this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
             this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
             this.clock = Objects.requireNonNull(clock, "clock");
+            this.generationPathResolver =
+                    Objects.requireNonNull(generationPathResolver, "generationPathResolver");
         }
 
         @Override
         public RepeatStatus execute(final StepContribution contribution,
                 final ChunkContext chunkContext) throws Exception {
+            final long generationNumber = generationNumberOf(chunkContext);
             final TransactionArchiveProgram unload = new TransactionArchiveProgram(
-                    this.transactionScanRepository, this.generationStore,
-                    generationNumberOf(chunkContext), this.meterRegistry, this.clock);
+                    this.transactionScanRepository, this.generationStore, generationNumber,
+                    this.generationPathResolver.apply(generationNumber), this.meterRegistry,
+                    this.clock);
 
             final AbstractCobolStep.ExecutionSummary summary;
             try {
@@ -702,6 +759,11 @@ public final class BackupTransactionJobConfig {
      * attempt goes through the template's guarded forms, so a failure anywhere logs the raw status
      * first and abends second without this class arranging that ordering itself.
      *
+     * <p><strong>A file and not an array.</strong> Each record image is written to a staged working file
+     * as it arrives, the file is sealed by an atomic move at close, and the object store streams it from
+     * there. Composing the generation in memory first bounded the job by heap and held a second complete
+     * copy at the moment it was published. See {@code docs/decision-log.md} entry DL-176.
+     *
      * <p>One instance serves one execution. Its mutable fields are per-execution state by
      * construction, which is why the enclosing tasklet builds a new one each time.
      */
@@ -714,23 +776,41 @@ public final class BackupTransactionJobConfig {
         /** The generation number this execution's archive is named with. */
         private final long generationNumber;
 
-        /** The generation being composed, one record image and one separator at a time. */
-        private final ByteArrayOutputStream generation = new ByteArrayOutputStream();
+        /** The local path the completed archive is sealed at, resolved by the enclosing configuration. */
+        private final Path completedGeneration;
 
         /** The sequential read position over the master, established when the input is opened. */
         private Iterator<Transaction> readPosition;
+
+        /**
+         * The generation being composed, one record image at a time, straight to its working file.
+         *
+         * <p>A stream and not a buffer. The legacy unload wrote a sequential dataset whose size is
+         * bounded by the volume it sits on, so an archive of any size must cost one buffer here and not
+         * one copy of itself.
+         */
+        private OutputStream generation;
+
+        /** The working file the composed generation occupies until it is sealed. */
+        private Path workingGeneration;
+
+        /** How many bytes this execution has written, counted as they are written. */
+        private long archivedBytes;
 
         /** The object name this execution writes, fixed when the output is opened. */
         private String objectKey;
 
         TransactionArchiveProgram(final TransactionScanRepository transactionScanRepository,
                 final StagedGenerationStore generationStore, final long generationNumber,
-                final MeterRegistry meterRegistry, final Clock clock) {
+                final Path completedGeneration, final MeterRegistry meterRegistry,
+                final Clock clock) {
             super(LEGACY_MEMBER_NAME, meterRegistry, clock);
             this.transactionScanRepository = Objects.requireNonNull(
                     transactionScanRepository, "transactionScanRepository");
             this.generationStore = Objects.requireNonNull(generationStore, "generationStore");
             this.generationNumber = generationNumber;
+            this.completedGeneration =
+                    Objects.requireNonNull(completedGeneration, "completedGeneration");
         }
 
         /**
@@ -755,6 +835,10 @@ public final class BackupTransactionJobConfig {
             openResource(OUTPUT_DEFINITION_NAME, () -> {
                 this.objectKey =
                         StagedGenerationStore.objectKey(ARCHIVE_DATASET_BASE, this.generationNumber);
+                this.workingGeneration =
+                        StagedGenerationStore.workingPath(this.completedGeneration);
+                this.archivedBytes = 0L;
+                this.generation = openWorkingGeneration(this.workingGeneration);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -796,7 +880,13 @@ public final class BackupTransactionJobConfig {
                     throw new IllegalStateException("archive record encoded to " + image.length
                             + " bytes, expected " + ARCHIVE_RECORD_LENGTH);
                 }
-                this.generation.writeBytes(image);
+                try {
+                    this.generation.write(image);
+                } catch (final IOException failure) {
+                    throw new UncheckedIOException("the transaction archive generation could not be"
+                            + " written", failure);
+                }
+                this.archivedBytes += image.length;
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -822,10 +912,14 @@ public final class BackupTransactionJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
             closeResource(OUTPUT_DEFINITION_NAME, () -> {
-                final byte[] content = this.generation.toByteArray();
-                requireWholeRecordStride(content.length);
-                this.generationStore.publishBytes(ARCHIVE_DATASET_BASE, this.generationNumber,
-                        content, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+                closeWorkingGeneration();
+                requireWholeRecordStride(this.archivedBytes);
+                StagedGenerationStore.completeWorkingFile(this.workingGeneration,
+                        this.completedGeneration);
+                this.workingGeneration = null;
+                this.generationStore.publishFile(ARCHIVE_DATASET_BASE, this.generationNumber,
+                        this.completedGeneration, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+                discardLocalGeneration(this.completedGeneration);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -840,11 +934,68 @@ public final class BackupTransactionJobConfig {
          * @param  composedLength        the size of the composed generation, in bytes
          * @throws IllegalStateException if the size is not a whole number of records
          */
-        private static void requireWholeRecordStride(final int composedLength) {
+        private static void requireWholeRecordStride(final long composedLength) {
             if (composedLength % ARCHIVE_RECORD_STRIDE != 0) {
                 throw new IllegalStateException("archive composed to " + composedLength
                         + " bytes, which is not a whole number of " + ARCHIVE_RECORD_STRIDE
                         + "-byte records");
+            }
+        }
+
+        /**
+         * Opens the working file the generation is composed in.
+         *
+         * @param  working              the working path
+         * @return a buffered stream over it
+         * @throws UncheckedIOException if it cannot be created
+         */
+        private static OutputStream openWorkingGeneration(final Path working) {
+            try {
+                // Owner-only from the first byte, and never through a link: the archive generation is
+                // the whole transaction master, one 350-byte record at a time.
+                // See docs/decision-log.md entry DL-178.
+                return new BufferedOutputStream(SecureStagedFiles.newOutputStream(working));
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("the transaction archive generation could not be"
+                        + " opened for writing", failure);
+            }
+        }
+
+        /**
+         * Flushes and closes the working stream, so the file is whole before it is sealed.
+         *
+         * @throws UncheckedIOException if the stream cannot be closed
+         */
+        private void closeWorkingGeneration() {
+            final OutputStream open = this.generation;
+            this.generation = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException failure) {
+                throw new UncheckedIOException("the transaction archive generation could not be"
+                        + " closed", failure);
+            }
+        }
+
+        /**
+         * Removes the local copy once the durable one exists.
+         *
+         * <p>The legacy unload wrote its generation to the dataset and kept nothing else; the object
+         * store is the generation here, and a local copy left behind would accumulate one archive of
+         * the whole master per submission in the staging root. A failure to remove it is reported and
+         * not raised, because the archive is already durable and the run succeeded.
+         *
+         * @param completed the sealed local generation
+         */
+        private static void discardLocalGeneration(final Path completed) {
+            try {
+                Files.deleteIfExists(completed);
+            } catch (final IOException failure) {
+                LOGGER.warn("The published transaction archive could not be removed from the local"
+                        + " staging root; failureType={}", failure.getClass().getSimpleName());
             }
         }
 
@@ -855,7 +1006,37 @@ public final class BackupTransactionJobConfig {
         @Override
         protected void releaseResources() {
             this.readPosition = null;
-            this.generation.reset();
+            releaseWorkingGenerationQuietly();
+        }
+
+        /**
+         * Hands back the working stream and its file after a failure, without raising.
+         *
+         * <p>A partly composed archive is not an archive, so its working file is removed rather than
+         * left where a later run might mistake it for one. Neither the close nor the removal may raise:
+         * a failure is already on its way out and must not be displaced by a secondary one.
+         */
+        private void releaseWorkingGenerationQuietly() {
+            final OutputStream open = this.generation;
+            this.generation = null;
+            if (open != null) {
+                try {
+                    open.close();
+                } catch (final IOException failure) {
+                    LOGGER.debug("The partly composed transaction archive could not be closed;"
+                            + " failureType={}", failure.getClass().getSimpleName());
+                }
+            }
+            final Path working = this.workingGeneration;
+            this.workingGeneration = null;
+            if (working != null) {
+                try {
+                    Files.deleteIfExists(working);
+                } catch (final IOException failure) {
+                    LOGGER.debug("The partly composed transaction archive could not be removed;"
+                            + " failureType={}", failure.getClass().getSimpleName());
+                }
+            }
         }
 
         /**
@@ -867,16 +1048,16 @@ public final class BackupTransactionJobConfig {
         }
 
         /** @return the size of the generation this execution composed, in bytes */
-        int archivedByteCount() {
-            return this.generation.size();
+        long archivedByteCount() {
+            return this.archivedBytes;
         }
 
         /**
          * @return how many fixed records the composed generation holds, being its size divided by
          *         {@link #ARCHIVE_RECORD_STRIDE}
          */
-        int archivedRecordCount() {
-            return this.generation.size() / ARCHIVE_RECORD_STRIDE;
+        long archivedRecordCount() {
+            return this.archivedBytes / ARCHIVE_RECORD_STRIDE;
         }
 
     }

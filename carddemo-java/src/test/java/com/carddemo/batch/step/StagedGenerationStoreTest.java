@@ -33,7 +33,9 @@ import io.awspring.cloud.s3.Location;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -312,6 +314,55 @@ class StagedGenerationStoreTest {
         }
     }
 
+    /**
+     * Writes one completed generation file with the supplied bytes.
+     *
+     * @param  content              the bytes the file holds
+     * @return the completed path, which is not a working file
+     * @throws UncheckedIOException if it cannot be written
+     */
+    private Path completedFileHolding(final byte[] content) {
+        final Path completed = this.stagingDirectory.resolve("published-generation.dat");
+        try {
+            Files.write(completed, content);
+        } catch (final IOException failure) {
+            throw new UncheckedIOException("the test generation could not be written", failure);
+        }
+        return completed;
+    }
+
+    @Nested
+    @DisplayName("immediate publication of one completed generation")
+    class ImmediatePublication {
+
+        @Test
+        @DisplayName("streams the body from the file and reports the file's own length")
+        void streamsTheBodyFromTheFile() {
+            final byte[] content = "0123456789".getBytes(StandardCharsets.US_ASCII);
+
+            final StagedGenerationStore.PublishedGeneration published =
+                    store.publishFile(BASE, 7, completedFileHolding(content),
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000007V00");
+            assertThat(published.contentLength()).isEqualTo(content.length);
+            verify(objectStore).upload(eq(BUCKET), eq(BASE + "/G0000000007V00"),
+                    any(InputStream.class));
+        }
+
+        @Test
+        @DisplayName("refuses a working file, because a working file is not a generation")
+        void refusesAWorkingFile() {
+            final Path working = StagedGenerationStore.workingPath(
+                    completedFileHolding(new byte[] {1}));
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> store.publishFile(BASE, 7, working,
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT))
+                    .withMessageContaining("working");
+        }
+    }
+
     @Nested
     @DisplayName("retention")
     class Retention {
@@ -330,7 +381,7 @@ class StagedGenerationStoreTest {
                     resource(BASE + "/not-a-generation"));
             when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(generations);
 
-            store.publishBytes(BASE, 11, new byte[] {1},
+            store.publishFile(BASE, 11, completedFileHolding(new byte[] {1}),
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
             verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000002V00");

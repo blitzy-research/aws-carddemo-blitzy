@@ -17,11 +17,9 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Transaction;
-import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
 /**
  * Spring Data JPA repository for table {@code transaction} - the Java replacement for the
@@ -124,9 +122,12 @@ import org.springframework.data.repository.query.Param;
  * region: the account, card, card alternate index, card cross-reference, cross-reference alternate
  * index, customer, transaction base cluster and user-security files. Both card-side alternate-index
  * paths are among them; the transaction alternate-index path is not, and the transaction entry
- * addresses the base cluster directly. No online request could therefore reach this index, so its
- * Java realisation - {@link #findByProcessingDateRange(String, String)} - serves the
- * reporting job alone.
+ * addresses the base cluster directly. No online request could therefore reach this index, so nothing
+ * on this interface reads through it: the reporting job's date-range selection is served by the
+ * report's own bounded reader rather than by a query declared here. An unbounded {@code List}-returning
+ * range query did once live on this interface, unreferenced by any production caller while the report
+ * filtered elsewhere; it was removed rather than left as a second contract for the same selection, and
+ * the removal is recorded in {@code docs/decision-log.md}.
  *
  * <p>{@code V2__create_indexes.sql} additionally declares {@code fk_transaction_card}, from this
  * table's card number to the card master. The entity nonetheless declares <strong>no association of
@@ -204,8 +205,7 @@ import org.springframework.data.repository.query.Param;
  * normalisation, the decision whether an absent record is an error, and the terminal abend path all
  * belong to the service and batch tiers. This interface therefore declares no exception type and no
  * status enumeration. Its own expressions of "nothing there" are an empty {@link Optional} from
- * {@link #findMaxId()}, an empty {@link Optional} from the inherited single-row lookup, and an empty
- * {@link List} from {@link #findByProcessingDateRange(String, String)}.
+ * {@link #findMaxId()} and an empty {@link Optional} from the inherited single-row lookup.
  *
  * <p>The interface carries no stereotype annotation: the repository infrastructure discovers it
  * through the component scan rooted at the base package, so annotating it would add nothing and
@@ -310,148 +310,4 @@ public interface TransactionRepository
             FROM Transaction t
             """)
     Optional<String> findMaxId();
-
-    /**
-     * Returns one caller-sized slice of the transactions whose processing date falls within an
-     * inclusive date range, ordered by card number ascending.
-     *
-     * <p>This is the Java realisation of the batch transaction report's selection and ordering, and of
-     * the batch-only processing-timestamp alternate index that made it affordable.
-     * {@code V2__create_indexes.sql} backs it with the non-unique B-tree index
-     * {@code idx_transaction_tran_proc_ts}, so the range resolves through that index rather than by
-     * scanning the transaction master.
-     *
-     * <h2>The whole selection is returned, in one ordering</h2>
-     *
-     * <p>The report's reader consumes the range in a single pass and breaks its pages and its totals
-     * from the rows themselves, line by line, so what it needs is the selection in the legacy sort's
-     * order and nothing besides - no total count, no page window and no availability flag. A list is
-     * exactly that, and it is what the legacy job's own input was: one sorted sequential dataset,
-     * read from the front.
-     *
-     * <p><strong>One ordering term, because the legacy sort declares one.</strong> The report
-     * procedure sorts on the card-number field ascending and specifies no {@code EQUALS} option, so it
-     * guarantees nothing at all about the relative order of records sharing a card number. Appending a
-     * second, unique term would make the sequence total, which reads like an improvement and is in
-     * fact a different contract from the one the legacy job states - so the declared key is reproduced
-     * alone, and a consumer that needs a total order imposes it where it needs it.
-     *
-     * <h2>The legacy comparison is a ten-character prefix compare</h2>
-     *
-     * <p>The cataloged procedure {@code app/proc/TRANREPT.prc} declares two symbolic field names to
-     * the external sort and two date parameters. The card-number field is declared at one-based
-     * position 263 with width 16, typed as zoned decimal. The processing-<em>date</em> field is
-     * declared at one-based position 305 with width <strong>10</strong>, typed as
-     * <strong>character</strong> - and the underlying column at that position is 26 characters wide.
-     * The two parameters are ten-character date literals. The sort orders by the card-number field
-     * ascending and keeps only those records whose processing-date field is greater than or equal to
-     * the start parameter and less than or equal to the end parameter.
-     *
-     * <p>So the legacy filter compares <strong>only the first ten characters</strong> of the
-     * timestamp - its date prefix - as character data, against ten-character literals. Position 305
-     * also corroborates the layout independently: it is the one-based form of the zero-based offset
-     * 304 that the copybook gives for the processing timestamp and that the alternate index uses as
-     * its key offset.
-     *
-     * <h2>Both ends are inclusive, and the predicate is deliberately asymmetric</h2>
-     *
-     * <p>The two bounds are inclusive, matching the greater-than-or-equal and less-than-or-equal pair
-     * of the legacy selection. Neither may be made strict, and the range may not be renormalised into
-     * a half-open interval.
-     *
-     * <p><strong>The upper bound compares a ten-character prefix of the column; the lower bound
-     * compares the bare column. That difference is required, not an oversight.</strong> Comparing the
-     * full 26-character value against a ten-character end-date literal would exclude every
-     * transaction processed <em>on</em> the end date, because a value that extends a literal sorts
-     * above that literal - a stored value of the end date followed by a time component is
-     * lexicographically greater than the end date alone. The report would look entirely plausible,
-     * would satisfy any test written under the same misunderstanding, and would silently drop a day's
-     * transactions. In the other direction the two forms are provably equivalent: for a stored value
-     * whose ten-character prefix is P and a ten-character literal L, the value is greater than or
-     * equal to L exactly when P is - if P exceeds L then so does the value; if P equals L then the
-     * value extends L and is greater; and if P is below L then so is the value. Leaving the lower
-     * bound bare therefore costs nothing semantically and keeps it index-searchable, so the range
-     * scan on {@code idx_transaction_tran_proc_ts} survives. Wrapping it would defeat that index for
-     * no gain.
-     *
-     * <h2>The upper predicate is a function of the column, and that is accepted deliberately</h2>
-     *
-     * <p>The consequence of that asymmetry is that the authoritative upper predicate is wrapped in a
-     * function of the column, and a predicate over a function of a column cannot serve as a bound for
-     * an index built on the column itself. So the index is entered at the start date and read forward,
-     * with rows beyond the end date fetched and discarded by the prefix comparison.
-     *
-     * <p><strong>No redundant pre-bound is added to narrow it.</strong> A second, column-only upper
-     * predicate - the end date concatenated with filler wide enough never to exclude a row the
-     * authority keeps - would give the index an upper bound, but it is a third predicate the legacy
-     * selection does not have, and its safety rests on an invariant about the eleventh character of a
-     * stored timestamp that holds under one collation and has to be re-argued under another. The
-     * selection reproduced here is the legacy one: a bare lower bound and a prefix-compared upper
-     * bound, and nothing else. Performance engineering beyond parity is out of scope, and the lower
-     * bound already confines the scan to the range's start.
-     *
-     * <p><strong>This must remain a character comparison.</strong> It is never converted to
-     * {@code LocalDate}, {@code LocalDateTime}, {@code Instant}, a database date or date-time type, or
-     * a type-conversion expression inside the query, because the legacy comparison is a character
-     * comparison and the module pins the JDBC time zone specifically so that no implicit temporal
-     * conversion happens anywhere. The prefix window is fixed at the first ten characters; neither its
-     * start nor its length may change, and it stays on the upper bound.
-     *
-     * <h2>An unprocessed transaction is excluded by the lower bound</h2>
-     *
-     * <p>A transaction that has not been processed carries 26 spaces in that column, whose
-     * ten-character prefix is ten spaces. The space character sorts below every digit in the character
-     * collating sequence the legacy sort used, so such a row falls below any date literal beginning
-     * with a digit and is excluded by the lower bound alone. That is the legacy behaviour exactly, so
-     * <strong>no null test and no blank test is added</strong> - the column is declared not-null and
-     * the comparison already handles the case. A guard would be unrequested behaviour.
-     *
-     * <h2>One ascending ordering serves both legacy jobs</h2>
-     *
-     * <p>The report procedure types the card-number bytes as zoned decimal, while the statement job
-     * {@code app/jcl/CREASTMT.JCL} sorts the very same bytes typed as character. Nothing reconciles
-     * the two, and nothing needs to: for a zero-padded unsigned sixteen-digit value with no sign
-     * overpunch, zoned-decimal ascending order and character ascending order are identical. A single
-     * ascending ordering on the card-number attribute is therefore faithful to both, which is why no
-     * separate zoned-decimal comparator exists.
-     *
-     * <p><strong>That equivalence is a precondition on the stored data, and it is stated here so it is
-     * not mistaken for a property of the column.</strong> It holds only while every stored card number
-     * is exactly sixteen digit characters, zero-padded, unsigned and without a sign overpunch - which
-     * is what the 16-byte card-number field of the record layout carries and what every mapper in this
-     * module writes. Storing a shorter, space-padded, signed or non-numeric card number would make
-     * character order diverge from zoned-decimal order and would silently reorder the report, without
-     * breaking compilation and without failing any test that did not look for it. It is the same
-     * precondition {@link #findMaxId()} depends on for the identifier, and every writer must preserve
-     * both.
-     *
-     * <p>The rows returned here are the report's input, nothing more. The report line itself is
-     * assembled at the fixed 133-character width by the formatter in the utility layer, and the report
-     * program {@code app/cbl/CBTRN03C.cbl} contains no arithmetic statement at all, so this method
-     * introduces no arithmetic and no total of its own. The selection filters on the date range only:
-     * no card-number, type, category or amount predicate belongs here, because the legacy selection
-     * had none.
-     *
-     * <p>The explicitly declared query text takes precedence over derivation from the method name, so
-     * the name is documentation rather than a derivation instruction. That is deliberate and
-     * well-defined; it does not need "fixing" into a derivable form, which could not express a range
-     * predicate over a prefix in any case.
-     *
-     * @param startDate the inclusive lower bound of the range, a ten-character date in the form the
-     *                  legacy parameters use; matched exactly as supplied and never trimmed or
-     *                  reformatted
-     * @param endDate   the inclusive upper bound of the range, likewise a ten-character date; a
-     *                  transaction processed on this date is returned
-     * @return every matching transaction in ascending card-number order, possibly empty, never
-     *         {@code null}
-     */
-    @Query("""
-            SELECT t
-            FROM Transaction t
-            WHERE t.tranProcTs >= :startDate
-              AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
-            ORDER BY t.tranCardNum ASC
-            """)
-    List<Transaction> findByProcessingDateRange(@Param("startDate") String startDate,
-                                                @Param("endDate") String endDate);
 }

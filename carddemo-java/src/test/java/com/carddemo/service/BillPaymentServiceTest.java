@@ -32,13 +32,14 @@ import com.carddemo.repository.TransactionRepository;
 
 import jakarta.persistence.OptimisticLockException;
 
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -52,6 +53,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Unit test for {@link BillPaymentService}, the translation of the bill-payment transaction
@@ -106,9 +108,11 @@ class BillPaymentServiceTest {
 
     private final NavigationService navigationService = new NavigationService();
 
+    private final OnlineTransactionBoundary transactionBoundary = new OnlineTransactionBoundary();
+
     private final BillPaymentService service = new BillPaymentService(transactionRepository,
             accountRepository, crossReferenceRepository, messageCatalogService, navigationService,
-            FIXED_CLOCK);
+            transactionBoundary, FIXED_CLOCK);
 
     // ----------------------------------------------------------------------------------------------
     // Fixtures
@@ -163,8 +167,8 @@ class BillPaymentServiceTest {
         Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
         Mockito.when(accountRepository.saveAndFlush(Mockito.any(Account.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        Mockito.when(crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
-                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
+        Mockito.when(crossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
         Mockito.when(transactionRepository.findMaxId())
                 .thenReturn(Optional.ofNullable(highestExisting));
         Mockito.when(transactionRepository.insertAndFlush(Mockito.any(Transaction.class)))
@@ -636,8 +640,8 @@ class BillPaymentServiceTest {
         void missingCrossReferenceRefusesTheInsert() {
             arrangePayableAccount("10.00", null);
             Mockito.when(crossReferenceRepository
-                    .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             final BillPaymentService.BillPaymentResult result =
                     service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
@@ -653,8 +657,8 @@ class BillPaymentServiceTest {
         void blankCardNumberReachesTheCrossReferenceCatchAll() {
             arrangePayableAccount("10.00", null);
             Mockito.when(crossReferenceRepository
-                    .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(
                             new CardCrossReference(" ".repeat(16), CUSTOMER_ID, ACCOUNT_ID)));
 
             final BillPaymentService.BillPaymentResult result =
@@ -729,8 +733,8 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the lock is taken exactly once per turn, because it is re-entrant within a "
-                + "session and a second acquisition would buy nothing")
+        @DisplayName("the lock is taken exactly once per turn, inside the insert's own unit of work: "
+                + "one acquisition covers every attempt that unit makes")
         void theLockIsTakenOncePerTurn() {
             arrangePayableAccount("10.00", null);
 
@@ -796,8 +800,8 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("a duplicate raised by the FLUSH is reported and not retried, because a refused "
-                + "flush leaves the transaction unable to commit whatever is attempted next")
+        @DisplayName("a duplicate raised by the FLUSH is reported and not retried: the re-allocation "
+                + "is driven by the probe, and the legacy write has no retry of its own to widen")
         void aFlushDuplicateIsReportedRatherThanRetried() {
             arrangePayableAccount("10.00", null);
             Mockito.doThrow(new DataIntegrityViolationException("duplicate key value"))
@@ -982,7 +986,7 @@ class BillPaymentServiceTest {
                     Clock.fixed(Instant.parse("2001-01-02T03:04:05.999999999Z"), ZoneOffset.UTC);
             final BillPaymentService earlyService = new BillPaymentService(transactionRepository,
                     accountRepository, crossReferenceRepository, messageCatalogService,
-                    navigationService, earlyClock);
+                    navigationService, transactionBoundary, earlyClock);
             arrangePayableAccount("10.00", null);
 
             earlyService.processBillPayment(submitted(ACCOUNT_ID, "Y"));
@@ -1048,8 +1052,8 @@ class BillPaymentServiceTest {
         void accountIsRewrittenEvenWhenTheInsertWasRefused() {
             final Account account = arrangePayableAccount("50.00", null);
             Mockito.when(crossReferenceRepository
-                    .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
@@ -1111,6 +1115,204 @@ class BillPaymentServiceTest {
 
             assertThat(result.account()).isNotNull();
             assertThat(result.account().version()).isZero();
+        }
+    }
+
+    // ==============================================================================================
+    // Independent units of work, lines 233 and 235
+    //
+    // Both files this member writes are defined to the region with RECOVERY(NONE) and JOURNAL(NO), so
+    // the legacy logs neither and backs neither out: the transaction written at line 233 is durable the
+    // instant it is written, and the account rewrite at line 235 cannot undo it. The source proves it
+    // relies on that by performing lines 234 and 235 whether or not the write succeeded, testing no
+    // flag between them.
+    //
+    // Every expectation here is authored from that fact rather than read back from the service. A
+    // single unit of work spanning both writes would fail all of them, which is what makes them a
+    // regression guard rather than a restatement.
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("Independent units of work, lines 233 and 235")
+    class IndependentUnitsOfWork {
+
+        @Test
+        @DisplayName("the service declares no transaction of its own, because a turn-wide transaction "
+                + "is what couples the two writes it must keep independent")
+        void theServiceDeclaresNoTransactionOfItsOwn() throws NoSuchMethodException {
+            assertThat(BillPaymentService.class
+                    .getMethod("processBillPayment", BillPaymentService.BillPaymentScreenInput.class)
+                    .getAnnotation(Transactional.class))
+                    .as("the unit of work belongs to OnlineTransactionBoundary, once per durable write")
+                    .isNull();
+            assertThat(BillPaymentService.class.getAnnotation(Transactional.class)).isNull();
+            assertThat(Modifier.isFinal(BillPaymentService.class.getModifiers()))
+                    .as("with no transactional method of its own the type needs no subclass proxy, so "
+                            + "it is final exactly as its four sibling screen services are")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the account rewrite re-reads the row inside its own unit, so a row deleted since "
+                + "line 343 is reported and never resurrected by a merge")
+        void theRewriteReReadsTheRowInsideItsOwnUnit() {
+            arrangePayableAccount("10.00", null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            Mockito.verify(accountRepository, Mockito.times(2)).findById(ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("a failed account rewrite leaves the inserted transaction standing, which is what "
+                + "RECOVERY(NONE) on both files means")
+        void aFailedAccountRewriteLeavesTheInsertedTransactionStanding() {
+            arrangePayableAccount("10.00", null);
+            Mockito.when(accountRepository.saveAndFlush(Mockito.any(Account.class)))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Unable to Update Account...");
+            assertThat(result.transaction())
+                    .as("the insert completed in its own unit, so the failed rewrite cannot remove it")
+                    .isNotNull();
+            Mockito.verify(transactionRepository).insertAndFlush(Mockito.any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("an account that has vanished since it was read reaches the rewrite's own "
+                + "not-found arm at lines 390 to 395")
+        void aVanishedAccountReachesTheRewriteNotFoundArm() {
+            final Account account = arrangePayableAccount("10.00", null);
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account))
+                    .thenReturn(Optional.empty());
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Account ID NOT found...");
+            assertThat(result.transaction()).isNotNull();
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a version that moved between the read and the rewrite is refused before anything "
+                + "is written, so the stale balance can never overwrite the newer one")
+        void aVersionThatMovedIsRefusedBeforeAnyWrite() {
+            final Account account = arrangePayableAccount("10.00", null);
+            final Account moved = Mockito.mock(Account.class);
+            Mockito.when(moved.getVersion()).thenReturn(7L);
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(account))
+                    .thenReturn(Optional.of(moved));
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")))
+                    .satisfies(conflict -> {
+                        assertThat(conflict.conflictKind()).isEqualTo(OptimisticLockConflictException
+                                .ConflictKind.RECORD_CHANGED_BEFORE_UPDATE);
+                        assertThat(conflict.entityName()).isEqualTo("Account");
+                        assertThat(conflict.key()).isEqualTo(ACCOUNT_ID);
+                    });
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any(Account.class));
+            Mockito.verify(moved, Mockito.never()).setAcctCurrBal(Mockito.any(BigDecimal.class));
+        }
+
+        @Test
+        @DisplayName("a duplicate raised when the insert's unit COMMITS - not when it flushes - still "
+                + "reaches the source's duplicate arm, which only a completed unit can report")
+        void aCommitDuplicateReachesTheDuplicateArm() {
+            final BillPaymentService committing = serviceWithFailingUnit(1,
+                    new DataIntegrityViolationException("duplicate key value"));
+            arrangePayableAccount("10.00", null);
+
+            final BillPaymentService.BillPaymentResult result =
+                    committing.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Tran ID already exist...");
+            assertThat(result.transaction())
+                    .as("the unit rolled back, so no arm may report a stored record")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("any other failure raised when the insert's unit commits reaches the write's "
+                + "catch-all text instead of escaping the turn")
+        void aCommitFailureReachesTheWriteCatchAll() {
+            final BillPaymentService committing = serviceWithFailingUnit(1,
+                    new DataAccessResourceFailureException("connection reset at commit"));
+            arrangePayableAccount("10.00", null);
+
+            final BillPaymentService.BillPaymentResult result =
+                    committing.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo("Unable to Add Bill pay Transaction...");
+            assertThat(result.transaction()).isNull();
+        }
+
+        @Test
+        @DisplayName("a failure of the ALLOCATION LOCK is not a response to a write, so it is not "
+                + "translated into a write arm and propagates exactly as it did before")
+        void aLockFailureIsNotTranslatedIntoAWriteArm() {
+            arrangePayableAccount("10.00", null);
+            Mockito.doThrow(new DataAccessResourceFailureException("advisory lock unavailable"))
+                    .when(transactionRepository)
+                    .lockIdentifierAllocation(Mockito.anyLong());
+
+            assertThatExceptionOfType(DataAccessResourceFailureException.class)
+                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")));
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .insertAndFlush(Mockito.any(Transaction.class));
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any(Account.class));
+        }
+
+        private BillPaymentService serviceWithFailingUnit(final int failingUnit,
+                final RuntimeException failure) {
+            return new BillPaymentService(transactionRepository, accountRepository,
+                    crossReferenceRepository, messageCatalogService, navigationService,
+                    new UnitFailingAtCommit(failingUnit, failure), FIXED_CLOCK);
+        }
+    }
+
+    /**
+     * A unit of work that runs its operation and then fails, standing in for a failure raised when the
+     * unit commits rather than when a statement flushes.
+     *
+     * <p>Only a unit that completes outside the service can fail this way, which is exactly the property
+     * under test: the service has to translate the failure into the write paragraph's arm after the unit
+     * has rolled back, and it can only do that if the unit is not the whole turn.
+     */
+    private static final class UnitFailingAtCommit extends OnlineTransactionBoundary {
+
+        private final int failingUnit;
+
+        private final RuntimeException failure;
+
+        private int units;
+
+        UnitFailingAtCommit(final int failingUnit, final RuntimeException failure) {
+            this.failingUnit = failingUnit;
+            this.failure = failure;
+        }
+
+        @Override
+        public <T> T execute(final Supplier<T> operation) {
+            this.units++;
+            final T value = super.execute(operation);
+            if (this.units == this.failingUnit) {
+                throw this.failure;
+            }
+            return value;
         }
     }
 
@@ -1341,22 +1543,25 @@ class BillPaymentServiceTest {
         void collaboratorsAreMandatory() {
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(null,
                     accountRepository, crossReferenceRepository, messageCatalogService,
-                    navigationService, FIXED_CLOCK));
+                    navigationService, transactionBoundary, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
                     transactionRepository, null, crossReferenceRepository, messageCatalogService,
-                    navigationService, FIXED_CLOCK));
+                    navigationService, transactionBoundary, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
                     transactionRepository, accountRepository, null, messageCatalogService,
-                    navigationService, FIXED_CLOCK));
+                    navigationService, transactionBoundary, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
                     transactionRepository, accountRepository, crossReferenceRepository, null,
-                    navigationService, FIXED_CLOCK));
+                    navigationService, transactionBoundary, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
                     transactionRepository, accountRepository, crossReferenceRepository,
-                    messageCatalogService, null, FIXED_CLOCK));
+                    messageCatalogService, null, transactionBoundary, FIXED_CLOCK));
             assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
                     transactionRepository, accountRepository, crossReferenceRepository,
-                    messageCatalogService, navigationService, null));
+                    messageCatalogService, navigationService, null, FIXED_CLOCK));
+            assertThatNullPointerException().isThrownBy(() -> new BillPaymentService(
+                    transactionRepository, accountRepository, crossReferenceRepository,
+                    messageCatalogService, navigationService, transactionBoundary, null));
         }
     }
 }

@@ -29,8 +29,8 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
@@ -113,8 +113,8 @@ import org.springframework.batch.item.ItemProcessor;
  * hands it the two collaborators its constructor names. Around it the configuration owns three
  * things this class deliberately does not: a reader that parses the filtered, ordered generation into
  * a detached {@link ReportTransactionSource}, the date-parameter record built from the validated
- * bounds, and a writer that expands {@code TransactionReportResult#reportLines()} onto the
- * fixed-length destination. It also owns the step's own metering and its failure semantics.
+ * bounds, and the destination each composed record is offered to as it is composed - so the report is
+ * never assembled in one place. It also owns the step's own metering and its failure semantics.
  * <strong>The item type is the complete report input, not one transaction</strong>, which is worth
  * stating plainly because a reader wired to emit individual transactions would compile and then
  * generate one complete report per transaction.
@@ -452,51 +452,66 @@ public final class TransactionReportProcessor
         final String startDate = ReportLineFormatter.readStartDate(dateParameterCard);
         final String endDate = ReportLineFormatter.readEndDate(dateParameterCard);
 
+        // The width proof is applied as each record passes rather than to a finished list, which is
+        // what lets the report stream: the proof stays inside the timed region and inside the guard
+        // below, so a report that fails it is reported as a failed generation rather than a completed
+        // one, and the earliest offending record is still the one that stops the run.
+        final ProvenReportRecordSink provenSink =
+                new ProvenReportRecordSink(input.reportRecordSink());
+
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         final TransactionReportResult result;
         try {
             result = Objects.requireNonNull(
                     this.reportService.generateReportFromDateParameterCard(
-                            input.transactionSource(), dateParameterCard),
+                            input.transactionSource(), provenSink, dateParameterCard),
                     () -> LEGACY_PROGRAM + " reported no result for the reporting range "
                             + startDate + " to " + endDate);
-            // The width proof is inside the timed region and inside this guard on purpose: it is
-            // part of what this stage promises, so a report that fails it must be reported as a
-            // failed generation rather than as a completed one.
-            requireReportRecordWidths(result.reportLines());
         } catch (RuntimeException failure) {
             stopSample(sample, OUTCOME_FAILED);
             throw failure;
         }
         stopSample(sample, OUTCOME_COMPLETED);
 
-        final List<String> reportLines = result.reportLines();
-        this.reportRecordCounter.increment(reportLines.size());
+        this.reportRecordCounter.increment(result.reportRecordCount());
         // Counts and the reporting range only. The grand total is a monetary value and every detail
         // record carries a primary account number and merchant fields, so none of that is logged.
         LOGGER.info("{} {} ({}) produced {} record(s) of {} bytes for the range {} to {}:"
                         + " {} page total(s), {} account total(s), line counter {}",
-                LEGACY_JOB, LEGACY_REPORT_STEP, LEGACY_PROGRAM, reportLines.size(),
+                LEGACY_JOB, LEGACY_REPORT_STEP, LEGACY_PROGRAM, result.reportRecordCount(),
                 REPORT_RECORD_LENGTH, startDate, endDate, result.pageCount(),
                 result.accountBreakCount(), result.lineCount());
         return result;
     }
 
     /**
-     * Proves the contracted width of every record of a generated report.
+     * The caller's destination with this stage's width proof in front of it.
      *
-     * <p>Records are checked in emission order and the first breach stops the run, so the diagnostic
-     * names the earliest record that is wrong rather than the last. The list itself cannot hold a
-     * null element - the result record seals it with an immutable copy, which rejects one - so the
-     * per-record null check exists only to keep this helper safe if it is ever called with a list
-     * assembled elsewhere.
-     *
-     * @param  reportLines the report's records in emission order
-     * @throws IllegalStateException if any record breaches purity or width
+     * <p>One record is in hand at a time and the emission ordinal is carried rather than recovered
+     * from a list, so the diagnostic still names the earliest record that is wrong. A record that
+     * fails the proof never reaches the destination.
      */
-    private static void requireReportRecordWidths(final List<String> reportLines) {
-        for (int index = 0; index < reportLines.size(); index++) {
-            requireReportRecordWidth(reportLines.get(index), index);
+    private static final class ProvenReportRecordSink implements Consumer<String> {
+
+        /** The destination proven records are passed to. */
+        private final Consumer<String> destination;
+
+        /** The emission ordinal of the record being proven. */
+        private int index;
+
+        /**
+         * @param destination the caller's destination; must not be {@code null}
+         */
+        ProvenReportRecordSink(final Consumer<String> destination) {
+            this.destination = Objects.requireNonNull(destination, LEGACY_JOB + " "
+                    + LEGACY_REPORT_STEP + " received no destination for its report records");
+        }
+
+        @Override
+        public void accept(final String record) {
+            requireReportRecordWidth(record, this.index);
+            this.index++;
+            this.destination.accept(record);
         }
     }
 

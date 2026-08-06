@@ -26,7 +26,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.service.JobSubmissionCoordinator;
-import com.carddemo.service.JobSubmissionOutbox;
 import com.carddemo.service.JobSubmissionService;
 import io.awspring.cloud.autoconfigure.s3.S3ClientCustomizer;
 import io.awspring.cloud.autoconfigure.sns.SnsClientCustomizer;
@@ -997,7 +996,6 @@ class AwsConfigTest {
             runner.withUserConfiguration(JobSubmissionService.class)
                     .withBean(SqsOperations.class, () -> mock(SqsOperations.class))
                     .withBean(JobSubmissionCoordinator.class, AwsConfigTest::passThroughCoordinator)
-                    .withBean(JobSubmissionOutbox.class, JobSubmissionOutbox::direct)
                     .withBean(ObservationRegistry.class, () -> ObservationRegistry.NOOP)
                     .run(context -> {
                         assertThat(context)
@@ -1021,7 +1019,6 @@ class AwsConfigTest {
                         .withBean(
                                 JobSubmissionCoordinator.class,
                                 AwsConfigTest::passThroughCoordinator)
-                        .withBean(JobSubmissionOutbox.class, JobSubmissionOutbox::direct)
                         .withBean(ObservationRegistry.class, () -> ObservationRegistry.NOOP)
                         .withPropertyValues(settingsWithPathRenamed(withheld))
                         .run(context -> assertThat(context)

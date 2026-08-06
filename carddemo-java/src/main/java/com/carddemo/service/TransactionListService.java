@@ -19,7 +19,7 @@ package com.carddemo.service;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
-import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.util.FailureDiagnostics;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -33,9 +33,7 @@ import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 /**
@@ -89,22 +87,25 @@ import org.springframework.stereotype.Service;
  * seventh discards the first, and the enter key discards nothing so a supplied filter key is
  * included in its own page.
  *
- * <p>The persistence surface for that walk is deliberately narrow. The transaction repository
- * declares two query methods and neither is for paging - one supplies the maximum identifier for the
- * bill-payment path and one serves the reporting job's date range - so this class uses the inherited
- * paged {@code findAll} and supplies the ordering itself: ascending on the identifier attribute for a
- * forward browse and descending for a backward one. Because that method takes no key predicate, the
- * browse positions by advancing through ordered windows until the record identification field is
- * reached, which is a sequential walk of the same key sequence the legacy walks. The observable
- * result is identical for every input; the cost of positioning is not, because a keyed cluster
- * positions in one seek. That divergence is a decision-log entry rather than a hidden compromise,
- * and it is deliberately not "fixed" by computing an offset, which would trade a cost difference for
- * a correctness difference.
+ * <p>The persistence surface for that walk is deliberately narrow: {@link TransactionScanRepository},
+ * whose four reads are all ordered on the identifier and all bounded by an explicit limit, and which
+ * publishes no {@code findAll}, no bulk write and no page number. The browse opens with the inclusive
+ * read in its direction - greater-or-equal ascending, less-or-equal descending, which is the
+ * positioning command itself - and continues with the exclusive read strictly past the last record it
+ * handed out. Positioning is therefore a single indexed seek, exactly as the keyed cluster's is, and
+ * no row is read that the walk intends to discard.
  *
- * <p>The comparison that decides when the walk has reached the cursor is a plain string comparison,
- * which agrees with the database ordering because every stored identifier is sixteen zero-padded
- * digit characters. That precondition is the same one the repository's maximum-identifier query
- * depends on, and it is stated there as an obligation on every writer.
+ * <p>Reading by retained key rather than by page number is a correctness property before it is a cost
+ * one. A page number describes a position that a concurrent insert or delete moves, so a walk built on
+ * one silently repeats or skips a row; the legacy browse cannot do that, because it repositions on a
+ * record key it retained. A row that appears between two turns simply appears at its own key, to this
+ * browse exactly as to the legacy one.
+ *
+ * <p>Bounds and ordering are applied by the store, on a column whose stored identifiers are sixteen
+ * zero-padded digit characters, so character order and numeric order coincide. That precondition is
+ * the same one the transaction repository's maximum-identifier query depends on, and it is stated
+ * there as an obligation on every writer. This class performs no key comparison of its own, which is
+ * one fewer place for the precondition to be got wrong.
  *
  * <h2>What this class deliberately does not do</h2>
  *
@@ -144,7 +145,7 @@ import org.springframework.stereotype.Service;
  *
  * @see NavigationService
  * @see MessageCatalogService
- * @see TransactionRepository
+ * @see TransactionScanRepository
  * @since 1.0.0
  */
 @Service
@@ -188,24 +189,12 @@ public final class TransactionListService {
      */
     private static final int FIRST_PAGE_NUMBER = 1;
 
-    /**
-     * Entity attribute the browse orders by: the transaction identifier, which is the cluster's own
-     * key at offset zero and therefore the sequence the legacy browse walks. Named once so the
-     * ascending and descending orderings cannot drift apart.
-     */
-    private static final String TRANSACTION_ID_ATTRIBUTE = "tranId";
-
-    /** Ordering of a forward browse: the key sequence the legacy reads with {@code READNEXT}. */
-    private static final Sort ASCENDING_BY_TRANSACTION_ID =
-            Sort.by(Sort.Direction.ASC, TRANSACTION_ID_ATTRIBUTE);
-
-    /**
-     * Ordering of a backward browse: the key sequence the legacy reads with {@code READPREV} at line
-     * 352. The rows arrive descending and are assembled into ascending slot order, which is what
-     * reproduces the legacy fill from slot ten down to slot one.
-     */
-    private static final Sort DESCENDING_BY_TRANSACTION_ID =
-            Sort.by(Sort.Direction.DESC, TRANSACTION_ID_ATTRIBUTE);
+    // The browse's ordering is no longer declared here as a sort object. Both directions are part of
+    // the repository's derived query names, so the forward sequence the legacy reads with READNEXT and
+    // the backward sequence it reads with READPREV at line 352 each name their own ordered, bounded
+    // read. The key is the transaction identifier in both directions because that is the cluster's own
+    // key at offset zero, and the backward rows arrive descending and are assembled into ascending slot
+    // order, which is what reproduces the legacy fill from slot ten down to slot one.
 
     /** Legacy transaction identifier this service implements, from the program's own work field. */
     public static final String TRANSACTION_ID = "CT00";
@@ -335,7 +324,7 @@ public final class TransactionListService {
     private static final DateTimeFormatter HEADER_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);
 
-    private final TransactionRepository transactionRepository;
+    private final TransactionScanRepository transactionScanRepository;
 
     private final MessageCatalogService messageCatalogService;
 
@@ -345,25 +334,26 @@ public final class TransactionListService {
 
     /**
      * Constructor injection of the four collaborators, each of which replaces a distinct legacy
-     * mechanism: the repository replaces the keyed cluster the browse walks, the message catalogue
+     * mechanism: the ordered-read view replaces the keyed cluster the browse walks, the message catalogue
      * replaces the common message copybook the invalid-key arm reads at line 132 and the screen
      * titles the header paragraph reads at lines 571-572, the navigation service replaces the
      * transfer-control dispatch of lines 192-195 and 518-521, and the clock replaces the intrinsic
      * current-date function of line 569.
      *
-     * @param transactionRepository  transaction master the browse reads; must not be {@code null}
+     * @param transactionScanRepository transaction master the browse reads, through its bounded
+     *                               ordered-read view; must not be {@code null}
      * @param messageCatalogService  common message and screen title catalogue; must not be {@code null}
      * @param navigationService      route resolver for every transfer this screen performs; must not
      *                               be {@code null}
      * @param clock                  clock the screen header is rendered from; must not be {@code null}
      * @throws NullPointerException if any collaborator is {@code null}
      */
-    public TransactionListService(final TransactionRepository transactionRepository,
+    public TransactionListService(final TransactionScanRepository transactionScanRepository,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
             final Clock clock) {
-        this.transactionRepository =
-                Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
+        this.transactionScanRepository = Objects.requireNonNull(transactionScanRepository,
+                "transactionScanRepository must not be null");
         this.messageCatalogService =
                 Objects.requireNonNull(messageCatalogService, "messageCatalogService must not be null");
         this.navigationService =
@@ -1308,9 +1298,8 @@ public final class TransactionListService {
                 return null;
             }
         }
-        final SequentialBrowse browse = new SequentialBrowse(transactionRepository,
-                ascending ? ASCENDING_BY_TRANSACTION_ID : DESCENDING_BY_TRANSACTION_ID);
-        if (browse.position(recordIdentification, ascending)) {
+        final SequentialBrowse browse = new SequentialBrowse(transactionScanRepository, ascending);
+        if (browse.position(recordIdentification)) {
             return browse;
         }
         browse.close();
@@ -1320,19 +1309,19 @@ public final class TransactionListService {
     /**
      * Reads the lowest stored transaction identifier, or {@code null} when the table holds no rows.
      *
-     * <p>Used only to resolve a low-values record identification field for a descending browse. It asks
-     * for the first ascending window and takes its first row, so it uses the same paged method and the
-     * same page size as every other read this class performs and introduces no second page size.
+     * <p>Used only to resolve a low-values record identification field for a descending browse. One
+     * bounded ascending read of a single row answers it: a blank bound is below every stored identifier,
+     * so the inclusive forward read opens at the first row of the sequence and one row is all that is
+     * wanted. Reading a whole window here would fetch ten rows to use one.
      *
      * <p>The table starts empty after the reference-data seed - rows reach it only from the posting, the
      * interest run and the online add path - so an empty result is a normal outcome here and not an
      * error.
      */
     private String lowestTransactionId() {
-        final Page<Transaction> firstWindow = transactionRepository.findAll(
-                PageRequest.of(0, SCREEN_ROW_COUNT + 1, ASCENDING_BY_TRANSACTION_ID));
-        final List<Transaction> rows = firstWindow.getContent();
-        return rows.isEmpty() ? null : rows.get(0).getTranId();
+        final List<Transaction> firstRow = transactionScanRepository
+                .findByTranIdGreaterThanEqualOrderByTranIdAsc(BLANK, Limit.of(1));
+        return firstRow.isEmpty() ? null : firstRow.get(0).getTranId();
     }
 
     /**
@@ -2090,88 +2079,115 @@ public final class TransactionListService {
     }
 
     /**
-     * The four legacy browse commands over the repository's inherited paged query.
+     * The four legacy browse commands over the repository's bounded ordered reads.
      *
      * <p>A CICS browse is a positioned cursor: one command opens it on a key, two advance it in either
-     * direction one record at a time, and one closes it. The repository deliberately declares no paging
-     * method and no key predicate - its two query methods serve identifier generation and the reporting
-     * job - so the mechanism available is the inherited paged query, to which this class supplies the
-     * ordering: ascending on the identifier for a forward browse and descending for a backward one.
+     * direction one record at a time, and one closes it. Each of the four maps onto one read of
+     * {@link TransactionScanRepository}, whose whole surface is ordered and bounded by an explicit
+     * limit: the open is the inclusive read in the walk's direction, the advance is the exclusive read
+     * strictly past the last record handed out, and the close releases the window this browse holds.
      *
-     * <p><strong>Positioning is cursor-driven and never computed.</strong> The browse advances through
-     * ordered windows until it reaches the record identification field, which is a sequential walk of the
-     * same key sequence the legacy walks and lands on the same record for every input. The alternative -
-     * deriving a window index from the page number - was rejected: the legacy repositions on a retained
-     * record key and holds no row number, so an index derived from a page number is correct only until a
-     * row is inserted, and after that it silently skips or repeats rows. A cost difference is a documented
-     * divergence; a correctness difference is a defect.
+     * <p><strong>Positioning is pushed into the query, not walked up to.</strong> The open reads at or
+     * beyond the record identification field and its first row <em>is</em> the positioned record, so a
+     * boundary key deep in the sequence costs exactly what a boundary key near its start costs. The
+     * earlier form walked ordered windows from the beginning of the sequence, discarding every row
+     * before the key; that is what this replaces.
      *
-     * <p>The cost of that walk is the one place this differs from the legacy, which positions a keyed
-     * cluster in a single seek, and it is recorded as a decision-log entry rather than hidden. Each window
-     * is exactly one screen's worth of rows, which is also exactly what the legacy reads per page.
+     * <p><strong>Deriving a window index from the page number was rejected, and so was walking to the
+     * key.</strong> The legacy repositions on a retained record key and holds no row number. An index
+     * derived from a page number is correct only until a row is inserted, after which it silently skips
+     * or repeats rows - a correctness defect, not a cost difference. A key-ordered read has neither
+     * problem: a row inserted between two turns simply appears, or does not, at its own key, exactly as
+     * it would to the legacy browse.
      *
-     * <p>Every read is delivered through {@link #read()}, which returns the positioned record first. That
-     * reproduces the CICS rule that a read issued immediately after the open returns the record the
-     * identification field names, which is precisely what the two paging guards rely on when they discard
-     * one record to step past the boundary key.
+     * <p>Every read is delivered through {@link #read()}, which returns the positioned record first.
+     * That reproduces the CICS rule that a read issued immediately after the open returns the record the
+     * identification field names, which is precisely what the two paging guards rely on when they
+     * discard one record to step past the boundary key.
+     *
+     * <p>Each window is one screen's worth of rows plus one, which is also exactly what the legacy reads
+     * per page: ten rows and one further read to learn whether another page follows. A full page
+     * therefore costs one query rather than eleven, and no query can return more than eleven rows
+     * however large the table becomes.
      *
      * <p>Per-turn state, created and closed inside a single call, so nothing here is shared between
      * callers.
      */
     private static final class SequentialBrowse {
 
-        private final TransactionRepository repository;
+        /** Rows read per query: one screen plus the one further read the paging guard makes. */
+        private static final int WINDOW_ROWS = SCREEN_ROW_COUNT + 1;
 
-        private final Sort sort;
+        private final TransactionScanRepository repository;
 
-        /** Index of the next window to fetch; the walk always starts at the first. */
-        private int nextWindowIndex;
+        /** Whether the walk reads the key sequence upward. */
+        private final boolean ascending;
 
-        /** Rows of the window currently held. */
+        /**
+         * The exclusive bound of the next continuation read: the identifier of the row most recently
+         * handed out, or {@code null} before the open.
+         *
+         * <p>A business key and not an ordinal, which is the property that makes the walk immune to a
+         * concurrent insert or delete shifting it.
+         */
+        private String cursorKey;
+
+        /** Rows of the window currently held, in read order. */
         private List<Transaction> window = List.of();
 
         /** Position within that window. */
         private int windowCursor;
 
-        /** Whether the ordered sequence has been walked to its end. */
+        /** Whether the ordered sequence has been walked to its end in this direction. */
         private boolean sequenceExhausted;
 
         /** The record the identification field named, held until the first read consumes it. */
         private Transaction positionedRecord;
 
-        SequentialBrowse(final TransactionRepository repository, final Sort sort) {
+        SequentialBrowse(final TransactionScanRepository repository, final boolean ascending) {
             this.repository = repository;
-            this.sort = sort;
+            this.ascending = ascending;
         }
 
         /**
          * Positions the browse, reporting whether a position exists at all - the difference between the
          * normal and the not-found responses of the open command.
          *
-         * <p>Ascending, the walk skips every key <em>below</em> the identification field and stops on the
-         * lowest key not below it, which is the greater-or-equal positioning the command performs by
-         * default. Descending, it skips every key <em>above</em> the field and stops on the highest key
-         * not above it. An absent field means the low end of the sequence and skips nothing, which is
-         * correct ascending; the descending caller resolves it to the lowest stored key before calling,
-         * because that key is where a descending walk from the low end must start.
+         * <p>One inclusive bounded read does the whole job. Ascending, it returns the lowest key not
+         * below the identification field, which is the greater-or-equal positioning the command performs
+         * by default; descending, the highest key not above it. Nothing is read that the walk intends to
+         * discard, and the rows after the first are the walk's read-ahead.
          *
-         * <p>The comparison is a plain string comparison, which agrees with the database ordering because
-         * every stored identifier is sixteen zero-padded digit characters - the same precondition the
-         * repository's maximum-identifier query depends on, and one every writer in this module is
-         * obliged to preserve.
+         * <p>An absent field means the low end of the sequence: ascending, a blank bound is below every
+         * stored identifier and so opens at the first row. The descending caller resolves it to the
+         * lowest stored key before calling, because that key is where a descending walk from the low end
+         * must start - a blank bound read backwards would position nowhere.
+         *
+         * <p>The bound is applied by the store on a column whose stored identifiers are sixteen
+         * zero-padded digit characters, so character order and numeric order coincide. That is the same
+         * precondition the repository's maximum-identifier query depends on, and one every writer in
+         * this module is obliged to preserve. No key comparison happens here at all, which is one fewer
+         * place for that precondition to be got wrong.
          *
          * @param recordIdentification the key to position on, or {@code null} for the low end
-         * @param ascending             whether the browse walks the key sequence upward
          * @return {@code true} when a record was positioned on, {@code false} for the not-found response
          */
-        boolean position(final String recordIdentification, final boolean ascending) {
-            Transaction candidate = nextOrderedRecord();
-            while (candidate != null && recordIdentification != null
-                    && isBeforePosition(candidate.getTranId(), recordIdentification, ascending)) {
-                candidate = nextOrderedRecord();
+        boolean position(final String recordIdentification) {
+            final String bound = recordIdentification == null ? BLANK : recordIdentification;
+            final Limit rows = Limit.of(WINDOW_ROWS);
+            final List<Transaction> opened = this.ascending
+                    ? this.repository.findByTranIdGreaterThanEqualOrderByTranIdAsc(bound, rows)
+                    : this.repository.findByTranIdLessThanEqualOrderByTranIdDesc(bound, rows);
+            if (opened.isEmpty()) {
+                this.sequenceExhausted = true;
+                return false;
             }
-            positionedRecord = candidate;
-            return candidate != null;
+            this.positionedRecord = opened.get(0);
+            this.cursorKey = this.positionedRecord.getTranId();
+            this.window = opened.subList(1, opened.size());
+            this.windowCursor = 0;
+            this.sequenceExhausted = opened.size() < WINDOW_ROWS;
+            return true;
         }
 
         /**
@@ -2199,37 +2215,36 @@ public final class TransactionListService {
             windowCursor = 0;
             sequenceExhausted = true;
             positionedRecord = null;
+            cursorKey = null;
         }
 
         /**
-         * Returns the next record of the ordered sequence, fetching the following window when the held one
-         * is spent, and {@code null} once the sequence is exhausted.
+         * Returns the next record of the ordered sequence, fetching the following window strictly past
+         * the last key handed out when the held one is spent, and {@code null} once the sequence is
+         * exhausted.
          */
         private Transaction nextOrderedRecord() {
-            while (windowCursor >= window.size()) {
-                if (sequenceExhausted) {
+            if (windowCursor >= window.size()) {
+                if (sequenceExhausted || cursorKey == null) {
                     return null;
                 }
-                final Page<Transaction> page = repository.findAll(
-                        PageRequest.of(nextWindowIndex, SCREEN_ROW_COUNT + 1, sort));
-                nextWindowIndex++;
-                window = page.getContent();
+                final Limit rows = Limit.of(WINDOW_ROWS);
+                window = this.ascending
+                        ? repository.findByTranIdGreaterThanOrderByTranIdAsc(cursorKey, rows)
+                        : repository.findByTranIdLessThanOrderByTranIdDesc(cursorKey, rows);
                 windowCursor = 0;
-                if (window.isEmpty() || !page.hasNext()) {
+                if (window.size() < WINDOW_ROWS) {
+                    // A short window is the end of the sequence in this direction, so the walk answers
+                    // the next end-of-file without another query.
                     sequenceExhausted = true;
                 }
+                if (window.isEmpty()) {
+                    return null;
+                }
             }
-            return window.get(windowCursor++);
-        }
-
-        /**
-         * Whether a key still lies before the requested position in the direction being walked: below it
-         * ascending, above it descending.
-         */
-        private static boolean isBeforePosition(final String key, final String recordIdentification,
-                final boolean ascending) {
-            final int comparison = key.compareTo(recordIdentification);
-            return ascending ? comparison < 0 : comparison > 0;
+            final Transaction delivered = window.get(windowCursor++);
+            cursorKey = delivered.getTranId();
+            return delivered;
         }
     }
 

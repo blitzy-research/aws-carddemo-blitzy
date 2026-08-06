@@ -27,10 +27,7 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 import com.carddemo.domain.Card;
@@ -535,16 +532,12 @@ public final class CardListService {
     private static final String STATUS_PERMANENT_ERROR = "31";
 
     // ==============================================================================================
-    // Sort orders. Both are immutable and shared safely; neither is a tuning value. The key is the
+    // Browse ordering. Neither direction is declared here as a sort object any more: the ordering is
+    // part of the repository's derived query names, so the forward browse of lines 1146 to 1154 and the
+    // backward browse of lines 1322 to 1330 each name their own ordered, bounded read. The key is the
     // card number in both directions because that is the base cluster's key, and a fixed-width
     // all-digit key orders identically whether compared as text or as a number.
     // ==============================================================================================
-
-    /** Ascending card-number order: the forward browse of lines 1146 to 1154. */
-    private static final Sort ASCENDING_BY_CARD_NUMBER = Sort.by(Sort.Direction.ASC, "cardNum");
-
-    /** Descending card-number order: the backward browse of lines 1322 to 1330. */
-    private static final Sort DESCENDING_BY_CARD_NUMBER = Sort.by(Sort.Direction.DESC, "cardNum");
 
     // ==============================================================================================
     // Injected collaborators. Constructor injection only, and every one is final.
@@ -3018,11 +3011,7 @@ public final class CardListService {
     private SequentialBrowse startBrowse(final TurnState state, final boolean descending) {
         LOG.trace("Card browse started: program={} resource={} startKeySupplied={} descending={}",
                 LIT_THISPGM, LIT_CARD_FILE, !isBlankScreenField(state.ridCardNumber), descending);
-        return new SequentialBrowse(
-                this.cardRepository,
-                descending ? DESCENDING_BY_CARD_NUMBER : ASCENDING_BY_CARD_NUMBER,
-                state.ridCardNumber,
-                descending);
+        return new SequentialBrowse(this.cardRepository, state.ridCardNumber, descending);
     }
 
     /**
@@ -3111,43 +3100,63 @@ public final class CardListService {
     /**
      * A sequential walk of the card base cluster in one direction, positioned at a record key.
      *
-     * <p>This is the browse the source holds open across its read loop, expressed with the only read path
-     * the repository offers this screen: its inherited paged {@code findAll}, with the sort supplied
-     * explicitly because no repository method imposes an ordering. The account finder the repository also
-     * declares is deliberately not used, for the reason set out on the class.
+     * <p>This is the browse the source holds open across its read loop, expressed as what the source
+     * actually performs: a positioning read on a retained record identifier followed by
+     * record-at-a-time reads onward from it. The account finder the repository also declares is
+     * deliberately not used, for the reason set out on the class.
      *
-     * <p><strong>Positioning is emulated rather than pushed into the query</strong>, because paged
-     * {@code findAll} offers an offset and not a start key. The walk therefore reads the ordered rows and
-     * discards those before the start key, which is what a greater-or-equal browse start followed by
-     * sequential reads delivers. It costs a walk from the beginning of the ordering to reach a distant
-     * cursor; the alternative would be a keyset finder on the repository, which is not this file's to add.
-     * No count of rows read, no limit and no timeout is imposed: the walk ends when the data ends.
+     * <p><strong>Positioning is pushed into the query, not emulated after it.</strong> A
+     * greater-or-equal browse start is two reads because the range finders are strict: the inclusive
+     * row is the inherited keyed read on the start key, and everything after it is a bounded range
+     * read strictly beyond the last key handed out. The walk therefore never reads a row it intends to
+     * discard, and reaching a distant cursor costs the same as reaching a near one - where the earlier
+     * offset form walked the ordering from its beginning and threw away every row before the start.
      *
-     * <p>Keys are compared whole and as text. A card number is a fixed-width sequence of digits, so its
-     * text order and its numeric order are the same, and comparing whole values means the key is never
-     * split, parsed or re-cased.
+     * <p><strong>Why keyset rather than an offset page.</strong> Two reasons, and the second is
+     * behavioural rather than a matter of cost. An offset page asks the store to count and discard
+     * every earlier row on each fetch. And an offset page is <em>not stable</em>: a card inserted or
+     * removed between two fetches shifts the window, so a row is delivered twice or missed entirely.
+     * The source cannot have that defect, because it retains the card number of the row it stopped at
+     * - lines 1212 to 1214 - and repositions on that value; a concurrent insert simply appears, or
+     * does not, at its own key. Reading by key is therefore the faithful translation as well as the
+     * bounded one.
      *
-     * <p>A blank start key means the source's own initial value, which a greater-or-equal start resolves
-     * to the first row of the cluster. Ascending, that is the beginning of the walk. Descending, no row
-     * lies at or before it, so the walk yields nothing at once &mdash; which is the same outcome the source
-     * reaches, because its single delivered row is the one its unstored first read discards.
+     * <p>Every fetch is bounded to one screen's worth of rows, so no call loads the whole cluster
+     * however large it grows. The chunk exists so that the record-at-a-time reads of one page cost one
+     * range read rather than seven; the source's own granularity - one row per verb - is what the walk
+     * hands out.
+     *
+     * <p>Keys are compared whole and by the store. A card number is a fixed-width sequence of digits,
+     * on which every collation this column can carry agrees with its numeric order, and the walk never
+     * splits, parses or re-cases the value.
+     *
+     * <p>A blank start key means the source's own initial value, which a greater-or-equal start
+     * resolves to the first row of the cluster: no card number equals a blank, and every card number
+     * sorts above one, so the inclusive read finds nothing and the forward range read begins at the
+     * first row. Descending, no row lies at or before a blank, so the walk yields nothing at once
+     * &mdash; which is the same outcome the source reaches, because its single delivered row is the one
+     * its unstored first read discards.
      */
     private static final class SequentialBrowse {
 
         /** The base cluster the walk reads. */
         private final CardRepository repository;
 
-        /** The direction the walk reads in, always keyed on the card number. */
-        private final Sort order;
-
-        /** The card number the walk starts at, compared whole and as text. */
-        private final String startKey;
-
         /** {@code true} when the walk runs backwards, as the source's backward read does. */
         private final boolean descending;
 
-        /** The zero-based index of the next chunk to fetch. */
-        private int chunkIndex;
+        /**
+         * The exclusive bound of the next range read: the start key until a row has been handed out,
+         * and the key of the row most recently handed out after that.
+         *
+         * <p>This single field is what replaced the page index. It is the browse's whole position, and
+         * it is a business key rather than an ordinal, which is precisely why a concurrent write cannot
+         * shift the walk under it.
+         */
+        private String cursorKey;
+
+        /** {@code false} until the inclusive positioning read has been attempted, which happens once. */
+        private boolean positioningRead;
 
         /** The chunk currently being handed out, one row at a time. */
         private List<Card> buffer = List.of();
@@ -3158,72 +3167,69 @@ public final class CardListService {
         /** {@code true} once the cluster holds no further row in the walk's direction. */
         private boolean exhausted;
 
-        /** {@code true} once the walk has passed the rows lying before its start key. */
-        private boolean positioned;
-
         /**
          * Positions a walk without reading from it.
          *
          * @param repository the base cluster to read
-         * @param order the ordering to read in, keyed on the card number
-         * @param startKey the card number to start at, which may be blank for the source's own initial value
+         * @param startKey the card number to start at, which may be blank for the source's own initial
+         *                 value
          * @param descending whether the walk runs backwards
          */
-        SequentialBrowse(final CardRepository repository, final Sort order, final String startKey,
+        SequentialBrowse(final CardRepository repository, final String startKey,
                 final boolean descending) {
             this.repository = repository;
-            this.order = order;
-            this.startKey = startKey == null ? NO_MESSAGE : startKey;
             this.descending = descending;
-            this.positioned = !descending && this.startKey.isEmpty();
+            this.cursorKey = startKey == null ? NO_MESSAGE : startKey;
         }
 
         /**
          * Delivers the next record of the walk.
          *
-         * @return the next record, or {@code null} when the walk has passed the end of the data, which is
-         *         the end-of-file condition of the source's read
+         * @return the next record, or {@code null} when the walk has passed the end of the data, which
+         *         is the end-of-file condition of the source's read
          */
         Card next() {
-            while (true) {
-                if (this.bufferPosition >= this.buffer.size()) {
-                    if (this.exhausted) {
-                        return null;
-                    }
-                    final Pageable request =
-                            PageRequest.of(this.chunkIndex, BROWSE_CHUNK_SIZE, this.order);
-                    this.chunkIndex = this.chunkIndex + 1;
-                    final Page<Card> chunk = this.repository.findAll(request);
-                    this.buffer = chunk.getContent();
-                    this.bufferPosition = 0;
-                    if (!chunk.hasNext()) {
-                        this.exhausted = true;
-                    }
-                    if (this.buffer.isEmpty()) {
-                        return null;
-                    }
-                }
-                final Card candidate = this.buffer.get(this.bufferPosition);
-                this.bufferPosition = this.bufferPosition + 1;
-                if (this.positioned || isAtOrBeyondStart(candidate)) {
-                    this.positioned = true;
-                    return candidate;
+            if (!this.positioningRead) {
+                this.positioningRead = true;
+                final Card inclusive = this.repository.findById(this.cursorKey).orElse(null);
+                if (inclusive != null) {
+                    // The row the browse positioned on is the row the first read returns, which is the
+                    // browse command's own contract in either direction.
+                    this.cursorKey = inclusive.getCardNum();
+                    return inclusive;
                 }
             }
+            if (this.bufferPosition >= this.buffer.size()) {
+                if (this.exhausted) {
+                    return null;
+                }
+                this.buffer = fetchChunk();
+                this.bufferPosition = 0;
+                if (this.buffer.size() < BROWSE_CHUNK_SIZE) {
+                    // A short chunk is the end of the data in this direction, so the walk answers the
+                    // next end-of-file without another query.
+                    this.exhausted = true;
+                }
+                if (this.buffer.isEmpty()) {
+                    return null;
+                }
+            }
+            final Card candidate = this.buffer.get(this.bufferPosition);
+            this.bufferPosition = this.bufferPosition + 1;
+            this.cursorKey = candidate.getCardNum() == null ? NO_MESSAGE : candidate.getCardNum();
+            return candidate;
         }
 
         /**
-         * Reports whether a row lies at or beyond the walk's start key, which is what a greater-or-equal start
-         * means reading forwards and what a less-or-equal start means reading backwards.
+         * Reads one bounded chunk strictly beyond the cursor, in the walk's direction.
          *
-         * @param candidate the row to test
-         * @return {@code true} when the row lies at or beyond the start key in the walk's direction
+         * @return at most one screen's worth of rows in read order, possibly empty
          */
-        private boolean isAtOrBeyondStart(final Card candidate) {
-            final String key = candidate.getCardNum() == null ? NO_MESSAGE : candidate.getCardNum();
+        private List<Card> fetchChunk() {
+            final Limit chunk = Limit.of(BROWSE_CHUNK_SIZE);
             return this.descending
-                    ? key.compareTo(this.startKey) <= 0
-                    : key.compareTo(this.startKey) >= 0;
+                    ? this.repository.findByCardNumLessThanOrderByCardNumDesc(this.cursorKey, chunk)
+                    : this.repository.findByCardNumGreaterThanOrderByCardNumAsc(this.cursorKey, chunk);
         }
     }
 

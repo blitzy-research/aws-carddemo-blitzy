@@ -26,14 +26,11 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.PriorityQueue;
-import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -56,8 +53,8 @@ public final class ExternalStringSorter implements AutoCloseable {
     /** Maximum run files opened by one merge operation. */
     public static final int MAX_MERGE_FAN_IN = 32;
 
-    private static final Set<PosixFilePermission> OWNER_ONLY_PERMISSIONS =
-            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+    /** Name prefix of the per-execution work area the runs are spilled into. */
+    private static final String WORK_AREA_PREFIX = "carddemo-sort-";
 
     private final Comparator<String> comparator;
     private final int recordsPerRun;
@@ -83,8 +80,11 @@ public final class ExternalStringSorter implements AutoCloseable {
         this.recordsPerRun = recordsPerRun;
         this.pendingRecords = new ArrayList<>(recordsPerRun);
         try {
-            this.workDirectory = Files.createTempDirectory("carddemo-sort-");
-            applyOwnerOnlyPermissions(this.workDirectory);
+            // Owner-only from creation rather than tightened afterwards: a run file holds complete
+            // record images, and a descriptor opened in the window between creation and a later chmod
+            // keeps its access after the mode changes.
+            // See docs/decision-log.md entry DL-178.
+            this.workDirectory = SecureStagedFiles.newTemporaryDirectory(WORK_AREA_PREFIX);
         } catch (final IOException failure) {
             throw new UncheckedIOException("unable to allocate the bounded external-sort work area",
                     failure);
@@ -243,10 +243,8 @@ public final class ExternalStringSorter implements AutoCloseable {
     }
 
     private static DataOutputStream openWriter(final Path target) throws IOException {
-        final DataOutputStream writer = new DataOutputStream(
-                new BufferedOutputStream(Files.newOutputStream(target)));
-        applyOwnerOnlyPermissions(target);
-        return writer;
+        return new DataOutputStream(
+                new BufferedOutputStream(SecureStagedFiles.newOutputStream(target)));
     }
 
     private static void writeRecord(final DataOutputStream writer, final String record) {
@@ -276,16 +274,6 @@ public final class ExternalStringSorter implements AutoCloseable {
         }
         if (primary == null && closeFailure != null) {
             throw closeFailure;
-        }
-    }
-
-    private static void applyOwnerOnlyPermissions(final Path path) {
-        try {
-            Files.setPosixFilePermissions(path, OWNER_ONLY_PERMISSIONS);
-        } catch (final UnsupportedOperationException ignored) {
-            // Non-POSIX filesystems retain their platform-default private temporary-file policy.
-        } catch (final IOException failure) {
-            throw new UncheckedIOException("unable to secure the external-sort work area", failure);
         }
     }
 

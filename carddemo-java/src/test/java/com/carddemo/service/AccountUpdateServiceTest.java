@@ -37,6 +37,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.OptimisticLockingFailureException;
 
 import com.carddemo.api.AccountProtectedDataAdapter;
@@ -155,8 +156,8 @@ class AccountUpdateServiceTest {
 
     private void seedRecords() {
         Mockito.when(this.crossReferenceRepository
-                        .findByXrefAcctId(ACCOUNT_ID))
-                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                         ACCOUNT_ID)));
         Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
                 .thenReturn(Optional.of(seededAccount()));
@@ -222,8 +223,8 @@ class AccountUpdateServiceTest {
     /** Seeds the three reads with a customer that carries both regulated identifiers. */
     private void seedRecordsWithRegulatedIdentifiers() {
         final Customer customer = customerWithRegulatedIdentifiers();
-        Mockito.when(this.crossReferenceRepository.findByXrefAcctId(ACCOUNT_ID))
-                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
+        Mockito.when(this.crossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
         Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
                 .thenReturn(Optional.of(seededAccount()));
         Mockito.when(this.customerRepository.findById(CUSTOMER_ID))
@@ -438,8 +439,8 @@ class AccountUpdateServiceTest {
         @DisplayName("an unresolvable cross-reference claims the declared not-found text")
         void crossReferenceMissing() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
             final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null,
@@ -893,8 +894,8 @@ class AccountUpdateServiceTest {
         @DisplayName("an account that cannot be held reports the lock text")
         void accountCannotBeHeld() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(seededCustomer()));
@@ -938,6 +939,173 @@ class AccountUpdateServiceTest {
             assertThat(response.fieldErrors()).isEmpty();
             assertThat(response.error()).isFalse();
             assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION);
+        }
+    }
+
+    @Nested
+    @DisplayName("the catch-all arms of the three read paragraphs and of the two update holds")
+    class ReadFailureArms {
+
+        /** The eight segments of {@code WS-FILE-ERROR-MESSAGE} sum to the width of {@code WS-RETURN-MSG}. */
+        private static final int RETURN_MESSAGE_WIDTH = 75;
+
+        private AccountUpdateCommand searchKeyTurn() {
+            return new AccountUpdateCommand(ACCOUNT_ID, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, KeyAction.ENTER,
+                    reEntered(), null, false);
+        }
+
+        private static String expectedFileError(final String resource) {
+            return "File Error: " + "READ    " + " on " + padded(resource) + " returned RESP "
+                    + " ".repeat(10) + ",RESP2 " + " ".repeat(10);
+        }
+
+        private static String padded(final String resource) {
+            return resource + " ".repeat(9 - resource.length());
+        }
+
+        @Test
+        @DisplayName("a cross-reference read that FAILS is the catch-all arm, not the not-found arm: it "
+                + "names the path and the operation, and it stops the read range")
+        void aFailingCrossReferenceReadTakesTheCatchAllArm() {
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage()).isEqualTo(expectedFileError("CXACAIX"));
+            assertThat(response.errorMessage()).hasSize(RETURN_MESSAGE_WIDTH);
+            Mockito.verify(accountRepository, Mockito.never())
+                    .findById(ArgumentMatchers.anyString());
+            Mockito.verify(customerRepository, Mockito.never())
+                    .findById(ArgumentMatchers.anyString());
+        }
+
+        @Test
+        @DisplayName("an account-master read that FAILS names the account master and never builds the "
+                + "detail screen from records it did not fetch")
+        void aFailingAccountReadTakesTheCatchAllArm() {
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            ACCOUNT_ID)));
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+                    .thenReturn(Optional.of(seededCustomer()));
+
+            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage()).isEqualTo(expectedFileError("ACCTDAT"));
+            assertThat(response.accountStatus())
+                    .as("no account was fetched, so no account field may be presented")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("a customer-master read that FAILS names the customer master, and its arm raises "
+                + "the CUSTOMER filter flag rather than the account one")
+        void aFailingCustomerReadTakesTheCatchAllArm() {
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            ACCOUNT_ID)));
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededAccount()));
+            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage()).isEqualTo(expectedFileError("CUSTDAT"));
+            assertThat(response.firstName())
+                    .as("no customer was fetched, so no customer field may be presented")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the composed text is the declared width exactly, so the five-character trailing "
+                + "filler of the legacy group falls outside the field and nothing is truncated")
+        void theComposedTextFillsTheDeclaredWidthExactly() {
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final String composed = service.handle(searchKeyTurn()).errorMessage();
+
+            assertThat(composed).hasSize(RETURN_MESSAGE_WIDTH);
+            assertThat(composed.substring(0, 12)).isEqualTo("File Error: ");
+            assertThat(composed.substring(12, 20)).isEqualTo("READ    ");
+            assertThat(composed.substring(20, 24)).isEqualTo(" on ");
+            assertThat(composed.substring(24, 33)).isEqualTo("CXACAIX  ");
+            assertThat(composed.substring(33, 48)).isEqualTo(" returned RESP ");
+            assertThat(composed.substring(48, 58))
+                    .as("a relational store reports no CICS response pair, so nothing is fabricated")
+                    .isEqualTo(" ".repeat(10));
+            assertThat(composed.substring(58, 65)).isEqualTo(",RESP2 ");
+            assertThat(composed.substring(65, 75)).isEqualTo(" ".repeat(10));
+        }
+
+        @Test
+        @DisplayName("the catch-all text OVERWRITES a message an earlier edit had claimed, because the "
+                + "source moves it ungated while every not-found arm moves it through the gate")
+        void theCatchAllTextOverwritesAClaimedMessage() {
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
+
+            assertThat(response.errorMessage())
+                    .isNotEqualTo("Did not find this account in account card xref file")
+                    .isEqualTo(expectedFileError("CXACAIX"));
+        }
+
+        @Test
+        @DisplayName("an account HOLD that fails reaches the could-not-lock arm, because the source "
+                + "tests for the normal response and treats every other response alike")
+        void aFailingAccountHoldReachesTheLockArm() {
+            seedRecords();
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededAccount()))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final AccountUpdateOutcome response =
+                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage())
+                    .isEqualTo(OptimisticLockConflictException.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+            Mockito.verify(customerRepository, Mockito.never())
+                    .compareAndSet(ArgumentMatchers.any(Customer.class),
+                            ArgumentMatchers.any(Customer.class));
+        }
+
+        @Test
+        @DisplayName("a customer HOLD that fails reaches its own could-not-lock arm and leaves the "
+                + "write range before either rewrite is attempted")
+        void aFailingCustomerHoldReachesTheLockArm() {
+            seedRecords();
+            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+                    .thenReturn(Optional.of(seededCustomer()))
+                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+
+            final AccountUpdateOutcome response =
+                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage())
+                    .isEqualTo(OptimisticLockConflictException.MSG_COULD_NOT_LOCK_CUST_FOR_UPDATE);
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
         }
     }
 
@@ -1200,8 +1368,8 @@ class AccountUpdateServiceTest {
         @DisplayName("report an account the master does not hold")
         void accountAbsentFromMaster() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
             final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
@@ -1222,8 +1390,8 @@ class AccountUpdateServiceTest {
         @DisplayName("report a customer the master does not hold")
         void customerAbsentFromMaster() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
                             ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(seededAccount()));

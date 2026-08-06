@@ -16,7 +16,7 @@
  */
 package com.carddemo.batch;
 
-import com.carddemo.service.BatchJobCatalog;
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -24,14 +24,13 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.time.Clock;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -76,6 +75,7 @@ import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FixedWidthFieldReader;
 import com.carddemo.util.ReportLineFormatter;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
@@ -721,6 +721,82 @@ public final class TransactionReportJobConfig {
                 .build();
     }
 
+    /**
+     * One forward walk over a filtered transaction generation.
+     *
+     * <p>Forward-only and one record deep. The position most recently served may be asked for again
+     * and is served from the record in hand without a further read, which is what lets a caller re-arm
+     * its position at the first record without consuming it. A position below the one last served is
+     * refused, because serving it would mean re-reading the generation from its start.
+     */
+    static final class SequentialGenerationWalk implements ReportTransactionSource {
+
+        /** Position value standing for "no record has been served yet". */
+        private static final int BEFORE_FIRST_RECORD_POSITION = -1;
+
+        /** The gated read of the next record of the generation. */
+        private final Supplier<Optional<Transaction>> nextRecord;
+
+        /** Position of the record in hand. */
+        private int servedPosition = BEFORE_FIRST_RECORD_POSITION;
+
+        /** The record in hand, or {@code null} before the first read and after exhaustion. */
+        private Transaction served;
+
+        /** Whether the generation has been read to end of file. */
+        private boolean exhausted;
+
+        /**
+         * @param nextRecord the gated read of the next record; must not be {@code null}
+         */
+        SequentialGenerationWalk(final Supplier<Optional<Transaction>> nextRecord) {
+            this.nextRecord = Objects.requireNonNull(nextRecord, "nextRecord");
+        }
+
+        @Override
+        public Optional<Transaction> readAt(final int position) {
+            if (position < 0) {
+                throw new IllegalArgumentException(
+                        "report transaction position must not be negative: " + position);
+            }
+            if (position == this.servedPosition) {
+                return Optional.ofNullable(this.served);
+            }
+            if (position < this.servedPosition) {
+                throw new IllegalStateException("the " + DD_REPORT_INPUT
+                        + " generation is read forward: position " + position
+                        + " was asked for after position " + this.servedPosition
+                        + " had already been served");
+            }
+            while (this.servedPosition < position && advance()) {
+                // Advancing is the whole of the loop body; the guard performs it.
+            }
+            return this.servedPosition == position ? Optional.ofNullable(this.served)
+                    : Optional.empty();
+        }
+
+        /**
+         * Serves the next record, if there is one.
+         *
+         * @return {@code true} when a record was served, {@code false} at end of file
+         */
+        private boolean advance() {
+            if (this.exhausted) {
+                return false;
+            }
+            final Optional<Transaction> next = Objects.requireNonNull(this.nextRecord.get(),
+                    "the gated read must report an Optional, never null");
+            if (next.isEmpty()) {
+                this.exhausted = true;
+                this.served = null;
+                return false;
+            }
+            this.served = next.get();
+            this.servedPosition++;
+            return true;
+        }
+    }
+
     // -----------------------------------------------------------------------------------------------
     // Tasklet adapters. Each builds a FRESH program lifecycle for the execution it is serving, so every
     // per-execution handle, counter and total lives on a short-lived object and nothing is shared
@@ -1112,13 +1188,10 @@ public final class TransactionReportJobConfig {
      */
     private static BufferedWriter openForWriting(final Path target) throws IOException {
         Objects.requireNonNull(target, "target");
-        final Path container = target.getParent();
-        if (container != null) {
-            Files.createDirectories(container);
-        }
-        return Files.newBufferedWriter(target, StandardCharsets.US_ASCII,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE);
+        // Owner-only from the first byte, never through a planted link, and never onto a file a
+        // previous run left: every 133-byte line of this generation names an account and a card.
+        // See docs/decision-log.md entry DL-178.
+        return SecureStagedFiles.newWriter(target, StandardCharsets.US_ASCII);
     }
 
     /**
@@ -1450,13 +1523,24 @@ public final class TransactionReportJobConfig {
         }
 
         /**
-         * The ordered result of this pass, for a caller that drives the lifecycle directly.
+         * Applies an action to each record of the ordered result, in emission order, one at a time.
          *
-         * @return the record images in emission order, never {@code null}
+         * <p>Bounded by construction: the traversal holds the record it is presenting and nothing
+         * else, so a caller that wants a count, a width proof or a sequence check pays for one record
+         * rather than for the whole generation.
+         *
+         * @param consumer the action to apply to each record image; must not be {@code null}
+         * @throws NullPointerException if {@code consumer} is {@code null}
          */
-        List<String> orderedRecords() {
-            try {
-                return Files.readAllLines(this.filteredGeneration, StandardCharsets.US_ASCII);
+        void forEachOrderedRecord(final Consumer<String> consumer) {
+            Objects.requireNonNull(consumer, "consumer");
+            try (BufferedReader ordered = Files.newBufferedReader(this.filteredGeneration,
+                    StandardCharsets.US_ASCII)) {
+                String image = ordered.readLine();
+                while (image != null) {
+                    consumer.accept(image);
+                    image = ordered.readLine();
+                }
             } catch (final IOException failure) {
                 throw new UncheckedIOException(
                         "unable to read the filtered transaction-report generation", failure);
@@ -1575,69 +1659,75 @@ public final class TransactionReportJobConfig {
                 this.parameterRecordServed = true;
                 return IoResult.of(FileStatus.SUCCESS.getCode(),
                         new ReportTransactionInput(this.dateParameterCard,
-                                snapshotTransactionSource()));
+                                sequentialTransactionSource(), this::writeReportRecord));
             });
         }
 
         @Override
         protected void processRecord(final ReportTransactionInput input) {
+            // Every report record reached the generation through the sink this lifecycle handed the
+            // stage, as the stage composed it. There is no list to expand here, which is the whole
+            // point: the report is bounded by one record rather than by its own length.
             this.result = Objects.requireNonNull(this.reportProcessor.process(input),
                     TransactionReportProcessor.LEGACY_PROGRAM
                             + " reported no report for the parameter record it was given");
-
-            for (final String reportRecord : this.result.reportLines()) {
-                writeRecord(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
-                    // Proved again at the destination: the stage proves what it hands on, and this
-                    // proves what actually reaches the generation the record length is declared for.
-                    requireEncodedWidth(reportRecord, REPORT_RECORD_LENGTH,
-                            TransactionReportProcessor.LEGACY_DD_TRANREPT);
-                    this.writer.write(reportRecord);
-                    this.writer.write(RECORD_SEPARATOR);
-                    this.recordsWritten++;
-                    return FileStatus.SUCCESS.getCode();
-                });
-            }
         }
 
         /**
-         * Reads the filtered generation to exhaustion and detaches its ordered contents.
+         * Writes one composed report record to the generation at the declared record length.
          *
-         * <p>The immutable copy is captured before report generation starts. A later change to the
-         * backing file or to the transaction master therefore cannot alter which records this run
-         * sees, and the source exposes only the sequential read contract the service needs.
+         * <p>Proved again at the destination: the stage proves what it hands on, and this proves what
+         * actually reaches the generation the record length is declared for.
          *
-         * @return the frozen ordered source, never {@code null}
+         * @param reportRecord the composed record, exactly {@value #REPORT_RECORD_LENGTH} bytes
          */
-        private ReportTransactionSource snapshotTransactionSource() {
-            final List<Transaction> records = new ArrayList<>();
-            boolean endOfFile = false;
-            while (!endOfFile) {
-                final Optional<Transaction> next = this.<Transaction>readRecord(DD_REPORT_INPUT,
-                        () -> {
-                            final Transaction transaction = this.transactionReader.read();
-                            if (transaction == null) {
-                                return IoResult.endOfFile();
-                            }
-                            return IoResult.of(FileStatus.SUCCESS.getCode(), transaction);
-                        });
-                if (next.isPresent()) {
-                    records.add(next.get());
-                } else {
-                    endOfFile = true;
-                }
-            }
+        private void writeReportRecord(final String reportRecord) {
+            writeRecord(TransactionReportProcessor.LEGACY_DD_TRANREPT, () -> {
+                requireEncodedWidth(reportRecord, REPORT_RECORD_LENGTH,
+                        TransactionReportProcessor.LEGACY_DD_TRANREPT);
+                this.writer.write(reportRecord);
+                this.writer.write(RECORD_SEPARATOR);
+                this.recordsWritten++;
+                return FileStatus.SUCCESS.getCode();
+            });
+        }
 
-            final List<Transaction> snapshot = List.copyOf(records);
-            return position -> {
-                if (position < 0) {
-                    throw new IllegalArgumentException(
-                            "report transaction position must not be negative: " + position);
+        /**
+         * One forward walk over the filtered generation this step reads.
+         *
+         * <p>Sequential and forward-only, which is exactly how the report program reads its input: the
+         * position it asks for advances by one for every record it consumes and it never returns to a
+         * position it has left. The generation is read one record at a time rather than copied into
+         * the heap first, so a run's memory is bounded by the record width and not by the number of
+         * records the date range admitted. The generation is written by the preceding step and is not
+         * touched again, so what this walk serves is as frozen as a copy would have been - and it
+         * cannot observe a change to the transaction master, because it never queries it. See
+         * {@code docs/decision-log.md} entry DL-176.
+         *
+         * @return the forward source, never {@code null}
+         */
+        private ReportTransactionSource sequentialTransactionSource() {
+            return new SequentialGenerationWalk(this::readNextFilteredRecord);
+        }
+
+        /**
+         * Reads the next record of the filtered generation through this lifecycle's own read gate.
+         *
+         * <p>Routed through the gate rather than straight at the reader so that a technical failure on
+         * any record - not only on the first - is normalised into this member's read status and
+         * reported under the input data definition, exactly as it was when the whole generation was
+         * drained here in one pass.
+         *
+         * @return the next record, or empty at end of file
+         */
+        private Optional<Transaction> readNextFilteredRecord() {
+            return this.<Transaction>readRecord(DD_REPORT_INPUT, () -> {
+                final Transaction transaction = this.transactionReader.read();
+                if (transaction == null) {
+                    return IoResult.endOfFile();
                 }
-                if (position >= snapshot.size()) {
-                    return Optional.empty();
-                }
-                return Optional.of(snapshot.get(position));
-            };
+                return IoResult.of(FileStatus.SUCCESS.getCode(), transaction);
+            });
         }
 
         @Override

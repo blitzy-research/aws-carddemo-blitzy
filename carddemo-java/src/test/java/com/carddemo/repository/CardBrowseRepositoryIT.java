@@ -33,9 +33,7 @@ import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.carddemo.domain.Card;
@@ -65,7 +63,7 @@ import com.carddemo.support.AbstractPostgresIT;
  * SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
  */
-@DisplayName("Card browse: service-side first match and the pageable browse of the list screen")
+@DisplayName("Card browse: repository-side ordered first match and the keyset browse of the list screen")
 final class CardBrowseRepositoryIT extends AbstractPostgresIT {
 
     /** The screen row count of the card list, from its seven-occurrence row table. */
@@ -161,101 +159,135 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
     }
 
     /**
-     * Verifies the pageable browse contract that replaced the former test-only keyset methods.
+     * Verifies the bounded keyset browse of the base cluster that the card-list screen walks.
      *
-     * <p>The frozen repository surface intentionally declares no cursor or {@code Limit} finder.
-     * {@code CardListService} reads inherited {@code findAll(Pageable)} pages with an explicit card-number
-     * sort and emulates the VSAM start position while walking those pages. Strict greater-than cursor and
-     * lookahead-row assertions therefore have no repository contract to test here. This nest instead
-     * proves page continuity, the descending read order used for backward browsing, the caller's reversal
-     * into ascending screen order, and the filtered pageable overload that the repository does declare.
+     * <p>The list program browses the base cluster by card number: it positions on a retained record
+     * identifier and reads onward from it. That is a keyset read, and the repository declares its two
+     * directions as ordered, limit-bounded finders. An offset page is deliberately not the mechanism and
+     * is not tested here as if it were: it recounts and discards every earlier row on each fetch, and a
+     * card inserted or removed between two fetches shifts the window so that a row is delivered twice or
+     * missed - a defect the retained-key browse cannot have.
+     *
+     * <p>The inclusive first row of a greater-or-equal browse start is the inherited keyed read, so the
+     * two finders here are strict and the nest proves exactly that: the boundary row is never repeated,
+     * the order is the one the finder name declares, and a window plus its continuation tile the sequence
+     * with no gap.
      */
     @Nested
-    @DisplayName("the pageable browse of the card-list screen")
-    final class PagedBrowse {
+    @DisplayName("the bounded keyset browse of the card-list screen")
+    final class KeysetBrowse {
 
         /** Creates the nest. */
-        PagedBrowse() {
+        KeysetBrowse() {
         }
 
         @Test
-        @DisplayName("successive unfiltered pages ascend by card number without a gap or duplicate")
-        void successiveUnfilteredPagesContinueInAscendingOrder() {
+        @DisplayName("a forward window and its continuation tile the ascending sequence without a gap or "
+                + "a repeated boundary row")
+        void successiveForwardWindowsTileTheAscendingSequence() {
             runner().run(context -> {
                 final CardRepository repository = context.getBean(CardRepository.class);
-                final Sort ascending = Sort.by(Sort.Direction.ASC, "cardNum");
 
-                final Page<Card> firstPage =
-                        repository.findAll(PageRequest.of(0, SCREEN_ROWS, ascending));
-                final Page<Card> secondPage =
-                        repository.findAll(PageRequest.of(1, SCREEN_ROWS, ascending));
-                final Page<Card> firstTwoPageWindow =
-                        repository.findAll(PageRequest.of(0, SCREEN_ROWS * 2, ascending));
-                final List<String> observed = Stream.concat(firstPage.stream(), secondPage.stream())
-                        .map(Card::getCardNum)
-                        .toList();
+                final List<String> firstWindow = cardNumbersOf(
+                        repository.findByCardNumGreaterThanOrderByCardNumAsc("", Limit.of(SCREEN_ROWS)));
+                final List<String> continuation = cardNumbersOf(
+                        repository.findByCardNumGreaterThanOrderByCardNumAsc(
+                                firstWindow.get(firstWindow.size() - 1), Limit.of(SCREEN_ROWS)));
+                final List<String> wideWindow = cardNumbersOf(
+                        repository.findByCardNumGreaterThanOrderByCardNumAsc(
+                                "", Limit.of(SCREEN_ROWS * 2)));
 
-                assertThat(firstPage.getContent()).hasSize(SCREEN_ROWS);
-                assertThat(firstPage.hasNext()).as("the fifty-row seed has another page").isTrue();
-                assertThat(secondPage.getContent()).hasSize(SCREEN_ROWS);
-                assertThat(observed).isSorted();
-                assertThat(observed)
-                        .as("the two seven-row pages exactly equal one fourteen-row window")
-                        .containsExactlyElementsOf(firstTwoPageWindow.stream()
-                                .map(Card::getCardNum)
-                                .toList());
-            });
-        }
-
-        @Test
-        @DisplayName("a backward page is read descending and reversed into ascending screen order")
-        void anUnfilteredBackwardReadReversesToTheScreenOrder() {
-            runner().run(context -> {
-                final CardRepository repository = context.getBean(CardRepository.class);
-                final Sort descending = Sort.by(Sort.Direction.DESC, "cardNum");
-
-                final Page<Card> read =
-                        repository.findAll(PageRequest.of(0, SCREEN_ROWS, descending));
-                final List<String> readOrder = read.stream().map(Card::getCardNum).toList();
-                final List<String> screenOrder = readOrder.reversed();
-
-                assertThat(read.getContent()).hasSize(SCREEN_ROWS);
-                assertThat(readOrder)
-                        .as("descending is the repository read order")
-                        .isSortedAccordingTo(Comparator.reverseOrder());
-                assertThat(screenOrder)
-                        .as("the service reverses the descending read before filling the screen")
+                assertThat(firstWindow)
+                        .as("a blank bound is below every stored card number, so the walk opens at the "
+                                + "first row and the limit truncates to one screen")
+                        .hasSize(SCREEN_ROWS)
                         .isSorted();
+                assertThat(continuation)
+                        .as("the bound is strict, so the row the previous window ended on is not repeated")
+                        .hasSize(SCREEN_ROWS)
+                        .isSorted()
+                        .doesNotContain(firstWindow.get(firstWindow.size() - 1));
+                assertThat(Stream.concat(firstWindow.stream(), continuation.stream()).toList())
+                        .as("one window plus its continuation equals one window of twice the size")
+                        .containsExactlyElementsOf(wideWindow);
             });
         }
 
         @Test
-        @DisplayName("the account-filtered pageable finder narrows the same sequence and honours the "
-                + "caller's requested direction")
-        void theAccountFilteredPageHonoursTheSuppliedOrdering() {
+        @DisplayName("a backward window is read descending and reverses into ascending screen order")
+        void aBackwardWindowReversesIntoScreenOrder() {
             runner().run(context -> {
                 final CardRepository repository = context.getBean(CardRepository.class);
+                final List<String> ascending = cardNumbersOf(
+                        repository.findByCardNumGreaterThanOrderByCardNumAsc(
+                                "", Limit.of(SCREEN_ROWS + 1)));
+                final String boundary = ascending.get(SCREEN_ROWS);
+
+                final List<String> readOrder = cardNumbersOf(
+                        repository.findByCardNumLessThanOrderByCardNumDesc(
+                                boundary, Limit.of(SCREEN_ROWS)));
+
+                assertThat(readOrder)
+                        .as("descending is the repository read order the legacy backward walk uses")
+                        .hasSize(SCREEN_ROWS)
+                        .isSortedAccordingTo(Comparator.reverseOrder())
+                        .doesNotContain(boundary);
+                assertThat(readOrder.reversed())
+                        .as("the service fills its bottom slot first, so reversing the read order is the "
+                                + "ascending page the operator sees")
+                        .containsExactlyElementsOf(ascending.subList(0, SCREEN_ROWS));
+            });
+        }
+
+        @Test
+        @DisplayName("the ends of the sequence answer empty rather than raising, which is the browse's "
+                + "end-of-file arm")
+        void theEndsOfTheSequenceAnswerEmpty() {
+            runner().run(context -> {
+                final CardRepository repository = context.getBean(CardRepository.class);
+
+                assertThat(repository.findByCardNumLessThanOrderByCardNumDesc("", Limit.of(SCREEN_ROWS)))
+                        .as("read backwards, no row lies before a blank bound, which is why a backward "
+                                + "walk opened on the initial value yields nothing at once")
+                        .isEmpty();
+                assertThat(repository.findByCardNumGreaterThanOrderByCardNumAsc(
+                                "9999999999999999", Limit.of(SCREEN_ROWS)))
+                        .as("nothing follows the highest possible card number")
+                        .isEmpty();
+            });
+        }
+
+        @Test
+        @DisplayName("the ordered-first account finder returns the one card a keyed read of the "
+                + "alternate-index path would return, bounded to that single row")
+        void theOrderedFirstAccountFinderReturnsTheLowestBaseKey() {
+            runner().run(context -> {
+                final CardRepository repository = context.getBean(CardRepository.class);
+
+                assertThat(repository.findFirstByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT))
+                        .get()
+                        .extracting(Card::getCardNum)
+                        .isEqualTo(SEEDED_CARD);
                 try {
                     repository.saveAndFlush(reservedCard());
 
-                    final Page<Card> ascending = repository.findByCardAcctId(SEEDED_ACCOUNT,
-                            PageRequest.of(0, SCREEN_ROWS, Sort.by(Sort.Direction.ASC, "cardNum")));
-                    final Page<Card> descending = repository.findByCardAcctId(SEEDED_ACCOUNT,
-                            PageRequest.of(0, SCREEN_ROWS, Sort.by(Sort.Direction.DESC, "cardNum")));
-
-                    assertThat(ascending.getContent())
+                    assertThat(repository.findFirstByCardAcctIdOrderByCardNumAsc(SEEDED_ACCOUNT))
+                            .get()
                             .extracting(Card::getCardNum)
-                            .as("only the two cards of the filtered account, ascending by card number")
-                            .containsExactly(SEEDED_CARD, RESERVED_CARD);
-                    assertThat(ascending.hasNext()).isFalse();
-                    assertThat(descending.getContent())
-                            .extracting(Card::getCardNum)
-                            .as("the same two rows are returned in the requested backward read order")
-                            .containsExactly(RESERVED_CARD, SEEDED_CARD);
+                            .as("with two cards on the account the ordered-first read still returns the "
+                                    + "lowest base key, which is what the legacy keyed read returns")
+                            .isEqualTo(SEEDED_CARD);
+                    assertThat(repository.findByCardAcctId(SEEDED_ACCOUNT))
+                            .as("while the list form still exposes both, because the two answer "
+                                    + "different questions")
+                            .hasSize(2);
                 } finally {
                     repository.deleteById(RESERVED_CARD);
                     repository.flush();
                 }
+                assertThat(repository.findFirstByCardAcctIdOrderByCardNumAsc("99999999999"))
+                        .as("an account owning no card is the legacy not-found response, not a failure")
+                        .isEmpty();
             });
         }
     }
@@ -293,12 +325,22 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
                             .extracting(CardCrossReference::getXrefCardNum)
                             .as("the repository exposes every row of the non-unique alternate key")
                             .containsExactlyInAnyOrder(SEEDED_CARD, RESERVED_CARD);
-                    assertThat(matches.stream()
-                            .min(Comparator.comparing(CardCrossReference::getXrefCardNum)))
+                    assertThat(crossReferences
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT))
                             .get()
                             .extracting(CardCrossReference::getXrefCardNum)
-                            .as("the service-owned keyed-read rule selects the lowest base record")
+                            .as("while the ordered-first finder reads only the row a keyed read of the "
+                                    + "path returns, which is the lowest base record")
                             .isEqualTo(SEEDED_CARD);
+                    assertThat(matches.stream()
+                            .min(Comparator.comparing(CardCrossReference::getXrefCardNum))
+                            .map(CardCrossReference::getXrefCardNum))
+                            .as("and the two agree, which is what makes moving the rule into the "
+                                    + "repository a de-duplication rather than a change")
+                            .contains(crossReferences
+                                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(SEEDED_ACCOUNT)
+                                    .orElseThrow()
+                                    .getXrefCardNum());
                 } finally {
                     crossReferences.deleteById(RESERVED_CARD);
                     crossReferences.flush();
@@ -313,12 +355,28 @@ final class CardBrowseRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("an account with no cross-reference row yields an empty list rather than a failure")
+        @DisplayName("an account with no cross-reference row yields an empty result from both forms "
+                + "rather than a failure")
         void anAccountWithNoRowYieldsAnEmptyList() {
-            runner().run(context -> assertThat(context.getBean(CardCrossReferenceRepository.class)
-                    .findByXrefAcctId("99999999999"))
-                    .isEmpty());
+            runner().run(context -> {
+                final CardCrossReferenceRepository crossReferences =
+                        context.getBean(CardCrossReferenceRepository.class);
+
+                assertThat(crossReferences.findByXrefAcctId("99999999999")).isEmpty();
+                assertThat(crossReferences.findFirstByXrefAcctIdOrderByXrefCardNumAsc("99999999999"))
+                        .isEmpty();
+            });
         }
+    }
+
+    /**
+     * Returns the card numbers of one read window in read order.
+     *
+     * @param window the rows the read returned
+     * @return their card numbers, in the order the window presents them
+     */
+    private static List<String> cardNumbersOf(final List<Card> window) {
+        return window.stream().map(Card::getCardNum).toList();
     }
 
     /**

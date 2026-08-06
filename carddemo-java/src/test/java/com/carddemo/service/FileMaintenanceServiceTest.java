@@ -64,6 +64,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -249,6 +250,14 @@ final class FileMaintenanceServiceTest {
         return new CardCrossReference(cardNumber, "000000001", "00000000001");
     }
 
+    private static Card card() {
+        return new Card("4111111111111111", "00000000001", "987", "JOHN Q PUBLIC", "2030-01-01", "Y");
+    }
+
+    private static TransactionCategoryBalance categoryBalanceRow() {
+        return new TransactionCategoryBalance("00000000001", "01", "0005", new BigDecimal("10.00"));
+    }
+
     private static DataAccessResourceFailureException unreachable() {
         return new DataAccessResourceFailureException("the cluster could not be reached");
     }
@@ -260,7 +269,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("a populated cluster is read to end of file and reports exactly what it read")
         void populatedClusterIsReadToEndOfFile() {
-            when(accountRepository.count()).thenReturn(3L);
             when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     account("00000000001"), account("00000000002"), account("00000000003")));
 
@@ -279,7 +287,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("an empty cluster still ends at end of file, with a count of zero and no abend")
         void emptyClusterEndsAtEndOfFileWithoutAbending() {
-            when(accountRepository.count()).thenReturn(0L);
             when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             assertThatNoException().isThrownBy(() -> {
@@ -292,7 +299,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the opening and closing banners are emitted around the loop, naming the member")
         void openingAndClosingBannersSurroundTheLoop() {
-            when(accountRepository.count()).thenReturn(1L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
 
@@ -312,9 +318,10 @@ final class FileMaintenanceServiceTest {
     class ErrorArmAbendsAfterEmitting {
 
         @Test
-        @DisplayName("an unreachable cluster abends on the open arm and never attempts the retrieval")
-        void openArmAbendsWithoutRetrieving() {
-            when(accountRepository.count()).thenThrow(unreachable());
+        @DisplayName("an unreachable cluster abends on the open arm after exactly ONE bounded retrieval, "
+                + "because that first bounded page IS the open and no whole-table count precedes it")
+        void openArmAbendsAfterOneBoundedRetrieval() {
+            when(accountRepository.findAll(any(Sort.class))).thenThrow(unreachable());
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.readAccountFile())
@@ -324,14 +331,45 @@ final class FileMaintenanceServiceTest {
                             () -> assertThat(abend.code())
                                     .isEqualTo(AbendException.BATCH_ABEND_CODE)));
 
-            verify(accountRepository, never()).findAll(any(Sort.class));
+            verify(accountRepository, times(1)).findAll(any(Sort.class));
+            verify(accountRepository, never()).count();
         }
 
         @Test
-        @DisplayName("a failed retrieval abends on the read arm, under the read paragraph's own literal")
+        @DisplayName("no reader counts its cluster to open it, because the open needs to know the resource "
+                + "can be read and not how many rows it holds")
+        void noReaderCountsItsClusterToOpenIt() {
+            when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of(account("00000000001")));
+            when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(card()));
+            when(cardCrossReferenceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(crossReference("4111111111111111")));
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(categoryBalanceRow()));
+            when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of(customer()));
+
+            service.readAccountFile();
+            service.readCardFile();
+            service.readCardCrossReferenceFile();
+            service.readTransactionCategoryBalanceFile(record -> { });
+            service.readCustomerFile();
+
+            assertAll(
+                    () -> verify(accountRepository, never()).count(),
+                    () -> verify(cardRepository, never()).count(),
+                    () -> verify(cardCrossReferenceRepository, never()).count(),
+                    () -> verify(transactionCategoryBalanceRepository, never()).count(),
+                    () -> verify(customerRepository, never()).count());
+        }
+
+        @Test
+        @DisplayName("a retrieval that fails AFTER the open abends on the read arm, under the read "
+                + "paragraph's own literal, with the records already read still counted as read")
         void readArmAbendsUnderItsOwnLiteral() {
-            when(accountRepository.count()).thenReturn(1L);
-            when(accountRepository.findAll(any(Sort.class))).thenThrow(unreachable());
+            // The first bounded page is the open and succeeds; the loop consumes it and asks for the
+            // next page, which is where the failure lands - so this is a read failure and not an open one.
+            when(accountRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(account("00000000001")))
+                    .thenThrow(unreachable());
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.readAccountFile())
@@ -344,7 +382,7 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("literal, then raw status, then abend: the legacy order, asserted by log position")
         void diagnosticsPrecedeTheRaiseInLegacyOrder() {
-            when(accountRepository.count()).thenThrow(unreachable());
+            when(accountRepository.findAll(any(Sort.class))).thenThrow(unreachable());
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.readAccountFile());
@@ -363,7 +401,7 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("both levels of the status model are recorded: the raw code and the coarse result")
         void bothLevelsOfTheStatusModelAreRecorded() {
-            when(accountRepository.count()).thenThrow(unreachable());
+            when(accountRepository.findAll(any(Sort.class))).thenThrow(unreachable());
 
             assertThatExceptionOfType(AbendException.class)
                     .isThrownBy(() -> service.readAccountFile());
@@ -481,7 +519,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the account reader orders by the eleven-character account identifier")
         void accountReaderOrdersByAccountIdentifier() {
-            when(accountRepository.count()).thenReturn(0L);
             when(accountRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             service.readAccountFile();
@@ -494,7 +531,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the card reader orders by the sixteen-character card number")
         void cardReaderOrdersByCardNumber() {
-            when(cardRepository.count()).thenReturn(0L);
             when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             service.readCardFile();
@@ -507,7 +543,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the cross-reference reader orders by the sixteen-character card-number key")
         void crossReferenceReaderOrdersByCardNumber() {
-            when(cardCrossReferenceRepository.count()).thenReturn(0L);
             when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             service.readCardCrossReferenceFile();
@@ -520,10 +555,9 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the category balance reader orders by all three parts of its composite key")
         void categoryBalanceReaderOrdersByTheWholeCompositeKey() {
-            when(transactionCategoryBalanceRepository.count()).thenReturn(0L);
             when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
-            service.readTransactionCategoryBalanceFile();
+            service.readTransactionCategoryBalanceFile(record -> { });
 
             ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
             verify(transactionCategoryBalanceRepository).findAll(sort.capture());
@@ -534,7 +568,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the customer reader orders by the nine-character customer identifier")
         void customerReaderOrdersByCustomerIdentifier() {
-            when(customerRepository.count()).thenReturn(0L);
             when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
             service.readCustomerFile();
@@ -552,7 +585,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the card reader reports its own member and resource")
         void cardReaderReportsItsOwnIdentity() {
-            when(cardRepository.count()).thenReturn(1L);
             when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     new Card("4111111111111111", "00000000001", "987", "JOHN Q PUBLIC",
                             "2030-01-01", "Y")));
@@ -569,7 +601,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the cross-reference reader reports CBACT03C and XREFFILE")
         void crossReferenceReaderReportsItsOwnIdentity() {
-            when(cardCrossReferenceRepository.count()).thenReturn(1L);
             when(cardCrossReferenceRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(crossReference("4111111111111111")));
 
@@ -584,15 +615,70 @@ final class FileMaintenanceServiceTest {
         }
 
         @Test
+        @DisplayName("the category-balance pass delivers every record to the destination it is given, in "
+                + "key order, as it reads them - so one traversal both reads and writes")
+        void theCategoryBalancePassDeliversEveryRecordAsItReadsIt() {
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
+                    new TransactionCategoryBalance("00000000001", "01", "0005",
+                            new BigDecimal("10.00")),
+                    new TransactionCategoryBalance("00000000001", "01", "0006",
+                            new BigDecimal("20.00")),
+                    new TransactionCategoryBalance("00000000002", "01", "0005",
+                            new BigDecimal("30.00"))));
+            final List<String> delivered = new java.util.ArrayList<>();
+
+            FileMaintenanceService.FileReadSummary summary =
+                    service.readTransactionCategoryBalanceFile(record -> delivered.add(
+                            record.getTrancatAcctId() + record.getTrancatTypeCd()
+                                    + record.getTrancatCd()));
+
+            assertAll(
+                    () -> assertThat(delivered).containsExactly(
+                            "00000000001010005", "00000000001010006", "00000000002010005"),
+                    () -> assertThat(summary.recordsRead())
+                            .as("the count is the count of the one traversal that fed the destination")
+                            .isEqualTo(delivered.size()));
+        }
+
+        @Test
+        @DisplayName("the destination is mandatory, because the pass stands for a copy statement and a "
+                + "copy with no destination is never an intent")
+        void theCategoryBalanceDestinationIsMandatory() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> service.readTransactionCategoryBalanceFile(null))
+                    .withMessageContaining("recordSink");
+        }
+
+        @Test
+        @DisplayName("a destination that fails stops the pass at that record, so the failure is not "
+                + "deferred until the whole cluster has been traversed")
+        void aFailingCategoryBalanceDestinationStopsThePass() {
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
+                    new TransactionCategoryBalance("00000000001", "01", "0005",
+                            new BigDecimal("10.00")),
+                    new TransactionCategoryBalance("00000000001", "01", "0006",
+                            new BigDecimal("20.00"))));
+            final List<String> delivered = new java.util.ArrayList<>();
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> service.readTransactionCategoryBalanceFile(record -> {
+                        delivered.add(record.getTrancatCd());
+                        throw new IllegalStateException("the destination refused the record");
+                    }))
+                    .withMessage("the destination refused the record");
+            assertThat(delivered)
+                    .as("only the first record was attempted; the pass did not run to the end first")
+                    .containsExactly("0005");
+        }
+        @Test
         @DisplayName("the category-balance unload reports the copy step rather than inventing a member")
         void categoryBalanceUnloadReportsItsStepAndResource() {
-            when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
             when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     new TransactionCategoryBalance("00000000001", "01", "0005",
                             new BigDecimal("10.00"))));
 
             FileMaintenanceService.FileReadSummary summary =
-                    service.readTransactionCategoryBalanceFile();
+                    service.readTransactionCategoryBalanceFile(record -> { });
 
             assertAll(
                     () -> assertThat(summary.programName()).isEqualTo("STEP05R"),
@@ -603,7 +689,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the customer reader reports its own member and resource")
         void customerReaderReportsItsOwnIdentity() {
-            when(customerRepository.count()).thenReturn(1L);
             when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of(customer()));
 
             FileMaintenanceService.FileReadSummary summary = service.readCustomerFile();
@@ -617,10 +702,11 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("every reader abends under its own member name and its own open literal")
         void everyReaderAbendsUnderItsOwnLiteral() {
-            when(cardRepository.count()).thenThrow(unreachable());
-            when(cardCrossReferenceRepository.count()).thenThrow(unreachable());
-            when(transactionCategoryBalanceRepository.count()).thenThrow(unreachable());
-            when(customerRepository.count()).thenThrow(unreachable());
+            when(cardRepository.findAll(any(Sort.class))).thenThrow(unreachable());
+            when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenThrow(unreachable());
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class)))
+                    .thenThrow(unreachable());
+            when(customerRepository.findAll(any(Sort.class))).thenThrow(unreachable());
 
             assertAll(
                     () -> assertThatExceptionOfType(AbendException.class)
@@ -636,7 +722,7 @@ final class FileMaintenanceServiceTest {
                                 assertThat(abend.reason()).isEqualTo("ERROR OPENING XREFFILE");
                             }),
                     () -> assertThatExceptionOfType(AbendException.class)
-                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile())
+                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile(record -> { }))
                             .satisfies(abend -> {
                                 assertThat(abend.culprit()).isEqualTo("STEP05R");
                                 assertThat(abend.reason()).isEqualTo("ERROR OPENING TCATBALF");
@@ -652,15 +738,16 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("every reader abends under its own read literal when the retrieval fails")
         void everyReaderAbendsUnderItsOwnReadLiteral() {
-            when(cardRepository.count()).thenReturn(1L);
-            when(cardRepository.findAll(any(Sort.class))).thenThrow(unreachable());
-            when(cardCrossReferenceRepository.count()).thenReturn(1L);
-            when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenThrow(unreachable());
-            when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
-            when(transactionCategoryBalanceRepository.findAll(any(Sort.class)))
+            // First bounded page succeeds - that page is the open - and the page after it fails.
+            when(cardRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(card())).thenThrow(unreachable());
+            when(cardCrossReferenceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(crossReference("4111111111111111")))
                     .thenThrow(unreachable());
-            when(customerRepository.count()).thenReturn(1L);
-            when(customerRepository.findAll(any(Sort.class))).thenThrow(unreachable());
+            when(transactionCategoryBalanceRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(categoryBalanceRow())).thenThrow(unreachable());
+            when(customerRepository.findAll(any(Sort.class)))
+                    .thenReturn(List.of(customer())).thenThrow(unreachable());
 
             assertAll(
                     () -> assertThatExceptionOfType(AbendException.class)
@@ -672,7 +759,7 @@ final class FileMaintenanceServiceTest {
                             .satisfies(abend -> assertThat(abend.reason())
                                     .isEqualTo("ERROR READING XREFFILE")),
                     () -> assertThatExceptionOfType(AbendException.class)
-                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile())
+                            .isThrownBy(() -> service.readTransactionCategoryBalanceFile(record -> { }))
                             .satisfies(abend -> assertThat(abend.reason())
                                     .isEqualTo("ERROR READING TCATBALF")),
                     () -> assertThatExceptionOfType(AbendException.class)
@@ -689,7 +776,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the reader opens, reads to end of file, closes and emits each record twice")
         void readsToEndOfFileAndReproducesTheDoubleEmission() {
-            when(cardCrossReferenceRepository.count()).thenReturn(2L);
             when(cardCrossReferenceRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     crossReference("4111111111111111"),
                     crossReference("4111111111111112")));
@@ -718,7 +804,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the two record emissions reveal none of the three cross-reference identifiers")
         void bothRecordEmissionsRemainRedacted() {
-            when(cardCrossReferenceRepository.count()).thenReturn(1L);
             when(cardCrossReferenceRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(crossReference("4111111111111111")));
 
@@ -773,7 +858,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("only a correlation token and the non-sensitive status label are emitted")
         void onlyCorrelationAndStatusAreEmitted() {
-            when(accountRepository.count()).thenReturn(1L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
 
@@ -800,7 +884,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the postal field the paragraph does not display is not displayed here either")
         void thePostalFieldIsNotDisplayed() {
-            when(accountRepository.count()).thenReturn(1L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
 
@@ -813,7 +896,6 @@ final class FileMaintenanceServiceTest {
         @DisplayName("with the diagnostic level raised, the read still completes and emits no labels")
         void labelsAreOmittedWhenTheDiagnosticLevelExcludesThem() {
             serviceLogger.setLevel(Level.INFO);
-            when(accountRepository.count()).thenReturn(1L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
 
@@ -832,7 +914,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("neither the card number nor the verification code reaches the log")
         void cardNumberAndVerificationCodeAreWithheld() {
-            when(cardRepository.count()).thenReturn(1L);
             when(cardRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     new Card("4111111111111111", "00000000001", "987", "JOHN Q PUBLIC",
                             "2030-01-01", "Y")));
@@ -853,7 +934,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the customer diagnostic carries only a correlation token")
         void onlyTheCustomerCorrelationTokenIsEmitted() {
-            when(customerRepository.count()).thenReturn(1L);
             when(customerRepository.findAll(any(Sort.class))).thenReturn(List.of(customer()));
 
             service.readCustomerFile();
@@ -872,12 +952,11 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("the category-balance unload withholds its account key and balance")
         void categoryBalanceUnloadWithholdsKeyAndBalance() {
-            when(transactionCategoryBalanceRepository.count()).thenReturn(1L);
             when(transactionCategoryBalanceRepository.findAll(any(Sort.class))).thenReturn(List.of(
                     new TransactionCategoryBalance("00000000001", "01", "0005",
                             new BigDecimal("98765.43"))));
 
-            service.readTransactionCategoryBalanceFile();
+            service.readTransactionCategoryBalanceFile(record -> { });
 
             assertAll(
                     () -> assertThat(messages()).anyMatch(line -> line.matches(
@@ -990,7 +1069,6 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("a second read reports its own count rather than accumulating the first")
         void countsDoNotAccumulateAcrossInvocations() {
-            when(accountRepository.count()).thenReturn(2L);
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001"), account("00000000002")))
                     .thenReturn(List.of());
@@ -1003,8 +1081,7 @@ final class FileMaintenanceServiceTest {
         @Test
         @DisplayName("an abend on one reader leaves another reader able to complete normally")
         void anAbendOnOneReaderDoesNotDisableAnother() {
-            when(cardRepository.count()).thenThrow(unreachable());
-            when(accountRepository.count()).thenReturn(1L);
+            when(cardRepository.findAll(any(Sort.class))).thenThrow(unreachable());
             when(accountRepository.findAll(any(Sort.class)))
                     .thenReturn(List.of(account("00000000001")));
 

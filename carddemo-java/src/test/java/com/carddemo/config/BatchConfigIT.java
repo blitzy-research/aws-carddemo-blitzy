@@ -296,10 +296,9 @@ class BatchConfigIT extends AbstractPostgresIT {
                         .as("and it disturbs none of the application tables the migrations own")
                         .containsAll(SchemaColumnCatalog.load().tableNames());
                 assertThat(present.stream().filter(name -> !name.startsWith("batch_")
-                                && !name.startsWith("flyway_")
-                                && !name.equals("job_submission_outbox")).toList())
-                        .as("a business-table census excludes framework, migration-history and "
-                                + "queue-delivery state; exactly eleven record-layout tables remain")
+                                && !name.startsWith("flyway_")).toList())
+                        .as("a business-table census excludes framework and migration-history "
+                                + "tables; exactly eleven record-layout tables remain")
                         .hasSize(SchemaColumnCatalog.load().tableNames().size());
             });
         }

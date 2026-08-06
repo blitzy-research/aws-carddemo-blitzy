@@ -20,7 +20,6 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -3628,10 +3627,12 @@ public final class CardUpdateService {
      * Performs the read the paragraph above dispatches on, choosing between the two access paths.
      *
      * <p>Keyed access by card number is the legacy's live path and uses the inherited primary-key finder.
-     * The account path is the declared non-unique alternate index. Its finder returns every matching
-     * row, and {@link #firstByBaseKey(java.util.List)} selects the one a keyed read would have returned -
-     * the lowest card number, which is the cluster's base key. That selection rule belongs to the read
-     * rather than to the index, so it is applied here rather than folded into the query.
+     * The account path is the declared non-unique alternate index, read through the repository's
+     * ordered-first finder: one row, ordered on the cluster's base key, which is the record a keyed read
+     * of that path returns. The selection rule lives in the repository so that the seven services
+     * reproducing this read state it once between them rather than seven times, and so that no row is
+     * fetched that the read would have discarded. The reasoning is recorded as {@code DL-164} in
+     * {@code docs/decision-log.md}.
      *
      * <p>Records the raw file status and the operation on failure, so the diagnostic and any subsequent
      * abend can name both. The two read sites are distinguishable there even though the source leaves the
@@ -3649,8 +3650,11 @@ public final class CardUpdateService {
                 return this.cardRepository.findById(state.recordIdentificationCardNumber.trim());
             }
             if (!isBlank(state.workAreaAccountId)) {
-                return firstByBaseKey(
-                        this.cardRepository.findByCardAcctId(state.workAreaAccountId.trim()));
+                // A keyed read of the non-unique account path returns the first record in ascending
+                // base-key order, which is what the repository's ordered-first finder reads: one row,
+                // ordered on the base key, with nothing fetched that the read would have discarded.
+                return this.cardRepository
+                        .findFirstByCardAcctIdOrderByCardNumAsc(state.workAreaAccountId.trim());
             }
             return Optional.empty();
         } catch (final RuntimeException failure) {
@@ -3662,26 +3666,6 @@ public final class CardUpdateService {
                     FailureDiagnostics.failureChainOf(failure));
             return Optional.empty();
         }
-    }
-
-    /**
-     * Selects the record a keyed read of the non-unique account path would have returned: the one with
-     * the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the card cluster is the card number. The
-     * repository therefore returns every matching row and the selection happens at this call site,
-     * where the behaviour it decides is visible.
-     *
-     * <p>The comparison is on the raw sixteen-character value and is neither trimmed nor numeric:
-     * every stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric
-     * order coincide.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or an empty result when there is none
-     */
-    private static Optional<Card> firstByBaseKey(final List<Card> candidates) {
-        return candidates.stream().min(Comparator.comparing(Card::getCardNum));
     }
 
     /**

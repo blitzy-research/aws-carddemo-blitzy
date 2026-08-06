@@ -16,10 +16,11 @@
  */
 package com.carddemo.batch.step;
 
+import com.carddemo.util.SecureStagedFiles;
+
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -203,13 +204,17 @@ public final class StagedGenerationStore {
     public static Path completeWorkingFile(final Path workingPath, final Path completedPath) {
         Objects.requireNonNull(workingPath, "workingPath");
         Objects.requireNonNull(completedPath, "completedPath");
-        final Path container = completedPath.getParent();
         try {
-            if (container != null) {
-                Files.createDirectories(container);
-            }
-            return Files.move(workingPath, completedPath,
+            SecureStagedFiles.prepareContainerOf(completedPath);
+            final Path sealed = Files.move(workingPath, completedPath,
                     StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            // An atomic move carries the working file's owner-only mode with it, so this is a no-op on
+            // the ordinary path. It is not a no-op where the destination pre-existed with a wider mode
+            // or where the filesystem implements the move as a copy, and either of those would leave a
+            // completed generation readable by every account on the host.
+            // See docs/decision-log.md entry DL-178.
+            SecureStagedFiles.applyOwnerOnly(sealed);
+            return sealed;
         } catch (final IOException failure) {
             throw new UncheckedIOException("completed batch artifact could not be atomically sealed",
                     failure);
@@ -335,31 +340,53 @@ public final class StagedGenerationStore {
     }
 
     /**
-     * Immediately publishes an in-memory generation, used by the transaction-backup job whose
-     * generation is composed in memory rather than through a local staging file.
+     * Immediately publishes one completed local generation, streaming it from the file rather than
+     * holding it.
+     *
+     * <p>The distinction from {@link #publishRegistered(JobExecution)} is <em>when</em>, not how. A
+     * registered artifact is published when its job completes, which suits a job whose generation must
+     * appear only if the whole submission succeeded. This method publishes at the moment the producing
+     * step closes its output, which is what a job stream that allocated and catalogued one new
+     * generation per step did: the generation existed from the end of the step that wrote it, and a
+     * later bypassed or failed step did not un-catalogue it.
+     *
+     * <p>Nothing is held in memory. The body is read from the file as it is uploaded, so a generation of
+     * any size costs one buffer, and the reported length is the file's own length rather than the size
+     * of an array that had to exist first. See {@code docs/decision-log.md} entry DL-176 for why this
+     * replaced a byte-array publication.
      *
      * @param logicalBase logical generation-group base
      * @param executionId framework execution identifier
-     * @param content complete external bytes
+     * @param completedPath completed local generation, which must not be a working file
      * @param retentionLimit measured retained depth
      * @return the published generation
+     * @throws IllegalArgumentException if the path names a working file
+     * @throws UncheckedIOException if the file cannot be measured or read
      */
-    public PublishedGeneration publishBytes(final String logicalBase, final long executionId,
-            final byte[] content, final int retentionLimit) {
+    public PublishedGeneration publishFile(final String logicalBase, final long executionId,
+            final Path completedPath, final int retentionLimit) {
         final String base = requireLogicalBase(logicalBase);
         requireExecutionId(executionId);
         requireRetentionLimit(retentionLimit);
-        final byte[] bytes = Objects.requireNonNull(content, "content").clone();
+        final Path source = Objects.requireNonNull(completedPath, "completedPath");
+        if (source.toString().endsWith(WORKING_SUFFIX)) {
+            throw new IllegalArgumentException("a working batch artifact cannot be published as"
+                    + " complete");
+        }
         final String bucket = this.bucket;
         final String key = objectKey(base, executionId);
-        try (InputStream body = new ByteArrayInputStream(bytes)) {
-            this.objectStore.upload(bucket, key, body);
-        } catch (final IOException impossibleForByteArray) {
-            throw new UncheckedIOException("in-memory batch artifact could not be closed",
-                    impossibleForByteArray);
+        final long size;
+        try {
+            size = Files.size(source);
+            try (InputStream body = Files.newInputStream(source)) {
+                this.objectStore.upload(bucket, key, body);
+            }
+        } catch (final IOException failure) {
+            throw new UncheckedIOException("completed batch artifact could not be published for "
+                    + base, failure);
         }
         enforceRetention(bucket, new RetentionPolicy(base, retentionLimit));
-        return new PublishedGeneration(bucket, key, bytes.length);
+        return new PublishedGeneration(bucket, key, size);
     }
 
     /**
@@ -485,10 +512,15 @@ public final class StagedGenerationStore {
                 + generationToken(registration.executionId()));
         try {
             if (aliasContainer != null) {
-                Files.createDirectories(aliasContainer);
+                SecureStagedFiles.prepareDirectory(aliasContainer);
             }
             Files.copy(registration.completedPath(), temporaryAlias,
                     StandardCopyOption.REPLACE_EXISTING);
+            // A copy without the attribute option creates its target at the process umask rather than
+            // at the source's mode, so the alias - which is a byte-for-byte duplicate of the completed
+            // generation - would otherwise be the one readable copy of it. Secured before the move,
+            // which then carries the mode across.
+            SecureStagedFiles.applyOwnerOnly(temporaryAlias);
             Files.move(temporaryAlias, alias, StandardCopyOption.ATOMIC_MOVE,
                     StandardCopyOption.REPLACE_EXISTING);
         } catch (final IOException failure) {

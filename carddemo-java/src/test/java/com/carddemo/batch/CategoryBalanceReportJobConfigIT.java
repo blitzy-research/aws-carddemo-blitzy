@@ -433,15 +433,23 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         SEEDED_ACCOUNT + " 01 000A",
                         SEEDED_ACCOUNT + " 01 000J"));
 
+        // EDIT=(TTTTTTTTT.TT) is written entirely from the always-print digit selector, so every one
+        // of the eleven digit positions carries a digit for every value and nothing is ever blanked.
         assertThat(amountOf(lines.get(0)))
-                .as("the mask suppresses leading zeros and inserts the point")
-                .isEqualTo("      900.00");
+                .as("every declared integer digit position is emitted, leading zeros included")
+                .isEqualTo("000000900.00");
         assertThat(amountOf(lines.get(1)))
-                .as("a balance of exactly zero blanks the whole mask")
-                .isEqualTo(" ".repeat(CategoryBalanceReportJobConfig.BALANCE_MASK_WIDTH));
+                .as("a balance of exactly zero renders nine zeros, the point and two more zeros - it "
+                        + "does NOT blank the field, which is what the zero-suppressing selector would "
+                        + "have done and this specification does not use it")
+                .isEqualTo("000000000.00");
         assertThat(amountOf(lines.get(4)))
-                .as("a magnitude below one keeps the point and both fractional digits")
-                .isEqualTo("         .05");
+                .as("a magnitude below one carries nine integer zeros, the point and both fractional "
+                        + "digits")
+                .isEqualTo("000000000.05");
+        assertThat(lines)
+                .as("no line may carry a blank anywhere inside the twelve-character mask")
+                .allSatisfy(line -> assertThat(amountOf(line)).doesNotContain(" "));
 
         // Beyond the five discriminating rows every key is plainly zero padded, so for that tail - and
         // ONLY for that tail - a character comparison and a zoned-decimal one agree. The whole file is

@@ -22,6 +22,8 @@ import com.carddemo.domain.TransactionCategoryBalance;
 import com.carddemo.domain.id.DisclosureGroupId;
 import com.carddemo.domain.id.TransactionCategoryBalanceId;
 import com.carddemo.service.InterestCalculationService;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.util.ZonedDecimalCodec;
 import io.micrometer.core.instrument.Counter;
@@ -31,9 +33,11 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.ExitStatus;
@@ -124,11 +128,19 @@ import org.springframework.batch.item.ItemProcessor;
  * through a control break the legacy would not have run.
  *
  * <p>The group's account rewrite is durable as soon as the service returns, because one closed group
- * owns one transaction. Synthesized transactions are returned rather than inserted into the live
- * transaction master: the job's guarded writer is the sole owner of the SYSTRAN generation, and
- * COMBTRAN loads that generation later. The final group is additionally retained on this instance and
- * published by {@link #finalAccruedGroup()}, so the job configuration can render its fixed-width
- * records after end of file; nothing about the account posting depends on that.
+ * owns one transaction. Nothing is inserted into the live transaction master: the job's guarded writer
+ * is the sole owner of the SYSTRAN generation, and COMBTRAN loads that generation later.
+ *
+ * <p><strong>That writer is bound to this stage and is invoked while the group is still open</strong>,
+ * not after it returns. {@code app/cbl/CBACT04C.cbl:L468} writes each transaction record the moment it
+ * is assembled and {@code L353} rewrites the account only at the control break, so every record of a
+ * group reached its dataset before that group's balance was rewritten and a failed record write abended
+ * with the balance untouched. Rendering the records after the service returned would invert that order,
+ * because the rewrite has committed by then. The group's records are still reported back, and this stage
+ * still counts and checks them, but it does not write them - the bound writer does, at the moment each
+ * one is synthesized. The final group is additionally retained on this instance and published by
+ * {@link #finalAccruedGroup()} for the same counting and checking; its records were written when they
+ * were synthesized, like every other group's.
  *
  * <h2>One deliberate re-ordering, recorded rather than hidden</h2>
  *
@@ -468,6 +480,17 @@ public class InterestCalculationProcessor
     private Accrual accrual;
 
     /**
+     * Where a synthesized transaction record is written, bound by the step that owns the output
+     * generation and unbound when that step closes it.
+     *
+     * <p>It is deliberately absent until bound rather than defaulting to a discarding sink. A discarding
+     * default would let a step that forgot to bind run to completion, post every balance and produce an
+     * empty generation - the exact failure this stage exists to make impossible. Absent, the first
+     * synthesized record fails loudly instead, before any balance is rewritten.
+     */
+    private Consumer<Transaction> synthesizedWriter;
+
+    /**
      * Constructs the stage.
      *
      * <p>Constructor injection throughout, and every collaborator is required. There is no degraded
@@ -616,13 +639,72 @@ public class InterestCalculationProcessor
     }
 
     /**
+     * Binds the writer that performs the legacy transaction-record write at
+     * {@code app/cbl/CBACT04C.cbl:L500}.
+     *
+     * <p>The step that owns the output generation binds this once its generation is open and <em>before
+     * the first row is read</em>, so no group can close without somewhere to write. Each record is then
+     * written while its group is still open and before that group's account rewrite, which is the order
+     * the legacy has and the order a write failure depends on to leave the balance untouched.
+     *
+     * <p>The writer is expected to raise on failure - the guarded write of the shared step template
+     * does exactly that, after logging the operation, the resource and the raw status. Whatever it raises
+     * propagates through the service's group boundary, so the group's transaction rolls back and the
+     * account is not rewritten. Nothing here catches it or translates it, because the legacy's own arms
+     * at lines 501 to 512 belong to the writer.
+     *
+     * @param writer where each synthesized record is written, in synthesis order
+     * @throws NullPointerException if the writer is absent; unbinding is
+     *         {@link #unbindSynthesizedTransactionWriter()} and is never expressed as a null binding
+     */
+    public void bindSynthesizedTransactionWriter(final Consumer<Transaction> writer) {
+        this.synthesizedWriter = Objects.requireNonNull(writer, "writer must not be null: unbinding is"
+                + " a separate operation, so a null binding is always a mistake rather than an intent");
+    }
+
+    /**
+     * Releases the bound writer, so a record synthesized after the generation has been closed fails
+     * rather than being written to a closed resource or silently discarded.
+     *
+     * <p>Called by the owning step when it closes its output, after the final control break has run.
+     * Ordering matters: the final break synthesizes records and must still find the writer bound.
+     */
+    public void unbindSynthesizedTransactionWriter() {
+        this.synthesizedWriter = null;
+    }
+
+    /**
+     * Performs one legacy transaction-record write through the bound writer.
+     *
+     * <p>Passed to the service as a method reference rather than passing the field, so that the binding
+     * is resolved at the moment of the write. A step binds after this stage is constructed, and a group
+     * may close on any row, so resolving early would capture the absence rather than the binding.
+     *
+     * @param synthesized the record the service has just assembled
+     * @throws IllegalStateException if no writer is bound, which means the owning step opened its
+     *         generation without binding it and would otherwise have posted balances into a run whose
+     *         records went nowhere
+     */
+    private void writeSynthesizedTransaction(final Transaction synthesized) {
+        final Consumer<Transaction> writer = this.synthesizedWriter;
+        if (writer == null) {
+            throw new IllegalStateException(LEGACY_JOB + " " + LEGACY_STEP + " synthesized a"
+                    + " transaction record with no writer bound; the step that owns the "
+                    + OUTPUT_RESOURCE + " generation must bind one before the first row is read,"
+                    + " because the legacy writes every record before it rewrites the balance");
+        }
+        writer.accept(synthesized);
+    }
+
+    /**
      * The group the final control break closed, once the step has ended.
      *
-     * <p>Published because the group closed after the last chunk cannot travel to the writer through
-     * the chunk path: there is no chunk left to carry it. Its account rewrite is already durable in the
-     * group's own transaction, while its synthesized transactions still belong exclusively to the
-     * SYSTRAN generation. This accessor lets the job configuration render that final group's records
-     * after end of file just as it renders every earlier group.
+     * <p>Published because the group closed after the last chunk cannot travel out through the chunk
+     * path: there is no chunk left to carry it. Its account rewrite is already durable in the group's
+     * own transaction, and <strong>its records were already written by the bound writer</strong> at the
+     * moment each was synthesized - this accessor does not carry them to a writer and must not be used
+     * to. What it carries is the group's outcome: its rows, its total, its counts and the suffix it
+     * finished on, which is what an operator, a counter and a check need after end of file.
      *
      * @return the final group, or an empty result when the run read no row at all, when the step did not
      *         succeed, or when the step has not ended yet
@@ -740,17 +822,22 @@ public class InterestCalculationProcessor
      * template's twenty-six-character format, and stamps the emitted group. It is not re-derived per
      * field and not re-derived per row.
      *
+     * <p>The bound writer is handed to the service rather than applied to the returned records, so each
+     * record is written at {@code app/cbl/CBACT04C.cbl:L500} - inside the group's unit of work and before
+     * its account rewrite - and a write failure abends with the balance still untouched.
+     *
      * @param  current the open execution state
      * @return what the group produced
      */
     private AccruedAccountGroup accrueOpenGroup(final Accrual current) {
         final String accountId = current.lastAccountNumber();
-        final List<TransactionCategoryBalance> rows = current.bufferedRows();
+        final List<TransactionCategoryBalance> rows = current.detachOpenGroupRows();
         final long initialSuffix = current.tranIdSuffix();
         final String parameterDate = current.parameterDate();
 
         final InterestCalculationService.GroupInterestResult result = this.interestCalculationService
-                .calculateGroupInterest(parameterDate, accountId, rows, initialSuffix);
+                .calculateGroupInterest(parameterDate, accountId, rows, initialSuffix,
+                        this::writeSynthesizedTransaction);
         requireGroupIdentity(accountId, rows.size(), result);
 
         final String accruedAt = this.batchTimestamps.batchTimestamp();
@@ -763,8 +850,9 @@ public class InterestCalculationProcessor
                 result.rateGateSkipped(), result.defaultGroupUsed());
         this.transactionsCounter.increment(result.interestTransactions().size());
 
-        LOGGER.debug("control break closed account={} rows={} transactions={} defaultGroupUsed={}"
-                + " rateGateSkipped={} accruedAt={}", accountId, result.recordCount(),
+        LOGGER.debug("control break closed accountRef={} rows={} transactions={} defaultGroupUsed={}"
+                + " rateGateSkipped={} accruedAt={}", SensitiveLogRedactor.redact(accountId),
+                result.recordCount(),
                 result.interestTransactions().size(), result.defaultGroupUsed(),
                 result.rateGateSkipped(), accruedAt);
 
@@ -911,8 +999,9 @@ public class InterestCalculationProcessor
         Objects.requireNonNull(parameterDate, "parameterDate must not be null");
         if (encodedWidth(parameterDate) != PARM_DATE_WIDTH) {
             throw new IllegalArgumentException("the run date must be exactly " + PARM_DATE_WIDTH
-                    + " encoded bytes to fill the identifier's date prefix, but \"" + parameterDate
-                    + "\" encodes to " + encodedWidth(parameterDate));
+                    + " encoded bytes to fill the identifier's date prefix, but \""
+                    + FailureDiagnostics.printableForm(parameterDate) + "\" encodes to "
+                    + encodedWidth(parameterDate));
         }
         if (suffix < 1L) {
             throw new IllegalArgumentException("the identifier suffix is incremented before use, so it"
@@ -1001,8 +1090,8 @@ public class InterestCalculationProcessor
     static void requireInterestRecordWidth(final byte[] renderedImage, final String tranId) {
         final int renderedWidth = renderedImage.length;
         if (renderedWidth != INTEREST_RECORD_LENGTH) {
-            throw outputContractBreach(ARTEFACT + " rendered " + renderedWidth
-                    + " bytes for interest transaction " + tranId + ", but every record of the "
+            throw outputContractBreach(ARTEFACT + " rendered " + renderedWidth + " bytes for "
+                    + interestTransactionDiagnostic(tranId) + ", but every record of the "
                     + OUTPUT_RESOURCE + " dataset is fixed at " + INTEREST_RECORD_LENGTH + " bytes");
         }
     }
@@ -1058,14 +1147,16 @@ public class InterestCalculationProcessor
         if (encodedWidth(supplied) != PARM_DATE_WIDTH) {
             throw new IllegalArgumentException("job parameter [" + PARM_DATE_KEY + "] must be exactly "
                     + PARM_DATE_WIDTH + " encoded bytes to fill the legacy parameter date field, but \""
-                    + supplied + "\" encodes to " + encodedWidth(supplied));
+                    + FailureDiagnostics.printableForm(supplied) + "\" encodes to "
+                    + encodedWidth(supplied));
         }
         for (int index = 0; index < supplied.length(); index++) {
             final char character = supplied.charAt(index);
             if (character < ZERO_FILL || character > '9') {
                 throw new IllegalArgumentException("job parameter [" + PARM_DATE_KEY + "] must be "
                         + PARM_DATE_WIDTH + " digits with no separators, and is not a hyphenated date,"
-                        + " but \"" + supplied + "\" carries '" + character + "' at position "
+                        + " but \"" + FailureDiagnostics.printableForm(supplied) + "\" carries "
+                        + FailureDiagnostics.printableForm(character) + " at position "
                         + (index + 1));
             }
         }
@@ -1110,14 +1201,15 @@ public class InterestCalculationProcessor
     private static void requireGroupIdentity(final String accountId, final int bufferedRows,
             final InterestCalculationService.GroupInterestResult result) {
         if (!accountId.equals(result.accountId())) {
-            throw outputContractBreach("the control break closed account " + accountId
-                    + " but the accrual reported account " + result.accountId());
+            throw outputContractBreach("the control break closed " + accountDiagnostic(accountId)
+                    + " but the accrual reported " + accountDiagnostic(result.accountId()));
         }
         if (result.recordCount() != bufferedRows
                 || result.categoryInterests().size() != bufferedRows) {
-            throw outputContractBreach("the control break buffered " + bufferedRows + " rows for"
-                    + " account " + accountId + " but the accrual reported " + result.recordCount()
-                    + " counted and " + result.categoryInterests().size() + " detailed");
+            throw outputContractBreach("the control break buffered " + bufferedRows + " rows for "
+                    + accountDiagnostic(accountId) + " but the accrual reported "
+                    + result.recordCount() + " counted and " + result.categoryInterests().size()
+                    + " detailed");
         }
         Objects.requireNonNull(result.updatedAccount(), "the control break must report the account it"
                 + " rewrote, because the rewrite is what posts the group's interest");
@@ -1137,15 +1229,15 @@ public class InterestCalculationProcessor
     private static void requireSkippedRow(final InterestCalculationService.CategoryInterest row,
             final TransactionCategoryBalanceId rowKey) {
         if (row.interestTransaction() != null) {
-            throw outputContractBreach("row " + rowKey + " reported a zero rate yet carried a"
+            throw outputContractBreach(rowDiagnostic(rowKey) + " reported a zero rate yet carried a"
                     + " synthesized transaction; the rate gate encloses the computation and the write");
         }
         if (row.monthlyInterest().signum() != 0) {
-            throw outputContractBreach("row " + rowKey + " reported a zero rate yet a non-zero"
+            throw outputContractBreach(rowDiagnostic(rowKey) + " reported a zero rate yet a non-zero"
                     + " monthly interest");
         }
         if (row.disclosedRate().signum() != 0) {
-            throw outputContractBreach("row " + rowKey + " was gated as a zero rate yet carried a"
+            throw outputContractBreach(rowDiagnostic(rowKey) + " was gated as a zero rate yet carried a"
                     + " non-zero disclosed rate");
         }
     }
@@ -1177,12 +1269,12 @@ public class InterestCalculationProcessor
             final long expectedSuffix, final String groupCardNumber) {
         final Transaction transaction = row.interestTransaction();
         if (transaction == null) {
-            throw outputContractBreach("row " + rowKey + " reported a non-zero rate yet synthesized no"
+            throw outputContractBreach(rowDiagnostic(rowKey) + " reported a non-zero rate yet synthesized no"
                     + " transaction; every row inside the rate gate mints exactly one");
         }
 
         final String tranId = transaction.getTranId();
-        requireExactField("TRAN-ID", interestTranId(parameterDate, expectedSuffix), tranId, tranId);
+        requireMintedIdentifier(interestTranId(parameterDate, expectedSuffix), tranId);
         requireEncodedWidth("TRAN-ID", tranId, TRAN_ID_WIDTH, tranId);
         requireExactField("TRAN-TYPE-CD", INTEREST_TRAN_TYPE_CD, transaction.getTranTypeCd(), tranId);
         requireExactField("TRAN-CAT-CD", INTEREST_TRAN_CAT_CD, transaction.getTranCatCd(), tranId);
@@ -1216,9 +1308,9 @@ public class InterestCalculationProcessor
     private static void requireInterestAmount(final Transaction transaction,
             final InterestCalculationService.CategoryInterest row, final String tranId) {
         final BigDecimal carried = Objects.requireNonNull(transaction.getTranAmt(),
-                "interest transaction " + tranId + " carries no amount");
+                interestTransactionDiagnostic(tranId) + " carries no amount");
         if (carried.compareTo(row.monthlyInterest()) != 0) {
-            throw outputContractBreach("interest transaction " + tranId + " carries an amount that is"
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries an amount that is"
                     + " not the monthly interest its row computed");
         }
     }
@@ -1242,8 +1334,9 @@ public class InterestCalculationProcessor
         requireEncodedWidth("TRAN-ORIG-TS", origination, BATCH_TIMESTAMP_WIDTH, tranId);
         requireEncodedWidth("TRAN-PROC-TS", processing, BATCH_TIMESTAMP_WIDTH, tranId);
         if (!origination.equals(processing)) {
-            throw outputContractBreach("interest transaction " + tranId + " carries origination"
-                    + " timestamp \"" + origination + "\" and processing timestamp \"" + processing
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries origination"
+                    + " timestamp \"" + FailureDiagnostics.printableForm(origination)
+                    + "\" and processing timestamp \"" + FailureDiagnostics.printableForm(processing)
                     + "\"; one timestamp is built once and moved into both fields, so they are"
                     + " byte-identical");
         }
@@ -1268,7 +1361,7 @@ public class InterestCalculationProcessor
         final String carried = transaction.getTranCardNum();
         requireEncodedWidth("TRAN-CARD-NUM", carried, CARD_NUM_WIDTH, tranId);
         if (established != null && !established.equals(carried)) {
-            throw outputContractBreach("interest transaction " + tranId + " carries a card number that"
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries a card number that"
                     + " differs from the one every earlier transaction of its group carried; the"
                     + " cross-reference is read once per group");
         }
@@ -1290,16 +1383,17 @@ public class InterestCalculationProcessor
      */
     private static void requireDescription(final String carried, final String accountId,
             final String tranId) {
-        Objects.requireNonNull(carried, "interest transaction " + tranId + " carries no description");
+        Objects.requireNonNull(carried, interestTransactionDiagnostic(tranId) + " carries no description");
         final String expected = interestDescriptionFor(accountId);
         if (!carried.startsWith(expected) || !carried.substring(expected.length()).isBlank()) {
-            throw outputContractBreach("interest transaction " + tranId + " carries description \""
-                    + carried + "\" but TRAN-DESC is the literal \"" + INTEREST_DESCRIPTION_PREFIX
+            throw outputContractBreach(interestTransactionDiagnostic(tranId)
+                    + " carries description \"" + SensitiveLogRedactor.redact(carried)
+                    + "\" but TRAN-DESC is the literal \"" + INTEREST_DESCRIPTION_PREFIX
                     + "\" followed by the " + ACCT_ID_WIDTH + "-digit account identifier and then only"
                     + " field padding");
         }
         if (encodedWidth(carried) > TRAN_DESC_WIDTH) {
-            throw outputContractBreach("interest transaction " + tranId + " carries a description of "
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries a description of "
                     + encodedWidth(carried) + " encoded bytes, wider than TRAN-DESC at "
                     + TRAN_DESC_WIDTH);
         }
@@ -1316,8 +1410,13 @@ public class InterestCalculationProcessor
     private static void requireExactField(final String field, final String expected,
             final String carried, final String tranId) {
         if (!expected.equals(carried)) {
-            throw outputContractBreach("interest transaction " + tranId + " carries " + field + " \""
-                    + carried + "\" but the source stores \"" + expected + "\"");
+            // Both operands are rendered, because for these fields the value IS the diagnosis: they
+            // carry reference codes and a fixed merchant literal, and neither is an identifier nor
+            // financial data. Rendered inert nonetheless - this helper is generic, and the day a caller
+            // passes it something read out of a record is the day a control byte reaches the message.
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries " + field
+                    + " \"" + FailureDiagnostics.printableForm(carried) + "\" but the source stores \""
+                    + FailureDiagnostics.printableForm(expected) + "\"");
         }
     }
 
@@ -1331,14 +1430,14 @@ public class InterestCalculationProcessor
      */
     private static void requireBlankField(final String field, final String carried, final int width,
             final String tranId) {
-        Objects.requireNonNull(carried, "interest transaction " + tranId + " carries no " + field
+        Objects.requireNonNull(carried, interestTransactionDiagnostic(tranId) + " carries no " + field
                 + ", but the source moves spaces into it rather than leaving it absent");
         if (!carried.isBlank()) {
-            throw outputContractBreach("interest transaction " + tranId + " carries a non-blank "
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries a non-blank "
                     + field + "; the source moves spaces into it");
         }
         if (encodedWidth(carried) > width) {
-            throw outputContractBreach("interest transaction " + tranId + " carries " + field + " at "
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries " + field + " at "
                     + encodedWidth(carried) + " encoded bytes, wider than its layout at " + width);
         }
     }
@@ -1353,9 +1452,9 @@ public class InterestCalculationProcessor
      */
     private static void requireEncodedWidth(final String field, final String carried, final int width,
             final String tranId) {
-        Objects.requireNonNull(carried, "interest transaction " + tranId + " carries no " + field);
+        Objects.requireNonNull(carried, interestTransactionDiagnostic(tranId) + " carries no " + field);
         if (encodedWidth(carried) != width) {
-            throw outputContractBreach("interest transaction " + tranId + " carries " + field + " at "
+            throw outputContractBreach(interestTransactionDiagnostic(tranId) + " carries " + field + " at "
                     + encodedWidth(carried) + " encoded bytes, but its layout fixes it at " + width);
         }
     }
@@ -1393,16 +1492,16 @@ public class InterestCalculationProcessor
             lastSuffix = row.tranIdSuffix();
         }
         if (running.compareTo(result.totalInterest()) != 0) {
-            throw outputContractBreach("account " + result.accountId() + " posted a group total that"
+            throw outputContractBreach(accountDiagnostic(result.accountId()) + " posted a group total that"
                     + " is not the sum of its " + minted + " truncated monthly interest amounts");
         }
         if (minted != result.interestTransactions().size()) {
-            throw outputContractBreach("account " + result.accountId() + " minted an identifier for "
+            throw outputContractBreach(accountDiagnostic(result.accountId()) + " minted an identifier for "
                     + minted + " rows but reported " + result.interestTransactions().size()
                     + " transactions");
         }
         if (lastSuffix != result.lastTranIdSuffix()) {
-            throw outputContractBreach("account " + result.accountId() + " advanced the identifier"
+            throw outputContractBreach(accountDiagnostic(result.accountId()) + " advanced the identifier"
                     + " suffix to " + lastSuffix + " but reported " + result.lastTranIdSuffix()
                     + "; the suffix advances by exactly one per transaction and belongs to the run");
         }
@@ -1424,7 +1523,8 @@ public class InterestCalculationProcessor
         final BigDecimal cycleDebit = Objects.requireNonNull(updatedAccount.getAcctCurrCycDebit(),
                 "the rewritten account carries no cycle debit accumulator");
         if (cycleCredit.signum() != 0 || cycleDebit.signum() != 0) {
-            throw outputContractBreach("the control break of account " + updatedAccount.getAcctId()
+            throw outputContractBreach("the control break of "
+                    + accountDiagnostic(updatedAccount.getAcctId())
                     + " left a cycle accumulator un-zeroed; the source zeroes both the credit and the"
                     + " debit before rewriting the account");
         }
@@ -1465,6 +1565,82 @@ public class InterestCalculationProcessor
         LOGGER.error("{} {} output contract breached in program {}: {}", LEGACY_JOB, LEGACY_STEP,
                 LEGACY_PROGRAM, detail);
         return new IllegalStateException(detail);
+    }
+
+    /**
+     * Names a synthesized interest transaction in a diagnostic by a redacted reference.
+     *
+     * <p>Every postcondition on this stage's output opens with this clause, so the identifier is
+     * withheld once rather than at each of the fourteen places a message could carry it, and a message
+     * added later cannot reintroduce it by omission.
+     *
+     * <p>A reference rather than nothing at all: the postconditions are stated per row, and a reader of
+     * a failed run needs to know which of an account's rows breached. {@link
+     * SensitiveLogRedactor#redact(String)} returns a reference that is stable for a given identifier
+     * within the run, so the several messages one breaching row can produce still tie to one another.
+     * The token is lower-case ASCII hexadecimal, so a value assembled from field content cannot carry a
+     * control byte, a delimiter or a line terminator into a log record or an exception message.
+     *
+     * @param  tranId the transaction's identifier, never rendered
+     * @return the opening clause, carrying a redacted reference
+     */
+    // See docs/decision-log.md entry DL-177 for why one composer per identifier kind, rather than a
+    // redaction at each of the fourteen messages that would otherwise have named the identifier.
+    private static String interestTransactionDiagnostic(final String tranId) {
+        return "interest transaction " + SensitiveLogRedactor.redact(tranId);
+    }
+
+    /**
+     * Names an account in a diagnostic by a redacted reference.
+     *
+     * @param  accountId the eleven-digit account identifier, never rendered
+     * @return the clause {@code account <reference>}
+     */
+    private static String accountDiagnostic(final String accountId) {
+        return "account " + SensitiveLogRedactor.redact(accountId);
+    }
+
+    /**
+     * Names a transaction-category-balance row in a diagnostic without rendering its account.
+     *
+     * <p>The composite key's own {@code toString} renders all three components, and the first of them is
+     * the account identifier, so the key is decomposed here: the account travels as a redacted reference
+     * and the two-character type code and four-character category code travel as themselves, being
+     * reference codes drawn from the estate's own tables rather than data about a cardholder. The two
+     * codes are what a reader needs to find the row within the account's group.
+     *
+     * @param  rowKey the row's composite key
+     * @return the clause {@code row <reference>/<type>/<category>}
+     */
+    private static String rowDiagnostic(final TransactionCategoryBalanceId rowKey) {
+        return "row " + SensitiveLogRedactor.redact(rowKey.getTrancatAcctId()) + "/"
+                + rowKey.getTrancatTypeCd() + "/" + rowKey.getTrancatCd();
+    }
+
+    /**
+     * Confirms the identifier carried is the one the source mints for the row.
+     *
+     * <p>Held apart from {@link #requireExactField(String, String, String, String)} rather than routed
+     * through it, because that check renders both operands and both operands here are transaction
+     * identifiers. The remaining fields it checks carry reference codes and a fixed merchant literal,
+     * which are neither identifiers nor financial data, so they are still rendered as themselves - the
+     * value is the whole diagnostic there.
+     *
+     * <p>Neither identifier is rendered. What the message states instead is the rule that was broken,
+     * which is what a reader acts on: the identifier is the parameter date followed by a six-digit
+     * suffix, and the suffix belongs to the run rather than to the row.
+     *
+     * @param  minted  the identifier the source mints for this row
+     * @param  carried the identifier the synthesized transaction carries
+     * @throws IllegalStateException if the two differ
+     */
+    private static void requireMintedIdentifier(final String minted, final String carried) {
+        if (!minted.equals(carried)) {
+            throw outputContractBreach(interestTransactionDiagnostic(carried) + " carries a TRAN-ID"
+                    + " that is not the one the source mints for its row; TRAN-ID is the "
+                    + PARM_DATE_WIDTH + "-character parameter date followed by the "
+                    + TRAN_ID_SUFFIX_WIDTH + "-digit suffix the run had reached");
+        }
     }
 
     /**
@@ -1671,8 +1847,14 @@ public class InterestCalculationProcessor
         /** The ten-character run date, fixed for the execution. */
         private final String parameterDate;
 
-        /** The rows of the group currently filling, in the order they arrived. */
-        private final List<TransactionCategoryBalance> openGroupRows = new ArrayList<>();
+        /**
+         * The rows of the group currently filling, in the order they arrived.
+         *
+         * <p>Not final, because a closing group's rows are <em>handed over</em> rather than copied: the
+         * buffer is replaced with a fresh one, so at no point do two lists of one group's rows exist.
+         * See {@code docs/decision-log.md} entry DL-176.
+         */
+        private List<TransactionCategoryBalance> openGroupRows = new ArrayList<>();
 
         /** {@code WS-LAST-ACCT-NUM} at line 167, which starts as spaces. */
         private String lastAccountNumber = NO_ACCOUNT_YET;
@@ -1738,6 +1920,10 @@ public class InterestCalculationProcessor
          * Lines 200 and 201: remembers the new key and empties the buffer, which is this stage's form of
          * resetting the group's running total - the total itself is accumulated by the group call.
          *
+         * <p>The buffer is already empty on the control-break path, because closing a group hands its
+         * rows over and installs a fresh buffer. The reset is kept because the source keeps it, and it
+         * is what makes the first group of a run start from an empty buffer too.
+         *
          * @param accountId the account identifier the new group keys on
          */
         void beginGroup(final String accountId) {
@@ -1754,13 +1940,19 @@ public class InterestCalculationProcessor
         }
 
         /**
-         * The open group's rows as an unmodifiable snapshot, so the buffer can be emptied without the
-         * service's view of the group changing underneath it.
+         * Hands the open group's rows over and starts a fresh buffer in their place.
          *
-         * @return the buffered rows, in arrival order
+         * <p>Handed over rather than copied. Replacing the buffer instead of emptying it gives the
+         * service a view that cannot change underneath it <em>and</em> leaves only one list of the
+         * group's rows in existence, where a defensive copy would have left two. The view is
+         * unmodifiable because the group is the service's input and never its workspace.
+         *
+         * @return the rows of the group being closed, in arrival order
          */
-        List<TransactionCategoryBalance> bufferedRows() {
-            return List.copyOf(this.openGroupRows);
+        List<TransactionCategoryBalance> detachOpenGroupRows() {
+            final List<TransactionCategoryBalance> closing = this.openGroupRows;
+            this.openGroupRows = new ArrayList<>();
+            return Collections.unmodifiableList(closing);
         }
 
         long tranIdSuffix() {
@@ -1768,7 +1960,11 @@ public class InterestCalculationProcessor
         }
 
         /**
-         * Folds a closed group's outcome back into the execution and empties the buffer.
+         * Folds a closed group's outcome back into the execution.
+         *
+         * <p>The buffer is not emptied here: {@link #detachOpenGroupRows()} already replaced it when the
+         * group's rows were handed over, so emptying again would clear the buffer the next group has
+         * begun filling.
          *
          * @param lastSuffix   the suffix the group finished on, which the next group continues from
          * @param transactions how many transactions the group synthesized
@@ -1782,7 +1978,6 @@ public class InterestCalculationProcessor
             this.rateGateSkipped |= gateSkipped;
             this.defaultGroupUsed |= defaultUsed;
             this.groupsClosed++;
-            this.openGroupRows.clear();
         }
 
         int groupsClosed() {

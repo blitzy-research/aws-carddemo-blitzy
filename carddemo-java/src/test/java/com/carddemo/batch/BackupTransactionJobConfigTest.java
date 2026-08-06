@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -37,6 +38,7 @@ import com.carddemo.exception.AbendException;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.support.OrderedTransactionScan;
 import io.awspring.cloud.s3.S3Operations;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -59,6 +61,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
@@ -159,17 +162,37 @@ final class BackupTransactionJobConfigTest {
 
     private BackupTransactionJobConfig config;
 
+    /**
+     * The staging root this test's archive is composed in.
+     *
+     * <p>The archive is streamed to a file and uploaded from it, so the test needs a real directory. A
+     * per-test temporary one also proves the local copy is removed after publication: nothing may be
+     * left in it once the step has closed.
+     */
+    @TempDir
+    private Path stagingDirectory;
+
+    /**
+     * Bodies the store received, drained <em>while the stream was open</em>.
+     *
+     * <p>The upload streams from the composed file and closes the stream as it returns, so a captured
+     * argument cannot be read afterwards. An observer that must see the bytes has to read them during
+     * the call, which is what this answer does - and it is also what a real object store does.
+     */
+    private List<byte[]> uploadedBodies;
+
     @BeforeEach
-    void buildConfigurationOverMockedCollaborators() {
+    void buildConfigurationOverMockedCollaborators() throws IOException {
         this.transactionRepository = mock(TransactionRepository.class);
-        this.transactionScanRepository = (cursor, limit) ->
-                this.transactionRepository.findAll(
-                                Sort.by(Sort.Direction.ASC, "tranId"))
-                        .stream()
-                        .filter(record -> record.getTranId().compareTo(cursor) > 0)
-                        .limit(limit.max())
-                        .toList();
+        this.transactionScanRepository = new OrderedTransactionScan(
+                () -> this.transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId")));
         this.objectStore = mock(S3Operations.class);
+        this.uploadedBodies = new ArrayList<>();
+        doAnswer(invocation -> {
+            this.uploadedBodies.add(
+                    ((InputStream) invocation.getArgument(2)).readAllBytes());
+            return null;
+        }).when(this.objectStore).upload(anyString(), anyString(), any(InputStream.class));
         this.meterRegistry = new SimpleMeterRegistry();
         this.config = configWithBucket(BUCKET);
     }
@@ -194,7 +217,8 @@ final class BackupTransactionJobConfigTest {
         return new BackupTransactionJobConfig(jobRepository, transactionManager,
                 boundaryListener, incrementer, this.transactionRepository,
                 this.transactionScanRepository, this.objectStore,
-                awsProperties, this.meterRegistry, fixed);
+                awsProperties, this.meterRegistry, fixed,
+                this.stagingDirectory.toString());
     }
 
     // ----------------------------------------------------------------------------------------
@@ -740,12 +764,12 @@ final class BackupTransactionJobConfigTest {
                     .as("the guard exists and names the stride it enforces")
                     .contains("requireWholeRecordStride")
                     .contains("% ARCHIVE_RECORD_STRIDE != 0");
-            assertThat(source.indexOf("requireWholeRecordStride(content.length)"))
+            assertThat(source.indexOf("requireWholeRecordStride(this.archivedBytes)"))
                     .as("the guard is called before the upload on the close path, so an object that is "
                             + "not a whole number of records is never handed to the store")
                     .isGreaterThan(0)
                     .isLessThan(source.indexOf(
-                            "this.generationStore.publishBytes(ARCHIVE_DATASET_BASE"));
+                            "this.generationStore.publishFile(ARCHIVE_DATASET_BASE"));
         }
 
         @Test
@@ -754,7 +778,7 @@ final class BackupTransactionJobConfigTest {
             final String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
 
             assertThat(source)
-                    .contains("this.generation.writeBytes(image);")
+                    .contains("this.generation.write(image);")
                     .doesNotContain("ARCHIVE_RECORD_SEPARATOR")
                     .doesNotContain("frameRecord()");
         }
@@ -822,6 +846,23 @@ final class BackupTransactionJobConfigTest {
                     .doesNotContain("HALF_EVEN")
                     .doesNotContain("HALF_UP");
         }
+
+        @Test
+        @DisplayName("it composes the archive in a file and not in memory, so the cost of an archive is "
+                + "bounded by the volume it is written to and not by the heap")
+        void itComposesTheArchiveInAFileAndNotInMemory() throws IOException {
+            final String source = Files.readString(SOURCE, StandardCharsets.UTF_8);
+
+            assertThat(source)
+                    .as("no in-heap accumulator of the whole generation")
+                    .doesNotContain("ByteArrayOutputStream")
+                    .doesNotContain("toByteArray()");
+            assertThat(source)
+                    .as("the generation is a stream over a working file that is sealed before it is "
+                            + "published")
+                    .contains("StagedGenerationStore.workingPath(this.completedGeneration)")
+                    .contains("StagedGenerationStore.completeWorkingFile(this.workingGeneration,");
+        }
     }
 
     // ----------------------------------------------------------------------------------------
@@ -874,11 +915,13 @@ final class BackupTransactionJobConfigTest {
         throw new IllegalStateException("step " + stepName + " failed", first);
     }
 
-    /** @return the body of the single stored object */
-    private byte[] capturedBody() throws IOException {
-        final ArgumentCaptor<InputStream> body = ArgumentCaptor.forClass(InputStream.class);
-        verify(this.objectStore).upload(eq(BUCKET), anyString(), body.capture());
-        return body.getValue().readAllBytes();
+    /** @return the body of the single stored object, as it was drained during the upload */
+    private byte[] capturedBody() {
+        verify(this.objectStore).upload(eq(BUCKET), anyString(), any(InputStream.class));
+        assertThat(this.uploadedBodies)
+                .as("exactly one body must have been drained during the upload")
+                .hasSize(1);
+        return this.uploadedBodies.get(0);
     }
 
     /**

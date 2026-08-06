@@ -16,14 +16,16 @@
  */
 package com.carddemo.service;
 
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.dao.DataAccessException;
+import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 
 import com.carddemo.domain.Account;
@@ -31,11 +33,14 @@ import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.AccountRepository;
-import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.AccountScanRepository;
+import com.carddemo.repository.CardCrossReferenceScanRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.util.AccountRecordMapper;
+import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.CardXrefRecordMapper;
 import com.carddemo.util.CustomerRecordMapper;
+import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.FixedWidthFieldReader;
 import com.carddemo.util.StatementWorkRecordMapper;
 
@@ -54,10 +59,26 @@ import com.carddemo.util.StatementWorkRecordMapper;
  * <p><strong>This class replaces 13 static call sites.</strong> Every one of them is a
  * {@code CALL 'CBSTM03B' USING LK-M03B-AREA} inside {@code [app/cbl/CBSTM03A.CBL]}, at L351, L377, L401,
  * L734, L746, L769, L787, L805, L835, L860, L877, L893 and L909. All 13 collapse into calls to
-     * {@link #execute(StatementFileRequest, StatementTransactionSource)} from the statement generator,
-     * which is the sole consumer. This class injects <strong>no other service</strong>: the three
-     * persistent reference repositories only. The transaction file arrives as the frozen source
-     * materialised by the statement job, never as a second query of the live transaction master.
+ * {@link #execute(StatementFileRequest, StatementTransactionSource, StatementCrossReferenceSource)} from
+ * the statement generator, which is the sole consumer. This class injects <strong>no other
+ * service</strong>: the persistent reference repositories only. The transaction file arrives as the frozen
+ * source materialised by the statement job, never as a second query of the live transaction master.
+ *
+ * <h2>Every access is bounded, and every failure is a file status</h2>
+ *
+ * <p>No read this class performs computes an offset, requests a count, or retrieves a row the caller will
+ * not use. The cross-reference file is walked once through a per-run bounded cursor obtained from
+ * {@link #openCrossReferenceSource()}; the two randomly accessed files are read by key; and each of the
+ * three opens that touch a store performs one bounded probe of a single row. An offset-addressed page
+ * query - which re-scans and re-discards every preceding row on every read, and counts the whole table
+ * besides - would turn one sequential pass over the cross-reference cluster into a quadratic one.
+ *
+ * <p>Every one of those calls is guarded, and a technical failure of the store becomes the raw
+ * two-character status {@code '31'} in the response rather than an exception. The caller's catch-all arm
+ * at {@code [app/cbl/CBSTM03A.CBL:L837-L847]} displays the failing operation with the raw status and then
+ * abends; an exception propagating out of this class would bypass that arm and lose both the diagnostic
+ * and the member's own abend literal. The reasoning is recorded as DL-174 in
+ * {@code docs/decision-log.md}.
  *
  * <h2>The parameter object, and why the caller owns the state</h2>
  *
@@ -176,7 +197,8 @@ public final class StatementDataAccessService {
      *
      * <p>It is part of the parameter contract and is therefore declared, but it carries no behaviour
      * whatsoever and no write path exists. A request naming it takes the fall-through of
-     * {@link #execute(StatementFileRequest, StatementTransactionSource)} described on that method,
+     * {@link #execute(StatementFileRequest, StatementTransactionSource, StatementCrossReferenceSource)}
+     * described on that method,
      * exactly as any other operation the handlers do not test would. Inventing a write path here would
      * be feature expansion; see the decision log.
      */
@@ -221,8 +243,48 @@ public final class StatementDataAccessService {
      */
     private static final int FIRST_RECORD_POSITION = 0;
 
-    /** One record per page request, so a page index is an ordinal record position. */
-    private static final int SINGLE_RECORD_PAGE_SIZE = 1;
+    /**
+     * The position a freshly created cursor holds before its first read: one before the first record, so
+     * that a request for the first record is the sole legal first request.
+     */
+    private static final int BEFORE_FIRST_RECORD_POSITION = -1;
+
+    /**
+     * Exclusive lower key bound of the first bounded page of a cross-reference walk.
+     *
+     * <p>The empty string precedes every sixteen-digit card number under both of the collations this
+     * module is validated against, because it is a proper prefix of all of them and neither collation
+     * disagrees about digits. No punctuation sentinel is used, deliberately: the two collations do not
+     * agree about punctuation, and a keyset bound that sorts differently in a container than it does in a
+     * deployed database would silently skip or repeat records.
+     */
+    private static final String LOWEST_CROSS_REFERENCE_KEY = "";
+
+    /**
+     * The raw two-character status a failed retrieval reports, {@code '31'} - a permanent input-output
+     * error. It is the status this module already uses for a technical data-access failure in the batch
+     * readers, so the statement feature reports the same code for the same class of failure rather than
+     * inventing a second vocabulary.
+     */
+    private static final String DATA_ACCESS_FAILURE_STATUS = FileStatus.PERMANENT_ERROR.getCode();
+
+    /**
+     * Rows one reachability probe reads. One row is enough to establish that a cluster can be read, and
+     * the row itself is discarded: the probe answers whether, not how many and not which.
+     */
+    private static final int REACHABILITY_PROBE_ROWS = 1;
+
+    /**
+     * Exclusive lower key bound of the customer cluster's reachability probe. See
+     * {@link #LOWEST_CROSS_REFERENCE_KEY} for why the empty string and not a punctuation sentinel.
+     */
+    private static final String LOWEST_CUSTOMER_KEY = "";
+
+    /**
+     * Exclusive lower key bound of the account cluster's reachability probe. See
+     * {@link #LOWEST_CROSS_REFERENCE_KEY} for why the empty string and not a punctuation sentinel.
+     */
+    private static final String LOWEST_ACCOUNT_KEY = "";
 
     /** Diagnostic layout name for the DD-name field of the parameter object. */
     private static final String FIELD_DD = "LK-M03B-DD";
@@ -245,37 +307,107 @@ public final class StatementDataAccessService {
     /** Diagnostic layout name for the account file's record key. */
     private static final String FIELD_FD_ACCT_ID = "FD-ACCT-ID";
 
-    /**
-     * Key order of the cross-reference file, whose {@code RECORD KEY IS FD-XREF-CARD-NUM} at
-     * {@code [app/cbl/CBSTM03B.CBL:L40]} is the card number alone.
-     */
-    private static final Sort CROSS_REFERENCE_KEY_ORDER = Sort.by(Sort.Direction.ASC, "xrefCardNum");
-
-    private final CardCrossReferenceRepository cardCrossReferenceRepository;
+    private final CardCrossReferenceScanRepository cardCrossReferenceScanRepository;
 
     private final CustomerRepository customerRepository;
 
     private final AccountRepository accountRepository;
 
+    private final AccountScanRepository accountScanRepository;
+
     /**
-     * Binds the three persistent repositories behind the reference-file reads.
+     * Binds the persistent repositories behind the reference-file reads: one bounded sequential view for
+     * the cross-reference cluster, the keyed views of the two randomly accessed files, and one bounded
+     * sequential view of the account cluster used by nothing but that file's open.
      *
-     * @param cardCrossReferenceRepository stands in for the cross-reference file; must not be
-     *                                     {@code null}
-     * @param customerRepository           stands in for the customer file; must not be {@code null}
-     * @param accountRepository            stands in for the account file; must not be {@code null}
+     * @param cardCrossReferenceScanRepository bounded sequential view standing in for the cross-reference
+     *                                         file; must not be {@code null}
+     * @param customerRepository               stands in for the customer file, both its keyed read and
+     *                                         its open; must not be {@code null}
+     * @param accountRepository                keyed view standing in for the account file's read; must
+     *                                         not be {@code null}
+     * @param accountScanRepository            bounded sequential view used by the account file's open;
+     *                                         must not be {@code null}
      * @throws NullPointerException if any repository is {@code null}
      */
     public StatementDataAccessService(
-                                      final CardCrossReferenceRepository cardCrossReferenceRepository,
-                                      final CustomerRepository customerRepository,
-                                      final AccountRepository accountRepository) {
-        this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
-                "cardCrossReferenceRepository must not be null");
+            final CardCrossReferenceScanRepository cardCrossReferenceScanRepository,
+            final CustomerRepository customerRepository,
+            final AccountRepository accountRepository,
+            final AccountScanRepository accountScanRepository) {
+        this.cardCrossReferenceScanRepository = Objects.requireNonNull(
+                cardCrossReferenceScanRepository, "cardCrossReferenceScanRepository must not be null");
         this.customerRepository =
                 Objects.requireNonNull(customerRepository, "customerRepository must not be null");
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must not be null");
+        this.accountScanRepository = Objects.requireNonNull(accountScanRepository,
+                "accountScanRepository must not be null");
+    }
+
+    /**
+     * Opens one run's sequential walk of the cross-reference cluster.
+     *
+     * <p>This is the counterpart of the statement job materialising the frozen transaction snapshot: the
+     * cross-reference cluster is read live from its own file exactly as {@code [app/cbl/CBSTM03B.CBL]}
+     * reads it - no sort step and no work resource stands between them - so the run acquires its cursor
+     * here rather than being handed one. The returned source is bound to this service's repository and to
+     * nothing else, holds one bounded page at a time, and is safe for exactly one run.
+     *
+     * <p>Creating a cursor issues no query. The first retrieval happens on the first read, which is what
+     * lets the file's own open perform it and report an unreachable cluster as an <em>open</em> failure.
+     *
+     * @return a fresh sequential cross-reference source, never {@code null}
+     */
+    public StatementCrossReferenceSource openCrossReferenceSource() {
+        return new BoundedCrossReferenceCursor(new BoundedKeysetIterator<>(
+                LOWEST_CROSS_REFERENCE_KEY, BoundedKeysetIterator.DEFAULT_PAGE_SIZE,
+                (cursor, size) -> this.cardCrossReferenceScanRepository
+                        .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(cursor,
+                                Limit.of(size.intValue())),
+                CardCrossReference::getXrefCardNum, Comparator.naturalOrder()));
+    }
+
+    /**
+     * One run's forward cursor over the cross-reference cluster, satisfying
+     * {@link StatementCrossReferenceSource} over a bounded keyset walk.
+     *
+     * <p>Retains the record most recently served so that the position may be re-requested once, which is
+     * how the file's open probes the first record without consuming it. Nothing else is retained: earlier
+     * records are released as the walk advances, so the walk costs one bounded page of memory however
+     * large the cluster is.
+     */
+    private static final class BoundedCrossReferenceCursor implements StatementCrossReferenceSource {
+
+        private final Iterator<CardCrossReference> records;
+
+        private int servedPosition = BEFORE_FIRST_RECORD_POSITION;
+
+        private Optional<CardCrossReference> served = Optional.empty();
+
+        BoundedCrossReferenceCursor(final Iterator<CardCrossReference> records) {
+            this.records = Objects.requireNonNull(records, "records must not be null");
+        }
+
+        @Override
+        public Optional<CardCrossReference> readAt(final int position) {
+            if (position < 0) {
+                throw new IllegalArgumentException("position must not be negative: " + position);
+            }
+            if (position == this.servedPosition) {
+                return this.served;
+            }
+            if (position != this.servedPosition + 1) {
+                throw new IllegalStateException("a sequential cross-reference walk advances by one"
+                        + " position at a time; it was at " + this.servedPosition
+                        + " and was asked for " + position);
+            }
+            this.served = this.records.hasNext()
+                    ? Optional.of(this.records.next())
+                    : Optional.empty();
+            this.servedPosition = position;
+            return this.served;
+        }
     }
 
     /**
@@ -544,22 +676,36 @@ public final class StatementDataAccessService {
      * @param request the parameter object, carrying the DD name, the operation, the status on entry, the
      *                key and its runtime length, the payload and the sequential position; must not be
      *                {@code null}
+     * <p><strong>A technical failure of the store is a file status, not an exception.</strong> Every
+     * repository call this class makes is guarded, and a failure becomes the raw two-character status
+     * {@value #DATA_ACCESS_FAILURE_STATUS} in the response. That is the whole point of the guard: the
+     * caller's selection at {@code [app/cbl/CBSTM03A.CBL:L837-L847]} has a catch-all arm that displays
+     * the failing operation with the raw status and then abends, and an exception thrown through this
+     * method would bypass that arm entirely - the diagnostic would never be emitted and the abend would
+     * carry a Java message instead of the member's own literal. Exhaustion, absence and failure therefore
+     * remain three distinct statuses rather than two statuses and an exception.
+     *
      * @param transactionSource the frozen projected transaction-work source for this statement run;
      *                          must not be {@code null}
+     * @param crossReferenceSource this run's sequential cross-reference walk, obtained from
+     *                             {@link #openCrossReferenceSource()}; must not be {@code null}
      * @return the parameter object's written-back components: the raw two-character status, the payload
      *         and the sequential position
-     * @throws NullPointerException     if {@code request} or {@code transactionSource} is {@code null}
+     * @throws NullPointerException     if {@code request}, {@code transactionSource} or
+     *                                  {@code crossReferenceSource} is {@code null}
      * @throws IllegalArgumentException if a keyed read supplies a runtime key length that lies outside the
      *                                 key field, which is the bounds-checked analogue of the source's
      *                                 reference modification at {@code [app/cbl/CBSTM03B.CBL:L189, L214]}
      */
     public StatementFileResponse execute(final StatementFileRequest request,
-            final StatementTransactionSource transactionSource) {
+            final StatementTransactionSource transactionSource,
+            final StatementCrossReferenceSource crossReferenceSource) {
         Objects.requireNonNull(request, "request must not be null");
         Objects.requireNonNull(transactionSource, "transactionSource must not be null");
+        Objects.requireNonNull(crossReferenceSource, "crossReferenceSource must not be null");
         return switch (request.ddName()) {
             case DD_TRNXFILE -> performTransactionFileRange(request, transactionSource);
-            case DD_XREFFILE -> performCrossReferenceFileRange(request);
+            case DD_XREFFILE -> performCrossReferenceFileRange(request, crossReferenceSource);
             case DD_CUSTFILE -> performCustomerFileRange(request);
             case DD_ACCTFILE -> performAccountFileRange(request);
             default -> goBack(request);
@@ -633,7 +779,7 @@ public final class StatementDataAccessService {
     private FileAction transactionFileProc(final StatementFileRequest request,
             final StatementTransactionSource transactionSource) {
         if (request.hasOperation(OPERATION_OPEN)) {
-            return openInput(request);
+            return openTransactionWorkResource(request);
         }
         if (request.hasOperation(OPERATION_READ)) {
             return readNextTransactionRecord(request, transactionSource);
@@ -685,8 +831,9 @@ public final class StatementDataAccessService {
      * @param request the parameter object
      * @return the response the range leaves behind
      */
-    private StatementFileResponse performCrossReferenceFileRange(final StatementFileRequest request) {
-        final FileAction action = crossReferenceFileProc(request);
+    private StatementFileResponse performCrossReferenceFileRange(final StatementFileRequest request,
+            final StatementCrossReferenceSource crossReferenceSource) {
+        final FileAction action = crossReferenceFileProc(request, crossReferenceSource);
         final String returnCode = crossReferenceFileExit(request, action);
         return crossReferenceFileTerminalExit(new StatementFileResponse(request.ddName(), returnCode,
                 action.payload(), action.sequentialPosition()));
@@ -704,12 +851,13 @@ public final class StatementDataAccessService {
      * @param request the parameter object
      * @return what the executed verb produced, or an action carrying no status when none executed
      */
-    private FileAction crossReferenceFileProc(final StatementFileRequest request) {
+    private FileAction crossReferenceFileProc(final StatementFileRequest request,
+            final StatementCrossReferenceSource crossReferenceSource) {
         if (request.hasOperation(OPERATION_OPEN)) {
-            return openInput(request);
+            return openCrossReferenceFile(request, crossReferenceSource);
         }
         if (request.hasOperation(OPERATION_READ)) {
-            return readNextCrossReferenceRecord(request);
+            return readNextCrossReferenceRecord(request, crossReferenceSource);
         }
         if (request.hasOperation(OPERATION_CLOSE)) {
             return closeFile(request);
@@ -788,15 +936,19 @@ public final class StatementDataAccessService {
      */
     private FileAction customerFileProc(final StatementFileRequest request) {
         if (request.hasOperation(OPERATION_OPEN)) {
-            return openInput(request);
+            return openCustomerFile(request);
         }
         if (request.hasOperation(OPERATION_READ_KEYED)) {
             final String recordKey =
                     toAlphanumericField(FIELD_FD_CUST_ID, slicedKey(request), FD_CUST_ID_WIDTH);
-            return this.customerRepository.findById(recordKey)
-                    .map((Customer customer) ->
-                            keyedReadSucceeded(request, customerRecordImage(request, customer)))
-                    .orElseGet(() -> recordNotFound(DD_CUSTFILE, request));
+            try {
+                return this.customerRepository.findById(recordKey)
+                        .map((Customer customer) ->
+                                keyedReadSucceeded(request, customerRecordImage(request, customer)))
+                        .orElseGet(() -> recordNotFound(DD_CUSTFILE, request));
+            } catch (DataAccessException failure) {
+                return retrievalFailed(DD_CUSTFILE, OPERATION_READ_KEYED, request, failure);
+            }
         }
         if (request.hasOperation(OPERATION_CLOSE)) {
             return closeFile(request);
@@ -872,14 +1024,18 @@ public final class StatementDataAccessService {
      */
     private FileAction accountFileProc(final StatementFileRequest request) {
         if (request.hasOperation(OPERATION_OPEN)) {
-            return openInput(request);
+            return openAccountFile(request);
         }
         if (request.hasOperation(OPERATION_READ_KEYED)) {
             final String recordKey = toNumericField(FIELD_FD_ACCT_ID, slicedKey(request), FD_ACCT_ID_WIDTH);
-            return this.accountRepository.findById(recordKey)
-                    .map((Account account) ->
-                            keyedReadSucceeded(request, AccountRecordMapper.toRecord(account)))
-                    .orElseGet(() -> recordNotFound(DD_ACCTFILE, request));
+            try {
+                return this.accountRepository.findById(recordKey)
+                        .map((Account account) ->
+                                keyedReadSucceeded(request, AccountRecordMapper.toRecord(account)))
+                        .orElseGet(() -> recordNotFound(DD_ACCTFILE, request));
+            } catch (DataAccessException failure) {
+                return retrievalFailed(DD_ACCTFILE, OPERATION_READ_KEYED, request, failure);
+            }
         }
         if (request.hasOperation(OPERATION_CLOSE)) {
             return closeFile(request);
@@ -915,18 +1071,95 @@ public final class StatementDataAccessService {
     // ------------------------------------------------------------------------------------------------
 
     /**
-     * {@code OPEN INPUT}, the verb at {@code [app/cbl/CBSTM03B.CBL:L136, L160, L184, L209]}.
+     * {@code OPEN INPUT TRNX-FILE} at {@code [app/cbl/CBSTM03B.CBL:L136]}.
      *
-     * <p>Reports success and positions at the first record, which is what an open of an existing input
-     * file does. The relational tables that replace these files are created by the schema migrations and
-     * are therefore always present, so the legacy open-failure status has no reachable counterpart here -
-     * consistent with the finding that the file-not-found code is compared nowhere in the estate.
+     * <p>The one open of the four that touches no store, and the reason is the statement job's own shape.
+     * The transaction work resource is not a live cluster: the job's preceding steps sort and project the
+     * transaction master into it, and the resulting snapshot is already materialised and frozen by the
+     * time generation begins. There is consequently nothing for this open to find unreachable - a failure
+     * to materialise the snapshot fails those steps, before this member runs at all - so it reports
+     * success and positions at the first record.
      *
      * @param request the parameter object, whose payload passes through untouched
      * @return an action reporting success and a file positioned at its first record
      */
-    private static FileAction openInput(final StatementFileRequest request) {
+    private static FileAction openTransactionWorkResource(final StatementFileRequest request) {
         LOG.debug("Opening statement input file for DD name {}", request.ddName());
+        return FileAction.status(request, FileStatus.SUCCESS.getCode(), FIRST_RECORD_POSITION);
+    }
+
+    /**
+     * {@code OPEN INPUT XREF-FILE} at {@code [app/cbl/CBSTM03B.CBL:L160]}.
+     *
+     * <p>Performs the run's first bounded page of the cross-reference walk, which is what makes this open
+     * an open rather than a formality: opening a key-sequenced cluster for input establishes that it
+     * exists and can be read, and its relational equivalent is one indexed range scan bounded to a page.
+     * The page loaded here is the page the first read then consumes, so establishing reachability costs
+     * nothing beyond work the first read would have done anyway, and the probe leaves the position at the
+     * first record because it re-serves rather than consumes it.
+     *
+     * <p>An empty cluster opens successfully. The open distinguishes reachable from unreachable and says
+     * nothing about how many records are present; the caller discovers emptiness on its first read, as the
+     * at-end status, which is exactly the sequence {@code [app/cbl/CBSTM03A.CBL]} follows.
+     *
+     * @param request              the parameter object, whose payload passes through untouched
+     * @param crossReferenceSource this run's sequential walk
+     * @return an action reporting success and a file positioned at its first record, or the permanent
+     *         input-output status when the cluster could not be read
+     */
+    private static FileAction openCrossReferenceFile(final StatementFileRequest request,
+            final StatementCrossReferenceSource crossReferenceSource) {
+        LOG.debug("Opening statement input file for DD name {}", request.ddName());
+        try {
+            crossReferenceSource.readAt(FIRST_RECORD_POSITION);
+        } catch (DataAccessException failure) {
+            return retrievalFailed(DD_XREFFILE, OPERATION_OPEN, request, failure);
+        }
+        return FileAction.status(request, FileStatus.SUCCESS.getCode(), FIRST_RECORD_POSITION);
+    }
+
+    /**
+     * {@code OPEN INPUT CUSTFILE} at {@code [app/cbl/CBSTM03B.CBL:L184]}.
+     *
+     * <p>The file is {@code ACCESS MODE RANDOM} and is never read sequentially, so its open has no first
+     * page to load and instead performs one bounded reachability read of a single row in key order. That
+     * is one indexed range scan limited to one row - not a count, not a scan and not a fetch of anything
+     * the caller will use - and it is enough to distinguish a cluster that can be read from one that
+     * cannot. An empty cluster opens successfully.
+     *
+     * @param request the parameter object, whose payload passes through untouched
+     * @return an action reporting success and a file positioned at its first record, or the permanent
+     *         input-output status when the cluster could not be read
+     */
+    private FileAction openCustomerFile(final StatementFileRequest request) {
+        LOG.debug("Opening statement input file for DD name {}", request.ddName());
+        try {
+            this.customerRepository.findByCustIdGreaterThanOrderByCustIdAsc(
+                    LOWEST_CUSTOMER_KEY, Limit.of(REACHABILITY_PROBE_ROWS));
+        } catch (DataAccessException failure) {
+            return retrievalFailed(DD_CUSTFILE, OPERATION_OPEN, request, failure);
+        }
+        return FileAction.status(request, FileStatus.SUCCESS.getCode(), FIRST_RECORD_POSITION);
+    }
+
+    /**
+     * {@code OPEN INPUT ACCTFILE} at {@code [app/cbl/CBSTM03B.CBL:L209]}.
+     *
+     * <p>The same bounded reachability read as the customer file's open, over the account cluster's own
+     * key, and for the same reason: the file is {@code ACCESS MODE RANDOM} and has no first page to load.
+     *
+     * @param request the parameter object, whose payload passes through untouched
+     * @return an action reporting success and a file positioned at its first record, or the permanent
+     *         input-output status when the cluster could not be read
+     */
+    private FileAction openAccountFile(final StatementFileRequest request) {
+        LOG.debug("Opening statement input file for DD name {}", request.ddName());
+        try {
+            this.accountScanRepository.findByAcctIdGreaterThanOrderByAcctIdAsc(
+                    LOWEST_ACCOUNT_KEY, Limit.of(REACHABILITY_PROBE_ROWS));
+        } catch (DataAccessException failure) {
+            return retrievalFailed(DD_ACCTFILE, OPERATION_OPEN, request, failure);
+        }
         return FileAction.status(request, FileStatus.SUCCESS.getCode(), FIRST_RECORD_POSITION);
     }
 
@@ -981,12 +1214,15 @@ public final class StatementDataAccessService {
      * @param request the parameter object, carrying the position to read from
      * @return an action carrying success and the record image, or the at-end status
      */
-    private FileAction readNextCrossReferenceRecord(final StatementFileRequest request) {
-        return this.cardCrossReferenceRepository
-                .findAll(PageRequest.of(request.sequentialPosition(), SINGLE_RECORD_PAGE_SIZE,
-                        CROSS_REFERENCE_KEY_ORDER))
-                .stream()
-                .findFirst()
+    private static FileAction readNextCrossReferenceRecord(final StatementFileRequest request,
+            final StatementCrossReferenceSource crossReferenceSource) {
+        final Optional<CardCrossReference> read;
+        try {
+            read = crossReferenceSource.readAt(request.sequentialPosition());
+        } catch (DataAccessException failure) {
+            return retrievalFailed(DD_XREFFILE, OPERATION_READ, request, failure);
+        }
+        return read
                 .map((CardCrossReference crossReference) ->
                         sequentialReadSucceeded(request, CardXrefRecordMapper.toRecord(crossReference)))
                 .orElseGet(() -> atEnd(DD_XREFFILE, request));
@@ -1058,6 +1294,37 @@ public final class StatementDataAccessService {
     }
 
     /**
+     * A retrieval failed for a technical reason. Publishes the permanent input-output status and changes
+     * nothing else, so the caller's own catch-all arm at {@code [app/cbl/CBSTM03A.CBL:L837-L847]} runs:
+     * it displays the failing operation together with this raw status and then abends, in that order.
+     *
+     * <p>Returning a status rather than propagating the exception is the whole point. The legacy
+     * subprogram has no way to raise anything - it sets a file status and returns - so the caller's
+     * diagnostic and its abend literal are the only report a failure ever produces. An exception thrown
+     * through this class would replace both with a stack trace and would take the failing DD name, the
+     * failing operation and the raw status out of the operator's log.
+     *
+     * <p>The failure is logged here at error level, once, with the DD name, the operation and the raw
+     * status. Neither the key nor the payload is included, because both carry regulated data and the
+     * caller has both already; and the store's own failure is reduced to its failure-type chain rather
+     * than handed to the logger whole, because a data-access failure's narrative is where a statement and
+     * its bound parameters appear.
+     *
+     * @param ddName    the DD name of the file whose retrieval failed
+     * @param operation the operation code that was executing
+     * @param request   the parameter object, whose payload and position pass through untouched
+     * @param failure   the store's own failure
+     * @return an action carrying the permanent input-output status
+     */
+    private static FileAction retrievalFailed(final String ddName, final String operation,
+            final StatementFileRequest request, final DataAccessException failure) {
+        LOG.error("Statement file operation {} on DD name {} did not complete; reporting raw file status"
+                + " {} failureChain={}", operation, ddName, DATA_ACCESS_FAILURE_STATUS,
+                FailureDiagnostics.failureChainOf(failure));
+        return FileAction.status(request, DATA_ACCESS_FAILURE_STATUS, request.sequentialPosition());
+    }
+
+    /**
      * A keyed read found no record for the supplied key. Publishes the record-not-found status and changes
      * nothing else; the caller decides what that means, and for the statement generator it means an abend.
      * Neither the key nor the payload is logged, because both carry regulated data.
@@ -1086,7 +1353,7 @@ public final class StatementDataAccessService {
      * status that verb produced; if none did, <strong>the status the caller supplied on entry, returned
      * unchanged</strong>. The second case is the fall-through of the source's three unguarded tests, and
      * preserving it is deliberate - see
-     * {@link #execute(StatementFileRequest, StatementTransactionSource)}.
+     * {@link #execute(StatementFileRequest, StatementTransactionSource, StatementCrossReferenceSource)}.
      *
      * @param ddName  the DD name, for the diagnostic only
      * @param request the parameter object, supplying the status carried on entry

@@ -46,6 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -192,7 +193,20 @@ class TransactionReportProcessorTest {
         this.reportTransactions = List.copyOf(content);
     }
 
-    /** Creates one complete processor item over a detached snapshot of the current fixture records. */
+    /** The destination created by the most recent {@link #input(String)}, for assertion purposes. */
+    private List<String> lastEmitted = new ArrayList<>();
+
+    /**
+     * Creates one complete processor item over a detached snapshot of the current fixture records.
+     *
+     * <p>The item carries its own destination, because the stage streams each record to a sink as it is
+     * composed and never hands back a list. The destination created here is remembered in
+     * {@link #lastEmitted} so a test can assert on what the run actually emitted; see
+     * {@code docs/decision-log.md} entry DL-176.
+     *
+     * @param dateParameterCard the parameter record this item carries
+     * @return the item
+     */
     private ReportTransactionInput input(final String dateParameterCard) {
         final List<Transaction> snapshot = List.copyOf(this.reportTransactions);
         final ReportTransactionSource source = position -> {
@@ -203,7 +217,53 @@ class TransactionReportProcessorTest {
                     ? Optional.of(snapshot.get(position))
                     : Optional.empty();
         };
-        return new ReportTransactionInput(dateParameterCard, source);
+        final List<String> collected = new ArrayList<>();
+        this.lastEmitted = collected;
+        return new ReportTransactionInput(dateParameterCard, source, collected::add);
+    }
+
+    /**
+     * One processed report: the stage's own observations paired with the records its sink received.
+     *
+     * @param observed    the stage's observations
+     * @param reportLines the records the sink received, in emission order
+     */
+    private record ProcessedReport(TransactionReportResult observed, List<String> reportLines) {
+
+        /** @return the grand total the run reported */
+        BigDecimal grandTotal() {
+            return this.observed.grandTotal();
+        }
+
+        /** @return the page-total emissions the run reported */
+        int pageCount() {
+            return this.observed.pageCount();
+        }
+
+        /** @return the final line-counter value the run reported */
+        long lineCount() {
+            return this.observed.lineCount();
+        }
+
+        /** @return the account-total emissions the run reported */
+        int accountBreakCount() {
+            return this.observed.accountBreakCount();
+        }
+    }
+
+    /**
+     * Runs the default stage over one item and pairs its observations with what its sink received.
+     *
+     * @param item the item to process
+     * @return the processed report
+     */
+    private ProcessedReport process(final ReportTransactionInput item) {
+        final List<String> destination = this.lastEmitted;
+        final TransactionReportResult observed = this.processor.process(item);
+        assertThat(observed.reportRecordCount())
+                .as("the stage's own record count must agree with what its sink received")
+                .isEqualTo(destination.size());
+        return new ProcessedReport(observed, List.copyOf(destination));
     }
 
     /** {@code count} transactions of one currency unit each, all on one card and one date. */
@@ -216,7 +276,7 @@ class TransactionReportProcessorTest {
     }
 
     /** The records of a report whose first sixteen characters are a transaction identifier. */
-    private static List<String> detailsOf(final TransactionReportResult result) {
+    private static List<String> detailsOf(final ProcessedReport result) {
         List<String> details = new ArrayList<>();
         for (String line : result.reportLines()) {
             if (Character.isDigit(line.charAt(0))) {
@@ -227,7 +287,7 @@ class TransactionReportProcessorTest {
     }
 
     /** The records of a report that begin with the supplied label. */
-    private static List<String> labelled(final TransactionReportResult result, final String label) {
+    private static List<String> labelled(final ProcessedReport result, final String label) {
         List<String> matches = new ArrayList<>();
         for (String line : result.reportLines()) {
             if (line.startsWith(label)) {
@@ -249,12 +309,17 @@ class TransactionReportProcessorTest {
         return digits.isEmpty() ? BigDecimal.ZERO : new BigDecimal(digits);
     }
 
-    /** A generator that yields exactly the supplied records, used for postcondition tests. */
+    /** A generator that offers exactly the supplied records to its sink, for postcondition tests. */
     private TransactionReportProcessor processorYielding(final List<String> reportLines) {
         TransactionReportService stubbed = mock(TransactionReportService.class);
         when(stubbed.generateReportFromDateParameterCard(
-                any(ReportTransactionSource.class), any())).thenReturn(
-                new TransactionReportResult(reportLines, BigDecimal.ZERO, 0, 0L, 0));
+                any(ReportTransactionSource.class), any(), any()))
+                .thenAnswer(invocation -> {
+                    final Consumer<String> sink = invocation.getArgument(1);
+                    reportLines.forEach(sink);
+                    return new TransactionReportResult(reportLines.size(), BigDecimal.ZERO, 0, 0L,
+                            0);
+                });
         return new TransactionReportProcessor(stubbed, registry);
     }
 
@@ -290,8 +355,8 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(3, "2022-07-05"));
 
-            TransactionReportResult fromStructured = processor.process(structuredCard());
-            TransactionReportResult fromImage = processor.process(cardImage());
+            final ProcessedReport fromStructured = process(structuredCard());
+            final ProcessedReport fromImage = process(cardImage());
 
             assertThat(fromImage.reportLines()).isEqualTo(fromStructured.reportLines());
         }
@@ -311,7 +376,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of());
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(detailsOf(result)).isEmpty();
             assertThat(labelled(result, "Grand Total")).hasSize(1);
@@ -322,7 +387,7 @@ class TransactionReportProcessorTest {
         void absentResultIsRejected() {
             TransactionReportService silent = mock(TransactionReportService.class);
             when(silent.generateReportFromDateParameterCard(
-                    any(ReportTransactionSource.class), any())).thenReturn(null);
+                    any(ReportTransactionSource.class), any(), any())).thenReturn(null);
 
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> new TransactionReportProcessor(silent, registry)
@@ -369,7 +434,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", START)));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(detailsOf(result)).hasSize(1);
             assertThat(detailsOf(result).get(0)).startsWith(identifier(1));
@@ -381,7 +446,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(2), CARD_A, "1.00", END)));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(detailsOf(result)).hasSize(1);
             assertThat(detailsOf(result).get(0)).startsWith(identifier(2));
@@ -396,7 +461,7 @@ class TransactionReportProcessorTest {
                     transaction(identifier(2), CARD_A, "1.00", "2022-07-15"),
                     transaction(identifier(3), CARD_A, "1.00", END)));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             List<String> details = detailsOf(result);
             assertThat(details).hasSize(3);
@@ -413,7 +478,7 @@ class TransactionReportProcessorTest {
                     transaction(identifier(1), CARD_A, "1.00", "2022-07-15"),
                     transaction(identifier(9), CARD_A, "1.00", "2022-08-01")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(result.reportLines()).noneMatch(line -> line.startsWith(identifier(9)));
             assertThat(detailsOf(result)).hasSize(1);
@@ -425,7 +490,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(8), CARD_A, "1.00", "2022-06-30")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(result.reportLines()).noneMatch(line -> line.startsWith(identifier(8)));
             assertThat(detailsOf(result)).isEmpty();
@@ -437,7 +502,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(1, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(result.reportLines().get(0))
                     .isEqualTo(ReportLineFormatter.buildReportNameHeader(START, END));
@@ -454,7 +519,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(1, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
             List<String> block = ReportLineFormatter.buildHeaderBlock(START, END);
 
             assertThat(result.reportLines()
@@ -472,7 +537,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(DETAILS_ON_FIRST_PAGE, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(detailsOf(result)).hasSize(DETAILS_ON_FIRST_PAGE);
             assertThat(labelled(result, "DALYREPT")).hasSize(1);
@@ -487,7 +552,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(DETAILS_ON_FIRST_PAGE + 1, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
             List<String> lines = result.reportLines();
             List<String> block = ReportLineFormatter.buildHeaderBlock(START, END);
             int firstBreak = ReportLineFormatter.HEADER_BLOCK_RECORD_COUNT + DETAILS_ON_FIRST_PAGE;
@@ -509,7 +574,7 @@ class TransactionReportProcessorTest {
             both.add(transaction(identifier(3), CARD_B, "1.00", "2022-07-05"));
             stubRange(both);
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
             List<String> lines = result.reportLines();
             int accountTotalIndex = -1;
             int newCardDetailIndex = -1;
@@ -535,7 +600,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(3, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(result.accountBreakCount()).isZero();
             assertThat(labelled(result, "Account Total")).isEmpty();
@@ -547,7 +612,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(2, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
             List<String> lines = result.reportLines();
 
             assertThat(lines.get(lines.size() - 3)).startsWith("Page Total");
@@ -565,7 +630,7 @@ class TransactionReportProcessorTest {
                     transaction(identifier(1), CARD_A, "1.00", "2022-07-06"),
                     transaction(identifier(2), CARD_A, "1.00", "2022-07-07")));
 
-            List<String> details = detailsOf(processor.process(structuredCard()));
+            List<String> details = detailsOf(process(structuredCard()));
 
             assertThat(details.get(0)).startsWith(identifier(3));
             assertThat(details.get(1)).startsWith(identifier(1));
@@ -583,7 +648,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(DETAILS_ON_FIRST_PAGE + 1, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             BigDecimal foldedFromPages = BigDecimal.ZERO;
             for (String line : labelled(result, "Page Total")) {
@@ -610,7 +675,7 @@ class TransactionReportProcessorTest {
             }
             stubRange(both);
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(amountOn(labelled(result, "Account Total").get(0)))
                     .isEqualByComparingTo(new BigDecimal("10.00"));
@@ -625,7 +690,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "12.34", "2022-07-05")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(amountOn(detailsOf(result).get(0)))
                     .isEqualByComparingTo(new BigDecimal("12.34"));
@@ -648,7 +713,7 @@ class TransactionReportProcessorTest {
             }
             stubRange(both);
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(result.reportLines()).isNotEmpty();
             for (String line : result.reportLines()) {
@@ -690,7 +755,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "0.00", "2022-07-05")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(amountField(detailsOf(result).get(0))).isBlank();
             assertThat(amountField(labelled(result, "Grand Total").get(0)))
@@ -704,7 +769,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "1.00", "2022-07-05")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(amountField(detailsOf(result).get(0)).charAt(0)).isEqualTo(' ');
             assertThat(amountField(labelled(result, "Page Total").get(0)).charAt(0))
@@ -719,7 +784,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(List.of(transaction(identifier(1), CARD_A, "-5.00", "2022-07-05")));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(amountField(detailsOf(result).get(0)).charAt(0)).isEqualTo('-');
             assertThat(amountField(labelled(result, "Grand Total").get(0)).charAt(0))
@@ -747,7 +812,7 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(3, "2022-07-05"));
 
-            TransactionReportResult result = processor.process(structuredCard());
+            final ProcessedReport result = process(structuredCard());
 
             assertThat(registry.find(GENERATION_TIMER)
                     .tag("resource", TransactionReportProcessor.LEGACY_DD_TRANREPT)
@@ -768,7 +833,7 @@ class TransactionReportProcessorTest {
             TransactionReportService failing = mock(TransactionReportService.class);
             IllegalStateException raised = new IllegalStateException("range unavailable");
             when(failing.generateReportFromDateParameterCard(
-                    any(ReportTransactionSource.class), any())).thenThrow(raised);
+                    any(ReportTransactionSource.class), any(), any())).thenThrow(raised);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> new TransactionReportProcessor(failing, registry)
@@ -798,8 +863,8 @@ class TransactionReportProcessorTest {
             stubLookups();
             stubRange(onOneCard(4, "2022-07-05"));
 
-            TransactionReportResult first = processor.process(structuredCard());
-            TransactionReportResult second = processor.process(structuredCard());
+            final ProcessedReport first = process(structuredCard());
+            final ProcessedReport second = process(structuredCard());
 
             assertThat(second.reportLines()).isEqualTo(first.reportLines());
             assertThat(second.grandTotal()).isEqualByComparingTo(first.grandTotal());

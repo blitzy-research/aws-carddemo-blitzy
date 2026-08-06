@@ -28,11 +28,12 @@ import com.carddemo.exception.AbendException;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
+import com.carddemo.service.DailyTransactionReadService.DailyTransactionVerification;
 import com.carddemo.util.BatchCancellation;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
@@ -554,17 +555,7 @@ public final class DailyTransactionReadJobConfig {
     private DailyTransactionReadResult runExtractPass(final BooleanSupplier stopRequested) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         try {
-            final Optional<List<DailyTransaction>> stagedInput = stagedDailyTransactionInput();
-            final DailyTransactionReadResult result;
-            if (stagedInput.isPresent()) {
-                result = stopRequested == null
-                        ? this.dailyTransactionReadService.execute(stagedInput.get())
-                        : this.dailyTransactionReadService.execute(stagedInput.get(), stopRequested);
-            } else {
-                result = stopRequested == null
-                        ? this.dailyTransactionReadService.execute()
-                        : this.dailyTransactionReadService.execute(stopRequested);
-            }
+            final DailyTransactionReadResult result = readPass(stopRequested);
 
             recordStepDuration(sample, OUTCOME_COMPLETED);
             LOG.info("PROGRAM {} READ {} RECORD(S), VERIFIED {}, MADE {} VERIFICATION PASS(ES), COULD NOT"
@@ -699,37 +690,103 @@ public final class DailyTransactionReadJobConfig {
      * @throws AbendException if the staged dataset cannot be opened or read, after the diagnostic and the raw
      *         status have been emitted
      */
-    private Optional<List<DailyTransaction>> stagedDailyTransactionInput() {
+    private DailyTransactionReadResult readPass(final BooleanSupplier stopRequested) {
         final Optional<FlatFileItemReader<DailyTransaction>> reader = dalytranReader();
         if (reader.isEmpty()) {
             LOG.debug("NO SEQUENTIAL DATASET IS STAGED FOR {}; THE ORDERED INPUT IS RESOLVED BY PROGRAM {}"
                     + " ITSELF, ASCENDING BY RECORD IDENTITY", DD_DALYTRAN, PROGRAM_NAME);
-            return Optional.empty();
+            return stopRequested == null
+                    ? this.dailyTransactionReadService.execute(
+                            DailyTransactionReadJobConfig::consumeVerification)
+                    : this.dailyTransactionReadService.execute(
+                            DailyTransactionReadJobConfig::consumeVerification, stopRequested);
         }
-        return Optional.of(readStagedDataset(reader.get()));
+
+        final FlatFileItemReader<DailyTransaction> staged = reader.get();
+        openStagedDataset(staged);
+        try {
+            // One record is in hand at a time: the pass pulls the next record from the open handle as
+            // it needs it, so a staged dataset is never held in the heap. See
+            // docs/decision-log.md entry DL-176.
+            final Iterable<DailyTransaction> streamed = () -> stagedRecordCursor(staged);
+            return stopRequested == null
+                    ? this.dailyTransactionReadService.execute(streamed,
+                            DailyTransactionReadJobConfig::consumeVerification)
+                    : this.dailyTransactionReadService.execute(streamed,
+                            DailyTransactionReadJobConfig::consumeVerification, stopRequested);
+        } finally {
+            releaseStagedDataset(staged);
+        }
     }
 
     /**
-     * Walks a staged dataset from its first record to its last and returns them in that order.
+     * Consumes one per-record verification outcome on behalf of this job.
      *
-     * @param reader the reader over the staged dataset
-     * @return the records the dataset holds, in dataset order, never {@code null}
-     * @throws AbendException if the dataset cannot be opened or read
+     * <p>The member writes no dataset and reports its per-record findings through its own diagnostics,
+     * which the pass has already emitted by the time an outcome arrives here. What this job reports is
+     * the pass's counts, so the outcome has no destination beyond a trace record - and naming that
+     * explicitly is the point: the pass cannot accumulate a whole dataset's outcomes, and a caller that
+     * wants them receives them one at a time.
+     *
+     * @param outcome the outcome of one verification pass; must not be {@code null}
      */
-    private static List<DailyTransaction> readStagedDataset(
+    private static void consumeVerification(final DailyTransactionVerification outcome) {
+        Objects.requireNonNull(outcome, "outcome");
+        LOG.trace("PROGRAM {} COMPLETED ONE VERIFICATION PASS: cardVerified={} accountFound={}"
+                        + " afterEndOfFile={}", PROGRAM_NAME, outcome.cardVerified(),
+                outcome.accountFound(), outcome.afterEndOfFile());
+    }
+
+    /**
+     * Walks an already-open staged dataset one record at a time, in dataset order.
+     *
+     * <p>Forward-only and one record deep: exactly one record is read ahead so that {@code hasNext} can
+     * answer without consuming, which is what lets the pass drive the walk as it goes rather than
+     * receiving a materialised dataset. Opening and releasing the handle belong to the caller, because
+     * the walk's lifetime is the pass's and not the iterator's.
+     *
+     * @param reader the open reader over the staged dataset
+     * @return a forward walk over the dataset, never {@code null}
+     * @throws AbendException if the dataset cannot be read
+     */
+    private static Iterator<DailyTransaction> stagedRecordCursor(
             final FlatFileItemReader<DailyTransaction> reader) {
-        openStagedDataset(reader);
-        try {
-            final List<DailyTransaction> staged = new ArrayList<>();
-            DailyTransaction nextRecord = readStagedRecord(reader);
-            while (nextRecord != null) {
-                staged.add(nextRecord);
-                nextRecord = readStagedRecord(reader);
+
+        return new Iterator<>() {
+
+            /** The record read ahead of the caller, or {@code null} when none is in hand. */
+            private DailyTransaction pending;
+
+            /** Whether the dataset has been read to its end. */
+            private boolean exhausted;
+
+            @Override
+            public boolean hasNext() {
+                if (this.pending != null) {
+                    return true;
+                }
+                if (this.exhausted) {
+                    return false;
+                }
+                this.pending = readStagedRecord(reader);
+                if (this.pending == null) {
+                    this.exhausted = true;
+                    return false;
+                }
+                return true;
             }
-            return List.copyOf(staged);
-        } finally {
-            releaseStagedDataset(reader);
-        }
+
+            @Override
+            public DailyTransaction next() {
+                if (!hasNext()) {
+                    throw new NoSuchElementException("the staged " + DD_DALYTRAN
+                            + " dataset holds no further record");
+                }
+                final DailyTransaction served = this.pending;
+                this.pending = null;
+                return served;
+            }
+        };
     }
 
     /**

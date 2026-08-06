@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,7 @@ import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.SensitiveLogRedactor;
+import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
 import com.carddemo.util.ZonedDecimalCodec;
 
 /**
@@ -380,10 +382,6 @@ public class InterestCalculationService {
      */
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
-    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
-
-    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
-
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
     private final DisclosureGroupRepository disclosureGroupRepository;
@@ -521,13 +519,17 @@ public class InterestCalculationService {
     }
 
     /**
-     * What the whole run produced: one entry per account group, every transaction written, and the two
-     * counters the legacy program maintained.
+     * What the whole run produced: the counters the legacy program maintained, and nothing else.
      *
-     * @param groups               one entry per account group, in the order the control break closed
-     *                             them
-     * @param interestTransactions every transaction the run synthesized, in the order written
-     * @param groupCount           how many account groups the control break closed
+     * <p>The closed groups and the synthesized transactions are <strong>not</strong> carried here. Each
+     * reached the caller's destination at the moment it was produced - a transaction inside its group's
+     * unit of work and a group at its control break - so a run holds one group's worth of state and
+     * never the whole master's. See {@code docs/decision-log.md} entry DL-176.
+     *
+     * @param groupCount           how many account groups the control break closed, each of which was
+     *                             offered to the caller's group destination as it closed
+     * @param transactionCount     how many transactions the run offered to the caller's transaction
+     *                             destination, in the order written
      * @param recordCount          the value the counter at line 172 reached, incremented once per
      *                             category-balance row read at line 192
      * @param rateGateSkipped      {@code true} when at least one row anywhere in the run had a zero
@@ -536,20 +538,22 @@ public class InterestCalculationService {
      *                             the padded default group literal
      * @param lastTranIdSuffix     the six-digit identifier suffix the run finished on
      */
-    public record InterestRunResult(List<GroupInterestResult> groups,
-                                    List<Transaction> interestTransactions,
-                                    int groupCount,
+    public record InterestRunResult(int groupCount,
+                                    int transactionCount,
                                     int recordCount,
                                     boolean rateGateSkipped,
                                     boolean defaultGroupUsed,
                                     long lastTranIdSuffix) {
 
         /**
-         * Canonical constructor, which defends the two collections against later mutation.
+         * Canonical constructor, which refuses a count the run could not have reached.
          */
         public InterestRunResult {
-            groups = List.copyOf(groups);
-            interestTransactions = List.copyOf(interestTransactions);
+            if (groupCount < 0 || transactionCount < 0 || recordCount < 0) {
+                throw new IllegalArgumentException("a run cannot report a negative count:"
+                        + " groupCount=" + groupCount + " transactionCount=" + transactionCount
+                        + " recordCount=" + recordCount);
+            }
         }
     }
 
@@ -567,15 +571,25 @@ public class InterestCalculationService {
      *
      * @param parameterDate the ten-character date from the linkage area at line 178, which is also the
      *                      first ten characters of every identifier this run mints
+     * @param transactionSink the destination each synthesized transaction is offered to, inside its
+     *                        group's unit of work and before that group's account rewrite; must not be
+     *                        {@code null}
+     * @param groupSink the destination each closed account group is offered to, as its control break
+     *                  closes it; must not be {@code null}
      * @return what the run produced
      * @throws IllegalArgumentException  when the parameter date is not exactly ten characters
+     * @throws NullPointerException      when either destination is absent
      * @throws com.carddemo.exception.AbendException when any read or write reports a status this
      *                                   member treats as a failure, or when a group's rate cannot be
      *                                   resolved even from the default group
      */
-    public InterestRunResult calculateInterest(final String parameterDate) {
+    public InterestRunResult calculateInterest(final String parameterDate,
+            final Consumer<Transaction> transactionSink,
+            final Consumer<GroupInterestResult> groupSink) {
+
         final String validatedDate = validatedParameterDate(parameterDate);
-        return calculateInterest(validatedDate, readCategoryBalanceMasterInKeyOrder());
+        return calculateInterest(validatedDate, readCategoryBalanceMasterInKeyOrder(),
+                transactionSink, groupSink);
     }
 
     /**
@@ -599,19 +613,35 @@ public class InterestCalculationService {
      * arm is honoured here: the last group is closed after the read loop ends. The divergence is
      * recorded in the decision log rather than left implicit.
      *
+     * <p><strong>Nothing accumulates across groups.</strong> The rows of the group currently filling
+     * are the only rows the run holds, and each closed group and each synthesized transaction is offered
+     * to the caller's destination as it is produced. A run over the whole master therefore costs one
+     * group rather than one master. See {@code docs/decision-log.md} entry DL-176.
+     *
      * @param parameterDate            the ten-character date from the linkage area at line 178
      * @param orderedCategoryBalances  the category-balance rows, in record-key order; may be empty, in
      *                                 which case the run reads nothing and closes no group
+     * @param transactionSink          the destination each synthesized transaction is offered to,
+     *                                 inside its group's unit of work and before that group's account
+     *                                 rewrite; must not be {@code null}
+     * @param groupSink                the destination each closed account group is offered to, as its
+     *                                 control break closes it; must not be {@code null}
      * @return what the run produced
      * @throws IllegalArgumentException  when the parameter date is not exactly ten characters, or when
      *                                   the row list is {@code null}
+     * @throws NullPointerException      when either destination is absent
      * @throws com.carddemo.exception.AbendException on any failure this member abends on
      */
     public InterestRunResult calculateInterest(final String parameterDate,
-            final Iterable<TransactionCategoryBalance> orderedCategoryBalances) {
+            final Iterable<TransactionCategoryBalance> orderedCategoryBalances,
+            final Consumer<Transaction> transactionSink,
+            final Consumer<GroupInterestResult> groupSink) {
+
         final String validatedDate = validatedParameterDate(parameterDate);
         Objects.requireNonNull(orderedCategoryBalances,
                 "orderedCategoryBalances must not be null: an absent source is not an empty source");
+        Objects.requireNonNull(transactionSink, "transactionSink must not be null");
+        Objects.requireNonNull(groupSink, "groupSink must not be null");
 
         LOG.info(START_OF_EXECUTION);
 
@@ -623,8 +653,9 @@ public class InterestCalculationService {
         tranfileOpen();
 
         final RunState run = new RunState();
-        final List<GroupInterestResult> groups = new ArrayList<>();
-        final List<Transaction> written = new ArrayList<>();
+        final CountingTransactionSink countedTransactions =
+                new CountingTransactionSink(transactionSink);
+        int groupsClosed = 0;
         final Iterator<TransactionCategoryBalance> cursor = orderedCategoryBalances.iterator();
         List<TransactionCategoryBalance> currentGroup = new ArrayList<>();
 
@@ -651,10 +682,9 @@ public class InterestCalculationService {
                 } else {
                     // Line 196. Closing the preceding group resets its running total by construction,
                     // which is what line 200 does for the group about to start.
-                    final GroupInterestResult closed =
-                            closeGroup(validatedDate, currentGroup, run);
-                    groups.add(closed);
-                    written.addAll(closed.interestTransactions());
+                    groupSink.accept(
+                            closeGroup(validatedDate, currentGroup, run, countedTransactions));
+                    groupsClosed++;
                     currentGroup = new ArrayList<>();
                 }
                 // Line 201.
@@ -665,9 +695,8 @@ public class InterestCalculationService {
 
         // Lines 219 to 221, honoured for the final group. See the note in this method's contract.
         if (!currentGroup.isEmpty()) {
-            final GroupInterestResult closed = closeGroup(validatedDate, currentGroup, run);
-            groups.add(closed);
-            written.addAll(closed.interestTransactions());
+            groupSink.accept(closeGroup(validatedDate, currentGroup, run, countedTransactions));
+            groupsClosed++;
         }
 
         // Lines 224 to 228, in source order.
@@ -679,13 +708,47 @@ public class InterestCalculationService {
 
         LOG.info(END_OF_EXECUTION);
 
-        return new InterestRunResult(groups,
-                written,
-                groups.size(),
+        return new InterestRunResult(groupsClosed,
+                countedTransactions.count(),
                 run.recordCount(),
                 run.isRateGateSkipped(),
                 run.isDefaultGroupUsed(),
                 run.tranIdSuffix());
+    }
+
+    /**
+     * The caller's transaction destination with a count of what passed through it.
+     *
+     * <p>Counting rather than collecting: the run reports how many transactions it synthesized without
+     * ever holding them, which is the whole point of handing them over as they are written.
+     */
+    private static final class CountingTransactionSink implements Consumer<Transaction> {
+
+        /** The caller's destination. */
+        private final Consumer<Transaction> destination;
+
+        /** How many transactions have passed through. */
+        private int count;
+
+        /**
+         * @param destination the caller's destination; must not be {@code null}
+         */
+        CountingTransactionSink(final Consumer<Transaction> destination) {
+            this.destination = Objects.requireNonNull(destination, "transactionSink must not be null");
+        }
+
+        @Override
+        public void accept(final Transaction transaction) {
+            this.destination.accept(transaction);
+            this.count++;
+        }
+
+        /**
+         * @return how many transactions have passed through, never negative
+         */
+        int count() {
+            return this.count;
+        }
     }
 
     /**
@@ -708,6 +771,21 @@ public class InterestCalculationService {
      * concurrent-modification failure is allowed to propagate rather than being translated into an
      * abend. No pessimistic lock is taken.
      *
+     * <p><strong>Why the caller supplies the writer instead of collecting the records afterwards.</strong>
+     * Line 468 writes each synthesized transaction the moment it is assembled, inside the loop, and line
+     * 353 rewrites the account only at the control break - so in the legacy <em>every</em> transaction
+     * record of a group reaches its dataset <em>before</em> that group's account rewrite is attempted,
+     * and a failed transaction write abends at lines 508 to 512 with the account not yet rewritten.
+     * Handing the records back for the caller to write after this method returns inverts that: the
+     * rewrite would already have committed, and a write failure would leave a hardened balance with no
+     * record of what hardened it. The writer is therefore invoked at the point line 500 writes, inside
+     * this group's unit of work, and a failure it raises propagates out before {@code updateAccount} is
+     * reached.
+     *
+     * <p>The records are still reported in the result, because the caller needs their count, their order
+     * and their contents for its own counters and checks. Reporting them is not the same as writing
+     * them, and only the writer writes.
+     *
      * @param parameterDate            the ten-character date from the linkage area at line 178
      * @param accountId                the eleven-digit account identifier every row of the group keys
      *                                 on
@@ -716,6 +794,10 @@ public class InterestCalculationService {
      * @param initialTranIdSuffix      the six-digit identifier suffix to continue from, because the
      *                                 suffix at line 173 is per run and not per group; zero starts a
      *                                 fresh run, so the first identifier minted carries suffix one
+     * @param synthesizedWriter        invoked once per synthesized transaction, in synthesis order, at
+     *                                 the point line 500 writes and therefore before the account
+     *                                 rewrite; whatever it throws propagates and the rewrite is not
+     *                                 reached
      * @return what the group produced, including the suffix the next group must continue from
      * @throws IllegalArgumentException  when the parameter date is not exactly ten characters, when the
      *                                   group is empty, when the suffix is negative, or when a row does
@@ -727,9 +809,14 @@ public class InterestCalculationService {
     public GroupInterestResult calculateGroupInterest(final String parameterDate,
             final String accountId,
             final List<TransactionCategoryBalance> groupCategoryBalances,
-            final long initialTranIdSuffix) {
+            final long initialTranIdSuffix,
+            final Consumer<Transaction> synthesizedWriter) {
+        Objects.requireNonNull(synthesizedWriter, "synthesizedWriter must not be null: the legacy"
+                + " program writes every transaction record before it rewrites the account, so there"
+                + " is no group path that synthesizes a record with nowhere to write it");
         return this.groupTransactionBoundary.execute(() -> calculateGroupInterestWithinBoundary(
-                parameterDate, accountId, groupCategoryBalances, initialTranIdSuffix));
+                parameterDate, accountId, groupCategoryBalances, initialTranIdSuffix,
+                synthesizedWriter));
     }
 
     /**
@@ -744,12 +831,14 @@ public class InterestCalculationService {
      * @param accountId             the group account identifier
      * @param groupCategoryBalances the rows belonging to the group
      * @param initialTranIdSuffix   the run suffix entering the group
+     * @param synthesizedWriter     the writer invoked at each line-500 write, inside this boundary
      * @return the completed account-group result
      */
     private GroupInterestResult calculateGroupInterestWithinBoundary(final String parameterDate,
             final String accountId,
             final List<TransactionCategoryBalance> groupCategoryBalances,
-            final long initialTranIdSuffix) {
+            final long initialTranIdSuffix,
+            final Consumer<Transaction> synthesizedWriter) {
         final String validatedDate = validatedParameterDate(parameterDate);
         Objects.requireNonNull(accountId, "accountId must not be null");
         Objects.requireNonNull(groupCategoryBalances, "groupCategoryBalances must not be null");
@@ -765,10 +854,13 @@ public class InterestCalculationService {
         for (final TransactionCategoryBalance row : groupCategoryBalances) {
             Objects.requireNonNull(row, "a category-balance row must not be null");
             if (!accountId.equals(row.getTrancatAcctId())) {
+                // Neither identifier is rendered: see docs/decision-log.md entry DL-177.
                 throw new IllegalArgumentException("every row of an account group must carry the"
-                        + " group's own account identifier, but a row keyed on \""
-                        + row.getTrancatAcctId() + "\" was presented for group \"" + accountId
-                        + "\"; the control break is driven by that key and a mixed group would post"
+                        + " group's own account identifier, but a row keyed on "
+                        + SensitiveLogRedactor.redact(row.getTrancatAcctId())
+                        + " was presented for group "
+                        + SensitiveLogRedactor.redact(accountId)
+                        + "; the control break is driven by that key and a mixed group would post"
                         + " one account's interest to another");
             }
         }
@@ -776,7 +868,8 @@ public class InterestCalculationService {
         // Lines 202 to 203, then lines 204 to 205: read once for the group, before any row of it.
         final Account account = getAcctData(accountId);
         final CardCrossReference crossReference = getXrefData(accountId);
-        final GroupContext context = new GroupContext(validatedDate, account, crossReference);
+        final GroupContext context =
+                new GroupContext(validatedDate, account, crossReference, synthesizedWriter);
 
         // Line 200: the running total starts at zero for every group.
         final GroupState group = new GroupState(initialTranIdSuffix);
@@ -788,7 +881,9 @@ public class InterestCalculationService {
             categoryInterests.add(accrueCategoryRow(row, context, group, interestTransactions));
         }
 
-        // Lines 350 to 370, and for the run's final group also lines 219 to 221.
+        // Lines 350 to 370, and for the run's final group also lines 219 to 221. Every record of this
+        // group has already been handed to the writer by now, exactly as the legacy had already written
+        // every one of them to SYSTRAN before it reached the control break.
         final Account updatedAccount = updateAccount(account, group.totalInterest());
 
         return new GroupInterestResult(accountId,
@@ -1039,10 +1134,11 @@ public class InterestCalculationService {
         final Optional<CardCrossReference> fetched;
         final String rawFileStatus;
         try {
-            // Lines 394 to 398: READ ... KEY IS the alternate key. The finder resolves the first
-            // matching row, which is what a non-unique alternate-key read returns.
-            fetched = firstXrefByBaseKey(
-                    this.cardCrossReferenceRepository.findByXrefAcctId(accountId));
+            // Lines 394 to 398: READ ... KEY IS the alternate key. The ordered-first finder is that
+            // read: bounded to one row and ordered on the base key, which is what a non-unique
+            // alternate-key read returns.
+            fetched = this.cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountId);
             rawFileStatus = fetched.isPresent()
                     ? FileStatus.SUCCESS.getCode()
                     : FileStatus.RECORD_NOT_FOUND.getCode();
@@ -1225,10 +1321,13 @@ public class InterestCalculationService {
      *       byte-identical.</li>
      * </ul>
      *
-     * <p>The legacy WRITE targets the sequential {@code SYSTRAN(+1)} generation allocated by
-     * {@code INTCALC.jcl}; it does not target the live transaction master. This method therefore
-     * returns the complete record without persisting it. The job configuration owns the sole guarded
-     * write and maps its output status at the actual file-I/O boundary.
+     * <p>The legacy WRITE at line 500 targets the sequential {@code SYSTRAN(+1)} generation allocated
+     * by {@code INTCALC.jcl}; it does not target the live transaction master, which is why nothing here
+     * touches the transaction repository. The write itself is performed by the writer the group was
+     * given, at the position line 500 occupies - <strong>before</strong> the control break rewrites the
+     * account - so the caller owns the guarded write and its status mapping while this method owns when
+     * the write happens. The assembled record is also returned, because the caller needs its contents
+     * for its own per-row records and counters.
      *
      * @param monthlyInterest the amount to carry, at the monetary scale
      * @param context         the group's account, cross-reference and parameter date
@@ -1264,8 +1363,11 @@ public class InterestCalculationService {
                 batchTimestamp,                                           // Line 497.
                 batchTimestamp);                                          // Line 498, the same value.
 
-        // Line 500 is performed by InterestCalculationJobConfig's guarded SYSTRAN writer. Returning
-        // the record here keeps INTCALC from exposing it in the live master before COMBTRAN runs.
+        // Line 500: WRITE FD-TRANFILE-REC. The caller's guarded writer performs it and owns the status
+        // arms at lines 501 to 512; what matters here is that it happens now, inside this group's unit
+        // of work and before the control break rewrites the account, and not after this group commits.
+        context.synthesizedWriter().accept(interestTransaction);
+
         return interestTransaction;
     }
 
@@ -1504,15 +1606,17 @@ public class InterestCalculationService {
      * reports back where it finished, because the suffix at line 173 belongs to the run and not to any
      * one group.
      *
-     * @param parameterDate the ten-character date
-     * @param group         the buffered rows of one account, in record-key order and never empty
-     * @param run           the run's per-invocation state
+     * @param parameterDate     the ten-character date
+     * @param group             the buffered rows of one account, in record-key order and never empty
+     * @param run               the run's per-invocation state
+     * @param synthesizedWriter where each line-500 write goes
      * @return what the group produced
      */
     private GroupInterestResult closeGroup(final String parameterDate,
-            final List<TransactionCategoryBalance> group, final RunState run) {
+            final List<TransactionCategoryBalance> group, final RunState run,
+            final Consumer<Transaction> synthesizedWriter) {
         final GroupInterestResult closed = calculateGroupInterest(parameterDate,
-                group.get(0).getTrancatAcctId(), group, run.tranIdSuffix());
+                group.get(0).getTrancatAcctId(), group, run.tranIdSuffix(), synthesizedWriter);
         run.rememberTranIdSuffix(closed.lastTranIdSuffix());
         run.mergeGroupFlags(closed.rateGateSkipped(), closed.defaultGroupUsed());
         return closed;
@@ -1530,24 +1634,19 @@ public class InterestCalculationService {
      * @return every category-balance row, in record-key order
      */
     private Iterable<TransactionCategoryBalance> readCategoryBalanceMasterInKeyOrder() {
-        return () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+        return () -> new BoundedKeysetIterator<>(TransactionCategoryBalanceKeyCodec.LOW_VALUES, KEYSET_PAGE_SIZE,
                 this::loadCategoryBalancePage,
-                InterestCalculationService::categoryBalanceKey,
+                TransactionCategoryBalanceKeyCodec::image,
                 Comparator.naturalOrder());
     }
 
     private List<TransactionCategoryBalance> loadCategoryBalancePage(
             final String cursor, final Integer pageSize) {
         try {
-            final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
-            final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
-            final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
-            final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
-            final String categoryCode = cursor.length() <= categoryOffset
-                    ? ""
-                    : cursor.substring(categoryOffset);
             return this.transactionCategoryBalanceRepository.findAfterKey(
-                    accountId, typeCode, categoryCode,
+                    TransactionCategoryBalanceKeyCodec.accountIdOf(cursor),
+                    TransactionCategoryBalanceKeyCodec.typeCodeOf(cursor),
+                    TransactionCategoryBalanceKeyCodec.categoryCodeOf(cursor),
                     PageRequest.of(0, pageSize.intValue()));
         } catch (final DataAccessException unreadable) {
             LOG.error("{} failureChain={}", ERROR_READING_TCATBAL,
@@ -1558,16 +1657,6 @@ public class InterestCalculationService {
         }
     }
 
-    private static String keyPart(final String key, final int offset, final int width) {
-        if (key.length() <= offset) {
-            return "";
-        }
-        return key.substring(offset, Math.min(key.length(), offset + width));
-    }
-
-    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
-        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
-    }
 
     /**
      * Returns the account identifier the control break at line 194 keys on, refusing a row that cannot
@@ -1794,7 +1883,8 @@ public class InterestCalculationService {
         if (parameterDate.length() != PARM_DATE_WIDTH) {
             throw new IllegalArgumentException("the run date job parameter must be exactly "
                     + PARM_DATE_WIDTH + " characters, matching the legacy linkage field, but \""
-                    + parameterDate + "\" has length " + parameterDate.length());
+                    + FailureDiagnostics.printableForm(parameterDate) + "\" has length "
+                    + parameterDate.length());
         }
         return parameterDate;
     }
@@ -1889,12 +1979,13 @@ public class InterestCalculationService {
      * read at line 203 and the cross-reference read at line 205. Immutable, so no row of a group can
      * change what a later row sees.
      *
-     * @param parameterDate  the ten-character run date
-     * @param account        the account every row of the group posts to
-     * @param crossReference the cross-reference row that supplies the card number
+     * @param parameterDate     the ten-character run date
+     * @param account           the account every row of the group posts to
+     * @param crossReference    the cross-reference row that supplies the card number
+     * @param synthesizedWriter where line 500 writes each assembled transaction record
      */
     private record GroupContext(String parameterDate, Account account,
-            CardCrossReference crossReference) {
+            CardCrossReference crossReference, Consumer<Transaction> synthesizedWriter) {
     }
 
     /**
@@ -2057,27 +2148,5 @@ public class InterestCalculationService {
         private void markDefaultGroupUsed() {
             this.defaultGroupUsed = true;
         }
-    }
-
-    /**
-     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
-     * with the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
-     * number. That is a property of the read being reproduced rather than of the index, so
-     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
-     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
-     *
-     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
-     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
-     * coincide.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or an empty result when the account has none
-     */
-    private static Optional<CardCrossReference> firstXrefByBaseKey(
-            final List<CardCrossReference> candidates) {
-        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

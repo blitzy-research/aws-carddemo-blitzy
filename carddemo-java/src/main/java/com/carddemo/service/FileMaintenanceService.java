@@ -21,7 +21,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
-import java.util.function.LongSupplier;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -51,6 +51,7 @@ import com.carddemo.util.BatchCancellation;
 import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.SensitiveLogRedactor;
+import com.carddemo.util.TransactionCategoryBalanceKeyCodec;
 
 /**
  * The four sequential file readers of the batch tier, and the home of the two-level I/O status model
@@ -427,7 +428,7 @@ public final class FileMaintenanceService {
 
     /** Template of the open diagnostic, reporting how many records the cluster holds when it is opened. */
     private static final String OPENED_RESOURCE =
-            "opened program={} resource={} recordsAvailable={}";
+            "opened program={} resource={} recordsPresent={}";
 
     /** Template carrying a bounded failure-type chain and none of the exception's messages or frames. */
     private static final String DATA_ACCESS_FAILED =
@@ -450,10 +451,6 @@ public final class FileMaintenanceService {
             "completed program={} resource={} recordsRead={} terminalFileStatus={}";
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
-
-    private static final int TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH = 11;
-
-    private static final int TRAN_CAT_BAL_TYPE_KEY_LENGTH = 2;
 
     private final AccountRepository accountRepository;
 
@@ -571,7 +568,6 @@ public final class FileMaintenanceService {
      */
     private SequentialCursor<Account> openAcctFile() {
         return openSequentialCursor(PROGRAM_CBACT01C, DD_ACCTFILE, FAILURE_OPENING_ACCTFILE,
-                this.accountRepository::count,
                 () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
                         (cursor, size) -> this.accountScanRepository
                                 .findByAcctIdGreaterThanOrderByAcctIdAsc(
@@ -683,7 +679,6 @@ public final class FileMaintenanceService {
      */
     private SequentialCursor<Card> openCardFile() {
         return openSequentialCursor(PROGRAM_CBACT02C, DD_CARDFILE, FAILURE_OPENING_CARDFILE,
-                this.cardRepository::count,
                 () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
                         (cursor, size) -> this.cardScanRepository
                                 .findByCardNumGreaterThanOrderByCardNumAsc(
@@ -775,7 +770,6 @@ public final class FileMaintenanceService {
      */
     private SequentialCursor<CardCrossReference> openXrefFile() {
         return openSequentialCursor(PROGRAM_CBACT03C, DD_XREFFILE, FAILURE_OPENING_XREFFILE,
-                this.cardCrossReferenceRepository::count,
                 () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
                         (cursor, size) -> this.cardCrossReferenceScanRepository
                                 .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(
@@ -839,28 +833,52 @@ public final class FileMaintenanceService {
      * code - which is both the sequential order of an indexed read and the order the job's sort
      * specification declares.
      *
+     * <p><strong>The caller receives each record as the pass reads it, and the pass is made once.</strong>
+     * The utility this stands for is a single {@code REPRO INFILE(FILEIN) OUTFILE(FILEOUT)} - one control
+     * statement that reads its input and writes its output in one traversal - so the destination is
+     * supplied to this pass rather than the records being collected and handed back for a second
+     * traversal to write. A caller that read the cluster here and then read it again to write it would
+     * read it twice, and would have two counts that a commit landing between the passes could make
+     * disagree; there is nothing in the utility that compares two counts, and no arm here for the
+     * disagreement.
+     *
+     * @param recordSink where each record is delivered, in key order, as it is read; a pass that only
+     *                   needs the count and the terminal status passes a sink that does nothing, which is
+     *                   a statement that it wants no records rather than an omission
      * @return the legacy step name, the DD name, the number of records read and the status that ended the
      *         loop
      * @throws AbendException if the open, a read or the close reports a status treated as an error
+     * @throws NullPointerException if the sink is absent
      */
-    public FileReadSummary readTransactionCategoryBalanceFile() {
-        return readTransactionCategoryBalanceFile(Thread.currentThread()::isInterrupted);
+    public FileReadSummary readTransactionCategoryBalanceFile(
+            final Consumer<TransactionCategoryBalance> recordSink) {
+        return readTransactionCategoryBalanceFile(Thread.currentThread()::isInterrupted, recordSink);
     }
 
     /**
      * Reads the category-balance cluster while observing cooperative cancellation between records.
      *
      * @param stopRequested live cancellation probe
+     * @param recordSink    where each record is delivered, in key order, as it is read
      * @return the completed read summary
+     * @throws NullPointerException if the sink is absent
      */
     public FileReadSummary readTransactionCategoryBalanceFile(
-            final BooleanSupplier stopRequested) {
+            final BooleanSupplier stopRequested,
+            final Consumer<TransactionCategoryBalance> recordSink) {
+        Objects.requireNonNull(recordSink, "recordSink must not be null: the pass that stands for a copy"
+                + " utility has a destination by definition, so an absent one is never an intent");
         BatchCancellation.checkpoint(stopRequested);
         LOGGER.info(START_OF_UNLOAD, LEGACY_UNLOAD_STEP, DD_TCATBALF);
         SequentialCursor<TransactionCategoryBalance> cursor = openTranCatBalFile();
         while (!cursor.atEndOfFile()) {
             BatchCancellation.checkpoint(stopRequested);
             tranCatBalFileGetNext(cursor);
+            if (cursor.hasCurrentRecord()) {
+                // Read, then write - the order the copy utility's one control statement has, and the
+                // reason the record is delivered here rather than after the loop has ended.
+                recordSink.accept(cursor.currentRecord());
+            }
         }
         closeTranCatBalFile(cursor);
         LOGGER.info(END_OF_UNLOAD, LEGACY_UNLOAD_STEP, DD_TCATBALF);
@@ -875,36 +893,20 @@ public final class FileMaintenanceService {
      */
     private SequentialCursor<TransactionCategoryBalance> openTranCatBalFile() {
         return openSequentialCursor(LEGACY_UNLOAD_STEP, DD_TCATBALF, FAILURE_OPENING_TCATBALF,
-                this.transactionCategoryBalanceRepository::count,
-                () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
+                () -> new BoundedKeysetIterator<>(TransactionCategoryBalanceKeyCodec.LOW_VALUES,
+                        KEYSET_PAGE_SIZE,
                         this::loadCategoryBalancePage,
-                        FileMaintenanceService::categoryBalanceKey,
+                        TransactionCategoryBalanceKeyCodec::image,
                         Comparator.naturalOrder()));
     }
 
     private List<TransactionCategoryBalance> loadCategoryBalancePage(
             final String cursor, final Integer pageSize) {
-        final String accountId = keyPart(cursor, 0, TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH);
-        final int typeOffset = TRAN_CAT_BAL_ACCOUNT_KEY_LENGTH;
-        final String typeCode = keyPart(cursor, typeOffset, TRAN_CAT_BAL_TYPE_KEY_LENGTH);
-        final int categoryOffset = typeOffset + TRAN_CAT_BAL_TYPE_KEY_LENGTH;
-        final String categoryCode = cursor.length() <= categoryOffset
-                ? ""
-                : cursor.substring(categoryOffset);
         return this.transactionCategoryBalanceRepository.findAfterKey(
-                accountId, typeCode, categoryCode,
+                TransactionCategoryBalanceKeyCodec.accountIdOf(cursor),
+                TransactionCategoryBalanceKeyCodec.typeCodeOf(cursor),
+                TransactionCategoryBalanceKeyCodec.categoryCodeOf(cursor),
                 PageRequest.of(0, pageSize.intValue()));
-    }
-
-    private static String keyPart(final String key, final int offset, final int width) {
-        if (key.length() <= offset) {
-            return "";
-        }
-        return key.substring(offset, Math.min(key.length(), offset + width));
-    }
-
-    private static String categoryBalanceKey(final TransactionCategoryBalance balance) {
-        return balance.getTrancatAcctId() + balance.getTrancatTypeCd() + balance.getTrancatCd();
     }
 
     /**
@@ -987,7 +989,6 @@ public final class FileMaintenanceService {
      */
     private SequentialCursor<Customer> openCustFile() {
         return openSequentialCursor(PROGRAM_CBCUS01C, DD_CUSTFILE, FAILURE_OPENING_CUSTFILE,
-                this.customerRepository::count,
                 () -> new BoundedKeysetIterator<>("", KEYSET_PAGE_SIZE,
                         (cursor, size) -> this.customerRepository
                                 .findByCustIdGreaterThanOrderByCustIdAsc(
@@ -1091,32 +1092,34 @@ public final class FileMaintenanceService {
      * the resource for input, normalise with no end-of-file arm, and abend on anything other than success.
      *
      * <p>Opening a key-sequenced cluster for input verifies that it exists and can be read. Its relational
-     * equivalent is a query that touches the table and returns without reading it row by row, which is why
-     * the probe is separate from the ordered retrieval: the retrieval is deferred to the first read, so a
-     * retrieval failure is reported by the read arm and an accessibility failure by the open arm, exactly as
-     * the two arms divide on the mainframe. Reporting both through the open would put a read failure on the
-     * wrong paragraph.
+     * equivalent is the first bounded page of the same key-ordered retrieval the read loop consumes: one
+     * indexed range scan limited to the page size, which proves the resource reachable and simultaneously
+     * loads the page the first read then takes. No aggregate over the cluster is issued, because the open
+     * asks whether the resource can be read and not how many rows it holds.
      *
-     * @param <T>                the record type the cluster holds
-     * @param programName        the legacy member name
-     * @param resourceName       the legacy DD name
-     * @param failureLiteral     the member's own display literal for a failed open
-     * @param reachabilityProbe  the query that verifies the resource can be read
-     * @param keyOrderedRead     the ordered retrieval, invoked on the first read rather than here
-     * @return an open cursor positioned before the first record
+     * <p>The two arms still divide as they do on the mainframe. A failure on this first page is an open
+     * failure and reports this member's open literal; a failure on any later page is a read failure and
+     * reports its read literal. Both arms stay reachable and both are exercised.
+     *
+     * @param <T>            the record type the cluster holds
+     * @param programName    the legacy member name
+     * @param resourceName   the legacy DD name
+     * @param failureLiteral the member's own display literal for a failed open
+     * @param keyOrderedRead the ordered retrieval, whose first bounded page is performed here
+     * @return an open cursor positioned before the first record, with its first page already loaded
      * @throws AbendException if the open reports anything other than success
      */
     private <T> SequentialCursor<T> openSequentialCursor(final String programName,
             final String resourceName, final String failureLiteral,
-            final LongSupplier reachabilityProbe, final Supplier<Iterator<T>> keyOrderedRead) {
+            final Supplier<Iterator<T>> keyOrderedRead) {
         SequentialCursor<T> cursor = new SequentialCursor<>(programName, resourceName, keyOrderedRead);
         cursor.arm(OPERATION_OPEN);
         String rawFileStatus = FileStatusException.STATUS_SUCCESS;
         try {
             // The probe is the open itself and must run at every log level, so its result is bound to a
             // local before it is reported rather than evaluated inside the reporting call.
-            long recordsAvailable = reachabilityProbe.getAsLong();
-            LOGGER.debug(OPENED_RESOURCE, programName, resourceName, recordsAvailable);
+            boolean recordsPresent = cursor.prime();
+            LOGGER.debug(OPENED_RESOURCE, programName, resourceName, recordsPresent);
         } catch (DataAccessException failure) {
             rawFileStatus = DATA_ACCESS_FAILURE_STATUS;
             logDataAccessFailure(cursor, OPERATION_OPEN, failure);
@@ -1543,6 +1546,39 @@ public final class FileMaintenanceService {
         /** Marks the resource open, which the close arm requires in order to report success. */
         void markOpened() {
             this.open = true;
+        }
+
+        /**
+         * Performs the first bounded retrieval and reports whether the resource holds a first record,
+         * without consuming it.
+         *
+         * <p>This is what the open does. It is bounded - one page of the cursor's own key-ordered
+         * retrieval, which is one indexed range scan limited to the page size - and the page it loads is
+         * the page the read loop then consumes, so proving the resource reachable costs nothing beyond the
+         * work the first read would have done anyway.
+         *
+         * <p>It deliberately replaces a whole-table count. A count aggregates every row of the cluster to
+         * answer a question the open does not ask: the open needs to know that the resource can be read,
+         * not how much of it there is, and the record count the reader publishes is the count of the rows
+         * it actually read. On the largest clusters of this estate the count was the most expensive
+         * statement either reader issued.
+         *
+         * <p>Because this <em>is</em> the open, a retrieval failure here is an open failure and reports the
+         * member's own open literal; a failure on any later page is a read failure and reports its read
+         * literal. Both arms stay reachable and both are exercised. In the legacy an open and a first read
+         * were two operations against a dataset that could fail independently; against a relational store
+         * there is one failure mode - the query fails - so which arm reports it is a translation decision,
+         * recorded as DL-173 in {@code docs/decision-log.md}.
+         *
+         * @return whether the resource holds at least one record
+         * @throws DataAccessException if the ordered retrieval fails, which the open arm turns into the
+         *                             permanent-error status
+         */
+        boolean prime() {
+            if (this.records == null) {
+                this.records = this.keyOrderedRead.get();
+            }
+            return this.records.hasNext();
         }
 
         /**

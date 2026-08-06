@@ -457,12 +457,13 @@ public abstract class AbstractPostgresIT {
     /**
      * Reads back the application tables that actually exist on the shared server, in name order.
      *
-     * <p>Three families of table are excluded, and excluding them is the whole point of this method.
+     * <p>Two families of table are excluded, and excluding them is the whole point of this method.
      * Spring Batch provisions its own job-repository tables from its bundled script because every
-     * shipped profile asks it to, the migration tool keeps a history table of its own, and the queue
-     * bridge keeps an operational outbox table that maps no legacy record layout. All are real and
-     * expected, and none belongs to the eleven-table business inventory - so a count that included
-     * them would fail for a reason that has nothing to do with the record schema.</p>
+     * shipped profile asks it to, and the migration tool keeps a history table of its own. Both are
+     * real and expected, and neither belongs to the eleven-table business inventory - so a count that
+     * included them would fail for a reason that has nothing to do with the record schema. Nothing
+     * else is excluded: the migrations create exactly the eleven business tables and no operational
+     * table of any kind, so an unrecognised name here is a genuine schema regression.</p>
      *
      * <p>The exclusion is written against lower-case names because the server folds unquoted
      * identifiers, so the job-repository tables land lower-cased however they were declared.</p>
@@ -479,7 +480,6 @@ public abstract class AbstractPostgresIT {
                  WHERE table_schema = 'public'
                    AND table_name NOT LIKE 'batch\\_%'
                    AND table_name <> 'flyway_schema_history'
-                   AND table_name <> 'job_submission_outbox'
                  ORDER BY table_name
                 """);
     }

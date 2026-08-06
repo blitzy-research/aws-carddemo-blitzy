@@ -13,15 +13,18 @@
 -- either express or implied. See the License for the specific
 -- language governing permissions and limitations under the License
 
--- V2__create_indexes.sql - relational integrity, index and queue-outbox layer.
+-- V2__create_indexes.sql - relational integrity and index layer.
 --
 -- Adds the complete integrity layer over the eleven tables V1__create_schema.sql creates, and
 -- exactly three nonunique B-tree secondary indexes standing in for the three legacy alternate
--- indexes, then exactly six foreign keys. It also creates one operational outbox table for the
--- online-to-batch queue bridge. That table is not a twelfth application record layout and carries no
--- business data: it persists a logical submission identity, the exact
--- publishable card image and the next unsent ordinal so a partial retry cannot be split by another
--- replica's job stream.
+-- indexes, then exactly six foreign keys. NOTHING ELSE.
+--
+-- ELEVEN TABLES AND NO TWELFTH. The estate defines eleven record layouts and V1 creates eleven
+-- tables; this migration creates none. An earlier revision added an operational outbox table so the
+-- online-to-batch queue bridge could resume a partial card stream. That was feature expansion: the
+-- legacy queue definition carries ERROROPTION(IGNORE) and the emitting program abandons a refused
+-- write rather than deferring it, so there is no delivery state to persist. The table and its
+-- replay behaviour are removed - see docs/decision-log.md DL-148.
 --
 -- APPLIES TO ALL PROFILES. V1 and V2 are resolved from classpath:db/migration, the one flat Flyway
 -- location EVERY profile configures, and both sit at or below the production version ceiling of
@@ -35,8 +38,7 @@
 -- primary keys that V1 creates and none is guarded, so applying V2 without V1 fails immediately and
 -- visibly. Flyway applies versions in ascending order across ALL configured locations - 1, then 2,
 -- then the seeds where a profile resolves them - so any later seed lands against a schema whose
--- foreign keys are already in force and is constraint-checked as it is written. The operational
--- outbox is independent of the BATCH_-prefixed job-repository tables Spring Batch provisions.
+-- foreign keys are already in force and is constraint-checked as it is written.
 --
 -- Validated against PostgreSQL 16.14 using plain schema, table, index and constraint DDL; nothing
 -- here depends on an extension. Checksum validation is enabled on
@@ -49,9 +51,9 @@
 
 -- GLOBAL RULES FOR THIS MIGRATION - each is a deliberate decision, not an omission.
 --
---  1. EXACTLY TEN EXECUTABLE STATEMENTS: three index creations, six constraint additions and one
---     outbox-table creation. The application-schema index and foreign-key counts remain contractual
---     and are asserted by tests that read PostgreSQL's catalogs.
+--  1. EXACTLY NINE EXECUTABLE STATEMENTS: three index creations and six constraint additions. No
+--     table creation of any kind. Both counts are contractual and are asserted by tests that read
+--     PostgreSQL's catalogs.
 --
 --  2. FAILURE-VISIBLE DDL. No existence guard, no conditional block, no exception handler and no
 --     conflict-tolerant clause anywhere, so schema drift fails the migration loudly. An integrity
@@ -59,9 +61,9 @@
 --     could rely on it.
 --
 --  3. NOTHING FROM V1 IS ALTERED - no column type, nullability, default, primary key or table name
---     is touched. V2 only adds. The operational card-delivery table is explicitly excluded from
---     entity mapping and record-layout accounting, so the eleven business tables remain exactly the
---     V1 contract. No schema, view, routine, trigger, extension or row of data is created.
+--     is touched. V2 only adds integrity, never structure, so the eleven business tables remain
+--     exactly the V1 contract. No table, schema, view, routine, trigger, extension or row of data is
+--     created.
 --
 --  4. THE THREE SECONDARY INDEXES ARE NONUNIQUE, DELIBERATELY. All three legacy alternate indexes
 --     were declared nonunique and upgraded synchronously with their base cluster, and a nonunique
@@ -306,59 +308,14 @@ ALTER TABLE transaction_category_balance
 -- -------------------------------------------------------------------------------------------------
 
 
--- #################################################################################################
--- ONLINE-TO-BATCH OUTBOX. This is operational delivery state, not a migrated record layout.
--- #################################################################################################
-
--- The queue bridge publishes one fixed-width card per message. A FIFO deduplication identifier makes
--- retrying one card idempotent, but without persisted progress a partial stream could be followed by a
--- different stream and only then by the first stream's remainder. The distinct table keeps that
--- delivery state out of the eleven business-record mappings while making it shared by every replica.
-CREATE TABLE job_submission_outbox (
-    submission_sequence BIGINT GENERATED BY DEFAULT AS IDENTITY,
-    submission_id       VARCHAR(128)             NOT NULL,
-    card_count          INTEGER                  NOT NULL,
-    terminal_ordinal    INTEGER                  NOT NULL,
-    next_card_ordinal   INTEGER                  NOT NULL DEFAULT 1,
-    card_image          BYTEA                    NOT NULL,
-    stream_fingerprint  BYTEA                    NOT NULL,
-    created_at          TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    completed           BOOLEAN                  NOT NULL DEFAULT FALSE,
-
-    CONSTRAINT pk_job_submission_outbox
-        PRIMARY KEY (submission_sequence),
-    CONSTRAINT uk_job_submission_outbox_identity
-        UNIQUE (submission_id),
-    CONSTRAINT ck_job_submission_outbox_card_count
-        CHECK (card_count >= 1),
-    CONSTRAINT ck_job_submission_outbox_terminal
-        CHECK (terminal_ordinal >= 1
-            AND terminal_ordinal <= card_count
-            AND terminal_ordinal <= 1000),
-    CONSTRAINT ck_job_submission_outbox_next_card
-        CHECK (next_card_ordinal >= 1
-            AND next_card_ordinal <= terminal_ordinal + 1),
-    CONSTRAINT ck_job_submission_outbox_card_image
-        CHECK (octet_length(card_image) = terminal_ordinal * 80),
-    CONSTRAINT ck_job_submission_outbox_fingerprint
-        CHECK (octet_length(stream_fingerprint) = 32),
-    CONSTRAINT ck_job_submission_outbox_completion
-        CHECK (
-            (next_card_ordinal <= terminal_ordinal AND NOT completed)
-            OR
-            (next_card_ordinal = terminal_ordinal + 1 AND completed)
-        )
-);
-
-
--- End of V2. Ten statements applied: three nonunique B-tree secondary indexes -
+-- End of V2. Nine statements applied: three nonunique B-tree secondary indexes -
 -- idx_card_card_acct_id (width 11 at offset 16), idx_card_cross_reference_xref_acct_id (width 11 at
 -- offset 25) and idx_transaction_tran_proc_ts (width 26 at offset 304, batch only, one logical index
--- described in two source members and emitted once); six foreign keys: fk_card_account,
+-- described in two source members and emitted once); and six foreign keys: fk_card_account,
 -- fk_card_xref_card, fk_card_xref_account, fk_card_xref_customer, fk_transaction_card and
--- fk_trancat_balance_account, all with default NO ACTION semantics; and the operational
--- job_submission_outbox table.
+-- fk_trancat_balance_account, all with default NO ACTION semantics.
 --
--- Zero business-record tables, schemas, views, routines, triggers, extensions or rows were created.
--- Zero foreign keys touch daily_transaction, zero use account.acct_group_id, and zero target a
--- reference-data table. Nothing V1 defined was altered.
+-- Zero tables of any kind, zero schemas, views, routines, triggers, extensions or rows were created;
+-- the eleven tables V1 defines remain the whole of the schema. Zero foreign keys touch
+-- daily_transaction, zero use account.acct_group_id, and zero target a reference-data table. Nothing
+-- V1 defined was altered.

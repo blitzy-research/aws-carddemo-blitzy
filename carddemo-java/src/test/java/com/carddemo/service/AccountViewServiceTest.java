@@ -31,7 +31,6 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -396,8 +395,8 @@ final class AccountViewServiceTest {
                 + "the card number arrives from the cross-reference because nothing else can supply it")
         void aValidFilterResolvesAllThree() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
@@ -427,8 +426,8 @@ final class AccountViewServiceTest {
                 + "master is never read and the miss text names the resource and the status")
         void aCrossReferenceMissStopsTheSequence() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             final AccountViewService.AccountViewResult result =
                     service.viewAccount("DFHENTER", filter(ACCOUNT_ID), reSubmission());
@@ -446,8 +445,8 @@ final class AccountViewServiceTest {
                 + "guard at line 704 compares a literal whose only assignment is commented out")
         void anAccountMissFallsThroughToTheCustomerRead() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
             Mockito.when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(customerRow(CUSTOMER_ID)));
@@ -472,8 +471,8 @@ final class AccountViewServiceTest {
                 + "told apart from the other two on a screen with one cursor position")
         void aCustomerMissRaisesItsOwnFlag() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.empty());
@@ -497,8 +496,8 @@ final class AccountViewServiceTest {
                 + "the screen's only input and all three legacy arms position it identically")
         void theCursorAlwaysSitsOnTheFilterField() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReferenceRow(ACCOUNT_ID)));
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReferenceRow(ACCOUNT_ID)));
             Mockito.when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(accountRow(ACCOUNT_ID)));
             Mockito.when(customerRepository.findById(CUSTOMER_ID))

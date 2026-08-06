@@ -30,8 +30,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -40,9 +42,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
+import org.mockito.invocation.InvocationOnMock;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Pageable;
 
 /**
@@ -141,8 +142,13 @@ final class CardListServiceTest {
     }
 
     /**
-     * Stubs the paged browse with the supplied number of rows, answering every chunk request with the
-     * same page so a forward walk sees them in order.
+     * Stubs the keyset browse with the supplied number of rows, behaving like an ordered primary-key
+     * cluster: the inclusive open is the inherited keyed read and every continuation is a strict,
+     * ordered, limit-bounded range read.
+     *
+     * <p>The bound is applied here exactly as the derived query name declares it. A stub that read
+     * inclusively would hide a repeated boundary row, and one that ignored the limit would hide an
+     * unbounded read, so both are reproduced rather than approximated.
      *
      * @param rowCount how many card rows the cluster holds
      */
@@ -151,19 +157,53 @@ final class CardListServiceTest {
         for (int ordinal = 1; ordinal <= rowCount; ordinal++) {
             rows.add(cardRow(ordinal));
         }
-        Mockito.when(cardRepository.findAll(ArgumentMatchers.any(Pageable.class)))
-                .thenAnswer(invocation -> {
-                    final Pageable requested = invocation.getArgument(0);
-                    final int from = (int) Math.min(requested.getOffset(), rows.size());
-                    final int to = Math.min(from + requested.getPageSize(), rows.size());
-                    return new PageImpl<>(rows.subList(from, to), requested, rows.size());
-                });
+        rows.sort(Comparator.comparing(Card::getCardNum));
+        Mockito.when(cardRepository.findById(ArgumentMatchers.anyString()))
+                .thenAnswer(invocation -> rows.stream()
+                        .filter(row -> row.getCardNum().equals(invocation.getArgument(0)))
+                        .findFirst());
+        Mockito.when(cardRepository.findByCardNumGreaterThanOrderByCardNumAsc(
+                        ArgumentMatchers.anyString(), ArgumentMatchers.any(Limit.class)))
+                .thenAnswer(invocation -> window(rows, invocation, true));
+        Mockito.when(cardRepository.findByCardNumLessThanOrderByCardNumDesc(
+                        ArgumentMatchers.anyString(), ArgumentMatchers.any(Limit.class)))
+                .thenAnswer(invocation -> window(rows, invocation, false));
     }
 
-    /** Stubs the paged browse with no rows at all. */
+    /**
+     * Returns one strict, ordered, limit-bounded window for a stubbed range read.
+     *
+     * @param rows       the ordered cluster contents
+     * @param invocation the stubbed call, carrying the cursor and the limit
+     * @param ascending  whether the read order is ascending
+     * @return the rows the read would return, in read order
+     */
+    private static List<Card> window(final List<Card> rows, final InvocationOnMock invocation,
+            final boolean ascending) {
+        final String cursor = invocation.getArgument(0);
+        final Limit limit = invocation.getArgument(1);
+        final List<Card> ordered = new ArrayList<>(rows);
+        if (!ascending) {
+            ordered.sort(Comparator.comparing(Card::getCardNum).reversed());
+        }
+        return ordered.stream()
+                .filter(row -> ascending
+                        ? row.getCardNum().compareTo(cursor) > 0
+                        : row.getCardNum().compareTo(cursor) < 0)
+                .limit(limit.max())
+                .toList();
+    }
+
+    /** Stubs the keyset browse with no rows at all. */
     private void seedNoCards() {
-        Mockito.when(cardRepository.findAll(ArgumentMatchers.any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, PAGE_SIZE), 0));
+        Mockito.when(cardRepository.findById(ArgumentMatchers.anyString()))
+                .thenReturn(Optional.empty());
+        Mockito.when(cardRepository.findByCardNumGreaterThanOrderByCardNumAsc(
+                        ArgumentMatchers.anyString(), ArgumentMatchers.any(Limit.class)))
+                .thenReturn(List.of());
+        Mockito.when(cardRepository.findByCardNumLessThanOrderByCardNumDesc(
+                        ArgumentMatchers.anyString(), ArgumentMatchers.any(Limit.class)))
+                .thenReturn(List.of());
     }
 
     /**
@@ -732,31 +772,37 @@ final class CardListServiceTest {
     // ==============================================================================================
 
     @Nested
-    @DisplayName("the browse reads through the repository's paged finder")
-    final class PagedFinder {
+    @DisplayName("the browse reads through the repository's bounded keyset finders")
+    final class KeysetFinder {
 
         @Test
-        @DisplayName("the browse asks for chunks of the page width, so a page is never assembled from a "
-                + "read wider than the screen")
+        @DisplayName("the browse asks for chunks of the page width and never an offset page, so a page "
+                + "is never assembled from a read wider than the screen")
         void theBrowseAsksForChunksOfThePageWidth() {
             seedCards(PAGE_SIZE * 2);
 
             service.processCardList(turn("DFHENTER", null, null));
 
-            final var captor = org.mockito.ArgumentCaptor.forClass(Pageable.class);
-            Mockito.verify(cardRepository, Mockito.atLeastOnce()).findAll(captor.capture());
+            final var captor = org.mockito.ArgumentCaptor.forClass(Limit.class);
+            Mockito.verify(cardRepository, Mockito.atLeastOnce())
+                    .findByCardNumGreaterThanOrderByCardNumAsc(
+                            ArgumentMatchers.anyString(), captor.capture());
             assertThat(captor.getAllValues())
-                    .allSatisfy(request -> assertThat(request.getPageSize()).isEqualTo(PAGE_SIZE));
+                    .allSatisfy(limit -> assertThat(limit.max()).isEqualTo(PAGE_SIZE));
+            Mockito.verify(cardRepository, Mockito.never())
+                    .findAll(ArgumentMatchers.any(Pageable.class));
         }
 
         @Test
         @DisplayName("an exhausted browse is tolerated: the reader returning an empty final chunk ends "
                 + "the walk instead of failing it")
         void anExhaustedBrowseIsTolerated() {
-            final Page<Card> empty = new PageImpl<>(List.of(), PageRequest.of(0, PAGE_SIZE), 0);
-            Mockito.when(cardRepository.findAll(ArgumentMatchers.any(Pageable.class)))
-                    .thenReturn(new PageImpl<>(List.of(cardRow(1)), PageRequest.of(0, PAGE_SIZE), 1))
-                    .thenReturn(empty);
+            Mockito.when(cardRepository.findById(ArgumentMatchers.anyString()))
+                    .thenReturn(Optional.empty());
+            Mockito.when(cardRepository.findByCardNumGreaterThanOrderByCardNumAsc(
+                            ArgumentMatchers.anyString(), ArgumentMatchers.any(Limit.class)))
+                    .thenReturn(List.of(cardRow(1)))
+                    .thenReturn(List.of());
 
             final CardListService.CardListResult result =
                     service.processCardList(turn("DFHENTER", null, null));

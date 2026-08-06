@@ -17,8 +17,11 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Account;
+import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -27,8 +30,10 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Spring Data JPA repository for the {@code account} table, which replaces the {@code ACCTDAT}
  * key-sequenced VSAM base cluster of the legacy estate. It is the only persistence entry point for
- * {@link Account}. Most access is inherited; the posting program additionally needs one explicit
- * update-count operation to reproduce the legacy {@code REWRITE ... INVALID KEY} arm.
+ * {@link Account}. Most access is inherited; the posting program additionally needs two explicit
+ * operations to reproduce the legacy {@code REWRITE ... INVALID KEY} arm without a timing window - a
+ * keyed read that holds the row and an update-count rewrite predicated on the version that read
+ * observed.
  *
  * <p><strong>Legacy provenance.</strong> The row shape derives from copybook
  * {@code app/cpy/CVACT01Y.cpy}, a 300-byte record whose 11-byte account identifier sits at offset 0,
@@ -54,10 +59,21 @@ import org.springframework.transaction.annotation.Transactional;
  * provider-managed {@code @Version} property on {@link Account} is the faithful replacement for that
  * comparison, and the provider enforces it on flush. A conflict therefore surfaces as a transactional
  * rollback and is translated into a domain-specific conflict exception in the service layer, which is
- * where the single rollback of the legacy online update path also lives. This interface consequently
- * declares no lock mode and no transaction boundary, and none should be added: layering a pessimistic
- * lock over an optimistic model would introduce concurrency behaviour the legacy system never had.
- * Read-committed isolation combined with that version check is strictly stronger than the legacy
+ * where the single rollback of the legacy online update path also lives. Every online path against this
+ * table therefore uses the inherited unheld read and relies on that version check alone, and none of them
+ * should acquire a lock: replacing an optimistic model with mutual exclusion would introduce waiting the
+ * legacy system never had.
+ *
+ * <p>The one keyed read that does hold its row, {@link #findByIdForUpdate(String)}, is not an exception to
+ * that rule but a different use of a lock, and the distinction is worth stating because it is easy to
+ * misread. It does not replace the version check - the rewrite it precedes still carries the version in
+ * its predicate, and a concurrent change is still refused rather than waited for. The hold exists only so
+ * that the batch tier can answer <em>whether the row exists</em> at the moment it rewrites, because the
+ * legacy {@code INVALID KEY} arm is exactly that answer and asking for it in a second unprotected query
+ * would let a concurrent commit invert it. Its scope is one record of one batch step, and no online path
+ * uses it.
+ *
+ * <p>Read-committed isolation combined with that version check is strictly stronger than the legacy
  * baseline, whose file definitions specified uncommitted read integrity with no recovery and no
  * journaling and rested solely on a locking update model plus the programs' own image comparison. The
  * stronger isolation is a deliberate, documented posture change recorded in the decision log, not a
@@ -124,6 +140,40 @@ import org.springframework.transaction.annotation.Transactional;
 public interface AccountRepository extends JpaRepository<Account, String> {
 
     /**
+     * Reads one account by its business key and holds the row for the rewrite that follows it in the
+     * same unit of work.
+     *
+     * <p><strong>What this exists to remove.</strong> A compare-and-set rewrite that affects no row has
+     * two possible causes - the row is gone, or the row is present carrying a different version - and the
+     * legacy reports only the first, through {@code REWRITE ... INVALID KEY}. Asking afterwards whether
+     * the row exists distinguishes them but is a second, unprotected query: another writer committing
+     * between the two turns a version race into a reported absence, or an absence into a reported race,
+     * and the caller cannot tell. Establishing presence <em>under a write lock before</em> the rewrite
+     * removes the window entirely, because nothing can change the row between the two statements.
+     *
+     * <p>An empty result is therefore the legacy invalid-key condition, and a row whose version differs
+     * from the one the caller read is a change the caller must refuse. Neither answer can be wrong for a
+     * timing reason.
+     *
+     * <p><strong>This is stronger than the legacy baseline, deliberately.</strong> The legacy cluster is
+     * defined {@code READINTEG(UNCOMMITTED)}, {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, and the
+     * batch program rewrites by key with no hold at all, so the legacy could not observe a concurrent
+     * change and had no arm for one. The strengthening is recorded in {@code docs/decision-log.md} entry
+     * DL-170 rather than presented as parity.
+     *
+     * <p>The lock is released when the unit of work that took it ends, so the caller must already be
+     * inside one; the persistence provider reports a call made outside a transaction rather than silently
+     * reading without the lock. The query is written out because the lock mode, not a predicate, is what
+     * distinguishes it from the inherited keyed read.
+     *
+     * @param accountId the eleven-character account business key
+     * @return the account, or {@link Optional#empty()} when no row carries that key
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Account a WHERE a.acctId = :accountId")
+    Optional<Account> findByIdForUpdate(@Param("accountId") String accountId);
+
+    /**
      * Rewrites the three account balances changed by the posting program and advances the optimistic
      * version in the same database statement, but only while the row still carries the version the
      * caller read.
@@ -143,14 +193,19 @@ public interface AccountRepository extends JpaRepository<Account, String> {
      * persistence context, and the posting mainline re-reads the account for every record, so each
      * record compares against the version its own read observed.
      *
+     * <p>The version predicate remains even though the caller now holds the row when it runs. It is
+     * defence in depth rather than duplication: it guarantees that a caller which had <em>not</em> taken
+     * the hold still cannot overwrite a concurrent change unnoticed, so the safety of this statement does
+     * not depend on every future call site remembering to lock first.
+     *
      * @param accountId          the eleven-character account business key
      * @param version            the optimistic version observed when the account was read
      * @param currentBalance     the new current balance
      * @param currentCycleCredit the new current-cycle credit total
      * @param currentCycleDebit  the new current-cycle debit total, retaining a negative sign
      * @return one when the row was rewritten, or zero when no row carries that key at that version -
-     *     which is either the legacy invalid-key outcome or a lost version race, and the two are
-     *     distinguished by the caller
+     *     which the caller distinguishes by having established presence under a write lock first, through
+     *     {@link #findByIdForUpdate(String)}, rather than by asking afterwards
      */
     @Modifying(clearAutomatically = true)
     @Transactional

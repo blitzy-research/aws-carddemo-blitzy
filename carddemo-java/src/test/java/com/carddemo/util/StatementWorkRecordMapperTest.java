@@ -24,6 +24,7 @@ import com.carddemo.domain.Transaction;
 import com.carddemo.support.SeededRecordFixture;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -94,5 +95,57 @@ final class StatementWorkRecordMapperTest {
                 .isThrownBy(() -> StatementWorkRecordMapper.fromRecord("short"));
         assertThatIllegalArgumentException()
                 .isThrownBy(() -> StatementWorkRecordMapper.fromTransactionRecord("short"));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> StatementWorkRecordMapper.key("short"));
+    }
+
+    @Test
+    @DisplayName("the projected geometry is published here and nowhere else: card plus identifier key, "
+            + "328 selected bytes and 22 bytes of fixed-record padding")
+    void projectedGeometryIsPublished() {
+        assertThat(StatementWorkRecordMapper.RECORD_LENGTH).isEqualTo(350);
+        assertThat(StatementWorkRecordMapper.CARD_NUMBER_OFFSET).isZero();
+        assertThat(StatementWorkRecordMapper.TRANSACTION_ID_OFFSET).isEqualTo(16);
+        assertThat(StatementWorkRecordMapper.KEY_LENGTH).isEqualTo(32);
+        assertThat(StatementWorkRecordMapper.TRANSACTION_REST_OFFSET).isEqualTo(32);
+        assertThat(StatementWorkRecordMapper.TRANSACTION_REST_LENGTH).isEqualTo(318);
+        assertThat(StatementWorkRecordMapper.TIMESTAMP_SEGMENT_OFFSET).isEqualTo(278);
+        assertThat(StatementWorkRecordMapper.PROJECTED_CONTENT_LENGTH).isEqualTo(328);
+        assertThat(StatementWorkRecordMapper.BLANK_PAD_LENGTH).isEqualTo(22);
+        assertThat(StatementWorkRecordMapper.TRUNCATED_PROCESSING_TIMESTAMP_LENGTH).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("the buffer-with-offset overload decodes a record held inside a larger block")
+    void bufferWithOffsetOverloadDecodesTheSameRecord() {
+        final String work = StatementWorkRecordMapper.fromTransactionRecord(canonicalFixture());
+        final byte[] block = ("prefix" + work).getBytes(StandardCharsets.US_ASCII);
+
+        assertThat(StatementWorkRecordMapper.fromRecord(block, "prefix".length()))
+                .usingRecursiveComparison()
+                .isEqualTo(StatementWorkRecordMapper.fromRecord(work));
+
+        assertThatNullPointerException()
+                .isThrownBy(() -> StatementWorkRecordMapper.fromRecord(null, 0));
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> StatementWorkRecordMapper.fromRecord(block, 1));
+    }
+
+    @Test
+    @DisplayName("the canonical transaction mapper publishes NO statement-work surface, so the "
+            + "projection cannot be re-derived from a second offset authority")
+    void theCanonicalMapperCarriesNoSecondProjectionAuthority() {
+        // The dual-authority defect this guards against compiled cleanly and produced identical bytes;
+        // only an explicit surface check catches a re-introduction before it drifts. Reflection is used
+        // deliberately and only here: the unsafe-code audit scopes reflection counting to
+        // src/main/java/** precisely because a test may legitimately inspect a surface, and asserting
+        // the ABSENCE of a member is not expressible any other way.
+        assertThat(TransactionRecordMapper.class.getDeclaredMethods())
+                .as("no method of the canonical mapper may name the statement-work layout")
+                .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT)
+                        .contains("statementwork"));
+        assertThat(TransactionRecordMapper.class.getDeclaredFields())
+                .as("no constant of the canonical mapper may name the statement-work layout")
+                .noneMatch(field -> field.getName().startsWith("STATEMENT_WORK"));
     }
 }

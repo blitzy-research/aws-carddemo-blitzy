@@ -33,18 +33,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.ArgumentMatchers;
-import org.mockito.Mockito;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.domain.Limit;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
-import com.carddemo.repository.TransactionRepository;
+import com.carddemo.repository.TransactionScanRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -151,8 +146,15 @@ final class TransactionListServiceTest {
     /** Keyset reads the stub repository was asked for, in order. */
     private final List<KeysetRead> keysetReads = new ArrayList<>();
 
-    /** One bounded repository read, retaining its direction, exclusive cursor and limit. */
-    private record KeysetRead(boolean ascending, String cursor, int limit) {
+    /**
+     * One bounded repository read, retaining everything the browse contract turns on: its direction, the
+     * key bound it declared, whether that bound was inclusive, and its limit.
+     *
+     * <p>Inclusiveness is recorded because it is the difference between the positioning command and a
+     * continuation read: an open that read exclusively would skip the row the browse positions on, and a
+     * continuation that read inclusively would deliver the boundary row twice.
+     */
+    private record KeysetRead(boolean ascending, String cursor, boolean inclusive, int limit) {
     }
 
     // ------------------------------------------------------------------------------------------
@@ -190,85 +192,106 @@ final class TransactionListServiceTest {
     }
 
     /** A repository that behaves like an ordered primary-key cluster in either keyset direction. */
-    private TransactionRepository repositoryOf(final List<Transaction> rows) {
-        final TransactionRepository repository = Mockito.mock(TransactionRepository.class);
-        Mockito.when(repository.findAll(ArgumentMatchers.any(Pageable.class)))
-                .thenAnswer(invocation -> {
-                    final Pageable pageable = invocation.getArgument(0);
-                    final Sort.Order order = pageable.getSort().getOrderFor("tranId");
-                    keysetReads.add(new KeysetRead(
-                            order == null || order.isAscending(), "", pageable.getPageSize()));
-                    return page(rows, pageable);
-                });
-        return repository;
+    private TransactionScanRepository repositoryOf(final List<Transaction> rows) {
+        return new RecordingScan(rows, Integer.MAX_VALUE);
     }
 
-    /** Returns the ordered page the production repository contract exposes. */
-    private static PageImpl<Transaction> page(
-            final List<Transaction> rows, final Pageable pageable) {
-        final List<Transaction> ordered = new ArrayList<>(rows);
-        ordered.sort(Comparator.comparing(Transaction::getTranId));
-        final Sort.Order order = pageable.getSort().getOrderFor("tranId");
-        if (order != null && order.isDescending()) {
-            Collections.reverse(ordered);
-        }
-        final int from = Math.min((int) pageable.getOffset(), ordered.size());
-        final int to = Math.min(from + pageable.getPageSize(), ordered.size());
-        return new PageImpl<>(new ArrayList<>(ordered.subList(from, to)), pageable, ordered.size());
-    }
-
-    /** Returns one strict keyset window and records the repository call that requested it. */
+    /**
+     * Returns one bounded ordered window and records the repository call that requested it.
+     *
+     * <p>The bound and the ordering are applied here exactly as the derived query names declare them,
+     * because a stub that got either wrong would let the service pass a test it should fail: an
+     * inclusive bound where the contract is strict would hide a repeated boundary row, and an ascending
+     * order where the contract is descending would hide a reversed backward page.
+     */
     private List<Transaction> keysetWindow(final List<Transaction> rows, final String cursor,
-            final Limit limit, final boolean ascending) {
+            final Limit limit, final boolean ascending, final boolean inclusive) {
         final List<Transaction> ordered = new ArrayList<>(rows);
         ordered.sort(Comparator.comparing(Transaction::getTranId));
         if (!ascending) {
             Collections.reverse(ordered);
         }
-        keysetReads.add(new KeysetRead(ascending, cursor, limit.max()));
+        keysetReads.add(new KeysetRead(ascending, cursor, inclusive, limit.max()));
         return ordered.stream()
-                .filter(row -> ascending
-                        ? row.getTranId().compareTo(cursor) > 0
-                        : row.getTranId().compareTo(cursor) < 0)
+                .filter(row -> retains(row.getTranId(), cursor, ascending, inclusive))
                 .limit(limit.max())
                 .toList();
     }
 
-    /**
-     * A repository that serves the given number of page requests and then fails, so a failure can be
-     * placed on a <em>read</em> rather than only on the opening browse.
-     */
-    private TransactionRepository repositoryFailingAfter(final List<Transaction> rows,
-            final int successfulRequests) {
-        final TransactionRepository repository = Mockito.mock(TransactionRepository.class);
-        final int[] requests = {0};
-        Mockito.when(repository.findAll(ArgumentMatchers.any(Pageable.class)))
-                .thenAnswer(invocation -> {
-                    requests[0]++;
-                    if (requests[0] > successfulRequests) {
-                        throw new QueryTimeoutException("the driver message must not be echoed");
-                    }
-                    final Pageable pageable = invocation.getArgument(0);
-                    final Sort.Order order = pageable.getSort().getOrderFor("tranId");
-                    keysetReads.add(new KeysetRead(
-                            order == null || order.isAscending(), "", pageable.getPageSize()));
-                    return page(rows, pageable);
-                });
-        return repository;
-    }
-
-    /** Applies the requested failure point before serving one recorded keyset read. */
-    private List<Transaction> failingKeysetWindow(final List<Transaction> rows, final String cursor,
-            final Limit limit, final boolean ascending, final int[] requests,
-            final int successfulRequests) {
-        requests[0]++;
-        if (requests[0] > successfulRequests) {
-            throw new QueryTimeoutException("the driver message must not be echoed");
+    /** Applies one read's key bound to one row. */
+    private static boolean retains(final String key, final String cursor, final boolean ascending,
+            final boolean inclusive) {
+        final int comparison = key.compareTo(cursor);
+        if (ascending) {
+            return inclusive ? comparison >= 0 : comparison > 0;
         }
-        return keysetWindow(rows, cursor, limit, ascending);
+        return inclusive ? comparison <= 0 : comparison < 0;
     }
 
-    private TransactionListService serviceOf(final TransactionRepository repository) {
+    /**
+     * The bounded ordered-read view the service consumes, backed by an in-memory list, recording every
+     * read and able to fail after a chosen number of them.
+     *
+     * <p>The failure counter is what makes the two failure arms separately reachable: zero lets the
+     * opening read fail, and one lets the browse open and then fails a continuation read.
+     */
+    private final class RecordingScan implements TransactionScanRepository {
+
+        private final List<Transaction> rows;
+
+        private final int successfulReads;
+
+        private int reads;
+
+        private RecordingScan(final List<Transaction> rows, final int successfulReads) {
+            this.rows = rows;
+            this.successfulReads = successfulReads;
+        }
+
+        @Override
+        public List<Transaction> findByTranIdGreaterThanOrderByTranIdAsc(final String tranId,
+                final Limit limit) {
+            return read(tranId, limit, true, false);
+        }
+
+        @Override
+        public List<Transaction> findByTranIdGreaterThanEqualOrderByTranIdAsc(final String tranId,
+                final Limit limit) {
+            return read(tranId, limit, true, true);
+        }
+
+        @Override
+        public List<Transaction> findByTranIdLessThanOrderByTranIdDesc(final String tranId,
+                final Limit limit) {
+            return read(tranId, limit, false, false);
+        }
+
+        @Override
+        public List<Transaction> findByTranIdLessThanEqualOrderByTranIdDesc(final String tranId,
+                final Limit limit) {
+            return read(tranId, limit, false, true);
+        }
+
+        private List<Transaction> read(final String cursor, final Limit limit, final boolean ascending,
+                final boolean inclusive) {
+            this.reads++;
+            if (this.reads > this.successfulReads) {
+                throw new QueryTimeoutException("the driver message must not be echoed");
+            }
+            return keysetWindow(this.rows, cursor, limit, ascending, inclusive);
+        }
+    }
+
+    /**
+     * A repository that serves the given number of reads and then fails, so a failure can be placed on
+     * a <em>continuation</em> read rather than only on the opening one.
+     */
+    private TransactionScanRepository repositoryFailingAfter(final List<Transaction> rows,
+            final int successfulRequests) {
+        return new RecordingScan(rows, successfulRequests);
+    }
+
+    private TransactionListService serviceOf(final TransactionScanRepository repository) {
         return new TransactionListService(repository, new MessageCatalogService(),
                 new NavigationService(), FIXED_CLOCK);
     }
@@ -997,12 +1020,9 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName("a data-access failure raises the error flag with the unable-to-look-up message")
         void dataAccessFailureIsReported() {
-            final TransactionRepository repository = Mockito.mock(TransactionRepository.class);
-            Mockito.when(repository.findAll(ArgumentMatchers.any(Pageable.class)))
-                    .thenThrow(new QueryTimeoutException("the driver message must not be echoed"));
-
             final TransactionListService.TransactionListResult result =
-                    serviceOf(repository).listTransactions(firstEntry());
+                    serviceOf(repositoryFailingAfter(transactions(25), 0))
+                            .listTransactions(firstEntry());
 
             assertThat(result.error()).isTrue();
             assertThat(result.message()).isEqualTo(EXPECTED_UNABLE_TO_LOOKUP);
@@ -1072,22 +1092,23 @@ final class TransactionListServiceTest {
         @Test
         @DisplayName("a read that fails mid-page reaches the forward read's own failure arm")
         void forwardReadFailureIsReported() {
-            // The opening browse serves its window; the page-boundary read then fails, so the
-            // failure lands on READNEXT rather than on STARTBR.
-            final TransactionListService.TransactionListCommand nearWindowEnd =
-                    new TransactionListService.TransactionListCommand(
-                            KeyAction.ENTER,
-                            ScreenNavigationState.empty().withReEntry(),
-                            identifier(10),
-                            List.of(),
-                            List.of(),
-                            null,
-                            false,
-                            0);
-            final TransactionListService.TransactionListResult result =
-                    serviceOf(repositoryFailingAfter(transactions(25), 1))
-                            .listTransactions(nearWindowEnd);
+            // The failure has to land on READNEXT rather than on STARTBR, which means the walk must run
+            // past its opening window. An opening window is one screen plus one row, and an enter-key
+            // page consumes exactly that many reads, so it never needs a second query; the forward
+            // pager does, because it discards the boundary row before filling the page and therefore
+            // reads twelve times. The first page and the pager's own open are allowed to succeed and the
+            // continuation read is the one that fails.
+            final TransactionListService service =
+                    serviceOf(repositoryFailingAfter(transactions(25), 2));
+            final TransactionListService.TransactionListResult firstPage =
+                    service.listTransactions(firstEntry());
 
+            final TransactionListService.TransactionListResult result = service.listTransactions(
+                    reEntry(KeyAction.PFK08, null, List.of(), List.of(), firstPage.pageMetadata()));
+
+            assertThat(firstPage.error())
+                    .as("the opening page is served from one window, so it must not have failed")
+                    .isFalse();
             assertThat(result.error()).isTrue();
             assertThat(result.message()).isEqualTo(EXPECTED_UNABLE_TO_LOOKUP);
             assertThat(result.message()).doesNotContain("driver message");

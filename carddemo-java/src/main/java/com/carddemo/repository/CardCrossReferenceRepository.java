@@ -18,6 +18,7 @@ package com.carddemo.repository;
 
 import com.carddemo.domain.CardCrossReference;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 /**
@@ -41,9 +42,10 @@ import org.springframework.data.jpa.repository.JpaRepository;
  * leading zeros are contractual. Values are matched and returned exactly as supplied - nothing here
  * trims, pads or folds - and fixed-width layout knowledge belongs to the record mapper.
  *
- * <p><strong>One declared finder, and no more.</strong> Keyed access to the base cluster is the
- * inherited {@code findById}; a rewrite is the inherited {@code save}. The single finder below is the
- * whole of the alternate-index surface this table needs.
+ * <p><strong>Two declared finders, and no more.</strong> Keyed access to the base cluster is the
+ * inherited {@code findById}; a rewrite is the inherited {@code save}. The two finders below are the
+ * whole of the alternate-index surface this table needs: one answers which rows an account carries, and
+ * one answers which single row a legacy keyed read of the path returns.
  *
  * @see CardCrossReference
  */
@@ -56,18 +58,16 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * moment two rows shared an account identifier, which is a failure the legacy read of a
      * duplicate-bearing path cannot produce.
      *
-     * <p><strong>The legacy first-match rule is the service's to apply, not this method's.</strong>
-     * Both verified legacy consumers issue a single keyed READ of this path rather than a browse, and a
-     * keyed read of a duplicate-bearing alternate index returns the first record in ascending base-key
-     * order - the base key here being the card number. That is a property of the READ being reproduced
-     * rather than of this index, so the services that reproduce it select the row with the lowest card
-     * number themselves and say so where they do it. Declaring {@code findFirstBy...} here would move a
-     * single-row decision into the persistence contract and conceal from every caller that the account
-     * may carry more than one row - which is exactly what the non-unique index exists to represent. The
-     * decision is recorded as {@code DL-121} in {@code docs/decision-log.md}.
+     * <p><strong>Use this only when every row of the account is genuinely wanted.</strong> A caller
+     * reproducing a legacy keyed READ of this path wants one row - the first duplicate in ascending
+     * base-key order - and asks for it through
+     * {@link #findFirstByXrefAcctIdOrderByXrefCardNumAsc(String)} instead. Five services once
+     * materialised every row here and then discarded all but the lowest, five copies of one rule paying
+     * five times for rows they threw away; the rule has one home again, and the reasoning is recorded as
+     * {@code DL-121} and its restoration as {@code DL-164} in {@code docs/decision-log.md}.
      *
-     * <p>No ordering term is declared for the same reason: a caller that depends on sequence sorts what
-     * it receives, so the sort is visible at the site whose behaviour depends on it.
+     * <p>No ordering term is declared, because a caller that wants every row and depends on its
+     * sequence sorts what it receives, so the sort is visible at the site whose behaviour depends on it.
      *
      * <p>An empty list is the analogue of the legacy not-found response and is not an error here; the
      * service turns absence into a screen message.
@@ -82,4 +82,29 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * @return the matching rows, possibly empty, never {@code null}
      */
     List<CardCrossReference> findByXrefAcctId(String xrefAcctId);
+
+    /**
+     * The one cross-reference row of an account that a legacy keyed READ of {@code CXACAIX} returns.
+     *
+     * <p>A keyed read of a duplicate-bearing alternate index yields the first record in ascending
+     * base-key order, and the base key of this cluster is the card number, so the ordering term is the
+     * legacy rule itself rather than a preference. The read is bounded to one row, so an account
+     * carrying many cards costs no more than one carrying a single card - which is the whole difference
+     * between this method and {@link #findByXrefAcctId(String)}.
+     *
+     * <p>Both verified legacy consumers issue a single keyed READ of this path rather than a browse, so
+     * this is the shape those services need; the list form remains for the callers that genuinely want
+     * every row. Keeping both is deliberate: one states "which row does a keyed read return", the other
+     * "which rows does this account carry", and the non-unique index exists precisely because those are
+     * different questions.
+     *
+     * <p>An empty result is the analogue of the legacy not-found response and is not an error here; the
+     * service turns absence into that screen's own message.
+     *
+     * @param xrefAcctId the eleven-character account identifier, matched exactly as supplied; its
+     *                   leading zeros are significant and it is never trimmed
+     * @return the row with the lowest card number among the account's rows, or empty when it carries
+     *         none
+     */
+    Optional<CardCrossReference> findFirstByXrefAcctIdOrderByXrefCardNumAsc(String xrefAcctId);
 }

@@ -70,13 +70,22 @@ final class IdentifierAllocationLockAuditTest {
     private static final int MINIMUM_PRODUCTION_SOURCES = 100;
 
     /**
-     * The two services licensed to mint a transaction identifier from the stored maximum, and the read
-     * each of them performs.
+     * The two services licensed to mint a transaction identifier from the stored maximum, and the
+     * statement each of them reaches the read through.
      *
      * <p>{@code BillPaymentService} translates the online bill-payment program, which browses backward to
      * the highest key; {@code TransactionAddService} translates the transaction-add program, which does
      * the same through a descending single-row page. Both take the allocation lock before that read and
      * both carry the bounded re-read the repository's contract obliges.
+     *
+     * <p><strong>The enrolled value is the statement that reaches the read from inside the method that
+     * takes the lock, not the read statement itself.</strong> Both services perform the read from a
+     * paragraph method of their own, and paragraph methods are laid out in the legacy source's paragraph
+     * order, so the read's own text can appear earlier in the file than the lock while still executing
+     * after it. Naming the call site inside the locking method is what makes a textual ordering assertion
+     * mean what it says. Changing the shape of either service's allocation span therefore requires
+     * changing the value here to the new call site, and leaving it stale makes this audit fail rather
+     * than pass silently.
      *
      * <p><strong>Enrolling a third file here is a concurrency decision and must be recorded in
      * {@code docs/decision-log.md}</strong>, because a further minting caller changes the serialisation
@@ -86,7 +95,7 @@ final class IdentifierAllocationLockAuditTest {
      * reads the maximum, so neither has anything to serialise.
      */
     private static final Map<String, String> ENROLLED_MINTING_SOURCES = Map.of(
-            "BillPaymentService.java", "mintAndWriteTransaction(state)",
+            "BillPaymentService.java", "mintTransactionRecord(state);",
             "TransactionAddService.java",
             "final Transaction pending = allocateTransactionRecord(state)");
 
@@ -127,8 +136,8 @@ final class IdentifierAllocationLockAuditTest {
         assertThat(sourcesContaining(sources, INSERT_FLUSH_CALL)).isNotEmpty();
         ENROLLED_MINTING_SOURCES.forEach((fileName, readCall) ->
                 assertThat(textOf(sources, fileName))
-                        .as("the read this audit expects %s to perform must be present verbatim",
-                                fileName)
+                        .as("the statement this audit expects %s to reach its read through must be "
+                                        + "present verbatim", fileName)
                         .contains(readCall));
     }
 
@@ -165,7 +174,9 @@ final class IdentifierAllocationLockAuditTest {
             final int readAt = text.indexOf(readCall);
 
             assertThat(lockAt).as("%s must take the lock", fileName).isNotNegative();
-            assertThat(readAt).as("%s must perform its allocation read", fileName).isNotNegative();
+            assertThat(readAt)
+                    .as("%s must reach its allocation read from inside the locking method", fileName)
+                    .isNotNegative();
             assertThat(lockAt)
                     .as("in %s the lock must be taken before the maximum is read", fileName)
                     .isLessThan(readAt);

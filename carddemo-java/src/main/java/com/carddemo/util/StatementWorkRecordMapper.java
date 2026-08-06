@@ -78,6 +78,19 @@ public final class StatementWorkRecordMapper {
     /** Blank bytes completing the 350-byte work record. */
     public static final int BLANK_PAD_LENGTH = RECORD_LENGTH - PROJECTED_CONTENT_LENGTH;
 
+    /**
+     * Processing-timestamp bytes the reprojection deliberately drops.
+     *
+     * <p>The copied timestamp segment is {@value #TIMESTAMP_SEGMENT_LENGTH} bytes beginning at the
+     * origination timestamp, so it carries that field whole and only the leading part of the processing
+     * timestamp. The remainder - this many bytes - never reaches the work record and must not be
+     * recovered from the live transaction row, which is the whole reason the truncation is named here
+     * rather than left as arithmetic at a call site.
+     */
+    public static final int TRUNCATED_PROCESSING_TIMESTAMP_LENGTH =
+            TransactionRecordMapper.TRAN_PROC_TS_LENGTH
+                    - (TIMESTAMP_SEGMENT_LENGTH - TransactionRecordMapper.TRAN_ORIG_TS_LENGTH);
+
     /** Work-record key: card number followed by transaction identifier. */
     public static final int KEY_LENGTH = CARD_NUMBER_LENGTH + TRANSACTION_ID_LENGTH;
 
@@ -87,7 +100,46 @@ public final class StatementWorkRecordMapper {
     private static final String FIELD_TIMESTAMP_SEGMENT = "TRANSACTION-TIMESTAMP-SEGMENT";
     private static final String FIELD_TRAILING_PAD = "STATEMENT-WORK-TRAILING-PAD";
 
+    /**
+     * Verifies the declared geometry once, at class initialisation, so a mis-typed figure fails on first
+     * use rather than producing a plausible but wrongly framed work record.
+     *
+     * <p>These checks used to live beside a second copy of this layout in
+     * {@link TransactionRecordMapper}. They belong here, with the layout they describe: this class is
+     * the sole authority for the reprojection, so it is also the only place that can assert the
+     * reprojection is self-consistent.
+     */
+    static {
+        requireSum("work key", KEY_LENGTH, CARD_NUMBER_LENGTH + TRANSACTION_ID_LENGTH);
+        requireSum("transaction-identifier offset", TRANSACTION_ID_OFFSET, CARD_NUMBER_LENGTH);
+        requireSum("remainder offset", TRANSACTION_REST_OFFSET, KEY_LENGTH);
+        requireSum("remainder width", TRANSACTION_REST_LENGTH, RECORD_LENGTH - KEY_LENGTH);
+        requireSum("timestamp-segment offset", TIMESTAMP_SEGMENT_OFFSET,
+                CARD_NUMBER_LENGTH + LEADING_SEGMENT_LENGTH);
+        requireSum("projected content", PROJECTED_CONTENT_LENGTH,
+                CARD_NUMBER_LENGTH + LEADING_SEGMENT_LENGTH + TIMESTAMP_SEGMENT_LENGTH);
+        requireSum("work record", RECORD_LENGTH, PROJECTED_CONTENT_LENGTH + BLANK_PAD_LENGTH);
+        requireSum("processing-timestamp truncation", TRUNCATED_PROCESSING_TIMESTAMP_LENGTH,
+                TransactionRecordMapper.TRAN_PROC_TS_LENGTH
+                        - (TIMESTAMP_SEGMENT_LENGTH - TransactionRecordMapper.TRAN_ORIG_TS_LENGTH));
+    }
+
     private StatementWorkRecordMapper() {
+    }
+
+    /**
+     * Refuses a declared width or offset that disagrees with the parts it is composed of.
+     *
+     * @param subject  what the figure describes, for the diagnostic
+     * @param declared the published figure
+     * @param computed the figure its parts sum to
+     */
+    private static void requireSum(final String subject, final int declared, final int computed) {
+        if (declared != computed) {
+            throw new IllegalStateException(ARTEFACT + " layout is inconsistent: the " + subject
+                    + " is published as " + declared + " encoded bytes but its parts sum to "
+                    + computed);
+        }
     }
 
     /**
@@ -179,6 +231,22 @@ public final class StatementWorkRecordMapper {
         Objects.requireNonNull(workRecord, "workRecord must not be null");
         FixedWidthFieldReader.of(ARTEFACT, workRecord, 0, RECORD_LENGTH);
         return fromRecord(new String(workRecord, StandardCharsets.US_ASCII));
+    }
+
+    /**
+     * Decodes one work record held at an offset inside a larger buffer, for a reader that fills a block
+     * of several fixed-length records in one read.
+     *
+     * @param buffer the buffer holding the record
+     * @param from   zero-based offset of the record within that buffer
+     * @return the represented transaction
+     * @throws NullPointerException     if {@code buffer} is {@code null}
+     * @throws IllegalArgumentException if the buffer does not hold a whole record at that offset
+     */
+    public static Transaction fromRecord(final byte[] buffer, final int from) {
+        Objects.requireNonNull(buffer, "workRecord buffer must not be null");
+        FixedWidthFieldReader.of(ARTEFACT, buffer, from, RECORD_LENGTH);
+        return fromRecord(new String(buffer, from, RECORD_LENGTH, StandardCharsets.US_ASCII));
     }
 
     /**

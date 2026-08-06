@@ -17,6 +17,7 @@
 package com.carddemo.batch.step;
 
 import com.carddemo.domain.Transaction;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.TransactionRecordMapper;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -330,25 +331,34 @@ public final class CombineTransactionsProcessor implements ItemProcessor<Transac
      * a new entry point.
      *
      * <p>The diagnostic precedes the failure, which is the ordering the batch tier uses throughout,
-     * and it carries the artefact name, the two widths and the transaction identifier - and nothing
-     * else, because the amount is financial data and the card number is a primary account number. It
-     * exists because an exception raised in a processor fails the whole chunk, after which the
-     * framework may re-present that chunk item by item; without a line naming the identifier at the
-     * moment of first detection, the record that actually caused the failure is easily lost in the
-     * re-presentation.
+     * and it carries the artefact name, the two widths and a <strong>redacted reference</strong> to the
+     * record - and nothing else, because the amount is financial data and the card number is a primary
+     * account number.
+     *
+     * <p>A reference rather than the identifier itself, and a reference rather than nothing at all. The
+     * line exists because an exception raised in a processor fails the whole chunk, after which the
+     * framework may re-present that chunk item by item; without something that singles out the record at
+     * the moment of first detection, the record that actually caused the failure is easily lost in the
+     * re-presentation. {@link SensitiveLogRedactor#redact(String)} keeps that property while withholding
+     * the value: the reference it returns is stable for a given identifier within a run, so the line and
+     * the exception name the same record and a reader can tie them together, and the token is lower-case
+     * ASCII hexadecimal, so an identifier read out of a corrupt fixed-width image cannot carry a control
+     * byte, a delimiter or a line terminator into either the log record or the message.
      *
      * @param  renderedImage the image the mapper produced for the record
-     * @param  tranId        the record's identifier, used only in the diagnostic and the message
+     * @param  tranId        the record's identifier, never rendered - only a redacted reference to it is
      * @throws IllegalStateException if the width differs from {@value #COMBINED_RECORD_LENGTH}
      */
     static void requireCombinedRecordWidth(final byte[] renderedImage, final String tranId) {
         final int renderedWidth = renderedImage.length;
         if (renderedWidth != COMBINED_RECORD_LENGTH) {
+            // See docs/decision-log.md entry DL-177.
+            final String transactionRef = SensitiveLogRedactor.redact(tranId);
             LOGGER.error("{} {}: {} rendered {} bytes for transaction {}, expected {}", LEGACY_JOB,
-                    LEGACY_LOAD_STEP, TransactionRecordMapper.ARTEFACT, renderedWidth, tranId,
+                    LEGACY_LOAD_STEP, TransactionRecordMapper.ARTEFACT, renderedWidth, transactionRef,
                     COMBINED_RECORD_LENGTH);
             throw new IllegalStateException(TransactionRecordMapper.ARTEFACT + " rendered "
-                    + renderedWidth + " bytes for transaction " + tranId
+                    + renderedWidth + " bytes for transaction " + transactionRef
                     + ", but every record of the combined stream is fixed at "
                     + COMBINED_RECORD_LENGTH + " bytes");
         }

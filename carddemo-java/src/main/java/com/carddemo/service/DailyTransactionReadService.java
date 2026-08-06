@@ -16,13 +16,12 @@
  */
 package com.carddemo.service;
 
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -258,22 +257,29 @@ public class DailyTransactionReadService {
      * repository imposes no ordering of its own; identity ascending is the deterministic relational
      * equivalent.
      *
-     * @return the counts, the per-record outcomes and the terminal result value
+     * @param verificationSink the destination each per-record outcome is offered to, as it is
+     *                         produced; must not be {@code null}
+     * @return the counts and the terminal result value
+     * @throws NullPointerException if {@code verificationSink} is {@code null}
      * @throws com.carddemo.exception.AbendException if any file operation reports a status the member
      *         treats as an error, after the diagnostic and the raw status have been emitted
      */
-    public DailyTransactionReadResult execute() {
-        return mainPara(null, Thread.currentThread()::isInterrupted);
+    public DailyTransactionReadResult execute(
+            final Consumer<DailyTransactionVerification> verificationSink) {
+        return mainPara(null, verificationSink, Thread.currentThread()::isInterrupted);
     }
 
     /**
      * Runs the repository-backed pass while observing a cooperative stop probe.
      *
+     * @param verificationSink the destination each per-record outcome is offered to
      * @param stopRequested live stop probe
      * @return the completed pass
      */
-    public DailyTransactionReadResult execute(final BooleanSupplier stopRequested) {
-        return mainPara(null,
+    public DailyTransactionReadResult execute(
+            final Consumer<DailyTransactionVerification> verificationSink,
+            final BooleanSupplier stopRequested) {
+        return mainPara(null, verificationSink,
                 Objects.requireNonNull(stopRequested, "stopRequested must not be null"));
     }
 
@@ -283,29 +289,40 @@ public class DailyTransactionReadService {
      * <p>The order is the caller's: this method walks the records exactly as given, because the legacy
      * read returns them in the order the dataset holds them and imposes no sort of its own.
      *
+     * <p>The source is walked once, forward only, and one record is in hand at a time. A caller that
+     * streams a staged dataset therefore never materialises it; see {@code docs/decision-log.md} entry
+     * DL-176.
+     *
      * @param orderedDailyTransactions the records to walk, in order; may be empty but not {@code null}
-     * @return the counts, the per-record outcomes and the terminal result value
+     * @param verificationSink the destination each per-record outcome is offered to, as it is
+     *                         produced; must not be {@code null}
+     * @return the counts and the terminal result value
+     * @throws NullPointerException if either argument is {@code null}
      * @throws com.carddemo.exception.AbendException if any file operation reports a status the member
      *         treats as an error, after the diagnostic and the raw status have been emitted
      */
     public DailyTransactionReadResult execute(
-            final Iterable<DailyTransaction> orderedDailyTransactions) {
-        return execute(orderedDailyTransactions, Thread.currentThread()::isInterrupted);
+            final Iterable<DailyTransaction> orderedDailyTransactions,
+            final Consumer<DailyTransactionVerification> verificationSink) {
+        return execute(orderedDailyTransactions, verificationSink,
+                Thread.currentThread()::isInterrupted);
     }
 
     /**
      * Runs the ordered pass while observing a cooperative stop probe between records.
      *
      * @param orderedDailyTransactions ordered input
+     * @param verificationSink the destination each per-record outcome is offered to
      * @param stopRequested live stop probe
      * @return the completed pass
      */
     public DailyTransactionReadResult execute(
             final Iterable<DailyTransaction> orderedDailyTransactions,
+            final Consumer<DailyTransactionVerification> verificationSink,
             final BooleanSupplier stopRequested) {
         Objects.requireNonNull(orderedDailyTransactions,
                 "orderedDailyTransactions must not be null");
-        return mainPara(orderedDailyTransactions,
+        return mainPara(orderedDailyTransactions, verificationSink,
                 Objects.requireNonNull(stopRequested, "stopRequested must not be null"));
     }
 
@@ -337,12 +354,15 @@ public class DailyTransactionReadService {
      * @param suppliedSource the ordered records to walk, or {@code null} to resolve the scan from the
      *                       repository once the opens have completed, which is where the legacy
      *                       program issues its first read
-     * @return the counts, the per-record outcomes and the terminal result value
+     * @param verificationSink the destination each per-record outcome is offered to, as it is produced
+     * @return the counts and the terminal result value
      */
     private DailyTransactionReadResult mainPara(
             final Iterable<DailyTransaction> suppliedSource,
+            final Consumer<DailyTransactionVerification> verificationSink,
             final BooleanSupplier stopRequested) {
         LOG.info(START_OF_EXECUTION);
+        Objects.requireNonNull(verificationSink, "verificationSink must not be null");
         final RunState state = new RunState();
 
         BatchCancellation.checkpoint(stopRequested);
@@ -367,7 +387,10 @@ public class DailyTransactionReadService {
                 // Lines 170 to 184 are deliberately OUTSIDE the test above. On the end-of-file
                 // iteration they therefore run once more against the record area as the last
                 // successful read left it, re-verifying the final record. See the class comment.
-                state.verifications.add(
+                // The outcome is offered to the caller's destination as it is produced. Nothing
+                // accumulates here, so a pass over a large dataset costs one outcome rather than one
+                // per record; see docs/decision-log.md entry DL-176.
+                verificationSink.accept(
                         verifyRecord(state.recordArea, state.endOfDailyTransFile, state));
             }
         }
@@ -978,12 +1001,10 @@ public class DailyTransactionReadService {
 
         private int accountsNotFound;
 
-        private final List<DailyTransactionVerification> verifications = new ArrayList<>();
-
         private DailyTransactionReadResult toResult() {
             return new DailyTransactionReadResult(this.recordsRead, this.recordsVerified,
                     this.verificationPasses, this.cardsNotVerified, this.accountsNotFound,
-                    this.verifications, this.applResult.value());
+                    this.applResult.value());
         }
     }
 
@@ -1039,17 +1060,19 @@ public class DailyTransactionReadService {
      *                           of file over the record area the previous read left in place
      * @param cardsNotVerified how many passes could not resolve their card number
      * @param accountsNotFound how many passes resolved a card but found no account
-     * @param verifications the per-record outcomes, in the order they were produced
      * @param returnCode the terminal value of {@code APPL-RESULT}, zero when the pass completed
      *                   normally; an error abends rather than returning
      */
     public record DailyTransactionReadResult(int recordsRead, int recordsVerified,
-            int verificationPasses, int cardsNotVerified, int accountsNotFound,
-            List<DailyTransactionVerification> verifications, int returnCode) {
+            int verificationPasses, int cardsNotVerified, int accountsNotFound, int returnCode) {
 
         /**
-         * Rejects any combination the pass could not have produced, and freezes the outcome list so the
-         * returned result is genuinely immutable rather than immutable by convention.
+         * Rejects any combination the pass could not have produced.
+         *
+         * <p>The per-record outcomes are <strong>not</strong> carried here. Each one reached the
+         * caller's destination as it was produced, so this result is the pass's observations and never
+         * a copy of a whole dataset's worth of detail; {@code verificationPasses} counts exactly how
+         * many outcomes were offered. See {@code docs/decision-log.md} entry DL-176.
          */
         public DailyTransactionReadResult {
             requireNotNegative(recordsRead, "recordsRead");
@@ -1066,8 +1089,6 @@ public class DailyTransactionReadService {
                 throw new IllegalArgumentException("verificationPasses (" + verificationPasses
                         + ") must not be fewer than recordsVerified (" + recordsVerified + ")");
             }
-            verifications = List.copyOf(Objects.requireNonNull(verifications,
-                    "verifications must not be null"));
         }
 
         /**

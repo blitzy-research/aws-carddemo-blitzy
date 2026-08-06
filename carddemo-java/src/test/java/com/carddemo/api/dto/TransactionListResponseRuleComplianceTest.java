@@ -43,7 +43,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import java.util.Locale;
 
 /**
  * Unit tests for {@link TransactionListResponse} and its nested

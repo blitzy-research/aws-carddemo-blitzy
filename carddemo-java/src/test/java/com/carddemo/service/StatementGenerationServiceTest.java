@@ -35,7 +35,7 @@ import org.mockito.Mockito;
 import com.carddemo.exception.AbendException;
 import com.carddemo.service.StatementDataAccessService.StatementFileRequest;
 import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
-import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.util.StatementWorkRecordMapper;
 
 /**
  * Behavioural suite over {@link StatementGenerationService}, the translation of
@@ -87,6 +87,15 @@ class StatementGenerationServiceTest {
 
     /** Frozen source identity threaded through every data-access call in this service-level suite. */
     private static final StatementTransactionSource TRANSACTION_SOURCE =
+            position -> java.util.Optional.empty();
+
+    /**
+     * The one cross-reference walk a run owns. The scripted stand-in never consumes it - it answers from
+     * its own script - so its only role here is identity: every one of the member's thirteen calls must
+     * carry this same instance, which is what proves the run acquires exactly one walk and threads it
+     * through rather than opening a fresh one per call.
+     */
+    private static final StatementCrossReferenceSource CROSS_REFERENCE_SOURCE =
             position -> java.util.Optional.empty();
 
     private static final UnaryOperator<String> REVEALER = envelope -> {
@@ -229,7 +238,7 @@ class StatementGenerationServiceTest {
         List<String> dailytran = fixture("dailytran.txt");
         List<String> trnxImages = new ArrayList<>();
         for (int index = 0; index < transactionCount; index++) {
-            trnxImages.add(TransactionRecordMapper.projectStatementWorkRecord(
+            trnxImages.add(StatementWorkRecordMapper.fromTransactionRecord(
                     overwrite(dailytran.get(index), 262, cardNumber)));
         }
         String custImage = fixture("custdata.txt").get(0);
@@ -237,7 +246,9 @@ class StatementGenerationServiceTest {
         Script script = new Script(trnxImages, List.of(xref50), custImage, acctImage, acceptedStatus,
                 badTrnxReadOrdinal);
         StatementDataAccessService dataAccess = Mockito.mock(StatementDataAccessService.class);
-        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE)))
+        Mockito.when(dataAccess.openCrossReferenceSource()).thenReturn(CROSS_REFERENCE_SOURCE);
+        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE),
+                        Mockito.same(CROSS_REFERENCE_SOURCE)))
                 .thenAnswer(invocation -> script.answer(invocation.getArgument(0)));
         return new Harness(new StatementGenerationService(dataAccess, new AbendService()), script);
     }
@@ -308,14 +319,16 @@ class StatementGenerationServiceTest {
         String cardNumber = xref36.substring(0, 16);
         List<String> dailytran = fixture("dailytran.txt");
         List<String> trnxImages = List.of(
-                TransactionRecordMapper.projectStatementWorkRecord(
+                StatementWorkRecordMapper.fromTransactionRecord(
                         overwrite(dailytran.get(0), 262, cardNumber)),
-                TransactionRecordMapper.projectStatementWorkRecord(
+                StatementWorkRecordMapper.fromTransactionRecord(
                         overwrite(dailytran.get(1), 262, cardNumber)));
         Script script = new Script(trnxImages, List.of(pad(xref36, 50)),
                 fixture("custdata.txt").get(0), fixture("acctdata.txt").get(0), STATUS_OK, -1);
         StatementDataAccessService dataAccess = Mockito.mock(StatementDataAccessService.class);
-        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE)))
+        Mockito.when(dataAccess.openCrossReferenceSource()).thenReturn(CROSS_REFERENCE_SOURCE);
+        Mockito.when(dataAccess.execute(Mockito.any(), Mockito.same(TRANSACTION_SOURCE),
+                        Mockito.same(CROSS_REFERENCE_SOURCE)))
                 .thenAnswer(invocation -> {
             StatementFileRequest request = invocation.getArgument(0);
             StatementFileResponse response = script.answer(request);

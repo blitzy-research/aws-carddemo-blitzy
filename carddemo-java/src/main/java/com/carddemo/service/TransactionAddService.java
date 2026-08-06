@@ -21,7 +21,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -1978,8 +1977,10 @@ public final class TransactionAddService {
     private void readCxacaixFile(final TurnState state) {
         final Optional<CardCrossReference> located;
         try {
-            located = firstXrefByBaseKey(
-                    cardCrossReferenceRepository.findByXrefAcctId(state.xrefAccountId));
+            // One keyed READ of the alternate-index path, expressed as the repository's ordered-first
+            // finder: bounded to one row and ordered on the base key, which is the row that read returns.
+            located = cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.xrefAccountId);
         } catch (final RuntimeException lookupFailure) {
             // WHEN OTHER at lines 597 to 603, including the DISPLAY at line 598.
             LOG.error("Alternate-index lookup of the {} failed: failureChain={}",
@@ -3034,27 +3035,5 @@ public final class TransactionAddService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
-    }
-
-    /**
-     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
-     * with the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
-     * number. That is a property of the read being reproduced rather than of the index, so
-     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
-     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
-     *
-     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
-     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
-     * coincide.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or an empty result when the account has none
-     */
-    private static Optional<CardCrossReference> firstXrefByBaseKey(
-            final List<CardCrossReference> candidates) {
-        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

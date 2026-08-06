@@ -19,16 +19,18 @@ package com.carddemo.service;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalLong;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -600,6 +602,17 @@ public final class UserManagementService {
          */
         private RecordResponse readResponse = RecordResponse.NORMAL;
 
+        /**
+         * Whether the maintenance unit of work has asked the store to rewrite or remove the identity.
+         *
+         * <p>Not a legacy field. The two maintenance transactions read the held record and write it in
+         * one unit of work, and the read and the write report through <em>different</em> texts, so a
+         * failure that escapes that unit has to be attributable to one of them. Raised immediately
+         * before the store is called, so a failure raised at flush and one raised at commit are both
+         * attributed to the write.
+         */
+        private boolean identityWriteAttempted;
+
         /** {@code WS-MESSAGE}. Starts blank, as set at {@code COUSR00C.cbl} L105. */
         private String message;
 
@@ -716,147 +729,251 @@ public final class UserManagementService {
      * An ordered browse over the user-security table, positioned by key and read one row at a time
      * in either direction.
      *
-     * <p><strong>Why this exists at all.</strong> The legacy list screen browses a keyed cluster:
-     * it positions on a key, reads forward or backward one record per verb, and stops when a read
-     * runs off the end. The repository declares no derived finder at all, because the schema creates
-     * no secondary index for one to use, so the two access paths that exist are the inherited
-     * full-key read and the inherited paged scan on the primary key. The paged scan is therefore the
-     * mechanism, and this class is the browse expressed in terms of it: each page is one indexed
-     * range read on the primary key, and a row-at-a-time cursor is layered over the pages.
+     * <p><strong>Why this exists at all.</strong> The legacy list screen browses a keyed cluster: it
+     * positions on a key, reads forward or backward one record per verb, and stops when a read runs
+     * off the end. Nothing in that description is a page of rows at an offset, and expressing it as
+     * one imports two defects the source does not have. This class is therefore the browse expressed
+     * the way the repository declares it: an inclusive primary-key seek establishes the position, and
+     * every read after that is a bounded keyset range read strictly beyond the last key handed out.
      *
-     * <p><strong>The page is bounded, and that is the property that matters.</strong> Every read here
-     * goes through a {@code Pageable} at the legacy screen's page size, so no call loads the whole
-     * table and no call loads a credential it has no use for beyond the row it is displaying. The
-     * rows are entities rather than a projection, so a digest is present in memory for the ten rows
-     * of one page; none of it is read - {@link #populateUserData} takes the four fields the legacy
-     * screen shows and nothing else - and none of it reaches a response, a log or an exception
-     * message.
+     * <p><strong>Why keyset rather than an offset page.</strong> An offset page asks the store to
+     * count and discard every earlier row on every turn, so paging deeper into the sequence costs
+     * more the further it goes; and it lets a row inserted or removed between two turns shift the
+     * window, which lists one identity twice or skips it altogether. The legacy screen has neither
+     * problem because it never computes a row number: it retains the first and last identifier it
+     * displayed - two eight-character communication-area fields written at {@code COUSR00C.cbl} L389
+     * and L435 - and repositions on one of them at L239-L243 and L262-L266. Reading by key is
+     * therefore both the cheaper access path and the faithful one, which is why the repository
+     * publishes the two keyset finders and this class uses nothing else once it is positioned.
      *
-     * <p>One instance serves one turn and is discarded with it, so the loaded page is a
-     * within-call read buffer and never state that outlives the call. The buffer is what keeps ten
-     * consecutive reads to one query rather than ten.
+     * <p><strong>Every read is bounded and carries no credential.</strong> Reads go through the
+     * closed {@link UserSecurityRepository.AdminEntry} projection, whose generated select names the
+     * four columns the screen shows and not {@code sec_usr_pwd}, so no digest exists in the returned
+     * objects to be rendered, logged or serialized by accident. The lookahead is the screen's row
+     * count plus the one extra read the source makes at L308-L316 to discover whether a further page
+     * follows, so walking a full page costs one range read rather than twelve and no call can load
+     * more than eleven rows however long the table becomes.
+     *
+     * <p>One instance serves one turn and is discarded with it, so the lookahead is a within-call
+     * read buffer and never state that outlives the call. Positioning discards it, which is what
+     * guarantees that a read after a reposition consults the store rather than an earlier answer.
      *
      * <p><strong>Positioning is greater-or-equal</strong>, which is the browse command's default and
      * therefore what the legacy gets even though the explicit qualifier at {@code COUSR00C.cbl} L592
-     * is commented out. A key that matches nothing positions at the next higher key, and a key above
-     * every row positions nowhere and yields the not-found arm.
+     * is commented out. It is two reads rather than one because the range finders are strict: the
+     * inclusive half is the projected primary-key seek, and the exclusive half is a forward range
+     * read. A key that matches nothing positions at the next higher key, and a key above every row
+     * positions nowhere and yields the not-found arm.
      *
-     * <p><strong>One assumption is stated rather than left implicit.</strong> Rows arrive ordered by
-     * the store, while the search key is compared here, so the two orderings must agree. They do for
-     * this table: the identifier is a fixed-width eight-character field drawn from upper-case letters
-     * and digits, on which lexicographic ordering and any collation the store applies coincide. The
-     * comparison is deliberately not case-folded and not trimmed, matching the legacy comparison of
-     * one fixed-width field against another.
+     * <p><strong>One assumption is stated rather than left implicit.</strong> The positioned row and
+     * every row after it are ordered and bounded by the store rather than compared here, so the
+     * browse depends on the store's collation alone rather than on that collation agreeing with a
+     * Java comparison - which is one fewer assumption than the offset form needed. The dependency is
+     * sound for this column: the identifier is {@code VARCHAR(8)} constrained to exactly eight
+     * characters drawn from upper-case letters and digits, so no trailing-blank or case-folding
+     * question arises. Keys are matched exactly as supplied and never trimmed or folded, matching the
+     * legacy comparison of one fixed-width field against another.
      */
     private static final class SequentialBrowse {
 
+        /**
+         * Rows fetched per range read: the screen's row count plus the one extra read the source
+         * makes at {@code COUSR00C.cbl} L308-L316 to answer whether a further page follows.
+         */
+        private static final int LOOKAHEAD_ROWS = USER_LIST_PAGE_SIZE + 1;
+
         private final UserSecurityRepository repository;
 
-        /** The page currently buffered, or {@code null} when the browse holds no position. */
-        private Page<UserSecurity> bufferedPage;
+        /**
+         * The row the browse is positioned on and has not yet handed out, or {@code null} once it
+         * has been.
+         *
+         * <p>Held apart from the lookahead because positioning is inclusive while the range finders
+         * are strict: the positioned row cannot be produced by a read beyond a key that is not yet
+         * known. Consuming it on the first read in either direction is what makes that first read
+         * return the row positioned on, which is the browse command's own contract.
+         */
+        private UserSecurityRepository.AdminEntry positionedRow;
 
-        /** Index of the buffered page, or {@code -1} when no page is buffered. */
-        private int bufferedPageIndex = -1;
+        /**
+         * Rows read ahead in {@link #lookaheadDirection}, in read order, never longer than
+         * {@link #LOOKAHEAD_ROWS}.
+         */
+        private final Deque<UserSecurityRepository.AdminEntry> lookahead = new ArrayDeque<>();
+
+        /** Direction the lookahead was filled in, or {@code null} when it holds nothing. */
+        private BrowseWindow.PagingDirection lookaheadDirection;
+
+        /**
+         * Set once a range read in {@link #lookaheadDirection} returned fewer rows than it asked
+         * for, which is how the browse knows the sequence ended without issuing a further read.
+         */
+        private boolean sequenceEnded;
+
+        /** Key of the row most recently handed out, or {@code null} before the first read. */
+        private String cursorKey;
 
         /**
          * Creates a browse over one repository.
          *
-         * @param repository the repository whose paged primary-key scan the browse reads
+         * @param repository the repository whose projected seek and keyset range reads the browse
+         *                   uses
          */
         private SequentialBrowse(final UserSecurityRepository repository) {
             this.repository = repository;
         }
 
         /**
-         * Loads a page, reusing the buffer when it already holds the page wanted.
-         *
-         * @param pageIndex zero-based page index
-         * @return the requested page, which is empty when it lies beyond the last row
-         */
-        private Page<UserSecurity> pageAt(final int pageIndex) {
-            if (bufferedPageIndex != pageIndex || bufferedPage == null) {
-                bufferedPage = repository.findAll(
-                        PageRequest.of(pageIndex, USER_LIST_PAGE_SIZE, ASCENDING_BY_USER_ID));
-                bufferedPageIndex = pageIndex;
-            }
-            return bufferedPage;
-        }
-
-        /**
-         * Reads the row at an absolute offset from the start of the key sequence, which is what one
-         * forward or backward read amounts to once the browse is positioned.
-         *
-         * @param offset zero-based offset into the key sequence; a negative offset is off the front
-         *               of the sequence and reads nothing, exactly as a backward read before the
-         *               first row does
-         * @return the row, or an empty result when the offset lies outside the sequence
-         */
-        private Optional<UserSecurity> rowAt(final long offset) {
-            if (offset < 0L || offset / USER_LIST_PAGE_SIZE > Integer.MAX_VALUE) {
-                return Optional.empty();
-            }
-            final int pageIndex = (int) (offset / USER_LIST_PAGE_SIZE);
-            final int withinPage = (int) (offset % USER_LIST_PAGE_SIZE);
-            final List<UserSecurity> content = pageAt(pageIndex).getContent();
-            if (withinPage >= content.size()) {
-                return Optional.empty();
-            }
-            return Optional.of(content.get(withinPage));
-        }
-
-        /**
-         * Positions the browse at the first row whose key is greater than or equal to a key, walking
-         * page by page from the start of the sequence.
-         *
-         * <p>Page-at-a-time rather than row-at-a-time so that skipping a stretch of the sequence
-         * costs one query per page rather than one per row, while the ordered comparison within a
-         * page is the row-at-a-time comparison the legacy browse performs.
-         *
-         * @param key the key to position at or after; compared as supplied, uncased and untrimmed
-         * @return the absolute offset of the positioned row, or an empty result when every row has a
-         *         lower key and the sequence is exhausted
-         */
-        private OptionalLong positionAtOrAfter(final String key) {
-            long pageStartOffset = 0L;
-            while (true) {
-                final Page<UserSecurity> page =
-                        pageAt((int) (pageStartOffset / USER_LIST_PAGE_SIZE));
-                final List<UserSecurity> content = page.getContent();
-                for (int index = 0; index < content.size(); index++) {
-                    if (content.get(index).getSecUsrId().compareTo(key) >= 0) {
-                        return OptionalLong.of(pageStartOffset + index);
-                    }
-                }
-                if (!page.hasNext()) {
-                    return OptionalLong.empty();
-                }
-                pageStartOffset += content.size();
-            }
-        }
-
-        /**
          * Positions the browse at the first row of the sequence, which is what a low-value key does.
          *
-         * @return the offset zero when any row exists, or an empty result on an empty table
+         * <p>The opening page is the one page an offset read may legitimately serve, because at page
+         * zero there is nothing to count and discard, so the whole opening window arrives in one
+         * read and the rows after the first seed the lookahead.
+         *
+         * @return the row positioned on, or an empty result on an empty table
          */
-        private OptionalLong positionAtFirst() {
-            if (pageAt(0).getContent().isEmpty()) {
-                return OptionalLong.empty();
-            }
-            return OptionalLong.of(0L);
+        private Optional<UserSecurityRepository.AdminEntry> positionAtFirst() {
+            release();
+            return adoptForwardWindow(repository
+                    .findAllProjectedBy(PageRequest.of(0, LOOKAHEAD_ROWS, ASCENDING_BY_USER_ID))
+                    .getContent());
         }
 
         /**
-         * Releases the browse, discarding the read buffer so no read position survives the verb.
+         * Positions the browse at the first row whose key is greater than or equal to a key.
+         *
+         * <p>Two reads, because the repository's range finders are strict. The projected primary-key
+         * seek settles the inclusive case without loading a credential to answer it; only when that
+         * finds nothing does a forward range read supply the next higher key, and that read fills
+         * the lookahead as well so the walk that follows needs no further query.
+         *
+         * @param key the key to position at or after; matched exactly as supplied, uncased and
+         *            untrimmed
+         * @return the row positioned on, or an empty result when every row has a lower key
+         */
+        private Optional<UserSecurityRepository.AdminEntry> positionAtOrAfter(final String key) {
+            release();
+            final Optional<UserSecurityRepository.AdminEntry> inclusive =
+                    repository.findProjectedBySecUsrId(key);
+            if (inclusive.isPresent()) {
+                positionedRow = inclusive.get();
+                return inclusive;
+            }
+            return adoptForwardWindow(repository
+                    .findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(key, Limit.of(LOOKAHEAD_ROWS)));
+        }
+
+        /**
+         * Takes an ascending window as the browse's position and forward lookahead.
+         *
+         * @param window rows in ascending key order, the first of which is the positioned row
+         * @return the row positioned on, or an empty result when the window is empty
+         */
+        private Optional<UserSecurityRepository.AdminEntry> adoptForwardWindow(
+                final List<UserSecurityRepository.AdminEntry> window) {
+            if (window.isEmpty()) {
+                return Optional.empty();
+            }
+            positionedRow = window.get(0);
+            lookaheadDirection = BrowseWindow.PagingDirection.FORWARD;
+            for (int index = 1; index < window.size(); index++) {
+                lookahead.addLast(window.get(index));
+            }
+            sequenceEnded = window.size() < LOOKAHEAD_ROWS;
+            return Optional.of(positionedRow);
+        }
+
+        /**
+         * Reads one row in a direction, which is what one browse read verb amounts to.
+         *
+         * <p>The positioned row is handed out first and exactly once. After that each read takes the
+         * next buffered row, refilling the buffer with one bounded range read strictly beyond the
+         * last key handed out. A change of direction discards the buffer, because rows read ahead
+         * one way say nothing about the other way.
+         *
+         * @param direction the direction to read in
+         * @return the row read, or an empty result at the end of the sequence in that direction
+         */
+        private Optional<UserSecurityRepository.AdminEntry> read(
+                final BrowseWindow.PagingDirection direction) {
+            if (positionedRow != null) {
+                final UserSecurityRepository.AdminEntry positioned = positionedRow;
+                positionedRow = null;
+                cursorKey = positioned.getSecUsrId();
+                return Optional.of(positioned);
+            }
+            if (cursorKey == null) {
+                // An unpositioned browse reads nothing, exactly as a read before any positioning
+                // does; every caller positions first, so this is a guard rather than a path.
+                return Optional.empty();
+            }
+            if (lookaheadDirection != direction) {
+                lookahead.clear();
+                lookaheadDirection = direction;
+                sequenceEnded = false;
+            }
+            if (lookahead.isEmpty() && !sequenceEnded) {
+                final List<UserSecurityRepository.AdminEntry> fetched =
+                        direction == BrowseWindow.PagingDirection.FORWARD
+                                ? repository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(
+                                        cursorKey, Limit.of(LOOKAHEAD_ROWS))
+                                : repository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                                        cursorKey, Limit.of(LOOKAHEAD_ROWS));
+                lookahead.addAll(fetched);
+                sequenceEnded = fetched.size() < LOOKAHEAD_ROWS;
+            }
+            final UserSecurityRepository.AdminEntry row = lookahead.pollFirst();
+            if (row == null) {
+                return Optional.empty();
+            }
+            cursorKey = row.getSecUsrId();
+            return Optional.of(row);
+        }
+
+        /**
+         * Counts the rows preceding a key, which is the position of that key in the sequence.
+         *
+         * <p>One range aggregate replaces the offset rescan the page counter used to need, and it
+         * selects no entity and therefore no credential.
+         *
+         * @param key the key whose position is wanted, excluded from the count
+         * @return how many rows precede the key
+         */
+        private long countBefore(final String key) {
+            return repository.countBySecUsrIdLessThan(key);
+        }
+
+        /**
+         * Reads the one row that follows a key, without disturbing the browse's own position.
+         *
+         * <p>The forward pager asks whether a further row follows the page it is leaving before it
+         * commits to walking. That question is a one-row bounded read on the key, not a read of the
+         * browse, so it deliberately leaves the position, the lookahead and the cursor untouched.
+         *
+         * @param key the exclusive lower bound
+         * @return the next row after the key, or an empty result when the key is the last
+         */
+        private Optional<UserSecurityRepository.AdminEntry> rowAfter(final String key) {
+            final List<UserSecurityRepository.AdminEntry> next =
+                    repository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(key, Limit.of(1));
+            return next.isEmpty() ? Optional.empty() : Optional.of(next.get(0));
+        }
+
+        /**
+         * Releases the browse, discarding the position and the read buffer so no read position
+         * survives the verb.
          *
          * <p>The counterpart of the browse-end command at {@code COUSR00C.cbl} L689-L691. It is
-         * genuine work rather than a formality: the buffer is the only thing the browse holds, and
-         * releasing it is what guarantees a later read in the same turn re-reads rather than
-         * answering from a page that a concurrent write may since have changed.
+         * genuine work rather than a formality: the position and the buffer are the only things the
+         * browse holds, and releasing them is what guarantees a later read in the same turn re-reads
+         * rather than answering from rows a concurrent write may since have changed.
          */
         private void release() {
-            bufferedPage = null;
-            bufferedPageIndex = -1;
+            positionedRow = null;
+            lookahead.clear();
+            lookaheadDirection = null;
+            sequenceEnded = false;
+            cursorKey = null;
         }
     }
 
@@ -1015,7 +1132,7 @@ public final class UserManagementService {
         // L246: MOVE -1 TO USRIDINL.
         state.focusFieldId = FIELD_LIST_USER_ID;
         final SequentialBrowse browse = new SequentialBrowse(userSecurityRepository);
-        state.pageNumber = pageNumberOf(probeAnchor(browse, state, anchor, firstOnPage));
+        state.pageNumber = pageNumberOf(browse, state, probeAnchor(browse, state, anchor, firstOnPage));
         // A store that refused the probe has already taken the catch-all arm, which owns the message;
         // the already-at-top text below must not overwrite it.
         if (state.errorFlag.isOn()) {
@@ -1062,10 +1179,11 @@ public final class UserManagementService {
         // L268: MOVE -1 TO USRIDINL.
         state.focusFieldId = FIELD_LIST_USER_ID;
         final SequentialBrowse browse = new SequentialBrowse(userSecurityRepository);
-        final OptionalLong anchorOffset = probeAnchor(browse, state, anchor, lastOnPage);
-        state.pageNumber = pageNumberOf(anchorOffset);
-        state.nextPageFlag = anchorOffset.isPresent()
-                && probeRowAt(browse, state, anchorOffset.getAsLong() + 1L).isPresent()
+        final Optional<UserSecurityRepository.AdminEntry> anchorRow =
+                probeAnchor(browse, state, anchor, lastOnPage);
+        state.pageNumber = pageNumberOf(browse, state, anchorRow);
+        state.nextPageFlag = anchorRow.isPresent()
+                && probeRowAfter(browse, state, anchorRow.get().getSecUsrId()).isPresent()
                 ? NextPageFlag.YES
                 : NextPageFlag.NO;
         // A store that refused either probe has already taken the catch-all arm, which owns the
@@ -1111,17 +1229,20 @@ public final class UserManagementService {
                                     final KeyAction keyAction) {
         state.pageDirection = BrowseWindow.PagingDirection.FORWARD;
         // L284: PERFORM STARTBR-USER-SEC-FILE.
-        final OptionalLong positioned = startbrUserSecFile(browse, state, anchor, key);
+        final Optional<UserSecurityRepository.AdminEntry> positioned =
+                startbrUserSecFile(browse, state, anchor, key);
         // L286: IF NOT ERR-FLG-ON.
         if (state.errorFlag.isOn() || positioned.isEmpty()) {
             browse.release();
             return;
         }
-        long offset = positioned.getAsLong();
-        // L288-L290: consume the positioning row for any key that is not enter, PF7 or PF3.
+        // L288-L290: consume the positioning row for any key that is not enter, PF7 or PF3. The
+        // browse advances its own cursor on a row it hands out, so consuming is the read itself; a
+        // read that finds nothing leaves the cursor where it was and marks end of sequence, which is
+        // what the source's own unadvanced position amounts to.
         if (keyAction != KeyAction.ENTER && keyAction != KeyAction.PFK07
                 && keyAction != KeyAction.PFK03) {
-            offset = readnextUserSecFile(browse, state, offset).isPresent() ? offset + 1 : offset;
+            readnextUserSecFile(browse, state);
         }
         // L292-L296: clear every slot before the page is filled.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
@@ -1132,19 +1253,18 @@ public final class UserManagementService {
         // L298-L306: MOVE 1 TO WS-IDX, then fill upward until the slot count is exceeded.
         int slot = 1;
         while (slot <= USER_LIST_PAGE_SIZE && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurity> row =
-                    readnextUserSecFile(browse, state, offset);
+            final Optional<UserSecurityRepository.AdminEntry> row =
+                    readnextUserSecFile(browse, state);
             if (row.isPresent() && !state.errorFlag.isOn()) {
                 populateUserData(state, slot, row.get());
-                offset++;
                 slot++;
             }
         }
         // L308-L323: one read past the page decides whether a further page follows.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
             state.pageNumber++;
-            final Optional<UserSecurity> beyond =
-                    readnextUserSecFile(browse, state, offset);
+            final Optional<UserSecurityRepository.AdminEntry> beyond =
+                    readnextUserSecFile(browse, state);
             state.nextPageFlag = beyond.isPresent() && !state.errorFlag.isOn()
                     ? NextPageFlag.YES
                     : NextPageFlag.NO;
@@ -1185,16 +1305,16 @@ public final class UserManagementService {
                                      final KeyAction keyAction) {
         state.pageDirection = BrowseWindow.PagingDirection.BACKWARD;
         // L338: PERFORM STARTBR-USER-SEC-FILE.
-        final OptionalLong positioned = startbrUserSecFile(browse, state, anchor, key);
+        final Optional<UserSecurityRepository.AdminEntry> positioned =
+                startbrUserSecFile(browse, state, anchor, key);
         // L340: IF NOT ERR-FLG-ON.
         if (state.errorFlag.isOn() || positioned.isEmpty()) {
             browse.release();
             return;
         }
-        long offset = positioned.getAsLong();
         // L342-L344: consume the positioning row for any key that is not enter or PF8.
         if (keyAction != KeyAction.ENTER && keyAction != KeyAction.PFK08) {
-            offset = readprevUserSecFile(browse, state, offset).isPresent() ? offset - 1 : offset;
+            readprevUserSecFile(browse, state);
         }
         // L346-L350: clear every slot before the page is filled.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
@@ -1205,18 +1325,17 @@ public final class UserManagementService {
         // L352-L360: MOVE 10 TO WS-IDX, then fill downward until the slot number falls below one.
         int slot = USER_LIST_PAGE_SIZE;
         while (slot >= 1 && !state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurity> row =
-                    readprevUserSecFile(browse, state, offset);
+            final Optional<UserSecurityRepository.AdminEntry> row =
+                    readprevUserSecFile(browse, state);
             if (row.isPresent() && !state.errorFlag.isOn()) {
                 populateUserData(state, slot, row.get());
-                offset--;
                 slot--;
             }
         }
         // L362-L372: one read further back decides the counter, which is floored at one.
         if (!state.eofFlag.isEof() && !state.errorFlag.isOn()) {
-            final Optional<UserSecurity> beyond =
-                    readprevUserSecFile(browse, state, offset);
+            final Optional<UserSecurityRepository.AdminEntry> beyond =
+                    readprevUserSecFile(browse, state);
             if (state.nextPageFlag.isYes()) {
                 final boolean furtherPageExists =
                         beyond.isPresent() && !state.errorFlag.isOn() && state.pageNumber > 1;
@@ -1242,12 +1361,12 @@ public final class UserManagementService {
      *
      * @param state the turn being assembled
      * @param slot  the one-based slot number
-     * @param row   the row to display; only its four screen fields are read and its credential
-     *              digest is never touched
+     * @param row   the projected row to display, which carries the four screen fields and no
+     *              credential column at all
      */
     private void populateUserData(final TurnState state,
                                   final int slot,
-                                  final UserSecurity row) {
+                                  final UserSecurityRepository.AdminEntry row) {
         if (slot < 1 || slot > USER_LIST_PAGE_SIZE) {
             // L439-L440: WHEN OTHER CONTINUE.
             return;
@@ -1392,27 +1511,23 @@ public final class UserManagementService {
      * @param state  the turn being assembled
      * @param anchor where to position
      * @param key    the key to position on when the anchor is a key
-     * @return the offset positioned at, or an empty result when nothing was positioned
+     * @return the row positioned on, or an empty result when nothing was positioned
      */
-    private OptionalLong startbrUserSecFile(final SequentialBrowse browse,
-                                            final TurnState state,
-                                            final BrowseAnchor anchor,
-                                            final String key) {
-        final OptionalLong positioned;
+    private Optional<UserSecurityRepository.AdminEntry> startbrUserSecFile(
+            final SequentialBrowse browse,
+            final TurnState state,
+            final BrowseAnchor anchor,
+            final String key) {
+        final Optional<UserSecurityRepository.AdminEntry> positioned;
         final BrowseResponse response;
         try {
-            positioned = switch (anchor) {
-                case LOW_VALUES -> browse.positionAtFirst();
-                // No key can be greater than or equal to a high value, so this positions nowhere.
-                case HIGH_VALUES -> OptionalLong.empty();
-                case KEY -> browse.positionAtOrAfter(key == null ? "" : key);
-            };
+            positioned = locateAnchor(browse, anchor, key);
             response = positioned.isPresent() ? BrowseResponse.NORMAL : BrowseResponse.END_OF_SEQUENCE;
         } catch (final RuntimeException failure) {
             LOG.warn("User list positioning failed: transaction={} anchor={} failureChain={}",
                     LIST_TRANSACTION_ID, anchor, FailureDiagnostics.failureChainOf(failure));
             applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
-            return OptionalLong.empty();
+            return Optional.empty();
         }
         applyBrowseResponse(state, response, UserOutcome.MSG_LIST_AT_TOP);
         return positioned;
@@ -1426,14 +1541,14 @@ public final class UserManagementService {
      * end-of-file arm marks end of sequence and emits the reached-the-bottom text without raising the
      * error flag; the default arm raises the flag and emits the lookup-failure text.
      *
-     * @param browse the positioned browse
+     * @param browse the positioned browse, which advances its own cursor over the row it hands out
      * @param state  the turn being assembled
-     * @param offset the offset to read
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurity> readnextUserSecFile(
-            final SequentialBrowse browse, final TurnState state, final long offset) {
-        return readOneRow(browse, state, offset, UserOutcome.MSG_LIST_REACHED_BOTTOM);
+    private Optional<UserSecurityRepository.AdminEntry> readnextUserSecFile(
+            final SequentialBrowse browse, final TurnState state) {
+        return readOneRow(browse, state, BrowseWindow.PagingDirection.FORWARD,
+                UserOutcome.MSG_LIST_REACHED_BOTTOM);
     }
 
     /**
@@ -1445,14 +1560,14 @@ public final class UserManagementService {
      * A backward read before the first row is off the front of the sequence and yields the same
      * end-of-sequence outcome that the command's own end-of-file response produces.
      *
-     * @param browse the positioned browse
+     * @param browse the positioned browse, which advances its own cursor over the row it hands out
      * @param state  the turn being assembled
-     * @param offset the offset to read
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurity> readprevUserSecFile(
-            final SequentialBrowse browse, final TurnState state, final long offset) {
-        return readOneRow(browse, state, offset, UserOutcome.MSG_LIST_REACHED_TOP);
+    private Optional<UserSecurityRepository.AdminEntry> readprevUserSecFile(
+            final SequentialBrowse browse, final TurnState state) {
+        return readOneRow(browse, state, BrowseWindow.PagingDirection.BACKWARD,
+                UserOutcome.MSG_LIST_REACHED_TOP);
     }
 
     /**
@@ -1573,40 +1688,45 @@ public final class UserManagementService {
      * @param state  the turn being assembled
      * @param anchor where to position
      * @param key    the key to position on when the anchor is a key
-     * @return the offset positioned at, or an empty result when nothing was positioned or the store
+     * @return the row positioned on, or an empty result when nothing was positioned or the store
      *         refused the probe
      */
-    private OptionalLong probeAnchor(final SequentialBrowse browse,
-                                     final TurnState state,
-                                     final BrowseAnchor anchor,
-                                     final String key) {
+    private Optional<UserSecurityRepository.AdminEntry> probeAnchor(final SequentialBrowse browse,
+                                                                   final TurnState state,
+                                                                   final BrowseAnchor anchor,
+                                                                   final String key) {
         try {
             return locateAnchor(browse, anchor, key);
         } catch (final RuntimeException failure) {
             LOG.warn("User list anchor probe failed: transaction={} anchor={} failureChain={}",
                     LIST_TRANSACTION_ID, anchor, FailureDiagnostics.failureChainOf(failure));
             applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
-            return OptionalLong.empty();
+            return Optional.empty();
         }
     }
 
     /**
-     * Reads one row at a known offset for the same three probes, under the same arm.
+     * Reads the one row following a key for the successor probe, under the same arm.
      *
-     * @param browse the positioned browse
+     * <p>The probe is a bounded one-row read on the key rather than a read of the browse, so it
+     * leaves the browse's position untouched and the walk that follows still positions for itself.
+     * The identifier is not interpolated into the diagnostic: the log line names the probe and the
+     * failure chain and nothing that identifies a person.
+     *
+     * @param browse the browse whose repository the probe reads
      * @param state  the turn being assembled
-     * @param offset the offset to read
-     * @return the row at that offset, or an empty result at the end of the sequence or when the store
-     *         refused the probe
+     * @param key    the exclusive lower bound - the last identifier the page displayed
+     * @return the row following that key, or an empty result at the end of the sequence or when the
+     *         store refused the probe
      */
-    private Optional<UserSecurity> probeRowAt(final SequentialBrowse browse,
-                                                                  final TurnState state,
-                                                                  final long offset) {
+    private Optional<UserSecurityRepository.AdminEntry> probeRowAfter(final SequentialBrowse browse,
+                                                                     final TurnState state,
+                                                                     final String key) {
         try {
-            return browse.rowAt(offset);
+            return browse.rowAfter(key);
         } catch (final RuntimeException failure) {
-            LOG.warn("User list row probe failed: transaction={} offset={} failureChain={}",
-                    LIST_TRANSACTION_ID, offset, FailureDiagnostics.failureChainOf(failure));
+            LOG.warn("User list successor probe failed: transaction={} failureChain={}",
+                    LIST_TRANSACTION_ID, FailureDiagnostics.failureChainOf(failure));
             applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
             return Optional.empty();
         }
@@ -1663,14 +1783,15 @@ public final class UserManagementService {
      * @param browse the browse to position
      * @param anchor where to position
      * @param key    the key to position on when the anchor is a key
-     * @return the offset positioned at, or an empty result when nothing was positioned
+     * @return the row positioned on, or an empty result when nothing was positioned
      */
-    private OptionalLong locateAnchor(final SequentialBrowse browse,
-                                      final BrowseAnchor anchor,
-                                      final String key) {
+    private Optional<UserSecurityRepository.AdminEntry> locateAnchor(final SequentialBrowse browse,
+                                                                    final BrowseAnchor anchor,
+                                                                    final String key) {
         return switch (anchor) {
             case LOW_VALUES -> browse.positionAtFirst();
-            case HIGH_VALUES -> OptionalLong.empty();
+            // No key can be greater than or equal to a high value, so this positions nowhere.
+            case HIGH_VALUES -> Optional.empty();
             case KEY -> browse.positionAtOrAfter(key == null ? "" : key);
         };
     }
@@ -1685,14 +1806,33 @@ public final class UserManagementService {
      * from the position of the page's own anchor</strong>, which is a stronger arrangement than the
      * one it replaces: it cannot drift, and it cannot be steered by a client.
      *
-     * @param offset the offset of the page's anchor row
-     * @return the one-based page number, or zero when the sequence held no such row
+     * <p>The position is obtained with one range count on the anchor's own key rather than by
+     * rescanning offset pages from the start of the sequence, so the cost of the counter no longer
+     * grows with how deep into the table the operator has paged. The count selects no entity and
+     * therefore reads no credential. A store that refuses the count takes the catch-all browse arm,
+     * exactly as the positioning probe beside it does, because the source has no path here that can
+     * raise and every browse arm it does have re-presents the screen with a message.
+     *
+     * @param browse    the browse whose repository supplies the count
+     * @param state     the turn being assembled
+     * @param anchorRow the page's anchor row, absent when the sequence held no such row
+     * @return the one-based page number, or zero when there was no anchor row or the store refused
      */
-    private int pageNumberOf(final OptionalLong offset) {
-        if (offset.isEmpty()) {
+    private int pageNumberOf(final SequentialBrowse browse,
+                             final TurnState state,
+                             final Optional<UserSecurityRepository.AdminEntry> anchorRow) {
+        if (anchorRow.isEmpty()) {
             return 0;
         }
-        return (int) (offset.getAsLong() / USER_LIST_PAGE_SIZE) + 1;
+        try {
+            final long precedingRows = browse.countBefore(anchorRow.get().getSecUsrId());
+            return (int) Math.min(precedingRows / USER_LIST_PAGE_SIZE + 1L, Integer.MAX_VALUE);
+        } catch (final RuntimeException failure) {
+            LOG.warn("User list page-counter probe failed: transaction={} failureChain={}",
+                    LIST_TRANSACTION_ID, FailureDiagnostics.failureChainOf(failure));
+            applyBrowseResponse(state, BrowseResponse.OTHER, UserOutcome.MSG_LIST_AT_TOP);
+            return 0;
+        }
     }
 
     /**
@@ -1705,18 +1845,18 @@ public final class UserManagementService {
      *
      * @param browse               the positioned browse
      * @param state                the turn being assembled
-     * @param offset               the offset to read
+     * @param direction            the direction to read in
      * @param endOfSequenceMessage the text the end-of-sequence arm emits
      * @return the row read, or an empty result at end of sequence or on failure
      */
-    private Optional<UserSecurity> readOneRow(
+    private Optional<UserSecurityRepository.AdminEntry> readOneRow(
             final SequentialBrowse browse,
             final TurnState state,
-            final long offset,
+            final BrowseWindow.PagingDirection direction,
             final String endOfSequenceMessage) {
-        final Optional<UserSecurity> row;
+        final Optional<UserSecurityRepository.AdminEntry> row;
         try {
-            row = browse.rowAt(offset);
+            row = browse.read(direction);
         } catch (final RuntimeException failure) {
             LOG.warn("User list read failed: transaction={} failureChain={}", LIST_TRANSACTION_ID,
                     FailureDiagnostics.failureChainOf(failure));
@@ -2247,10 +2387,53 @@ public final class UserManagementService {
         }
         // L210-L212: WHEN OTHER places the cursor on the given-name field and continues.
         state.focusFieldId = FIELD_FIRST_NAME;
-        // L215-L217: read the record that is about to be rewritten.
-        final Optional<UserSecurity> found = readUserSecFileForUpdate(state);
-        if (state.errorFlag.isOn() || found.isEmpty()) {
+
+        // L215-L243 are ONE unit of work, because in the region they are one. The read at L217 is an
+        // EXEC CICS READ ... UPDATE, which holds the record exclusively until the rewrite at L237
+        // happens or the task ends, so no other administrator can change the four fields between the
+        // comparison and the write. Reading in one unit and writing in a later one would compare against
+        // a record that the write then overwrites blind - a lost update the operator is never told
+        // about, because both statements succeed.
+        final Optional<UserSecurity> saved;
+        try {
+            saved = transactionBoundary.execute(() -> updateHeldIdentity(state));
+        } catch (final RuntimeException failure) {
+            applyMaintenanceFailure(state, failure);
             return;
+        }
+        if (saved.isEmpty()) {
+            // Either the read reported through its own arm, or nothing differed and the please-modify
+            // text set inside the unit stands. Neither is a rewrite, so no rewrite arm applies.
+            return;
+        }
+        // L369-L376: the normal arm of the rewrite paragraph, applied only once its unit has committed -
+        // so a failure raised at commit reports the failure arm instead of leaving a success behind.
+        final UserSecurity stored = saved.get();
+        state.actionSucceeded = true;
+        state.message = UserOutcome.MSG_UPDATE_SUCCESS_PREFIX
+                + delimitedBySpace(stored.getSecUsrId())
+                + UserOutcome.MSG_UPDATE_SUCCESS_SUFFIX;
+        LOG.info("User updated: transaction={} roleClass={}", UPDATE_TRANSACTION_ID,
+                resolvedRoleClass(stored.getSecUsrType()));
+    }
+
+    /**
+     * The held read, the four comparisons and the rewrite of L215-L243, executed inside one unit of
+     * work.
+     *
+     * <p>Extracted so that the whole of the source's maintenance step sits inside the unit and only the
+     * response arms sit outside it. Every statement keeps the source's order, and the read keeps its own
+     * paragraph.
+     *
+     * @param state the turn being assembled
+     * @return the stored instance when the rewrite ran, or an empty result when the read reported
+     *         through its own arm or nothing differed
+     */
+    private Optional<UserSecurity> updateHeldIdentity(final TurnState state) {
+        // L215-L217: read for update the record that is about to be rewritten, taking its hold.
+        final Optional<UserSecurity> found = readUserSecFileForUpdateHolding(state);
+        if (state.errorFlag.isOn() || found.isEmpty()) {
+            return Optional.empty();
         }
         final UserSecurity identity = found.get();
         // L219-L222: compare the given name.
@@ -2276,10 +2459,36 @@ public final class UserManagementService {
         }
         // L236-L243: save when anything differs, otherwise emit the please-modify text.
         if (state.modifiedFlag.isYes()) {
-            updateUserSecFile(state, identity);
-            return;
+            return Optional.of(updateUserSecFile(state, identity));
         }
         state.message = UserOutcome.MSG_UPDATE_NO_CHANGE;
+        return Optional.empty();
+    }
+
+    /**
+     * Reports a failure that escaped a maintenance unit of work, under the text of whichever statement
+     * raised it.
+     *
+     * <p>The read and the write of a maintenance step report through different texts, so the arm depends
+     * on how far the unit got. A failure before the store was asked to write is the read's
+     * lookup-failure arm; a failure at or after that point - including one raised when the unit commits,
+     * which only a unit that completes out here can produce - is the rewrite's own failure arm.
+     *
+     * @param state   the turn being assembled
+     * @param failure the failure the unit raised
+     */
+    private void applyMaintenanceFailure(final TurnState state, final RuntimeException failure) {
+        if (state.identityWriteAttempted) {
+            LOG.warn("User update save failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
+            state.message = UserOutcome.MSG_UPDATE_UNABLE_TO_UPDATE_USER;
+        } else {
+            LOG.warn("User update read failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
+                    FailureDiagnostics.failureChainOf(failure));
+            state.message = UserOutcome.MSG_UPDATE_UNABLE_TO_LOOKUP_USER;
+        }
+        state.errorFlag = ErrorFlag.ON;
+        state.focusFieldId = FIELD_FIRST_NAME;
     }
 
     /**
@@ -2332,13 +2541,61 @@ public final class UserManagementService {
      * identical: their prompts differ, and a shared body would have to be told which text to emit,
      * which is the same thing as two paragraphs with clearer names.
      *
+     * <h2>Two forms of the same paragraph, differing only in the record hold</h2>
+     *
+     * <p>The source performs this paragraph from two places with one statement: the enter-key load at
+     * L163, which only displays what it read, and the save path at L217, which rewrites it. Because the
+     * statement is a read <em>for update</em>, both take the record's exclusive hold - but a hold taken
+     * on the load path is released when that task returns at the end of the turn, long before the
+     * operator presses the saving key, so nothing about the screen's behaviour depends on it.
+     *
+     * <p>Reproducing it that way would therefore lock a row for the duration of a display and buy
+     * nothing, so the two call sites read through two forms: this one for the display, and
+     * {@link #readUserSecFileForUpdateHolding(TurnState)} for the save path, where the hold is what makes
+     * the read and the rewrite one indivisible step. Both evaluate the identical three arms, which is
+     * why the arm evaluation is shared rather than duplicated.
+     *
      * @param state the turn being assembled
      * @return the identity read, or an empty result on the not-found or failure arms
      */
     private Optional<UserSecurity> readUserSecFileForUpdate(final TurnState state) {
+        return evaluateUpdateRead(state,
+                () -> userSecurityRepository.findById(recordKeyOf(state.userId)));
+    }
+
+    /**
+     * Reads the record the update screen is about to rewrite, holding it for that rewrite.
+     * <strong>{@code READ-USER-SEC-FILE}, {@code app/cbl/COUSR02C.cbl} L320, performed from L217.</strong>
+     *
+     * <p>The form of the paragraph the save path uses: the same three arms, over a read that takes the
+     * row's write lock so the rewrite that follows in the same unit of work cannot be interleaved with
+     * another administrator's. The lock is released when that unit ends.
+     *
+     * <p>Must be called inside a unit of work. It is, from exactly one place -
+     * {@link #updateHeldIdentity(TurnState)} - and the persistence provider reports a call made outside
+     * one rather than silently reading without the lock.
+     *
+     * @param state the turn being assembled
+     * @return the identity read and held, or an empty result on the not-found or failure arms
+     */
+    private Optional<UserSecurity> readUserSecFileForUpdateHolding(final TurnState state) {
+        return evaluateUpdateRead(state,
+                () -> userSecurityRepository.findByIdForUpdate(recordKeyOf(state.userId)));
+    }
+
+    /**
+     * Evaluates the three arms of the update screen's read paragraph over whichever form of the read the
+     * caller supplies.
+     *
+     * @param state the turn being assembled
+     * @param read  the keyed read to perform, held or unheld
+     * @return the identity read, or an empty result on the not-found or failure arms
+     */
+    private Optional<UserSecurity> evaluateUpdateRead(final TurnState state,
+            final Supplier<Optional<UserSecurity>> read) {
         final Optional<UserSecurity> found;
         try {
-            found = userSecurityRepository.findById(recordKeyOf(state.userId));
+            found = read.get();
         } catch (final RuntimeException failure) {
             LOG.warn("User update read failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
                     FailureDiagnostics.failureChainOf(failure));
@@ -2371,10 +2628,18 @@ public final class UserManagementService {
      * default arm the unable-to-update text.
      *
      * <p>The rewrite is one save of one instance, which is the record-at-a-time behaviour the legacy
-     * verb has. Note what this paragraph does <strong>not</strong> do: it acquires no lock, tests no
-     * version and forces no rollback, because the entity carries no version attribute and not one of
-     * the four members contains a rollback - the estate's only explicit rollback is in the
+     * verb has. It runs inside the unit of work that already holds the row, taken by the read at L217,
+     * so nothing here needs to acquire one. Note what this paragraph does <strong>not</strong> do: it
+     * tests no version and forces no rollback, because the entity carries no version attribute - the
+     * legacy prevented interleaving with the hold rather than detecting it afterwards, and a version
+     * column would introduce a conflict outcome none of these four screens has a message for - and not
+     * one of the four members contains a rollback, the estate's only explicit rollback being in the
      * account-update program.
+     *
+     * <p><strong>The response arms are not applied here.</strong> They belong to the caller, which
+     * applies them once the unit of work has completed: a failure raised when the unit commits would
+     * otherwise arrive after a success text had already been composed, and the turn would report a
+     * rewrite that did not happen.
      *
      * <p><strong>Nor does it revoke anything, and it must not be given a step that does.</strong> A
      * bearer session issued to this operator carries a fingerprint of the three security facts of this
@@ -2387,30 +2652,15 @@ public final class UserManagementService {
      *
      * @param state    the turn being assembled
      * @param identity the identity to save, already carrying the changed fields
+     * @return the stored instance, which the persistence provider may substitute for the argument
      */
-    private void updateUserSecFile(final TurnState state, final UserSecurity identity) {
-        final UserSecurity saved;
-        try {
-            saved = transactionBoundary.execute(() -> {
-                final UserSecurity persisted = userSecurityRepository.save(identity);
-                recordWriter.flush();
-                return persisted;
-            });
-        } catch (final RuntimeException failure) {
-            LOG.warn("User update save failed: transaction={} failureChain={}", UPDATE_TRANSACTION_ID,
-                    FailureDiagnostics.failureChainOf(failure));
-            state.errorFlag = ErrorFlag.ON;
-            state.message = UserOutcome.MSG_UPDATE_UNABLE_TO_UPDATE_USER;
-            state.focusFieldId = FIELD_FIRST_NAME;
-            return;
-        }
-        // L369-L376: the normal arm.
-        state.actionSucceeded = true;
-        state.message = UserOutcome.MSG_UPDATE_SUCCESS_PREFIX
-                + delimitedBySpace(saved.getSecUsrId())
-                + UserOutcome.MSG_UPDATE_SUCCESS_SUFFIX;
-        LOG.info("User updated: transaction={} roleClass={}", UPDATE_TRANSACTION_ID,
-                resolvedRoleClass(saved.getSecUsrType()));
+    private UserSecurity updateUserSecFile(final TurnState state, final UserSecurity identity) {
+        // Raised before the store is asked, so a failure escaping this unit of work is attributed to the
+        // rewrite rather than to the read that preceded it in the same unit.
+        state.identityWriteAttempted = true;
+        final UserSecurity persisted = userSecurityRepository.save(identity);
+        recordWriter.flush();
+        return persisted;
     }
 
     /**
@@ -2589,6 +2839,13 @@ public final class UserManagementService {
      * than tidied, and the outcome is identical either way; the observation is recorded as a source
      * oddity rather than corrected here.
      *
+     * <p><strong>The two are also ONE unit of work, because in the region they are one.</strong> The
+     * read at L190 is an {@code EXEC CICS READ ... UPDATE} and the delete at L191 names no record
+     * identifier at all, so the only record it can remove is the one that read is holding. Reading in
+     * one unit and deleting by key in a later one would remove a row that another administrator had
+     * changed in between - the operator having confirmed a record that no longer exists in that form,
+     * and nothing in either statement noticing.
+     *
      * @param state the turn being assembled
      */
     private void deleteUserInfo(final TurnState state) {
@@ -2600,9 +2857,51 @@ public final class UserManagementService {
         }
         // L183-L185: WHEN OTHER places the cursor on the identifier field and continues.
         state.focusFieldId = FIELD_LIST_USER_ID;
-        // L189-L191: read, then delete - both unconditional, in this order.
-        final Optional<UserSecurity> found = readUserSecFileForDelete(state);
-        deleteUserSecFile(state, found);
+
+        // L189-L191 as one unit of work: read for update, then remove the record that read holds.
+        final Optional<UserSecurity> removed;
+        try {
+            removed = transactionBoundary.execute(() -> deleteHeldIdentity(state));
+        } catch (final RuntimeException failure) {
+            LOG.warn("User delete removal failed: transaction={} failureChain={}",
+                    DELETE_TRANSACTION_ID, FailureDiagnostics.failureChainOf(failure));
+            // L329-L335: the default arm, whose text names the update operation in the source. It covers
+            // a failure of the read as well as of the removal, because the source's read-failure arm is
+            // immediately overwritten by this one - the removal is performed regardless.
+            state.errorFlag = ErrorFlag.ON;
+            state.message = UserOutcome.MSG_DELETE_UNABLE_TO_UPDATE_USER;
+            state.focusFieldId = FIELD_FIRST_NAME;
+            return;
+        }
+        if (removed.isEmpty()) {
+            // The failing arms have already been applied inside the unit from what the read reported.
+            return;
+        }
+        // L314-L322: the normal arm clears the fields, then builds the text from the removed record -
+        // applied only once the unit has committed, so a failure raised at commit cannot leave a success
+        // text and a raised success flag behind.
+        final UserSecurity gone = removed.get();
+        final String removedUserId = gone.getSecUsrId();
+        final String removedRoleCode = gone.getSecUsrType();
+        initializeDeleteFields(state);
+        state.actionSucceeded = true;
+        state.message = UserOutcome.MSG_DELETE_SUCCESS_PREFIX
+                + delimitedBySpace(removedUserId)
+                + UserOutcome.MSG_DELETE_SUCCESS_SUFFIX;
+        LOG.info("User deleted: transaction={} roleClass={}", DELETE_TRANSACTION_ID,
+                resolvedRoleClass(removedRoleCode));
+    }
+
+    /**
+     * The held read and the removal of L189-L191, executed inside one unit of work.
+     *
+     * @param state the turn being assembled
+     * @return the record that was removed, or an empty result when the read reported through one of its
+     *         failing arms
+     */
+    private Optional<UserSecurity> deleteHeldIdentity(final TurnState state) {
+        final Optional<UserSecurity> found = readUserSecFileForDeleteHolding(state);
+        return deleteUserSecFile(state, found);
     }
 
     /**
@@ -2647,13 +2946,50 @@ public final class UserManagementService {
      * not-found arm - which is what an empty result is - raises the flag, emits the not-found text and
      * places the cursor on the identifier field. The default arm emits the lookup-failure text.
      *
+     * <p>As on the update screen, the source performs this paragraph from two places with one read-for-update
+     * statement: the enter-key load at L161, which only displays the record, and the confirming path at
+     * L190, whose delete verb names no record and can therefore only remove the record this read holds.
+     * A hold taken on the load path is released when that task returns, so only the second call site
+     * depends on it; the two forms differ in nothing else and share this arm evaluation. See
+     * {@link #readUserSecFileForDeleteHolding(TurnState)}.
+     *
      * @param state the turn being assembled
      * @return the identity read, or an empty result on the not-found or failure arms
      */
     private Optional<UserSecurity> readUserSecFileForDelete(final TurnState state) {
+        return evaluateDeleteRead(state,
+                () -> userSecurityRepository.findById(recordKeyOf(state.userId)));
+    }
+
+    /**
+     * Reads the record the delete screen is about to remove, holding it for that removal.
+     * <strong>{@code READ-USER-SEC-FILE}, {@code app/cbl/COUSR03C.cbl} L267, performed from L190.</strong>
+     *
+     * <p>The form the confirming path uses: the same three arms over a read that takes the row's write
+     * lock, so the delete that follows it in the same unit of work removes exactly the record the
+     * operator confirmed. Must be called inside a unit of work, and is, from exactly one place.
+     *
+     * @param state the turn being assembled
+     * @return the identity read and held, or an empty result on the not-found or failure arms
+     */
+    private Optional<UserSecurity> readUserSecFileForDeleteHolding(final TurnState state) {
+        return evaluateDeleteRead(state,
+                () -> userSecurityRepository.findByIdForUpdate(recordKeyOf(state.userId)));
+    }
+
+    /**
+     * Evaluates the three arms of the delete screen's read paragraph over whichever form of the read the
+     * caller supplies.
+     *
+     * @param state the turn being assembled
+     * @param read  the keyed read to perform, held or unheld
+     * @return the identity read, or an empty result on the not-found or failure arms
+     */
+    private Optional<UserSecurity> evaluateDeleteRead(final TurnState state,
+            final Supplier<Optional<UserSecurity>> read) {
         final Optional<UserSecurity> found;
         try {
-            found = userSecurityRepository.findById(recordKeyOf(state.userId));
+            found = read.get();
         } catch (final RuntimeException failure) {
             LOG.warn("User delete read failed: transaction={} failureChain={}", DELETE_TRANSACTION_ID,
                     FailureDiagnostics.failureChainOf(failure));
@@ -2684,12 +3020,15 @@ public final class UserManagementService {
      * Removes the record.
      * <strong>{@code DELETE-USER-SEC-FILE}, {@code app/cbl/COUSR03C.cbl} L305.</strong>
      *
-     * <p>L307-L311 removes the record the browse is positioned on and L313-L336 evaluates the response
-     * in three arms. The normal arm clears the fields and builds the success text from a fixed prefix,
-     * the identifier up to its first space and a fixed suffix, reproducing L318-L321 - and note that
-     * the identifier must be captured <em>before</em> the fields are cleared, because the source builds
-     * the text from the record area rather than from the screen. The not-found arm emits the not-found
-     * text.
+     * <p>L307-L311 removes the record the preceding read is holding - the verb names no record
+     * identifier, so the held record is the only one it can mean - and L313-L336 evaluates the response
+     * in three arms. The two failing arms are applied here, from what the read reported. The
+     * <strong>normal arm is applied by the caller</strong>, once the unit of work has committed: it
+     * clears the fields and builds the success text from a fixed prefix, the identifier up to its first
+     * space and a fixed suffix, reproducing L318-L321, and the identifier must be taken from the record
+     * rather than the screen because the source builds the text from the record area. Applying it from
+     * inside the unit would leave a success text and a raised success flag behind a failure raised when
+     * that unit committed, which is why this method returns the removed record instead of reporting it.
      *
      * <p><strong>Removing the record is what ends the removed operator's sessions</strong>, and nothing
      * further is required here. The security boundary reads this record on every request that presents a
@@ -2706,8 +3045,10 @@ public final class UserManagementService {
      * @param state the turn being assembled, carrying the arm the preceding read reported through
      * @param found the outcome of the preceding read, whose record supplies the identifier and the
      *              role class the normal arm reports
+     * @return the record that was removed, or an empty result when one of the failing arms applied
      */
-    private void deleteUserSecFile(final TurnState state, final Optional<UserSecurity> found) {
+    private Optional<UserSecurity> deleteUserSecFile(final TurnState state,
+            final Optional<UserSecurity> found) {
         if (state.readResponse != RecordResponse.NORMAL || found.isEmpty()) {
             // L323-L335: the two failing arms, selected by what the read left behind. A read that
             // found nothing leaves the removal nothing to position on, so it reports not-found at
@@ -2725,37 +3066,18 @@ public final class UserManagementService {
                     state.focusFieldId = FIELD_FIRST_NAME;
                 }
             }
-            return;
+            return Optional.empty();
         }
-        final String removedUserId = found.get().getSecUsrId();
-        // The role class is captured with the identifier and for the same reason: the normal arm blanks
-        // the screen before it reports, so anything the report needs must be taken beforehand. It comes
-        // from the record that was read rather than from the echoed screen item.
-        final String removedRoleCode = found.get().getSecUsrType();
-        try {
-            transactionBoundary.execute(() -> {
-                userSecurityRepository.deleteById(removedUserId);
-                recordWriter.flush();
-                return Boolean.TRUE;
-            });
-        } catch (final RuntimeException failure) {
-            LOG.warn("User delete removal failed: transaction={} failureChain={}",
-                    DELETE_TRANSACTION_ID, FailureDiagnostics.failureChainOf(failure));
-            // L329-L335: the default arm, whose text names the update operation in the source.
-            state.errorFlag = ErrorFlag.ON;
-            state.message = UserOutcome.MSG_DELETE_UNABLE_TO_UPDATE_USER;
-            state.focusFieldId = FIELD_FIRST_NAME;
-            return;
-        }
-        // L314-L322: the normal arm clears the fields, then builds the text from the captured
-        // identifier.
-        initializeDeleteFields(state);
-        state.actionSucceeded = true;
-        state.message = UserOutcome.MSG_DELETE_SUCCESS_PREFIX
-                + delimitedBySpace(removedUserId)
-                + UserOutcome.MSG_DELETE_SUCCESS_SUFFIX;
-        LOG.info("User deleted: transaction={} roleClass={}", DELETE_TRANSACTION_ID,
-                resolvedRoleClass(removedRoleCode));
+        final UserSecurity identity = found.get();
+        // Raised before the store is asked, so a failure escaping this unit of work is attributed to the
+        // removal rather than to the read that preceded it in the same unit.
+        state.identityWriteAttempted = true;
+        userSecurityRepository.deleteById(identity.getSecUsrId());
+        recordWriter.flush();
+        // The removed instance is returned rather than its two reported fields, because the normal arm
+        // blanks the screen before it reports and must therefore take everything it reports from the
+        // record that was read rather than from the echoed screen items.
+        return found;
     }
 
     /**

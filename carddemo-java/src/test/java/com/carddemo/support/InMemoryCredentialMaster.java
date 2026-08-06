@@ -129,8 +129,10 @@ public final class InMemoryCredentialMaster {
                 deleteById((String) args[0]);
                 yield null;
             }
-            case "existsById" -> this.records.containsKey((String) args[0]);
-            case "count" -> (long) this.records.size();
+            // The repository is a closed interface, so the three writes and reads above are the whole
+            // surface a production collaborator can reach through this view. The browse operations are
+            // deliberately absent rather than refused: no fixture user of this class lists identities,
+            // and the default arm below names the operation if one ever starts to.
             case "toString" -> "InMemoryCredentialMaster.repository";
             case "hashCode" -> System.identityHashCode(proxy);
             case "equals" -> proxy == args[0];

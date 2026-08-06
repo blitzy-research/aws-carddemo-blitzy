@@ -1319,11 +1319,31 @@ public class TransactionPostingService {
      * description text is identical to 101's, because the two arise at different points and a
      * traceability row needs to tell them apart.
      *
-     * <p>The repository performs one update-only statement and returns its affected-row count. That is
-     * the relational equivalent of {@code REWRITE ... INVALID KEY}: zero rows reaches 109 without a
-     * time-of-check/time-of-use window, while one row means the rewrite completed at this paragraph.
-     * The statement increments the version explicitly and clears the persistence context afterward, so
-     * the managed account read during validation cannot be dirty-flushed a second time.
+     * <p>The repository performs one update-only statement and returns its affected-row count, which is
+     * the relational equivalent of {@code REWRITE ... INVALID KEY}: one row means the rewrite completed
+     * at this paragraph. The statement increments the version explicitly and clears the persistence
+     * context afterward, so the managed account read during validation cannot be dirty-flushed a second
+     * time.
+     *
+     * <p><strong>Why the row is read before the rewrite.</strong> An affected-row count of zero has two
+     * possible causes - the row is gone, which is the legacy invalid-key condition, or the row is present
+     * carrying a version other than the one validation read, which the legacy could not observe - and
+     * they reach opposite outcomes here: the first is inert 109 and the second refuses the record. Asking
+     * <em>after</em> the rewrite which of the two happened cannot be trusted, because a writer committing
+     * between the rewrite and the question turns one answer into the other and this paragraph cannot tell
+     * that it did. So the answer is obtained <em>first</em>, from a keyed read that holds the row for the
+     * rest of the record's unit of work: from that moment nothing else can delete the row or change its
+     * version, so an absence observed there is still an absence when the rewrite runs, and a presence
+     * observed there leaves a zero count with only one remaining explanation. Neither outcome can be
+     * wrong for a timing reason.
+     *
+     * <p>The hold is a strengthening of the legacy baseline and is recorded as one in
+     * {@code docs/decision-log.md} entry DL-170 rather than presented as parity. The legacy cluster is defined {@code READINTEG(UNCOMMITTED)},
+     * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, and this program rewrites by key - the file is
+     * {@code ORGANIZATION IS INDEXED, ACCESS MODE IS RANDOM} at lines 51 to 53 - so no row was ever
+     * actually held and a concurrent change was invisible. It does not replace the version predicate,
+     * which still carries the version validation read; the two answer different questions, presence and
+     * change.
      *
      * @param  record  the record being posted
      * @param  account the account read during validation
@@ -1350,6 +1370,15 @@ public class TransactionPostingService {
                     account.getAcctCurrCycDebit().add(amount));
         }
 
+        // Establish, under a write lock and BEFORE the rewrite, whether the row the rewrite is about to
+        // address exists. This is the paragraph's invalid-key question, asked at a point where the answer
+        // cannot subsequently change: the row is held for the remainder of this record's unit of work, so
+        // it can be neither deleted nor re-versioned between here and the statement below. The result is
+        // only ever consulted to tell the two zero-count causes apart, so the returned image is not used
+        // and its staleness relative to the validation read does not matter.
+        final boolean rowHeld =
+                this.accountRepository.findByIdForUpdate(account.getAcctId()).isPresent();
+
         // Lines 554 to 559: REWRITE ... INVALID KEY. The update count is the rewrite status. The
         // version read during validation is part of the predicate, so the statement is a compare-and-set
         // and a concurrent write cannot be overwritten unnoticed.
@@ -1372,7 +1401,12 @@ public class TransactionPostingService {
             // account that is not absent, and to let the record's transaction roll back so the
             // transaction-file write and the category-balance update do not harden against a balance that
             // was never rewritten.
-            if (this.accountRepository.existsById(account.getAcctId())) {
+            //
+            // Which of the two it is was settled by the held read above, not by a second question asked
+            // now. A row that was held is still present, so a zero count leaves the version as the only
+            // remaining explanation; a row that was absent then cannot have been removed by anything this
+            // paragraph did since.
+            if (rowHeld) {
                 LOG.warn("account rewrite lost a version race program={} accountRef={} effect=none",
                         PROGRAM_NAME, SensitiveLogRedactor.redact(account.getAcctId()));
                 throw new OptimisticLockConflictException(

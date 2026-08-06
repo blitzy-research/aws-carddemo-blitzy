@@ -337,7 +337,16 @@ carddemo:
     # container needs one writable mounted path rather than six unrelated temporary directories.
     # Production durability comes from the object-store publication boundary, not from this volume;
     # the volume keeps in-progress and completed local files observable and restartable.
-    staging-directory: ${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}}
+    #
+    # The default resolves to a NAMED SUBDIRECTORY of the platform temporary location and never to that
+    # location itself. The platform temporary directory is world-writable and sticky by design and is
+    # shared with the rest of the host, so a staging root placed directly in it cannot be owner-only
+    # without the module tightening a path it does not own. A subdirectory is created by this module,
+    # which is what lets com.carddemo.util SecureStagedFiles create it owner-only and every generation
+    # within it owner-readable only. Overriding this to the platform temporary location itself, or to any
+    # directory shared with another workload, gives up that guarantee for the directory listing - the
+    # generations themselves stay owner-only either way.
+    staging-directory: ${CARDDEMO_BATCH_STAGING_DIRECTORY:${java.io.tmpdir}/carddemo-batch-staging}
   aws:
     # THE SIX KEYS UNDER THIS PREFIX ARE THE MIGRATION PLAN'S OWN CONTRACT, and com.carddemo.config
     # AwsProperties binds exactly these and nothing else: region, endpoint-override,

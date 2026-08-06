@@ -26,6 +26,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -45,9 +46,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.carddemo.domain.Transaction;
@@ -393,41 +392,46 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     }
 
     /**
-     * Verifies the inherited pageable browse that replaced the former test-only keyset methods.
+     * Verifies the bounded ordered reads the transaction-list browse and the batch archive scan share.
      *
-     * <p>The frozen repository declares no cursor finder. The transaction-list service supplies the
-     * identifier sort through {@code PageRequest}, and any start-position emulation belongs to that
-     * service rather than to this two-query repository surface.
+     * <p>{@link TransactionScanRepository} publishes four reads - inclusive and exclusive, ascending and
+     * descending - and no offset page at all. The pair matters: the inclusive form is the positioning
+     * command, whose first row is the record the browse positions on, and the exclusive form is the
+     * continuation, which must not repeat the row already handed out. Both are derived query names, so
+     * only a started context proves they resolve, and only real SQL proves the bound is applied by the
+     * store rather than by the caller.
      */
     @Nested
-    @DisplayName("the pageable browse of the list screen")
-    final class PagedBrowse {
+    @DisplayName("the bounded keyset reads of the list browse and the archive scan")
+    final class KeysetBrowse {
 
         /** Creates the nest. */
-        PagedBrowse() {
+        KeysetBrowse() {
         }
 
         @Test
-        @DisplayName("successive forward pages preserve ascending identifier order and page metadata")
-        void successiveForwardPagesPreserveAscendingOrder() {
+        @DisplayName("the inclusive forward read opens on the boundary row and the exclusive read "
+                + "continues past it, so successive windows neither repeat nor skip a row")
+        void inclusiveOpenAndExclusiveContinuationTileTheSequence() {
             runner().run(context -> {
                 final TransactionRepository repository = context.getBean(TransactionRepository.class);
+                final TransactionScanRepository scan =
+                        context.getBean(TransactionScanRepository.class);
                 try {
                     seedReservedRows(repository);
 
-                    final Sort ascending = Sort.by(Sort.Direction.ASC, "tranId");
-                    final Page<Transaction> firstPage =
-                            repository.findAll(PageRequest.of(0, SCREEN_ROWS, ascending));
-                    final Page<Transaction> secondPage =
-                            repository.findAll(PageRequest.of(1, SCREEN_ROWS, ascending));
+                    final List<Transaction> opened =
+                            scan.findByTranIdGreaterThanEqualOrderByTranIdAsc(
+                                    RESERVED_IDS.get(0), Limit.of(SCREEN_ROWS));
+                    final List<Transaction> continued =
+                            scan.findByTranIdGreaterThanOrderByTranIdAsc(
+                                    identifiersOf(opened).get(SCREEN_ROWS - 1), Limit.of(SCREEN_ROWS));
 
-                    assertThat(firstPage.getTotalElements()).isEqualTo(RESERVED_IDS.size());
-                    assertThat(firstPage.getTotalPages()).isEqualTo(2);
-                    assertThat(firstPage.getContent())
-                            .extracting(Transaction::getTranId)
+                    assertThat(identifiersOf(opened))
+                            .as("the opening read is inclusive, so the boundary row is its first row")
                             .containsExactlyElementsOf(RESERVED_IDS.subList(0, SCREEN_ROWS));
-                    assertThat(secondPage.getContent())
-                            .extracting(Transaction::getTranId)
+                    assertThat(identifiersOf(continued))
+                            .as("the continuation is strict, so it starts after the last row handed out")
                             .containsExactlyElementsOf(
                                     RESERVED_IDS.subList(SCREEN_ROWS, RESERVED_IDS.size()));
                 } finally {
@@ -437,21 +441,38 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("a backward page is read in descending identifier order")
-        void aBackwardPageUsesDescendingOrder() {
+        @DisplayName("the backward reads are descending, and reversing the read order yields the "
+                + "ascending page the screen presents")
+        void theBackwardReadsAreDescendingAndReverseIntoScreenOrder() {
             runner().run(context -> {
                 final TransactionRepository repository = context.getBean(TransactionRepository.class);
+                final TransactionScanRepository scan =
+                        context.getBean(TransactionScanRepository.class);
                 try {
                     seedReservedRows(repository);
+                    final String highestReserved = RESERVED_IDS.get(RESERVED_IDS.size() - 1);
 
-                    final Page<Transaction> read = repository.findAll(PageRequest.of(
-                            0, SCREEN_ROWS, Sort.by(Sort.Direction.DESC, "tranId")));
+                    final List<String> readOrder = identifiersOf(
+                            scan.findByTranIdLessThanEqualOrderByTranIdDesc(
+                                    highestReserved, Limit.of(SCREEN_ROWS)));
+                    final List<String> strictlyBefore = identifiersOf(
+                            scan.findByTranIdLessThanOrderByTranIdDesc(
+                                    highestReserved, Limit.of(1)));
 
-                    assertThat(read.getContent())
-                            .extracting(Transaction::getTranId)
-                            .as("descending is the read order before the service fills the screen")
-                            .containsExactlyElementsOf(
-                                    RESERVED_IDS.reversed().subList(0, SCREEN_ROWS));
+                    assertThat(readOrder)
+                            .as("descending is the read order the legacy backward path uses")
+                            .isSortedAccordingTo(Comparator.reverseOrder());
+                    assertThat(readOrder.get(0))
+                            .as("the inclusive backward open positions on the boundary row itself")
+                            .isEqualTo(highestReserved);
+                    assertThat(readOrder.reversed())
+                            .as("reading the rows in reverse of the read order is what makes the "
+                                    + "assembled page ascend, exactly like a forward page")
+                            .isSorted();
+                    assertThat(strictlyBefore)
+                            .as("the strict backward continuation never repeats the boundary row")
+                            .doesNotContain(highestReserved)
+                            .hasSize(1);
                 } finally {
                     removeReservedRows(repository);
                 }
@@ -459,22 +480,43 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the two-argument date-range query still resolves beside the inherited pager")
-        void theDateRangeQueryStillResolves() {
+        @DisplayName("every read honours its limit and a blank bound opens the sequence forwards while "
+                + "positioning nowhere backwards")
+        void boundsAndLimitsBehaveAtTheEndsOfTheSequence() {
             runner().run(context -> {
                 final TransactionRepository repository = context.getBean(TransactionRepository.class);
+                final TransactionScanRepository scan =
+                        context.getBean(TransactionScanRepository.class);
                 try {
                     seedReservedRows(repository);
 
-                    assertThat(repository.findByProcessingDateRange(
-                            "2022-07-18", "2022-07-18"))
-                            .as("every reserved row carries that processing date")
-                            .hasSize(RESERVED_IDS.size());
+                    assertThat(scan.findByTranIdGreaterThanEqualOrderByTranIdAsc("", Limit.of(3)))
+                            .as("a blank bound is below every stored identifier, so a forward open "
+                                    + "starts at the first row and the limit truncates")
+                            .extracting(Transaction::getTranId)
+                            .containsExactlyElementsOf(RESERVED_IDS.subList(0, 3));
+                    assertThat(scan.findByTranIdLessThanEqualOrderByTranIdDesc("", Limit.of(3)))
+                            .as("read backwards, no row lies at or before a blank bound")
+                            .isEmpty();
+                    assertThat(scan.findByTranIdGreaterThanOrderByTranIdAsc(
+                                    RESERVED_IDS.get(RESERVED_IDS.size() - 1), Limit.of(SCREEN_ROWS)))
+                            .as("nothing follows the highest identifier, which is the end-of-file arm")
+                            .isEmpty();
                 } finally {
                     removeReservedRows(repository);
                 }
             });
         }
+    }
+
+    /**
+     * Returns the identifiers of a read window in read order.
+     *
+     * @param window the rows the read returned
+     * @return their identifiers, in the order the window presents them
+     */
+    private static List<String> identifiersOf(final List<Transaction> window) {
+        return window.stream().map(Transaction::getTranId).toList();
     }
 
     /**

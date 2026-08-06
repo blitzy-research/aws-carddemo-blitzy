@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -252,7 +253,7 @@ final class InterestCalculationProcessorTest {
 
     private void stubGroup(final String accountId,
             final InterestCalculationService.GroupInterestResult result) {
-        when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong()))
+        when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(), any()))
                 .thenReturn(result);
     }
 
@@ -261,7 +262,7 @@ final class InterestCalculationProcessorTest {
      * groups repeat or whose suffix advances across several groups needs.
      */
     private void stubGroupsFromArguments() {
-        when(this.service.calculateGroupInterest(anyString(), anyString(), anyList(), anyLong()))
+        when(this.service.calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any()))
                 .thenAnswer(invocation -> {
                     final String accountId = invocation.getArgument(1);
                     final List<?> buffered = invocation.getArgument(2);
@@ -274,6 +275,110 @@ final class InterestCalculationProcessorTest {
     // The control break
     // ----------------------------------------------------------------------------------------
 
+    @Nested
+    @DisplayName("The synthesized-record writer this stage binds for the step that owns the generation")
+    final class TheBoundRecordWriter {
+
+        /** Creates the nest. */
+        TheBoundRecordWriter() {
+        }
+
+        /**
+         * Stubs the accrual so that it writes through the writer it is handed, which is what the real
+         * service does at {@code app/cbl/CBACT04C.cbl:L500}.
+         *
+         * @param accountId the account the group keys on
+         */
+        private void stubGroupThatWrites(final String accountId) {
+            when(service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(),
+                    any())).thenAnswer(invocation -> {
+                        final InterestCalculationService.GroupInterestResult group =
+                                sizedGroup(accountId, 1, invocation.getArgument(3));
+                        final Consumer<Transaction> writer = invocation.getArgument(4);
+                        group.interestTransactions().forEach(writer);
+                        return group;
+                    });
+        }
+
+        @Test
+        @DisplayName("a bound writer receives every record the closing group synthesized, in order")
+        void aBoundWriterReceivesTheGroupsRecords() {
+            final List<String> written = new ArrayList<>();
+            stubGroupThatWrites(ACCOUNT_A);
+            processor.bindSynthesizedTransactionWriter(
+                    synthesized -> written.add(synthesized.getTranId()));
+            processor.beforeStep(stepExecution);
+
+            processor.process(row(ACCOUNT_A, "0005"));
+            processor.afterStep(stepExecution);
+
+            assertThat(written).containsExactly(
+                    InterestCalculationProcessor.interestTranId(RUN_DATE, 1L));
+        }
+
+        @Test
+        @DisplayName("synthesizing a record with NO writer bound fails loudly, because a discarding "
+                + "default would post every balance into a run whose records went nowhere")
+        void anUnboundWriterFailsRatherThanDiscarding() {
+            stubGroupThatWrites(ACCOUNT_A);
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> processor.afterStep(stepExecution))
+                    .withMessageContaining(InterestCalculationProcessor.OUTPUT_RESOURCE)
+                    .withMessageContaining("before the first row is read");
+        }
+
+        @Test
+        @DisplayName("unbinding releases it, so a record synthesized after the generation closed fails "
+                + "rather than being written into a closed resource")
+        void unbindingReleasesTheWriter() {
+            final List<String> written = new ArrayList<>();
+            stubGroupThatWrites(ACCOUNT_A);
+            processor.bindSynthesizedTransactionWriter(
+                    synthesized -> written.add(synthesized.getTranId()));
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+            processor.afterStep(stepExecution);
+            assertThat(written).hasSize(1);
+
+            processor.unbindSynthesizedTransactionWriter();
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> processor.afterStep(stepExecution));
+            assertThat(written).as("nothing further reached the released writer").hasSize(1);
+        }
+
+        @Test
+        @DisplayName("a null binding is refused, because unbinding is its own operation and a null one "
+                + "is therefore always a mistake")
+        void aNullBindingIsRefused() {
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> processor.bindSynthesizedTransactionWriter(null))
+                    .withMessageContaining("writer must not be null");
+        }
+
+        @Test
+        @DisplayName("whatever the writer raises propagates untranslated, so the write-error arm of the "
+                + "legacy reaches the caller rather than being reported as a business outcome")
+        void aWriterFailurePropagatesUntranslated() {
+            final AbendException writeFailure = new AbendException("CBACT04C",
+                    "ERROR WRITING TRANSACTION RECORD");
+            stubGroupThatWrites(ACCOUNT_A);
+            processor.bindSynthesizedTransactionWriter(synthesized -> {
+                throw writeFailure;
+            });
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> processor.afterStep(stepExecution))
+                    .isSameAs(writeFailure);
+        }
+    }
     @Nested
     @DisplayName("The account control break")
     final class TheAccountControlBreak {
@@ -314,8 +419,8 @@ final class InterestCalculationProcessorTest {
             assertThat(closed).isNotNull();
             assertThat(closed.accountId()).isEqualTo(ACCOUNT_A);
             assertThat(closed.parameterDate()).isEqualTo(RUN_DATE);
-            verify(service).calculateGroupInterest(RUN_DATE, ACCOUNT_A,
-                    List.of(row(ACCOUNT_A, "0005")), 0L);
+            verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
         }
 
         @Test
@@ -329,8 +434,8 @@ final class InterestCalculationProcessorTest {
             final InterestCalculationProcessor.AccruedAccountGroup closed =
                     processor.process(row(ACCOUNT_B, "0005"));
 
-            verify(service).calculateGroupInterest(RUN_DATE, ACCOUNT_A,
-                    List.of(row(ACCOUNT_A, "0005"), row(ACCOUNT_A, "0006")), 0L);
+            verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
+                    eq(List.of(row(ACCOUNT_A, "0005"), row(ACCOUNT_A, "0006"))), eq(0L), any());
             assertThat(closed).isNotNull();
             assertThat(closed.rows()).extracting(accrued -> accrued.rowKey().getTrancatCd())
                     .containsExactly("0005", "0006");
@@ -347,8 +452,8 @@ final class InterestCalculationProcessorTest {
 
             processor.afterStep(stepExecution);
 
-            verify(service).calculateGroupInterest(RUN_DATE, ACCOUNT_A,
-                    List.of(row(ACCOUNT_A, "0005")), 0L);
+            verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
             assertThat(processor.finalAccruedGroup())
                     .map(InterestCalculationProcessor.AccruedAccountGroup::accountId)
                     .contains(ACCOUNT_A);
@@ -390,10 +495,10 @@ final class InterestCalculationProcessorTest {
 
             processor.afterStep(stepExecution);
 
-            verify(service).calculateGroupInterest(RUN_DATE, ACCOUNT_A,
-                    List.of(row(ACCOUNT_A, "0005")), 0L);
-            verify(service).calculateGroupInterest(RUN_DATE, ACCOUNT_B,
-                    List.of(row(ACCOUNT_B, "0005")), 1L);
+            verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
+            verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_B),
+                    eq(List.of(row(ACCOUNT_B, "0005"))), eq(1L), any());
             assertThat(processor.finalAccruedGroup())
                     .map(InterestCalculationProcessor.AccruedAccountGroup::lastTranIdSuffix)
                     .contains(2L);
@@ -412,7 +517,7 @@ final class InterestCalculationProcessorTest {
             processor.afterStep(stepExecution);
 
             verify(service, times(2)).calculateGroupInterest(anyString(), eq(ACCOUNT_A), anyList(),
-                    anyLong());
+                    anyLong(), any());
             assertThat(stepExecution.getExecutionContext()
                     .getInt(InterestCalculationProcessor.CONTEXT_GROUPS_CLOSED)).isEqualTo(3);
         }
@@ -517,8 +622,8 @@ final class InterestCalculationProcessorTest {
                     .getInt(InterestCalculationProcessor.CONTEXT_ROWS_READ)).isEqualTo(1);
             assertThat(second.getExecutionContext()
                     .getLong(InterestCalculationProcessor.CONTEXT_LAST_TRAN_ID_SUFFIX)).isEqualTo(1L);
-            verify(service, times(2)).calculateGroupInterest(RUN_DATE, ACCOUNT_A,
-                    List.of(row(ACCOUNT_A, "0005")), 0L);
+            verify(service, times(2)).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
         }
 
         @Test
@@ -707,7 +812,7 @@ final class InterestCalculationProcessorTest {
         void aFailedAccrualPropagatesUntranslated() {
             final AbendException abend = new AbendException("CBACT04C", "STATUS 23 READING DISCGRP");
             when(service.calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong())).thenThrow(abend);
+                    anyList(), anyLong(), any())).thenThrow(abend);
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
@@ -722,7 +827,7 @@ final class InterestCalculationProcessorTest {
                 + "call per group, and a second miss abends without a third attempt")
         void aSecondMissAbendsWithoutAThirdAttempt() {
             when(service.calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong()))
+                    anyList(), anyLong(), any()))
                     .thenThrow(new AbendException("CBACT04C", "STATUS 23 READING DISCGRP"));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
@@ -731,7 +836,7 @@ final class InterestCalculationProcessorTest {
                     .isThrownBy(() -> processor.afterStep(stepExecution));
 
             verify(service, times(1)).calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong());
+                    anyList(), anyLong(), any());
         }
     }
 
@@ -891,7 +996,7 @@ final class InterestCalculationProcessorTest {
                     .extracting(InterestCalculationProcessor.AccruedCategoryRow
                             ::feeParagraphInvoked)
                     .containsExactly(true, false, true);
-            verify(service).calculateGroupInterest(anyString(), anyString(), anyList(), anyLong());
+            verify(service).calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any());
         }
 
         @Test

@@ -380,4 +380,115 @@ class FailureDiagnosticsTest {
                     .withCauseInstanceOf(AssertionError.class);
         }
     }
+
+    @Nested
+    @DisplayName("rendering a caller-supplied value, which some diagnostics must show and none may let "
+            + "through unaltered")
+    class PrintableForm {
+
+        @Test
+        @DisplayName("an ordinary fixed-width value passes through exactly, so a comparison against an "
+                + "expected value still reads")
+        void anOrdinaryValuePassesThrough() {
+            assertThat(FailureDiagnostics.printableForm("2022-07-19")).isEqualTo("2022-07-19");
+            assertThat(FailureDiagnostics.printableForm("  padded  ")).isEqualTo("  padded  ");
+            assertThat(FailureDiagnostics.printableForm("")).isEmpty();
+        }
+
+        @ParameterizedTest(name = "[{index}] {0}")
+        @DisplayName("every character that could end a record, redraw a terminal or hide itself is named "
+                + "by its code point instead of being written")
+        @ValueSource(strings = {
+            "\n", "\r", "\r\n", "\t", "\u0000", "\u001B", "\u0007", "\u007F",
+            "\u200B", "\u202E", "\u00A0", "\uFEFF", "\uFF12"})
+        void anInertRenderingNamesEveryDangerousCharacter(final String dangerous) {
+            final String rendered = FailureDiagnostics.printableForm("A" + dangerous + "B");
+
+            assertThat(rendered)
+                    .as("the character itself must not survive into the record")
+                    .doesNotContain(dangerous)
+                    .startsWith("A")
+                    .endsWith("B")
+                    .contains("U+")
+                    .matches("[\\x20-\\x7E]*");
+        }
+
+        @Test
+        @DisplayName("and it is named in a form a reader can reverse, four upper-case hexadecimal digits "
+                + "for the code unit")
+        void theCodePointRenderingIsExact() {
+            assertThat(FailureDiagnostics.printableForm("\n")).isEqualTo("U+000A");
+            assertThat(FailureDiagnostics.printableForm("\u001B")).isEqualTo("U+001B");
+            assertThat(FailureDiagnostics.printableForm("\uFEFF")).isEqualTo("U+FEFF");
+            assertThat(FailureDiagnostics.printableForm("\u0000")).isEqualTo("U+0000");
+        }
+
+        @Test
+        @DisplayName("a value longer than the bound is cut and marked, so one oversized value cannot set "
+                + "the size of the record")
+        void anOversizedValueIsCutAndMarked() {
+            final String oversized = "9".repeat(FailureDiagnostics.MAX_RENDERED_VALUE_LENGTH * 3);
+
+            final String rendered = FailureDiagnostics.printableForm(oversized);
+
+            assertThat(rendered)
+                    .hasSize(FailureDiagnostics.MAX_RENDERED_VALUE_LENGTH
+                            + FailureDiagnostics.RENDERED_VALUE_TRUNCATION_MARKER.length())
+                    .endsWith(FailureDiagnostics.RENDERED_VALUE_TRUNCATION_MARKER);
+        }
+
+        @Test
+        @DisplayName("a value exactly at the bound is rendered whole and carries no marker, so a reader "
+                + "can tell a cut value from one that ended where it appears to")
+        void aValueAtTheBoundCarriesNoMarker() {
+            final String exact = "8".repeat(FailureDiagnostics.MAX_RENDERED_VALUE_LENGTH);
+
+            assertThat(FailureDiagnostics.printableForm(exact))
+                    .isEqualTo(exact)
+                    .doesNotContain(FailureDiagnostics.RENDERED_VALUE_TRUNCATION_MARKER);
+        }
+
+        @Test
+        @DisplayName("an absent value is named rather than dereferenced, so no diagnostic reads null "
+                + "where a value belongs")
+        void anAbsentValueIsNamed() {
+            assertThat(FailureDiagnostics.printableForm((String) null))
+                    .isEqualTo(FailureDiagnostics.ABSENT_VALUE);
+        }
+
+        @Test
+        @DisplayName("one printable character is quoted, so a space found where a separator belongs is "
+                + "visible as a space rather than as a gap")
+        void onePrintableCharacterIsQuoted() {
+            assertThat(FailureDiagnostics.printableForm(' ')).isEqualTo("' '");
+            assertThat(FailureDiagnostics.printableForm('-')).isEqualTo("'-'");
+            assertThat(FailureDiagnostics.printableForm('~')).isEqualTo("'~'");
+        }
+
+        @Test
+        @DisplayName("and one character that is not printable is named unquoted, so the two renderings "
+                + "cannot be read for one another")
+        void oneDangerousCharacterIsNamedUnquoted() {
+            assertThat(FailureDiagnostics.printableForm('\n')).isEqualTo("U+000A");
+            assertThat(FailureDiagnostics.printableForm('\u001F')).isEqualTo("U+001F");
+            assertThat(FailureDiagnostics.printableForm('\u200B')).isEqualTo("U+200B");
+        }
+
+        @Test
+        @DisplayName("the rendering does not depend on the locale, because a diagnostic that changes "
+                + "with the locale is not a diagnostic")
+        void theRenderingIsLocaleIndependent() {
+            final java.util.Locale restore = java.util.Locale.getDefault();
+            try {
+                java.util.Locale.setDefault(java.util.Locale.forLanguageTag("ar-EG"));
+                final String arabic = FailureDiagnostics.printableForm("2022-07-19\u001B");
+                java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+                final String turkish = FailureDiagnostics.printableForm("2022-07-19\u001B");
+
+                assertThat(arabic).isEqualTo("2022-07-19U+001B").isEqualTo(turkish);
+            } finally {
+                java.util.Locale.setDefault(restore);
+            }
+        }
+    }
 }

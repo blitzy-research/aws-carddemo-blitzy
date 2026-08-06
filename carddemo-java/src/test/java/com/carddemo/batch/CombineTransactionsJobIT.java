@@ -18,8 +18,10 @@ package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
@@ -373,9 +375,19 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                     .as("%s was loaded through the repository, not through a utility", reserved)
                     .isPresent();
         }
+        // Published from the sealed local file and not from an array: the generation is a sequential
+        // file, so its size is bounded by the volume it is written to rather than by the heap.
+        final Path publishedGeneration =
+                Path.of(System.getProperty("java.io.tmpdir"), STAGING_SUBDIRECTORY)
+                .resolve(CombineTransactionsJobConfig.JOB_NAME + ".combined." + execution.getId()
+                        + ".dat");
         verify(stagingArea).publish(
                 eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + execution.getId()),
-                any(byte[].class));
+                eq(publishedGeneration));
+        verify(stagingArea, never()).publish(anyString(), any(byte[].class));
+        assertThat(publishedGeneration)
+                .as("the local copy is removed once the load step has served every record")
+                .doesNotExist();
     }
 
     /**

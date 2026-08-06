@@ -29,10 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.data.domain.Limit;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
@@ -40,7 +38,8 @@ import com.carddemo.domain.Customer;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
 import com.carddemo.repository.AccountRepository;
-import com.carddemo.repository.CardCrossReferenceRepository;
+import com.carddemo.repository.AccountScanRepository;
+import com.carddemo.repository.CardCrossReferenceScanRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.service.StatementDataAccessService.StatementFileRequest;
 import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
@@ -48,15 +47,21 @@ import com.carddemo.support.SeededRecordFixture;
 import com.carddemo.util.AccountRecordMapper;
 import com.carddemo.util.CardXrefRecordMapper;
 import com.carddemo.util.CustomerRecordMapper;
+import com.carddemo.util.StatementWorkRecordMapper;
 import com.carddemo.util.TransactionRecordMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -82,24 +87,41 @@ class StatementDataAccessServiceTest {
     /** Smallest decoded body the customer entity accepts for a protected value. */
     private static final int ENVELOPE_MINIMUM_BYTES = 28;
 
-    private CardCrossReferenceRepository cardCrossReferenceRepository;
+    /** Bounded page size the cross-reference walk requests, so a test can assert the bound. */
+    private static final int CROSS_REFERENCE_PAGE_SIZE = 256;
+
+    /** Exclusive lower key bound of the first bounded page, and of the two reachability probes. */
+    private static final String LOWEST_KEY = "";
+
+    /** The raw two-character status a technical retrieval failure reports. */
+    private static final String PERMANENT_ERROR = "31";
+
+    private CardCrossReferenceScanRepository cardCrossReferenceScanRepository;
 
     private CustomerRepository customerRepository;
 
     private AccountRepository accountRepository;
 
+    private AccountScanRepository accountScanRepository;
+
     private StatementTransactionSource transactionSource;
+
+    private StatementCrossReferenceSource crossReferenceSource;
 
     private StatementDataAccessService service;
 
     @BeforeEach
     void setUp() {
-        this.cardCrossReferenceRepository = mock(CardCrossReferenceRepository.class);
+        this.cardCrossReferenceScanRepository = mock(CardCrossReferenceScanRepository.class);
         this.customerRepository = mock(CustomerRepository.class);
         this.accountRepository = mock(AccountRepository.class);
+        this.accountScanRepository = mock(AccountScanRepository.class);
         this.transactionSource = position -> Optional.empty();
-        this.service = new StatementDataAccessService(this.cardCrossReferenceRepository,
-                this.customerRepository, this.accountRepository);
+        this.service = new StatementDataAccessService(this.cardCrossReferenceScanRepository,
+                this.customerRepository, this.accountRepository, this.accountScanRepository);
+        // One walk per run, exactly as the generator obtains one per run. Rebuilt for every test, so no
+        // test can observe another's position.
+        this.crossReferenceSource = this.service.openCrossReferenceSource();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -190,17 +212,30 @@ class StatementDataAccessServiceTest {
                 StatementDataAccessServiceTest::reveal);
     }
 
-    private static Page<CardCrossReference> pageOf(final CardCrossReference crossReference) {
-        return new PageImpl<>(List.of(crossReference));
+    private void verifyNoRepositoryTouched() {
+        verifyNoInteractions(this.cardCrossReferenceScanRepository, this.customerRepository,
+                this.accountRepository, this.accountScanRepository);
     }
 
-    private void verifyNoRepositoryTouched() {
-        verifyNoInteractions(this.cardCrossReferenceRepository, this.customerRepository,
-                this.accountRepository);
+    /**
+     * Stubs the cross-reference walk to deliver the given records as one bounded page and then to report
+     * exhaustion, which is what the bounded cursor's contract requires of its loader.
+     *
+     * @param records the records the first page holds, in key order
+     */
+    private void crossReferencePage(final CardCrossReference... records) {
+        when(this.cardCrossReferenceScanRepository
+                .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(anyString(), any(Limit.class)))
+                .thenReturn(List.of(records))
+                .thenReturn(List.of());
+    }
+
+    private static DataAccessResourceFailureException unreachable() {
+        return new DataAccessResourceFailureException("the cluster could not be reached");
     }
 
     private StatementFileResponse execute(final StatementFileRequest request) {
-        return this.service.execute(request, this.transactionSource);
+        return this.service.execute(request, this.transactionSource, this.crossReferenceSource);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -221,7 +256,17 @@ class StatementDataAccessServiceTest {
         void rejectsNullTransactionSource() {
             assertThatNullPointerException().isThrownBy(() ->
                     StatementDataAccessServiceTest.this.service.execute(
-                            request("TRNXFILE", StatementDataAccessService.OPERATION_OPEN), null));
+                            request("TRNXFILE", StatementDataAccessService.OPERATION_OPEN), null,
+                            StatementDataAccessServiceTest.this.crossReferenceSource));
+        }
+
+        @Test
+        @DisplayName("rejects an absent cross-reference walk, because the run must own one")
+        void rejectsNullCrossReferenceSource() {
+            assertThatNullPointerException().isThrownBy(() ->
+                    StatementDataAccessServiceTest.this.service.execute(
+                            request("XREFFILE", StatementDataAccessService.OPERATION_OPEN),
+                            StatementDataAccessServiceTest.this.transactionSource, null));
         }
 
         @ParameterizedTest
@@ -350,6 +395,190 @@ class StatementDataAccessServiceTest {
             assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
             assertThat(actual.sequentialPosition()).isZero();
         }
+
+        @Test
+        @DisplayName("the cross-reference open performs the walk's first bounded page, so an unreadable "
+                + "cluster is discovered by the open and not by a later read")
+        void crossReferenceOpenPerformsTheFirstBoundedPage() {
+            StatementDataAccessServiceTest.this.crossReferencePage(seededCrossReference());
+
+            StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_OPEN));
+
+            verify(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository)
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(eq(LOWEST_KEY),
+                            eq(Limit.of(CROSS_REFERENCE_PAGE_SIZE)));
+        }
+
+        @Test
+        @DisplayName("the page the open loaded IS the page the first read consumes, so the probe costs "
+                + "nothing beyond the first read's own work")
+        void theOpenedPageIsTheFirstReadPage() {
+            final CardCrossReference crossReference = seededCrossReference();
+            StatementDataAccessServiceTest.this.crossReferencePage(crossReference);
+
+            StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_OPEN));
+            final StatementFileResponse read = StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
+
+            assertThat(read.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
+            assertThat(read.payload())
+                    .isEqualTo(payloadOf(CardXrefRecordMapper.toRecord(crossReference)));
+            verify(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository, times(1))
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(anyString(), any(Limit.class));
+        }
+
+        @Test
+        @DisplayName("the customer open reads ONE bounded row in key order, never a count")
+        void customerOpenProbesOneBoundedRow() {
+            StatementDataAccessServiceTest.this
+                    .execute(request("CUSTFILE", StatementDataAccessService.OPERATION_OPEN));
+
+            verify(StatementDataAccessServiceTest.this.customerRepository)
+                    .findByCustIdGreaterThanOrderByCustIdAsc(eq(LOWEST_KEY), eq(Limit.of(1)));
+            verifyNoMoreInteractions(StatementDataAccessServiceTest.this.customerRepository);
+        }
+
+        @Test
+        @DisplayName("the account open reads ONE bounded row in key order, never a count")
+        void accountOpenProbesOneBoundedRow() {
+            StatementDataAccessServiceTest.this
+                    .execute(request("ACCTFILE", StatementDataAccessService.OPERATION_OPEN));
+
+            verify(StatementDataAccessServiceTest.this.accountScanRepository)
+                    .findByAcctIdGreaterThanOrderByAcctIdAsc(eq(LOWEST_KEY), eq(Limit.of(1)));
+            verifyNoMoreInteractions(StatementDataAccessServiceTest.this.accountScanRepository,
+                    StatementDataAccessServiceTest.this.accountRepository);
+        }
+
+        @Test
+        @DisplayName("an empty cluster still opens successfully, because an open establishes that the "
+                + "resource can be read and says nothing about how much of it there is")
+        void anEmptyClusterOpensSuccessfully() {
+            for (final String ddName : List.of("XREFFILE", "CUSTFILE", "ACCTFILE")) {
+                assertThat(StatementDataAccessServiceTest.this
+                        .execute(request(ddName, StatementDataAccessService.OPERATION_OPEN))
+                        .returnCode())
+                        .as("an empty %s opens", ddName)
+                        .isEqualTo(FileStatus.SUCCESS.getCode());
+            }
+        }
+
+        @Test
+        @DisplayName("the transaction work resource's open touches no store, because the snapshot is "
+                + "materialised by the job's preceding steps and is already frozen")
+        void theTransactionWorkResourceOpenTouchesNoStore() {
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
+                    .execute(request("TRNXFILE", StatementDataAccessService.OPERATION_OPEN));
+
+            assertThat(actual.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
+            StatementDataAccessServiceTest.this.verifyNoRepositoryTouched();
+        }
+    }
+
+    @Nested
+    @DisplayName("A technical failure of the store is a raw file status, never an exception")
+    class TechnicalFailureBecomesAStatus {
+
+        @Test
+        @DisplayName("the cross-reference OPEN reports the permanent input-output status")
+        void crossReferenceOpenFailure() {
+            when(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(anyString(), any(Limit.class)))
+                    .thenThrow(unreachable());
+
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_OPEN));
+
+            assertThat(actual.returnCode()).isEqualTo(PERMANENT_ERROR);
+            assertThat(actual.status()).contains(FileStatus.PERMANENT_ERROR);
+        }
+
+        @Test
+        @DisplayName("the cross-reference READ reports the permanent input-output status and leaves the "
+                + "payload and the position exactly as they arrived")
+        void crossReferenceReadFailure() {
+            when(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(anyString(), any(Limit.class)))
+                    .thenThrow(unreachable());
+
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
+                    .execute(new StatementFileRequest("XREFFILE",
+                            StatementDataAccessService.OPERATION_READ, STALE_STATUS, "", 1,
+                            payloadOf("PRIOR"), 0));
+
+            assertThat(actual.returnCode()).isEqualTo(PERMANENT_ERROR);
+            assertThat(actual.payload()).isEqualTo(payloadOf("PRIOR"));
+            assertThat(actual.sequentialPosition()).isZero();
+        }
+
+        @Test
+        @DisplayName("the customer OPEN reports the permanent input-output status")
+        void customerOpenFailure() {
+            when(StatementDataAccessServiceTest.this.customerRepository
+                    .findByCustIdGreaterThanOrderByCustIdAsc(anyString(), any(Limit.class)))
+                    .thenThrow(unreachable());
+
+            assertThat(StatementDataAccessServiceTest.this
+                    .execute(request("CUSTFILE", StatementDataAccessService.OPERATION_OPEN))
+                    .returnCode())
+                    .isEqualTo(PERMANENT_ERROR);
+        }
+
+        @Test
+        @DisplayName("the customer KEYED READ reports the permanent input-output status, which is NOT "
+                + "the record-not-found status an absent row reports")
+        void customerKeyedReadFailure() {
+            when(StatementDataAccessServiceTest.this.customerRepository.findById(anyString()))
+                    .thenThrow(unreachable());
+
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
+                    .execute(keyedRequest("CUSTFILE", "000000123", 9));
+
+            assertThat(actual.returnCode())
+                    .isEqualTo(PERMANENT_ERROR)
+                    .isNotEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
+        }
+
+        @Test
+        @DisplayName("the account OPEN reports the permanent input-output status")
+        void accountOpenFailure() {
+            when(StatementDataAccessServiceTest.this.accountScanRepository
+                    .findByAcctIdGreaterThanOrderByAcctIdAsc(anyString(), any(Limit.class)))
+                    .thenThrow(unreachable());
+
+            assertThat(StatementDataAccessServiceTest.this
+                    .execute(request("ACCTFILE", StatementDataAccessService.OPERATION_OPEN))
+                    .returnCode())
+                    .isEqualTo(PERMANENT_ERROR);
+        }
+
+        @Test
+        @DisplayName("the account KEYED READ reports the permanent input-output status, which is NOT the "
+                + "record-not-found status an absent row reports")
+        void accountKeyedReadFailure() {
+            when(StatementDataAccessServiceTest.this.accountRepository.findById(anyString()))
+                    .thenThrow(unreachable());
+
+            final StatementFileResponse actual = StatementDataAccessServiceTest.this
+                    .execute(keyedRequest("ACCTFILE", "00000000099", 11));
+
+            assertThat(actual.returnCode())
+                    .isEqualTo(PERMANENT_ERROR)
+                    .isNotEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
+        }
+
+        @Test
+        @DisplayName("the reported status is neither success, nor end of file, nor record not found, so "
+                + "the caller's catch-all arm is the arm that runs")
+        void theFailureStatusIsDistinctFromEveryAcceptedOne() {
+            assertThat(PERMANENT_ERROR)
+                    .isNotEqualTo(FileStatus.SUCCESS.getCode())
+                    .isNotEqualTo(FileStatus.RECORD_LENGTH_MISMATCH.getCode())
+                    .isNotEqualTo(FileStatus.END_OF_FILE.getCode())
+                    .isNotEqualTo(FileStatus.RECORD_NOT_FOUND.getCode());
+        }
     }
 
     @Nested
@@ -360,7 +589,7 @@ class StatementDataAccessServiceTest {
         @DisplayName("a transaction read returns the frozen projected image and advances the position")
         void transactionReadReturnsImageAndAdvances() {
             final Transaction transaction = seededTransaction();
-            final String projected = TransactionRecordMapper.toStatementWorkRecord(transaction);
+            final String projected = StatementWorkRecordMapper.toRecord(transaction);
             StatementDataAccessServiceTest.this.transactionSource =
                     position -> position == 3 ? Optional.of(projected) : Optional.empty();
 
@@ -391,11 +620,10 @@ class StatementDataAccessServiceTest {
         }
 
         @Test
-        @DisplayName("a cross-reference read returns the fifty-byte image and orders by the card number")
+        @DisplayName("a cross-reference read returns the fifty-byte image and advances the position")
         void crossReferenceReadReturnsImage() {
             final CardCrossReference crossReference = seededCrossReference();
-            when(StatementDataAccessServiceTest.this.cardCrossReferenceRepository
-                    .findAll(any(Pageable.class))).thenReturn(pageOf(crossReference));
+            StatementDataAccessServiceTest.this.crossReferencePage(crossReference);
 
             final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
@@ -404,29 +632,70 @@ class StatementDataAccessServiceTest {
             assertThat(actual.payload())
                     .isEqualTo(payloadOf(CardXrefRecordMapper.toRecord(crossReference)));
             assertThat(actual.sequentialPosition()).isOne();
+        }
 
-            final Pageable used = capturedCrossReferencePageable();
-            assertThat(used.getSort()).isEqualTo(Sort.by(Sort.Direction.ASC, "xrefCardNum"));
+        @Test
+        @DisplayName("the walk is a bounded keyset read: the first page is bounded to the page size and "
+                + "starts strictly after the lowest key, and no offset or count is ever requested")
+        void crossReferenceWalkIsBoundedKeyset() {
+            StatementDataAccessServiceTest.this.crossReferencePage(seededCrossReference());
+
+            StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
+
+            verify(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository)
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(eq(LOWEST_KEY),
+                            eq(Limit.of(CROSS_REFERENCE_PAGE_SIZE)));
+            verifyNoMoreInteractions(
+                    StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository);
+        }
+
+        @Test
+        @DisplayName("a walk of several records issues ONE page retrieval, not one per record, which is "
+                + "the whole difference between a cursor and offset paging")
+        void crossReferenceWalkIssuesOnePageForManyRecords() {
+            final CardCrossReference first = seededCrossReference();
+            final CardCrossReference second = new CardCrossReference("9999999999999999",
+                    first.getXrefCustId(), first.getXrefAcctId());
+            StatementDataAccessServiceTest.this.crossReferencePage(first, second);
+
+            for (int position = 0; position < 2; position++) {
+                final StatementFileResponse read = StatementDataAccessServiceTest.this
+                        .execute(new StatementFileRequest("XREFFILE",
+                                StatementDataAccessService.OPERATION_READ, STALE_STATUS, "", 1,
+                                blankPayload(), position));
+                assertThat(read.returnCode()).isEqualTo(FileStatus.SUCCESS.getCode());
+            }
+
+            verify(StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository, times(1))
+                    .findByXrefCardNumGreaterThanOrderByXrefCardNumAsc(anyString(),
+                            any(Limit.class));
         }
 
         @Test
         @DisplayName("an exhausted cross-reference file yields the at-end status")
         void crossReferenceReadAtEnd() {
-            when(StatementDataAccessServiceTest.this.cardCrossReferenceRepository
-                    .findAll(any(Pageable.class))).thenReturn(Page.empty());
-
             final StatementFileResponse actual = StatementDataAccessServiceTest.this
                     .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
 
             assertThat(actual.returnCode()).isEqualTo(FileStatus.END_OF_FILE.getCode());
         }
 
-        private Pageable capturedCrossReferencePageable() {
-            final org.mockito.ArgumentCaptor<Pageable> captor =
-                    org.mockito.ArgumentCaptor.forClass(Pageable.class);
-            verify(StatementDataAccessServiceTest.this.cardCrossReferenceRepository)
-                    .findAll(captor.capture());
-            return captor.getValue();
+        @Test
+        @DisplayName("the walk refuses to go backwards, because a forward cursor cannot and offset "
+                + "paging is what it replaced")
+        void crossReferenceWalkRefusesToGoBackwards() {
+            StatementDataAccessServiceTest.this.crossReferencePage(seededCrossReference());
+            StatementDataAccessServiceTest.this
+                    .execute(request("XREFFILE", StatementDataAccessService.OPERATION_READ));
+            StatementDataAccessServiceTest.this
+                    .execute(new StatementFileRequest("XREFFILE",
+                            StatementDataAccessService.OPERATION_READ, STALE_STATUS, "", 1,
+                            blankPayload(), 1));
+
+            assertThatIllegalStateException().isThrownBy(() ->
+                    StatementDataAccessServiceTest.this.execute(
+                            request("XREFFILE", StatementDataAccessService.OPERATION_READ)));
         }
     }
 
@@ -641,13 +910,20 @@ class StatementDataAccessServiceTest {
         void rejectsNullCollaborators() {
             assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(null,
                     StatementDataAccessServiceTest.this.customerRepository,
-                    StatementDataAccessServiceTest.this.accountRepository));
+                    StatementDataAccessServiceTest.this.accountRepository,
+                    StatementDataAccessServiceTest.this.accountScanRepository));
             assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
-                    StatementDataAccessServiceTest.this.cardCrossReferenceRepository,
-                    StatementDataAccessServiceTest.this.customerRepository, null));
+                    StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository, null,
+                    StatementDataAccessServiceTest.this.accountRepository,
+                    StatementDataAccessServiceTest.this.accountScanRepository));
             assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
-                    StatementDataAccessServiceTest.this.cardCrossReferenceRepository, null,
-                    StatementDataAccessServiceTest.this.accountRepository));
+                    StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository,
+                    StatementDataAccessServiceTest.this.customerRepository, null,
+                    StatementDataAccessServiceTest.this.accountScanRepository));
+            assertThatNullPointerException().isThrownBy(() -> new StatementDataAccessService(
+                    StatementDataAccessServiceTest.this.cardCrossReferenceScanRepository,
+                    StatementDataAccessServiceTest.this.customerRepository,
+                    StatementDataAccessServiceTest.this.accountRepository, null));
         }
 
         @Test
@@ -655,7 +931,7 @@ class StatementDataAccessServiceTest {
                 + "other, because no cursor is held by the service")
         void interleavedReadsAreIndependent() {
             final Transaction transaction = seededTransaction();
-            final String projected = TransactionRecordMapper.toStatementWorkRecord(transaction);
+            final String projected = StatementWorkRecordMapper.toRecord(transaction);
             StatementDataAccessServiceTest.this.transactionSource =
                     position -> Optional.of(projected);
 

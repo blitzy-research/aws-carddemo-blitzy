@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mockito;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -611,7 +612,7 @@ class FileProbeJobConfigTest {
             run(ProbeMode.CROSS_REFERENCE.parameterValue());
 
             Mockito.verify(fileMaintenanceService, Mockito.never())
-                    .readTransactionCategoryBalanceFile();
+                    .readTransactionCategoryBalanceFile(ArgumentMatchers.any());
         }
 
         @Test

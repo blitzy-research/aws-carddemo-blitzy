@@ -993,8 +993,6 @@ class TransactionViewServiceTest {
             Mockito.verify(repository, Mockito.never()).deleteById(ArgumentMatchers.anyString());
             Mockito.verify(repository, Mockito.never()).flush();
             Mockito.verify(repository, Mockito.never()).findMaxId();
-            Mockito.verify(repository, Mockito.never()).findByProcessingDateRange(
-                    ArgumentMatchers.anyString(), ArgumentMatchers.anyString());
         }
 
         @Test

@@ -632,8 +632,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("an absent result is the not-found outcome, not an exception and not an index error")
         void anAbsentResultIsTheNotFoundOutcome() {
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of());
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
 
             final CardDetailService.CardDetailResult probe =
                     service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
@@ -649,27 +649,29 @@ class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("the SERVICE resolves the non-unique key to the lowest base key, whatever order "
-                + "the repository hands the rows over in")
-        void theServiceResolvesTheNonUniqueKeyToTheLowestBaseKey() {
-            // Two cards share the account, and the repository declares no ordering, so the rows are
-            // deliberately handed over HIGHEST FIRST. A keyed read of the duplicate-bearing path
-            // returns the first record in ascending BASE-key order, and the base key is the card
-            // number, so the service must present the LOWER card number - which it can only do by
-            // selecting the minimum rather than by taking element zero.
+        @DisplayName("the account read is the bounded ordered-first finder, and the list finder is not "
+                + "touched, so no row is fetched that a keyed read would have discarded")
+        void theAccountReadIsBoundedToTheOneRowAKeyedReadReturns() {
+            // A keyed read of the duplicate-bearing path returns the first record in ascending BASE-key
+            // order, and the base key is the card number. That rule now lives in the repository's
+            // finder name rather than in a minimum-selection here, so what this asserts is the change of
+            // location: the service asks for the one ordered row and presents it, and it never asks for
+            // the list form that would materialise every card of the account. That the ordered finder
+            // really does return the lowest base key is proven against real SQL in
+            // CardBrowseRepositoryIT, which is where an ordering claim about a query belongs.
             assertThat(CARD_LOW).isLessThan(CARD_HIGH);
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of(activeCard(CARD_HIGH), activeCard(CARD_LOW)));
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             service.getCardByAcct(state, ACCOUNT);
             final CardDetailService.CardDetailResult presented = service.toResult(state);
 
             assertThat(presented.card()).isNotNull();
-            assertThat(presented.card().cardNumber())
-                    .as("taking the first element of the returned list would have presented %s",
-                            CARD_HIGH)
-                    .isEqualTo(CARD_LOW);
+            assertThat(presented.card().cardNumber()).isEqualTo(CARD_LOW);
+            Mockito.verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
+            Mockito.verify(cardRepository, Mockito.never())
+                    .findByCardAcctId(ArgumentMatchersHelper.any());
         }
 
         @Test
@@ -1017,8 +1019,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("the account-keyed read presents the one card the non-unique index resolves to")
         void theAccountKeyedReadPresentsTheResolvedCard() {
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of(activeCard(CARD_LOW)));
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             service.getCardByAcct(state, ACCOUNT);
@@ -1030,15 +1032,15 @@ class CardDetailServiceTest {
             assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS);
             assertThat(result.message()).isEmpty();
             // The account path is read exactly once and the selection happens in the service.
-            Mockito.verify(cardRepository).findByCardAcctId(ACCOUNT);
+            Mockito.verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
             Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
         }
 
         @Test
         @DisplayName("an empty result faults ONE field and sets its own text UNGATED")
         void anEmptyResultFaultsOneFieldAndSetsItsTextUngated() {
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of());
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             // Pre-set a summary message: this arm must OVERWRITE it, unlike the card-number arm, which
@@ -1059,8 +1061,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("its message overwrites an earlier one, where the card-number read's would not")
         void itsMessageOverwritesAnEarlierOne() {
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of());
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
             service.getCardByAcct(state, ACCOUNT);
@@ -1074,8 +1076,8 @@ class CardDetailServiceTest {
         @Test
         @DisplayName("a record that violates its layout takes the catch-all and names CARDAIX")
         void aViolatingRecordNamesTheAlternateIndex() {
-            Mockito.when(cardRepository.findByCardAcctId(ACCOUNT))
-                    .thenReturn(List.of(card(CARD_LOW, CVV_WITH_LEADING_ZEROS,
+            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(card(CARD_LOW, CVV_WITH_LEADING_ZEROS,
                             EMBOSSED_NAME_WITH_SPACE, EXPIRY, "Q")));
 
             final CardDetailService.TurnState state = new CardDetailService.TurnState();

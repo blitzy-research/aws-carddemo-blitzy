@@ -3437,6 +3437,15 @@ migration emits exactly three B-tree indexes to match, so changing one into a co
 delivered migration for a plan-shape gain that no measured baseline asks for. The same reasoning
 applies to `idx_card_card_acct_id`.
 
+**Revision, 2026-08-06.** Two later findings touch this entry and neither overturns its core. The two
+ordered-first finders it mandates were removed from the delivered module and replaced by list-plus-minimum
+selection in seven services; DL-164 restores them and records what the regression cost. And the paged card
+overload this entry retained for "genuine browse consumers" never acquired one, so DL-165 removes it. The
+determinism argument, the rejection of a single-valued unbounded derived query, and the decision to leave
+`idx_card_cross_reference_xref_acct_id` and `idx_card_card_acct_id` un-widened all stand as written. This
+entry also appears twice in this document, identically; the duplication is a documentation defect recorded
+here rather than silently repaired, because a citation may point at either copy.
+
 *Cited by:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`. The index
 inventory this preserves is `V2__create_indexes.sql`.
 
@@ -4365,6 +4374,15 @@ migration emits exactly three B-tree indexes to match, so changing one into a co
 delivered migration for a plan-shape gain that no measured baseline asks for. The same reasoning
 applies to `idx_card_card_acct_id`.
 
+**Revision, 2026-08-06.** Two later findings touch this entry and neither overturns its core. The two
+ordered-first finders it mandates were removed from the delivered module and replaced by list-plus-minimum
+selection in seven services; DL-164 restores them and records what the regression cost. And the paged card
+overload this entry retained for "genuine browse consumers" never acquired one, so DL-165 removes it. The
+determinism argument, the rejection of a single-valued unbounded derived query, and the decision to leave
+`idx_card_cross_reference_xref_acct_id` and `idx_card_card_acct_id` un-widened all stand as written. This
+entry also appears twice in this document, identically; the duplication is a documentation defect recorded
+here rather than silently repaired, because a citation may point at either copy.
+
 *Cited by:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`. The index
 inventory this preserves is `V2__create_indexes.sql`.
 
@@ -5175,13 +5193,11 @@ deduplication interval: all seventeen cards in the second request could be accep
 silently discarded by the queue as duplicates of the first request.
 
 **Decision.** Every new submission call mints an opaque UUID identity before it builds the per-card
-deduplication identifiers. Inside the deployment-wide coordination transaction, the PostgreSQL outbox
-persists that identity, the exact publishable card image, a fingerprint of the complete supplied stream
-and the next unsent ordinal before another logical submission may pass it. The submission result also
-carries the identity so a caller can name the same attempt explicitly. Identity-bearing overloads accept
-it back only for a true retry of that same logical attempt; calling the ordinary overload again always
-means a new request and therefore mints a new identity. The report-screen transport records are unchanged:
-retry identity is an internal bridge contract, not a new field invented for the legacy screen contract.
+deduplication identifiers. The submission result also carries the identity so a caller can name the same
+attempt explicitly. Identity-bearing overloads accept it back only for a true retry of that same logical
+attempt; calling the ordinary overload again always means a new request and therefore mints a new identity.
+The report-screen transport records are unchanged: retry identity is an internal bridge contract, not a new
+field invented for the legacy screen contract.
 
 **Why dates, timestamps and card bodies are not identities.** Dates describe requested work and can repeat.
 A process timestamp can collide across replicas or after clock correction. A card body deliberately
@@ -5189,23 +5205,32 @@ repeats inside one image. A random logical identity has none of those semantic a
 one-based card ordinal still makes all seventeen deduplication identifiers distinct inside one
 submission.
 
-**How a partial stream cannot be split by a later request.** An incomplete older outbox row is always
-drained before a newer row. If card five of submission A is refused, submission B is persisted behind A;
-the next successful drain publishes A from card five through its sentinel before publishing B's first
-card. A true retry of a completed identity reads the completed row and sends nothing. Reusing an identity
-with different cards is refused.
+**Revision - the persistent outbox this entry once described has been removed, and its removal is the
+decision.** An earlier revision persisted each logical submission, its exact publishable card image, a
+fingerprint of the supplied stream and its next unsent ordinal in an operational `job_submission_outbox`
+table, so that a later call first drained the oldest incomplete stream. That was wrong on three counts.
+It was feature expansion: the estate defines eleven record layouts and the migration created a twelfth
+table for behaviour no legacy artifact asks for. It inverted the queue contract: a caller's own cards
+could be preceded by an unrelated submission's remainder, and the count handed back described a stream the
+call had not published, because the reported total closed over the requesting call's card list while the
+drain could be publishing an older one. And it contradicted the source directly - the emitting loop at
+`[app/cbl/CORPT00C.cbl:L498-L509]` walks only the cards the running task holds, and
+`ERROROPTION(IGNORE)` at `[app/csd/CARDDEMO.CSD:L501]` says a refused write is reported and abandoned,
+never deferred. `JobSubmissionOutbox`, `PostgresJobSubmissionOutbox` and the table are therefore deleted.
 
-**What failure still means.** Persisting an identity does not promise delivery and does not add a retry
-policy. The result reports how many cards of the requested submission are known to have been published and
-returns the same identity even on failure. A later submission attempt may drain an older pending row, but
-the queue-write refusal remains non-fatal and stops that drain at the refused card.
+**What a submission does now, and what failure means.** One call publishes its own cards, once each, from
+the first through the transmitted end-of-stream card, and stops at its own first refusal with the
+remaining cards unsent. Nothing is remembered afterwards. The result reports how many of *this call's*
+cards reached the queue and returns the identity even on failure. The FIFO deduplication identifier still
+makes a genuine retry of the same identity idempotent for cards the queue already accepted, which is the
+one durability property the target technology supplies for free and the only one claimed. There is no
+retry policy, no backoff, no dead-letter redirect and no cross-request replay, because the legacy has
+none and each would add timing behaviour the migrated system must not inherit.
 
-*Cited by:* `service/JobSubmissionService.java`, `service/JobSubmissionOutbox.java`,
-`service/PostgresJobSubmissionOutbox.java`, `service/ReportRequestService.java` and the operational table
-in `db/migration/V2__create_indexes.sql`. The distinct-new-request and same-identity-retry
-contracts are exercised by `service/JobSubmissionServiceSecurityTest.java`,
-`service/JobSubmissionServiceIT.java`, `service/ReportRequestServiceTest.java` and
-`service/PostgresJobSubmissionOutboxIT.java`.
+*Cited by:* `service/JobSubmissionService.java` and `service/ReportRequestService.java`. The
+distinct-new-request and same-identity-retry contracts are exercised by
+`service/JobSubmissionServiceSecurityTest.java`, `service/JobSubmissionServiceIT.java` and
+`service/ReportRequestServiceTest.java`.
 
 ---
 
@@ -5220,12 +5245,15 @@ requires.
 **Decision.** A deployment-wide coordinator owns the entire first-card-through-sentinel critical section.
 Its production implementation opens a new PostgreSQL transaction and acquires one parameterized,
 transaction-scoped advisory lock under module-owned `CARD` / `JOBS` integer keys before invoking the
-publication supplier. The outbox uses that same transaction, so inserting a logical submission, reading
-the oldest pending row, advancing a delivered ordinal and releasing the global guard are one ordered
-operation. Commit and rollback both release the lock. The coordinator exposes no separate unlock
-operation, so returning or throwing cannot leak ownership. An infrastructure failure is translated back
-into the legacy queue bridge's non-fatal failed result; it is logged with a bounded failure chain and no
-card is attempted.
+publication supplier. The supplier publishes the call's own cards inside that boundary, so the whole
+first-card-through-sentinel run and the release of the global guard are one ordered operation. Commit and
+rollback both release the lock. The coordinator exposes no separate unlock operation, so returning or
+throwing cannot leak ownership. An infrastructure failure is translated back into the legacy queue
+bridge's non-fatal failed result; it is logged with a bounded failure chain and no card is attempted.
+
+**No delivery state is persisted inside the boundary.** The lock is the whole mechanism. An earlier
+revision also wrote an outbox row per logical submission so a later call could resume an older partial
+stream; that behaviour and its table are removed as feature expansion - see DL-148.
 
 **Why PostgreSQL rather than a new lock service or a lock table.** Every replica already shares the
 configured PostgreSQL database, so the advisory lock adds no dependency, schema migration, cleanup row or
@@ -5239,10 +5267,8 @@ cannot enter its own supplier until the first transaction releases the advisory 
 seventeen-card streams remain contiguous.
 
 *Cited by:* `service/JobSubmissionCoordinator.java`,
-`service/PostgresJobSubmissionCoordinator.java`, `service/PostgresJobSubmissionOutbox.java` and
-`service/JobSubmissionService.java`. The real shared-database proofs are
-`service/PostgresJobSubmissionCoordinatorIT.java` and
-`service/PostgresJobSubmissionOutboxIT.java`.
+`service/PostgresJobSubmissionCoordinator.java` and `service/JobSubmissionService.java`. The real
+shared-database proof is `service/PostgresJobSubmissionCoordinatorIT.java`.
 
 ---
 
@@ -5767,16 +5793,18 @@ audit - because a new source of identifiers is a concurrency decision, not a for
 
 ### DL-150 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission — CORRECTED
 
-**Correction — integrated state, 2026-08-05.** The nonce-backed identity and per-message reassembly
-envelope remain current, but the process-local-only interleaving decision below is superseded.
-`JobSubmissionOutbox` persists the complete logical submission and its next unsent ordinal, while the
-production submission coordinator opens a new PostgreSQL transaction and takes a transaction-scoped
-advisory lock before draining. Across replicas, an older partial stream is therefore completed before a
-newer stream starts; the message attributes remain useful as a self-describing envelope rather than as
-the sole defence against interleaving.
+**Correction — integrated state, 2026-08-06.** The nonce-backed identity and per-message reassembly
+envelope remain current, and so does the supersession of the process-local-only interleaving decision
+below: the production submission coordinator opens a new PostgreSQL transaction and takes a
+transaction-scoped advisory lock, so one whole card stream is published as the only such publication in
+the deployment. What is NOT current is the persistent delivery state a previous revision of this note
+described. `JobSubmissionOutbox` and its table are removed; a call publishes only its own cards, once
+each, and stops at its own first refusal - see DL-148 for the reasoning. The message attributes therefore
+carry their original weight again: they let a consumer reassemble a stream whatever order it arrives in,
+alongside the cross-replica exclusion the advisory lock supplies.
 
-The original paragraph that excludes distributed coordination is retained as the intermediate design
-that preceded the outbox and database-backed coordinator.
+The original paragraph that excludes distributed coordination is retained as the intermediate design that
+preceded the database-backed coordinator.
 
 **Context.** The report-request turn publishes a seventeen-card job image to a first-in-first-out queue, one
 card per message, reproducing the estate's queue write. The deduplication identity was derived from the
@@ -6216,6 +6244,967 @@ eight-character bound and JSON write-only credential contract.
 *Cited by:* `service/AuthenticationService.java`, `api/AuthController.java`,
 `api/GlobalExceptionHandler.java`, `api/dto/SignOnRequest.java`, and their authentication,
 controller, exception-handler, DTO-boundary and JSON-contract tests.
+
+---
+
+### DL-159 - The category-balance report's edit mask prints every digit position it declares, so a zero balance is nine zeros and not a blank field
+
+**Context.** The report step of `app/jcl/PRTCATBL.jcl` reprojects the balance under
+`EDIT=(TTTTTTTTT.TT)` at lines 53 to 56. The first translation rendered that mask the way the module's
+other amount masks render theirs: leading integer zeros suppressed to blanks, and a value of exactly
+zero blanking the whole twelve-character field.
+
+**The decision, and why the earlier reading was wrong.** In the external sort's edit vocabulary the two
+digit selectors are not interchangeable. `T` is a digit position that is always printed; `I` is the
+selector that replaces a leading zero with a blank. This specification is written entirely from `T` and
+uses `I` nowhere, so all nine integer positions and both fractional positions carry a digit for every
+value and a balance of exactly zero renders `000000000.00`. The mask is now emitted that way.
+
+**Why the defect was invisible.** Every balance in `app/data/ASCII/tcatbal.txt` and in the seeded
+reference data is exactly zero, so aggregate figures, record counts, key ordering and record widths were
+all correct under either reading - the only observable difference was up to nine bytes per line of a
+fixed-width external dataset. That is precisely the class of defect a byte comparison catches and nothing
+else does, and it is why the fifth contractual output width needs golden bytes rather than a width
+assertion. `CategoryBalanceReportJobConfigIT` now asserts the exact twelve characters for a 900.00
+balance, for a 0.00 balance and for a 0.05 balance, and additionally that no line carries a blank
+anywhere inside the mask.
+
+**What is unchanged.** The 40-byte record length, the eight-byte trailing filler resolved against the
+reprojection's own nine-blank declaration, the absence of a sign character, and the zoned-decimal key
+ordering are all separate decisions and none of them moved.
+
+*Cited by:* `batch/CategoryBalanceReportJobConfig.java`. Proven by
+`batch/CategoryBalanceReportJobConfigIT.java` against a real database.
+
+---
+
+### DL-160 - The COSTM01 statement-work projection has exactly one offset authority, because two agreeing copies are the defect
+
+**Context.** `util/StatementWorkRecordMapper` declares itself the sole authority for the 328-of-350-byte
+reprojection that `app/jcl/CREASTMT.JCL` specifies. `util/TransactionRecordMapper` nevertheless carried a
+complete second implementation of the same projection: fourteen `STATEMENT_WORK_*` constants, a
+projector, two parsers, a key reader and its own geometry self-check. The statement job and the tests
+used both, interchangeably.
+
+**Why agreeing copies are worse than disagreeing ones.** The two implementations produced identical
+bytes, so nothing failed and nothing looked wrong. That is the hazard: either copy could have been
+changed alone - a width corrected, an offset tidied - and the build would still have compiled and the
+tests that happened to use the other copy would still have passed. A duplicated record layout has no
+mechanism that forces the copies to stay equal.
+
+**The decision.** The statement-work surface is removed from `TransactionRecordMapper` entirely, which
+now publishes only the canonical 350-byte layout the projection reads *from*. The two members
+`StatementWorkRecordMapper` was missing - the buffer-with-offset decode overload and the named
+processing-timestamp truncation width - were added there, and the geometry self-check moved with the
+layout it describes. Production and tests now route through `StatementWorkRecordMapper` exclusively.
+
+**How a re-introduction is caught.** `util/StatementWorkRecordMapperTest` asserts that no method or
+constant of `TransactionRecordMapper` names the statement-work layout. That assertion needs reflection,
+which is why it lives in a test: the unsafe-code audit scopes reflection counting to `src/main/java/**`
+precisely because asserting the *absence* of a member is not expressible any other way.
+
+*Cited by:* `util/StatementWorkRecordMapper.java`, `util/TransactionRecordMapper.java` and
+`batch/CreateStatementJobConfig.java`. Proven by `util/StatementWorkRecordMapperTest.java`.
+
+---
+
+### DL-161 - The transaction-category-balance composite key is one codec, because four private copies of a key layout cannot be held equal
+
+**Context.** The `TCATBALF` cluster is keyed on a contiguous 17-byte run at offset 0 - account
+identifier 11, type code 2, category code 4. Every keyset cursor over the cluster carries that whole run
+as one value and has to split it back into three parts to resume. Four call sites needed exactly that,
+and each had grown its own private pair of helpers plus its own pair of key-width constants: the interest
+service, the interest job, the file-maintenance service and the category-balance report job.
+
+**The decision.** One authority, `util/TransactionCategoryBalanceKeyCodec`, renders a row or three parts
+as a key image and slices an image back into parts. It takes its widths from
+`util/TranCatBalRecordMapper`, so the key layout is still derived from the record layout rather than
+restated, and it publishes the low-value cursor as a named constant so that four call sites no longer
+each write a bare `""`. The eight duplicated width constants and eight duplicated helper methods are
+deleted.
+
+**Two properties that are decisions rather than conveniences.** A short image is legal and each accessor
+returns an empty part for a part the image does not reach, because that is exactly what an initial cursor
+position means and padding would invent a lower bound the caller never stated. And the category part is
+deliberately *not* truncated to its declared width: a stored category code is a zoned-decimal field whose
+final byte may carry an overpunched sign, and the after-key predicate compares whatever three parts it is
+given, so cutting the tail here could drop a byte the store produced.
+
+*Cited by:* `util/TransactionCategoryBalanceKeyCodec.java`,
+`service/InterestCalculationService.java`, `service/FileMaintenanceService.java`,
+`batch/InterestCalculationJobConfig.java` and `batch/CategoryBalanceReportJobConfig.java`. Proven by
+`util/TransactionCategoryBalanceKeyCodecTest.java`.
+
+---
+
+### DL-162 - The credential repository is closed again, and the administrative list reads a projection that has no credential column in it
+
+**Context.** `repository/UserSecurityRepository` had regressed to an empty
+`JpaRepository<UserSecurity, String>`. Two consequences followed from that one line. Every row the
+administrative list displayed arrived as a full entity, so ten BCrypt digests were hydrated per page for
+a screen that shows an identifier, two names and a one-character type - digests that then live in the
+heap, in any dump taken from it, and in anything that serialises an entity by reflection. And the whole
+`JpaRepository` surface became reachable on a table of credentials: an unbounded `findAll()`, a
+`deleteAll()`, a `saveAll()`, a lazy `getReferenceById` and the entire query-by-example API, none of
+which any caller in this module uses and none of which the legacy tier has a counterpart for.
+
+**The decision.** The interface extends the marker `Repository` and publishes exactly eight operations:
+the entity-returning `findById` for the two paths that genuinely need a digest - sign-on verification and
+the update that carries an unchanged credential forward - and seven credential-free reads and writes for
+everything else. The list projection `AdminEntry` is closed: four getters, no credential accessor, and
+therefore a generated select that does not name `sec_usr_pwd` at all. The entity keeps its digest behind
+`credentialDigest()` rather than a bean-property getter, which is what stops a projection from binding it
+by accident.
+
+**Why a closed interface rather than a convention.** "No caller uses `deleteAll`" is a claim a reviewer
+has to check. "`deleteAll` does not exist" is a compilation failure at the call site. The narrower
+surface moves the guarantee from review to the compiler, which is the only place it holds without
+vigilance.
+
+*Cited by:* `repository/UserSecurityRepository.java` and `service/UserManagementService.java`. Proven by
+`repository/UserSecurityRepositoryIT.java`, whose frozen-contract nest asserts the exact eight published
+operation names, the single nested type, and the four projected accessors.
+
+---
+
+### DL-163 - Every retained-key browse reads by key, because an offset page is a correctness defect and not merely a slower one
+
+**Context.** Three screens browse a keyed cluster: the card list at seven rows, the transaction list at
+ten and the administrative user list at ten. Each legacy program positions on a business key it retained
+- the first or last value it displayed - reads forward or backward one record per verb, and stops when a
+read runs off the end. All three Java counterparts had been expressed with page indexes or absolute
+offsets instead, walking the ordering from its beginning and discarding every row before the cursor.
+
+**Why that is a defect and not a trade-off.** An offset describes a position that a concurrent insert or
+delete moves. Between two turns of a pseudo-conversation - and a pseudo-conversation is precisely a gap
+between two turns - a row added before the window shifts everything after it, so the next page repeats a
+row the operator has already seen or skips one they have not. The legacy browse cannot do that: a row
+added at its own key simply appears there, or does not. Cost is the secondary point, though it is real:
+paging deeper cost more the further it went, and the user list additionally rescanned offset pages from
+page zero on every turn merely to recover its page counter.
+
+**The decision.** Each browse opens with an inclusive read in its own direction - which is what a
+browse-start command performs, greater-or-equal forwards and less-or-equal backwards - and continues with
+a read bounded strictly past the last key it handed out. Windows are one screen plus one row, which is
+also exactly what the legacy reads per page: the page, and one further read to learn whether another page
+follows. A full page therefore costs one query rather than one per row, and no query can return more than
+eleven rows however large the table becomes. The card list's inclusive open is the inherited keyed read
+on its own primary key; the user list's is a projected primary-key seek that avoids hydrating a digest to
+answer a boundary question; the transaction list's is a declared less-or-equal or greater-or-equal read.
+The user list's page counter is now one range count on the anchor's own key.
+
+**Three properties preserved exactly.** The backward walk still reads descending and still fills its
+bottom screen slot first, so the assembled page ascends like a forward page - the descending read order
+*is* the reversal, and there is no separate reversing step to get wrong. The forward and backward pagers
+still discard the boundary row before filling, and the enter key still discards nothing, so a supplied
+filter key is included in its own page. And the three-arm browse response model is untouched: end of
+sequence emits its own text and leaves the error flag clear, while only a store refusal raises it.
+
+**One assumption removed rather than added.** The offset forms compared keys in Java against rows the
+store had ordered, so they depended on the two orderings agreeing. The keyset forms let the store apply
+both the bound and the order, so no key comparison happens in the services at all.
+
+*Cited by:* `service/CardListService.java`, `service/TransactionListService.java`,
+`service/UserManagementService.java`, `repository/CardRepository.java`,
+`repository/TransactionScanRepository.java` and `repository/UserSecurityRepository.java`. Proven by
+`repository/CardBrowseRepositoryIT.java`, `repository/TransactionRepositoryIT.java`,
+`repository/UserSecurityRepositoryIT.java` and the three service test classes.
+
+---
+
+### DL-164 - The lowest-base-key rule of a non-unique alternate index is restored to the repository, undoing a regression away from DL-121
+
+**Context.** DL-121 settled this question already: a keyed `READ` of a duplicate-bearing VSAM alternate
+index returns the first record in ascending *base*-key order, that is deterministic in the legacy and
+must be deterministic here, and both paths therefore publish a bounded, explicitly base-key-ordered
+finder. Those finders were present in the delivered module and were then removed, and seven services -
+five over `CXACAIX` and two over `CARDAIX` - each grew a private replacement: materialise every row of
+the account, then select the minimum, under an identical twenty-line helper with identical Javadoc.
+
+**Why the regression matters, restated from DL-121 and sharpened by what it produced.** DL-121's
+argument stands unchanged: an unordered list whose head a caller takes makes the result depend on plan
+shape, insertion history and whether a vacuum has run, which is non-determinism in exactly the case where
+determinism is the contract. The seven copies added two further faults. The rule could be corrected in six
+places and missed in the seventh with nothing failing. And each copy paid for rows it discarded - an
+account with several cards fetched all of them to use one - over an index whose entire purpose is to
+represent that an account may have several.
+
+**The decision.** `CardCrossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc` and
+`CardRepository.findFirstByCardAcctIdOrderByCardNumAsc` are restored, bounded to one row and ordered
+explicitly, and the seven private helpers are deleted. The list-returning finders remain beside them,
+because they answer a different question - which rows does this account carry - and the non-unique index
+exists precisely because the two questions differ. A caller reproducing a keyed read uses the
+ordered-first form; a caller that genuinely wants every row uses the list.
+
+**What moved and what did not.** The selection rule moved back; its content never changed. The ordering
+is ascending on the base key, applied to the raw sixteen-character value with no trim and no numeric
+conversion, and an empty result is the legacy not-found condition that each service reports with its own
+screen's text.
+
+*Cited by:* `repository/CardCrossReferenceRepository.java`, `repository/CardRepository.java`,
+`service/AccountUpdateService.java`, `service/AccountViewService.java`, `service/BillPaymentService.java`,
+`service/InterestCalculationService.java`, `service/TransactionAddService.java`,
+`service/CardDetailService.java` and `service/CardUpdateService.java`. Proven against real SQL by
+`repository/CardBrowseRepositoryIT.java`, which asserts that the ordered-first read and the minimum of
+the list agree while both finders remain available.
+
+---
+
+### DL-165 - Two repository methods with no production caller were removed rather than left as competing contracts
+
+**Context.** `TransactionRepository.findByProcessingDateRange` returned an unbounded `List` for the
+report's date-range selection, and `CardRepository.findByCardAcctId(String, Pageable)` returned an offset
+page of an account's cards. Neither had a production caller. The report filtered its range through its own
+reader, and the card screens read either the base cluster by card number or the account path as a list.
+
+**Why an unused method is not harmless here.** Both described a selection that production performs
+somewhere else, with different boundedness in one case and different ordering in the other. A later reader
+comparing the two would have no way to tell which was authoritative, and the obvious "tidy-up" - routing
+the report through the declared query - would have replaced a bounded reader with an unbounded list, on
+the one table in the schema with no upper bound on its row count.
+
+**The decision.** Both are deleted, and the interface Javadoc says so and says why, so that the absence is
+a recorded decision rather than an omission an author might helpfully repair. The tests that exercised
+them are replaced by tests of the paths production actually uses: the bounded keyset reads of the
+transaction scan view, and the ordered-first account finder of the card master.
+
+**This supersedes one paragraph of DL-121.** DL-121 retained `Page<Card> findByCardAcctId(String,
+Pageable)` on the reasoning that it was the browse translation the migration plan names literally, kept
+for genuine browse consumers. No genuine browse consumer materialised: the card-list screen browses the
+*base* cluster by card number and filters by account after the read, exactly as DL-121 itself records, and
+that browse is now served by the keyset finders of DL-163. An offset page retained for a caller that never
+arrived is the competing contract this entry exists to remove. Everything else in DL-121 stands, including
+its decision to leave the two supporting indexes un-widened.
+
+*Cited by:* `repository/TransactionRepository.java` and `repository/CardRepository.java`. Proven by
+`repository/TransactionRepositoryIT.java` and `repository/CardBrowseRepositoryIT.java`.
+
+---
+
+### DL-166 - The bill-payment turn is two independent units of work, not one, because both files it writes are unrecoverable
+
+**Context.** `app/cbl/COBIL00C.cbl` writes the transaction master at L233 and rewrites the account master
+at L235, with the balance computation at L234 between them and **no flag tested between the write and the
+rewrite**. Both files are defined to the region with `READINTEG(UNCOMMITTED)`, `RECOVERY(NONE)` and
+`JOURNAL(NO)` (`app/csd/CARDDEMO.CSD`), so the region logs neither and backs neither out.
+
+**What that means, and what it does not.** The inserted transaction is durable the instant it is written.
+No later failure removes it, and the source proves it depends on exactly that by performing L234 and L235
+whether or not the write succeeded. The account read at L343 does take `UPDATE`, so the record is *held*
+from the read to the rewrite - but a hold is a lock, not a log: it excludes a concurrent writer and it does
+not undo anything.
+
+**The defect this entry records.** The service previously carried one `@Transactional` over the whole
+turn. That coupled the two writes in two ways the legacy has no analogue for. A conflict on the account
+rewrite rolled back a transaction the operator had already been shown a success message for; and a write
+failure the insert paragraph *handled* - translating it into the source's duplicate or catch-all text -
+left the unit marked for rollback, so the unconditional rewrite that follows could not commit and the turn
+would have failed at commit with an outcome no response arm had chosen.
+
+**The decision.** The service declares no transaction of its own, exactly as
+`OnlineTransactionBoundary` documents that a screen service must not. The allocate-and-insert span of
+L212-L233 is one unit; the account rewrite of L235 is another; every read outside them is
+non-transactional. Each unit's failure is translated into its own paragraph's response arm *after* that
+unit has completed its rollback, which is what makes the translated arm the turn's actual outcome. The
+class became `final` as a direct consequence, matching its four sibling screen services, since it no
+longer needs a subclass proxy.
+
+**The identifier rule is unaffected, and the lock is why.** `TransactionRepository.lockIdentifierAllocation`
+is taken as the first statement *inside* the insert's unit, before the maximum is read, and is
+transaction-scoped - so that unit holds it across the increment, the insert and its flush and releases it
+when the unit ends. Highest-key-plus-one, the `0000000000000001` seed on an empty table, and the bounded
+re-allocation are all unchanged; no sequence, no generated value. The account rewrite is deliberately
+outside the lock, so a payment does not serialise every other allocator behind an account write.
+
+**Two consequences worth naming.** First, only the insert's own failure is translated: a failure of the
+advisory lock or of the existence probe is not a response to a write, has no arm in the source, and still
+propagates, distinguished by a flag raised immediately before the store is called. Second, a failure raised
+when the insert's unit *commits* now reaches the write's own response arm - which is only observable
+because the unit completes outside the service, and is the property the two new commit-failure tests
+assert.
+
+**A related correctness repair inside the rewrite.** With the turn no longer transactional, the account
+instance the rewrite receives is detached, and handing a detached versioned instance to a save makes the
+provider *merge* it - which, for a row deleted in the meantime, inserts it again instead of reporting the
+invalid-key condition. The rewrite therefore re-reads the row inside its own unit: an absent row is the
+source's own not-found arm at L390-L395, a version that no longer matches the one the read observed is the
+conflict, and the versioned update the flush issues closes the window between the two. The select costs
+nothing, because the merge would have issued the same one.
+
+*Cited by:* `service/BillPaymentService.java`. Proven by the `IndependentUnitsOfWork` nest of
+`service/BillPaymentServiceTest.java`.
+
+---
+
+### DL-167 - The two administrative maintenance transactions read the record under a write lock and write it in the same unit
+
+**Context.** `app/cbl/COUSR02C.cbl` L322-L331 and `app/cbl/COUSR03C.cbl` L269-L278 both issue
+`EXEC CICS READ ... UPDATE`, and each then writes in the same task: the rewrite at COUSR02C L360 and the
+delete at COUSR03C L307. **That delete names no record identifier at all**, so the only record it can
+remove is the one the read is holding - which is the proof that the hold is load-bearing rather than
+incidental.
+
+**The defect this entry records.** The service read the identity in one unit of work, compared the four
+editable fields or showed the operator the record, and then wrote in a *later* unit. Between the two,
+another administrator could change or remove the same identity; both statements would still succeed, and
+the operator would never be told. On the update path that is a lost update of whichever fields the other
+administrator had changed; on the delete path it is the removal of a record the operator confirmed in a
+form it no longer had.
+
+**The decision.** `UserSecurityRepository` gains a ninth operation, `findByIdForUpdate`, carrying
+`LockModeType.PESSIMISTIC_WRITE` - the relational form of the legacy read-for-update. Each maintenance
+path now runs its read, its decision and its write inside **one** `OnlineTransactionBoundary` unit, so the
+row is held from the read to the write and released when that unit ends. The response arms stay outside
+the unit, so a failure raised when the unit commits reports the failure arm instead of leaving a success
+text and a raised success flag behind.
+
+**A lock, not a version column.** No version attribute is added to `UserSecurity`. The legacy *prevented*
+the interleaving with a hold rather than detecting it afterwards, and a version column would introduce a
+conflict outcome that none of these four screens has a message for - so reproducing the hold keeps the
+observable behaviour identical while a version column would not.
+
+**Why the display paths keep the unheld read.** The source performs the same paragraph from two places
+with one statement, so the enter-key load also takes the hold - but that hold is released when the task
+returns at the end of the turn, long before the operator presses the saving key, so nothing about the
+screen's behaviour depends on it. Reproducing it would lock a row for the length of a display and
+serialise every other reader for nothing. The two call sites therefore read through two forms that share
+one arm evaluation, and the tests assert which path uses which.
+
+**Attribution of a failure inside a two-statement unit.** The read and the write of a maintenance step
+report through *different* texts, so a failure that escapes the unit is attributed by a flag raised
+immediately before the store is called: before it, the read's lookup-failure text; at or after it,
+including at commit, the write's own failure text.
+
+**The held read refuses to run outside a unit of work**, rather than silently reading without the lock -
+verified against a real server, where it raises `jakarta.persistence.TransactionRequiredException`. That is
+the failure direction to prefer, because a silent downgrade restores exactly the lost update this entry
+removes.
+
+*Cited by:* `repository/UserSecurityRepository.java` and `service/UserManagementService.java`. Proven by
+the `MaintenanceUnitOfWork` nest of `service/UserManagementServiceTest.java` and the `HeldKeyedRead` nest
+of `repository/UserSecurityRepositoryIT.java`, whose last test holds the row against a second holder and
+then observes it released.
+
+---
+
+### DL-168 - The account-update transaction's three read paragraphs have a third arm, and it is not a variant of the second
+
+**Context.** `app/cbl/COACTUPC.cbl` evaluates each of its three read paragraphs over three arms:
+9200-GETCARDXREF-BYACCT at L3664-L3696, 9300-GETACCTDATA-BYACCT at L3714-L3746 and
+9400-GETCUSTDATA-BYCUST at L3763-L3795. The catch-all arm of each raises the input error, raises its
+filter flag, moves `'READ'` into `ERROR-OPNAME` and the resource literal into `ERROR-FILE`, and moves the
+composed `WS-FILE-ERROR-MESSAGE` into `WS-RETURN-MSG`. The write range's two read-for-update statements at
+L3894 and L3917 are tested with `IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE`, so **every** non-normal
+response reaches the could-not-lock arm and leaves the range.
+
+**The defect this entry records.** None of those five arms existed. A repository failure on any of the
+three reads, or on either hold, propagated out of the turn - abending a transaction that the legacy leaves
+on the screen with a message. A read that *fails* is not a read that finds nothing, and the source is
+explicit about the difference: the not-found arms compose a business text through the message gate, while
+the catch-all arms name the operation and the resource and move their text **ungated**, overwriting
+whatever an earlier edit had claimed.
+
+**The decision.** Each of the three reads now catches `DataAccessException` and takes its own catch-all
+arm, raising the filter flag its paragraph raises - the account filter for the cross-reference and the
+account master, the customer filter for the customer master, which is the only structural difference
+between them. Each hold maps every non-normal outcome, absent row and raised failure alike, onto the
+could-not-lock arm it already had for the absent row. The asymmetric account-versus-customer rollback
+below is untouched.
+
+**The two response slots are left blank rather than filled with an invented pair.** `ERROR-RESP` and
+`ERROR-RESP2` hold a CICS response and reason code, and a relational store reports neither. Their declared
+widths and blank initial values are what the composition carries, which is the same convention the
+read-only twin of this transaction already uses - so an operator sees one shape of file-error text across
+the account screens rather than two. The eight composed segments sum to exactly 12 + 8 + 4 + 9 + 15 + 10 +
+7 + 10 = 75, the declared width of `WS-RETURN-MSG` at L479, so the five-character trailing filler at
+L407-L408 falls outside the field by construction and nothing is truncated.
+
+**Where the flow stops, and where the source walks on.** The caller's guard after the cross-reference read
+tests the account filter flag, which the catch-all arm raises, so a failing cross-reference read stops the
+read range exactly as the legacy does. After the other two reads the legacy tests condition names that its
+own not-found arms leave unset - the commented-out `SET` at L3719 - so it walks on; that is reproduced,
+and the range still refuses to build a screen because neither record was fetched. A second read that fails
+overwrites the first one's text, which is precisely what an ungated move does.
+
+*Cited by:* `service/AccountUpdateService.java`. Proven by the `ReadFailureArms` nest of
+`service/AccountUpdateServiceTest.java`.
+
+---
+
+### DL-169 - The identifier-allocation audit measures the call site inside the locking method, and why that had to be restated
+
+**Context.** `repository/IdentifierAllocationLockAuditTest` scans the production sources and asserts, per
+enrolled minting service, that the allocation lock is taken textually *before* the statement that reaches
+the read. The value it compares against for the bill-payment service was the invocation of that service's
+allocate-and-write span.
+
+**Why the fix of DL-166 invalidated the proxy rather than the property.** Moving the lock inside the span,
+so that it is taken inside the insert's own unit of work, swapped the textual order of the span's
+invocation and the span's body: the invocation now appears earlier in the file than the lock, while still
+executing after it. The audit failed on a file whose serialisation had strictly improved.
+
+**The decision.** The enrolled value for the bill-payment service becomes the mint invocation *inside* the
+locking method, which is the same shape the transaction-add service's entry already had, and the constant's
+documentation now states the rule explicitly: the value is the statement that reaches the read from inside
+the method that takes the lock, never the read statement itself. Paragraph methods are laid out in the
+legacy source's paragraph order, so a read's own text can appear earlier in the file than the lock while
+executing after it - which is exactly why the audit cannot compare against the read directly. The audit
+was not weakened: it still fails on a stale value rather than passing silently.
+
+*Cited by:* `repository/IdentifierAllocationLockAuditTest.java`.
+
+---
+
+### DL-170 - The posting rewrite establishes the invalid-key answer under a write lock before it rewrites, instead of asking afterwards whether the row exists
+
+**Context.** `CBTRN02C` paragraph `2800-UPDATE-ACCOUNT-REC` (`app/cbl/CBTRN02C.cbl` L545-L560) adds the
+posted amount onto three balances and issues `REWRITE FD-ACCTFILE-REC`. Its `INVALID KEY` arm sets reject
+code 109 and does nothing else - no status test, no diagnostic, no abend - so 109 is inert and the mainline
+still writes the transaction and counts the record posted. The file is `ORGANIZATION IS INDEXED, ACCESS MODE
+IS RANDOM` (L51-L53), so the rewrite is keyed rather than positional, and the cluster is defined
+`READINTEG(UNCOMMITTED) RECOVERY(NONE) JOURNAL(NO)` (`app/csd/CARDDEMO.CSD`).
+
+**The problem with the relational translation as first delivered.** The rewrite is a version-predicated
+update whose affected-row count carries the rewrite status. A count of zero has two causes that reach
+opposite outcomes here - the row is gone, which is the legacy invalid-key condition and inert 109; or the
+row is present at a version other than the one validation read, which the legacy could not observe and which
+must refuse the record. The delivered code told them apart with a second, unprotected existence probe issued
+*after* the rewrite. That probe is a time-of-check/time-of-use window: a writer committing between the
+rewrite and the probe turns either answer into the other, and the paragraph cannot tell that it did. The
+consequences are not symmetric nuisances - a false 109 lets a transaction post against a balance that was
+never rewritten, and a false conflict discards a record the legacy would have posted.
+
+**The decision.** The answer is obtained *before* the rewrite, from a keyed read that holds the row for the
+remainder of the record's unit of work: `AccountRepository.findByIdForUpdate`, a `PESSIMISTIC_WRITE` query.
+From the moment it returns, nothing else can delete the row or change its version, so an absence observed
+there is still an absence when the rewrite runs, and a presence observed there leaves a zero count with only
+one remaining explanation. The classification is therefore complete and cannot be wrong for a timing reason.
+The unprotected probe is removed.
+
+**What deliberately did not change.** Reject 109 remains inert, with the same code, the same description
+text and the same distinctness from 101. The three balance moves keep their legacy sign semantics, including
+a negative amount accumulated *unchanged* into the cycle debit. The computed balances are still carried on
+the result image on the invalid-key path, because lines 547 to 552 mutate the record area before the rewrite
+is attempted. The version predicate stays on the rewrite even though the caller now holds the row: it is
+defence in depth, so the statement's safety does not depend on every future call site remembering to lock
+first, and it is what makes a zero count under a held row mean "changed" unambiguously.
+
+**Divergence recorded, not presented as parity.** A row hold is stronger than the legacy baseline, which
+held nothing and read uncommitted. §0.7.4 of the plan sanctions exactly this class of strengthening -
+read-committed isolation plus a version check being strictly stronger than a file with no recovery and no
+journaling - on the condition that it is documented rather than passed off as faithful, which is what this
+entry does. The hold is scoped to one record of one batch step, is released by that record's unit of work,
+and is not used by any online path: the online tier against this table continues to rely on the version
+check alone, because replacing an optimistic model with mutual exclusion there would introduce waiting the
+legacy system never had. Lock ordering is uniform across the batch tier - the category-balance row is
+written before the account row in both the posting and the interest-accrual paths - so no cycle exists.
+
+*Cited by:* `service/TransactionPostingService.java`, `repository/AccountRepository.java`.
+
+---
+
+### DL-171 - The interest run writes each synthesized transaction record while its group is still open, instead of rendering the group's records after the group has committed
+
+**Context.** `CBACT04C` synthesizes one transaction record per accruing category-balance row and writes it
+immediately: `1300-COMPUTE-INTEREST` adds the row's interest to the running total and then performs
+`1300-B-WRITE-TX`, whose `WRITE FD-TRANFILE-REC` is at `app/cbl/CBACT04C.cbl` L500, inside the read loop.
+The account is rewritten only at the control break, `1050-UPDATE-ACCOUNT` at L350-L370, reached from L196 on
+a key change and from L220 at end of file. So in the legacy **every** record of a group reaches its dataset
+before that group's balance is rewritten, and the write-error arm at L508-L512 abends with the balance
+untouched.
+
+**The problem with the relational translation as first delivered.** The group operation collected its
+synthesized records, committed the account rewrite in the group's own transaction, and returned the records
+for the batch step to render afterwards. The order was inverted. A generation write that failed - a full
+volume, a permission change, a closed handle - abended after the balance had already hardened, leaving an
+accrued balance with no record of what accrued it, and a reconciliation between the SYSTRAN generation and
+the account master that could not be closed. The legacy has no such state, because it cannot reach the
+control break without having written first.
+
+**The decision.** The caller supplies the writer, as a required parameter of the group operation, and the
+service invokes it at the position L500 occupies - inside `1300-B-WRITE-TX`, inside the group's unit of work,
+before `updateAccount` is reached. The batch step binds its guarded generation write as that writer once the
+generation is open and before the first row is read; the service's own whole-file driver binds the run
+result's record list, which is that driver's equivalent of a dataset. A failure the writer raises therefore
+propagates out through the group's transaction boundary and the account is not rewritten, which is the legacy
+outcome at L508-L512.
+
+**Why the writer is required rather than defaulted.** A discarding default would let a caller that forgot to
+supply one post every balance in the run and produce an empty generation - precisely the failure the ordering
+exists to prevent, and silent. The service refuses a null writer, and the batch stage refuses to synthesize
+a record while none is bound, naming the resource and the binding point in the message.
+
+**What deliberately did not change.** The records are still reported in the group result, because the batch
+stage counts them, checks their identifiers against the suffix it threaded, and renders its per-row outcomes
+from them; reporting them is not writing them, and only the writer writes. Their order is unchanged. The
+zero-rate gate still suppresses the computation, the fee paragraph and therefore the record, so a group of
+only skipped rows writes nothing and still rewrites its account. The commit remains at the control break,
+one transaction per closed group. Nothing is inserted into the live transaction master - the generation is
+still loaded later by COMBTRAN.
+
+**One property the file medium cannot give, stated plainly.** The generation is a file, so a record written
+before a group's transaction later fails is not withdrawn. That is the legacy's behaviour too: the dataset is
+sequential and unrecoverable and the account cluster is defined `RECOVERY(NONE)`, so the legacy's guarantee
+was ordering rather than atomicity. This entry claims ordering, and claims nothing more.
+
+*Cited by:* `service/InterestCalculationService.java`, `batch/step/InterestCalculationProcessor.java`,
+`batch/InterestCalculationJobConfig.java`.
+
+---
+
+### DL-172 - The category-balance report reads its cluster once, and no longer abends because two passes counted differently
+
+**Context.** Step `STEP05R` of `app/jcl/PRTCATBL.jcl` invokes the cataloged wrapper `app/proc/REPROC.prc`,
+whose control member `app/ctl/REPROCT.ctl` holds a single statement: `REPRO INFILE(FILEIN)
+OUTFILE(FILEOUT)`. One statement, one traversal, input to output. There is no validating pass ahead of it,
+no second read, and nothing that compares one traversal's record count against another's.
+
+**What the first translation did instead.** The unload step ran the service's whole sequential pass over the
+cluster - open, read to end of file, close, report the count - and then opened a <em>second</em> cursor over
+the same cluster to produce the output. Two traversals for one utility invocation. It then compared the
+records it had written against the count the first traversal reported and abended when they differed.
+
+**Why the comparison was worse than redundant.** The two traversals are taken at different times against a
+live table. A commit landing between them - a posting run or an interest run touching one category-balance
+row, both of which reach this cluster transactionally - makes the counts differ legitimately, and the step
+then abended. The utility being translated has no notion of that condition and the step has no arm for it,
+so the abend was an invention: a failure the migration introduced, raised on correct data, on a report whose
+inputs are written by two other jobs in the same estate.
+
+**The decision.** The cluster is traversed once. The step opens its output, then hands the shared sequential
+pass that output as the destination of its read, and the pass delivers each record to it as it reads it -
+read then write, the order the copy statement has. The pass keeps everything it already owned: the open, the
+composite-key ordering, the two-level status model in which end of file is normal, the record redaction and
+the emit-then-abend ordering on a failure. The step keeps the guarded write of each record it is handed. The
+count the closing diagnostic reports is the count of the one traversal that produced the output, so it cannot
+disagree with itself, and the reconciliation is gone along with the second pass.
+
+**Consequences that are deliberate.** The destination is a required parameter of the pass: a pass standing for
+a copy statement has a destination by definition, and a defaulted one would silently reproduce the collect-
+then-write shape this entry removes. A caller that genuinely wants only the count and the terminal status
+passes a sink that does nothing, which states that intent rather than omitting it. The step has no read loop
+of its own - the whole effect of the utility completes in one call, exactly as the allocation step of the same
+job has no read loop - and it therefore holds no repository: its only persistence access is that pass.
+
+**What deliberately did not change.** The 40-byte report line, the trailing filler, the edit mask that prints
+every digit position it declares (DL-159), the absence of a sign character, the zoned-decimal key ordering,
+the sort specification applied to an already-ordered unload, and the generation staging and retention are all
+separate decisions and none of them moved.
+
+*Cited by:* `batch/CategoryBalanceReportJobConfig.java`, `service/FileMaintenanceService.java`.
+
+### DL-173 - A member is opened by its own first bounded page, not by counting the cluster
+
+**Context.** All five sequential passes in `service/FileMaintenanceService.java` translate the same COBOL
+skeleton: `OPEN INPUT <dd>`, test the file status, then a read loop, then `CLOSE`. `CBACT01C` states it at
+`app/cbl/CBACT01C.cbl` L90-L114 - status `'00'` becomes `APPL-RESULT` 0, `'10'` becomes 16, anything else 12
+- and `CBACT02C`, `CBACT03C`, `CBCUS01C` and the category-balance unload repeat it verbatim with their own
+DD names and their own display literals.
+
+**What the first translation did instead.** The open issued `repository.count()` as its probe: an aggregate
+over every row of the cluster, executed for no reason other than to decide whether the resource was
+reachable, and then discarded. The reader went on to perform its real work through a separate bounded
+keyset retrieval, so the count was pure overhead - `SELECT count(*)` over `transaction`, `account`, `card`,
+`customer` and `tran_cat_bal` before a single record was read. It also answered a question the source never
+asks. `OPEN INPUT` reports whether the dataset can be read; it does not report how large it is, and the
+record count the reader publishes at the end is the count of the rows it actually read, taken from its own
+loop.
+
+**The decision.** The open performs the first bounded page of the cursor's own key-ordered retrieval and
+reports whether a first record is present, without consuming it. That page is the page the read loop then
+takes, so establishing reachability costs nothing beyond work the first read would have done anyway, and no
+aggregate is issued at any point. The probe runs inside the same guard the open already had, so a failure
+still becomes the permanent-error status, still runs `logDataAccessFailure` before the status is normalised,
+and still reaches the member's own open literal through `abendOnFailedOperation`.
+
+**How the two arms still divide.** On the mainframe an open and a first read are two operations against a
+dataset and can fail independently. Against a relational store there is one failure mode - the query fails -
+so which arm reports it is a translation decision. It is resolved by position: a failure on the first page is
+an open failure and carries the member's open literal, and a failure on any later page is a read failure and
+carries its read literal. Both arms remain reachable, and both are exercised - the read arm because the
+bounded iterator issues one further query after the last non-empty page has been consumed, which is where a
+mid-stream failure lands.
+
+**What deliberately did not change.** The two-level status model, end of file as a normal completion rather
+than an error, the pre-operation sentinel that every other value is measured against, each member's own open,
+read and close literals, the emit-then-abend ordering, the record redaction, and the composite-key ordering
+of the category-balance pass. The opening diagnostic now reports `recordsPresent` rather than
+`recordsAvailable`, because a boolean is what the open now knows and a cardinality is what it deliberately no
+longer asks for.
+
+*Cited by:* `service/FileMaintenanceService.java`.
+
+---
+
+### DL-174 - The statement file handler walks the cross-reference once and reports every failure as a file status
+
+**Context.** `app/cbl/CBSTM03B.CBL` declares four files. Two are `ACCESS MODE SEQUENTIAL` - the transaction
+work resource at L33 and the cross-reference cluster at L39 - and two are `ACCESS MODE RANDOM`, the customer
+file at L45 and the account file at L51. Each of its four handlers offers `OPEN INPUT`, one read, and
+`CLOSE`, and each publishes the file's own two-character status into the return-code field of the shared
+parameter area before returning. The subprogram cannot raise anything: setting a status and returning is the
+whole of its failure vocabulary, and its caller's selection at `app/cbl/CBSTM03A.CBL` L837-L847 is what turns
+a status it does not accept into a display naming the operation and the raw code, followed by an abend.
+
+**Three defects of the first translation.** The cross-reference read requested one offset-addressed page per
+record: a paged query re-scans and re-discards every preceding row on every read and counts the whole table
+besides, so one sequential pass over the cluster became a quadratic one and two queries per record instead of
+none. The open reported success unconditionally without touching any store, so a cluster that could not be
+read at all was not discovered by the open but by the first read - and reported under the wrong paragraph's
+literal. And no repository call was guarded, so a technical failure of the store propagated out as an
+exception: the caller's catch-all arm never ran, the operator never saw the DD name, the operation or the raw
+status, and the abend carried a Java message instead of the member's own reason.
+
+**The decision.** The cross-reference file is walked once, by a bounded forward cursor a run acquires for
+itself. The cursor retains one page and one key, never an offset and never a count, and it is created per run
+rather than held by the service, because a file position is state and the handler is a shared singleton. A
+second single-method source interface joins the transaction one: between them they cover exactly the two
+files the source declares sequential, which is why one is a parameter of the entry point and the other is
+too, and why the two random files have neither.
+
+**Why one source is passed in and the other is opened here.** The transaction work resource is a snapshot -
+the statement job's sort and projection steps produce it, so it is materialised and frozen before generation
+begins and must be handed in rather than re-queried. The cross-reference cluster has no snapshot: the legacy
+member reads it live, one record at a time, in key order. The run therefore asks the file handler to open a
+walk of it, and the handler owns the repository that backs it, exactly as the subprogram owns the file.
+
+**The open is now the first bounded page.** Opening a key-sequenced cluster for input establishes that it
+exists and can be read; its relational equivalent is one indexed range scan bounded to a page. The page the
+open loads is the page the first read consumes - the cursor re-serves the position it most recently served
+rather than consuming it - so proving the cluster reachable costs nothing beyond the first read's own work.
+The two randomly accessed files have no first page to load, so their opens read one bounded row in key order
+instead. An empty cluster opens successfully in every case: an open says whether, and the caller discovers
+emptiness on its first read as the at-end status, which is the sequence the caller already follows.
+
+**Every failure is a status, and the status distinguishes the two conditions.** A `DataAccessException` from
+any of the guarded calls becomes raw status `'31'` in the response, which is the code this module already
+uses for a technical data-access failure in its batch readers. `'31'` is not `'23'`: the record-not-found code
+states that the cluster was read and held no such record, which is a data condition, while `'31'` states that
+the read did not complete. Both reach the caller's catch-all arm, and the arm displays whichever code it was
+given, so an operator can tell the two apart. Exhaustion stays `'10'` and remains a normal outcome.
+
+**What deliberately did not change.** The unguarded consecutive-check shape of all four handlers, so that an
+operation a handler does not test still performs nothing and returns the caller's own status untouched. The
+publication of a status on every path out of a handler, including that one. The two different key paddings the
+two random files' picture clauses demand. The record images, their widths, and the caller's obligation to
+blank the payload before every read. The statelessness of the handler itself: it holds no cursor, no status
+and no payload, so two runs sharing it still cannot observe one another.
+
+*Cited by:* `service/StatementDataAccessService.java`, `service/StatementCrossReferenceSource.java`,
+`service/StatementGenerationService.java`.
+
+---
+
+### DL-175 - The transaction report resolves each distinct reference once, and a failed reference read reports 31
+
+**Context.** `app/cbl/CBTRN03C.cbl` resolves three references while reporting. Its unnamed driving body at
+L160-L217 performs `1500-B-LOOKUP-TRANTYPE` at L494 and `1500-C-LOOKUP-TRANCATG` at L504 for **every**
+transaction record, and `1500-A-LOOKUP-XREF` at L484 on every card-number break. All three are random reads
+of small key-sequenced reference clusters, and all three have exactly one failure arm: `INVALID KEY` displays
+the paragraph's own literal, moves 23 into the status field, performs `9910-DISPLAY-IO-STATUS` and then
+performs `9999-ABEND-PROGRAM`, in that order.
+
+**What the first translation did.** It issued one `findById` per record for the type and the category, and one
+per card break for the cross-reference. On the mainframe a random read of a cluster the step holds open is an
+index probe in the address space; its relational equivalent issued per record is a separate round trip per
+record. Over the seeded daily-transaction input that is several hundred round trips to resolve **seven**
+distinct transaction types and **eighteen** distinct categories - the reference cardinalities the project's
+own specification records. Separately, none of the three reads was guarded, so a technical failure of the
+store escaped as an exception and none of the four steps of the paragraph's failure arm ran.
+
+**The decision on the reads.** Each run memoizes the references it resolves, keyed by the reference key the
+paragraph presents - the card number, the two-character type code, and the composite type-and-category key.
+The number of reference queries a run issues is then bounded by the cardinality of the reference clusters and
+is independent of how many transaction records the run reports, which is the whole of the defect. A capped
+eager prefetch was considered and rejected: it would need a cap the source does not state and a fallback path
+for exceeding it, and the fallback would be an untested branch. Memoization needs neither and is bounded by
+strictly less - what the run actually required.
+
+**Absence is deliberately not memoized.** An absent reference abends on the record that first presents it, so
+the run does not continue and there is nothing to remember. The first missing reference is therefore still the
+one that fails, with its own literal, its own status, its own operation and its own resource, on the same
+record as before.
+
+**The memo is per run and never outlives one.** A cache held by the service would make one run's reference
+data visible to the next, which is a snapshot the legacy step never had. Within a run the memo is a snapshot
+of references read at first use rather than at every use, which is weaker isolation than a single read would
+give and stronger than the `READINTEG(UNCOMMITTED)` baseline of `app/csd/CARDDEMO.CSD`; no program of the
+estate writes the two reference clusters while a report runs.
+
+**The decision on the failures.** A `DataAccessException` from any of the three reads now takes the
+paragraph's own sequence - literal display, status display, abend - carrying raw status `'31'` rather than
+`'23'`. The distinction is the point. `'23'` says the cluster was read and held no such record, which is a
+data condition an operator fixes in the reference data; `'31'` says the read did not complete, which is an
+operational one. Reporting one as the other would send an operator to the wrong place. The store's own
+failure is reduced to its failure-type chain before it reaches a diagnostic and is never handed to a logger
+whole, because a data-access failure's narrative is where a statement and its bound parameters appear.
+
+**What deliberately did not change.** The 133-byte report line and its two amount masks. The page and account
+break placement and the accumulation chain in which an amount reaches the grand total only through a page
+total. Both pinned legacy defects - the `NEXT SENTENCE` arm that leaves the whole driving loop and the at-end
+path that re-adds the last record's stale amount. The absence of arithmetic: the member contains no `COMPUTE`
+and this change introduces none. The card number is still withheld from every diagnostic, and the module's
+single sanctioned stand-in is still the only form in which it is referred to.
+
+*Cited by:* `service/TransactionReportService.java`.
+
+---
+
+### DL-176 — A dataset is streamed through the batch tier, not held in it
+
+**What was there.** Nine places in the batch and service tiers assembled a whole dataset in the heap
+before doing anything with it. The transaction archive composed its generation into a
+`ByteArrayOutputStream` and published the byte array. The combined-transactions generation held every
+merged record in a `List<Transaction>` and handed back its `content()` as one array. The statement job's
+transient work resource held every projected record in a `TreeMap` and duplicated the whole map three
+times over — once for its records, once for its keys and once more for the frozen snapshot generation
+read from. The transaction-report emitter drained its whole filtered generation into a `List<Transaction>`
+and copied it, and the report itself accumulated every 133-byte record in a `List<String>` that the
+result then copied again. The daily-transaction extract read its whole staged dataset into a
+`List<DailyTransaction>` before the pass started, and accumulated one verification outcome per record for
+the whole run. The interest run held one entry per account group and every synthesized transaction for
+the whole master, and the accrual stage copied each group's rows a second time on the way out.
+
+**Why that is wrong rather than merely wasteful.** Every one of those inputs and outputs is a sequential
+disk dataset on the mainframe, read and written a record at a time. A member's working storage holds one
+record area, not the dataset. Sizing a translated run by the number of records the dataset happens to
+contain replaces a constant cost with one that grows without bound, and it does so silently: the seeded
+fixtures are small enough that nothing shows. The estate's own numbers make the point — `dailytran.txt`
+is 300 records because that is what the sample holds, not because 300 is a limit anything enforces.
+
+**What it is now.** Each site retains one record, or the one group the source requires, and nothing more.
+
+*The two published generations* are composed into a staged working file, sealed by an atomic move and
+published by path. `StagedGenerationStore.publishBytes` is gone and `publishFile` replaces it: it streams
+from the completed file, reports the file's own length, and refuses a path that is still a working file.
+The archive writes each 350-byte record as it arrives and deletes its local copy once the object store
+holds it.
+
+*The combined generation* is a sequential file with two roles in sequence. As the writer it appends each
+record image and a single `'\n'` — stated as a byte rather than taken from the platform, because a
+writer's own line separator would be two bytes on one platform and would change every record's external
+length. It is sealed on close, published once, then served back a record at a time as the reader, and the
+local copy is removed when it has been served.
+
+*The statement job's transient cluster* is a sequential file minted per execution under the staging root
+and scratched when the job-scoped bean is destroyed — which is the second half of the lifetime the
+absorbed definition step declares, and something the heap map never reproduced. Records are appended as
+they are loaded and served through one forward walk. Ordering is now *proved* rather than imposed: every
+key must strictly exceed the key last admitted, which is the rule a keyed load into an empty cluster
+enforces, where the sorted map silently repaired a disagreement and hid a defect in the ordering step. A
+duplicate key still reports the message it always did; a key out of sequence reports its own. Reading
+freezes the resource, so a record presented afterwards is refused rather than changing what the
+generation step has already been given.
+
+*The report* takes its destination as an argument. `ReportTransactionInput` carries a
+`Consumer<String>`, `TransactionReportService` offers each composed record to it as the record is
+composed, and `TransactionReportResult` reports how many it offered instead of carrying them. The
+processor's width proof moved from a finished list to a decorator in front of the destination, so the
+earliest offending record still stops the run and a record that fails the proof never reaches a file.
+The emitter's own destination is the writer it already had.
+
+*The report's input* is one forward walk over the open reader, routed through the step's read gate so a
+technical failure on any record — not only on the first — is still normalised into the step's read status
+under the input data definition.
+
+*The daily-transaction extract* pulls its staged records through a one-record-deep cursor while the pass
+runs, and offers each verification outcome to a destination as it is produced. `DailyTransactionReadResult`
+keeps its counts and carries no per-record list; `verificationPasses` was already the count of the list it
+used to hold.
+
+*The interest run* offers each closed group to a destination at its control break and each synthesized
+transaction to a destination inside its group's unit of work, and reports counts. The accrual stage hands
+its closing group's rows over and installs a fresh buffer rather than copying the rows and emptying the
+old one, so one group's rows exist once rather than twice.
+
+**Where retention is deliberate and permitted.** The rows of the group currently filling, that group's
+per-row outcomes and that group's synthesized transactions are all still held, because the control break
+at `app/cbl/CBACT04C.cbl:L194` cannot be decided without them: a group is the unit the member itself
+works in. So is the bounded 51-by-10 card table of `app/cbl/CBSTM03A.CBL`, whose two dimensions are the
+member's own `OCCURS` clauses and which is not part of this change. So are the two statement output
+allocations the scratch step enrols, of which there are exactly two.
+
+**A behavioural consequence worth stating.** The daily-transaction extract used to read its whole staged
+dataset before the pass began, so a malformed record failed before the translated member ran. It is now
+read as the pass pulls it, which is where `app/cbl/CBTRN01C.cbl` reads it — inside the read loop. The
+diagnostic, its raw status and the abend that follows are unchanged and still in that order; what changed
+is that the failure now arises at the point in the pass the member would have reached, which is the more
+faithful position.
+
+**What deliberately did not change.** Every contractual record width: 430 for a reject, 80 for a
+statement record, 100 for an HTML statement record, 133 for a report line, 40 for a category-balance
+report line, 350 for a transaction and an archive record. Every reject reason code. Every ordering,
+including the two-key character ordering of the statement work resource and the zoned-decimal card-number
+ordering of the report. Every diagnostic and its position relative to the abend that follows it. The
+absence of arithmetic in the report path.
+
+*Cited by:* `batch/BackupTransactionJobConfig.java`, `batch/CombineTransactionsJobConfig.java`,
+`batch/CreateStatementJobConfig.java`, `batch/TransactionReportJobConfig.java`,
+`batch/DailyTransactionReadJobConfig.java`, `batch/step/InterestCalculationProcessor.java`,
+`batch/step/StagedGenerationStore.java`, `service/TransactionReportService.java`,
+`service/DailyTransactionReadService.java`, `service/InterestCalculationService.java`,
+`service/ReportTransactionInput.java`.
+
+---
+
+### DL-177 — A diagnostic names a record by a redacted reference, and renders a caller's bytes inert
+
+**Context.** The migrated estate's only diagnostic channel is the console display statement, and there
+are 217 of them. A display statement writes a literal and a named field, so the legacy programs did name
+identifiers in their diagnostics — `CBTRN02C` displays the daily-transaction identifier beside a reject
+reason, and `CBACT04C` displays the account it has just closed a control break for. Reproducing that
+literally on this stack reproduces something the legacy channel was not: a spooled JES output dataset is
+read by whoever holds authority over that job's output, whereas a structured log record is shipped to
+centralised storage that is searchable by considerably more people than the operator who ran the job, is
+retained for considerably longer, and is correlated with everything else that storage holds.
+
+Two properties of these identifiers make the difference material. They identify a cardholder's
+transaction or account, so a log record naming one is a disclosure. And their **bytes are not this
+module's text**: they are read out of a 350-byte or 50-byte fixed-width image, or off a job parameter
+card, so a producer that writes a line terminator, a carriage return, an escape byte or a zero-width code
+point into one has chosen what a log reader sees. A line terminator ends the record early and makes the
+remainder read as a record of its own; an escape byte begins a sequence a terminal obeys; a zero-width
+code point hides the difference between two values a reader is comparing by eye.
+
+**The decision.** Every diagnostic on the four record paths — `batch/step/TransactionValidationProcessor`,
+`batch/step/CombineTransactionsProcessor`, `batch/step/InterestCalculationProcessor` and
+`service/InterestCalculationService` — names a record by a **redacted reference** and never by its
+identifier. The reference comes from `util/SensitiveLogRedactor.redact`, which withholds the value and
+returns `[REDACTED] ref=<token>` where the token is a truncated HMAC under a process-local key. Two
+properties of that token are what make the substitution acceptable rather than merely safer: it is
+**stable for a given value within a run**, so the several messages one failing record produces still tie
+to one another and a record re-presented item by item after a chunk failure is still findable; and it is
+**lower-case ASCII hexadecimal only**, so routing a value through it neutralises every injectable byte in
+the same step that withholds it.
+
+Redaction is applied at a **single composer per identifier kind** rather than at each message. The
+postconditions on the interest stage state fourteen properties of one synthesized transaction and every
+one of them opened with the same clause; the posted-record fidelity check states seven and did the same.
+Each family now opens through one method — `postedRecordDiagnostic`, `interestTransactionDiagnostic`,
+`accountDiagnostic`, `rowDiagnostic` — so the identifier is withheld once and a message added later cannot
+reintroduce it by forgetting to. `rowDiagnostic` additionally decomposes the composite
+transaction-category-balance key rather than rendering it, because that key's own `toString` renders the
+account identifier as its first component while its two-character type code and four-character category
+code are reference codes from the estate's own tables and are what a reader needs to locate the row.
+
+Where a diagnostic must show the value itself — a job parameter that is not a date, a field that is not
+its declared width, a character found where a digit belongs — withholding it would leave the reader with
+nothing to act on. Those values instead go through `util/FailureDiagnostics.printableForm`, which keeps
+printable ASCII exactly and renders everything else as `U+XXXX`. The rendering is reversible by a reader,
+which is what a diagnostic needs, and inert, which is what a log record needs. It is bounded at 200 source
+characters so that one oversized value cannot set the size of the record, and it is locale-free, because a
+diagnostic that changes with the locale is not a diagnostic.
+
+**Divergence from the legacy behaviour, stated plainly.** The legacy programs displayed the identifier and
+this module does not. A reader of a Java log therefore cannot read an account number out of it, where a
+reader of the legacy job output could. That is a deliberate reduction in what the diagnostic channel
+publishes and not an oversight; the diagnostic retains everything it needs to be actionable — which
+program, which step, which reason code, which field, which position, and which record, by reference.
+
+*Cited by:* `batch/step/TransactionValidationProcessor.java`,
+`batch/step/CombineTransactionsProcessor.java`, `batch/step/InterestCalculationProcessor.java`,
+`service/InterestCalculationService.java`, `util/FailureDiagnostics.java`.
+
+---
+
+### DL-178 — A staged generation is created readable by its owner and by nobody else
+
+**Context.** Nine jobs write a local file before publishing it to object storage, and what those files
+hold is the whole of what the legacy datasets held, in the same fixed-width images: the 430-byte reject
+records, the 350-byte archive and combined generations with their card numbers, the 80-byte and 100-byte
+statement generations with a cardholder's name and address and every transaction on their account, the
+133-byte report generation, and the 40-byte category-balance listing.
+
+On z/OS a sequential dataset is a catalogued object whose access is decided by an external security
+product and not by the program that writes it, so **no COBOL member in the migrated estate expresses a
+permission at all**. Reproducing that silence on a filesystem does not reproduce the access control; it
+reproduces the process umask. At the conventional container umask of `0022` every generation was created
+`rw-r--r--`, readable by every account on the host for the whole of the job's run and for as long as the
+generation was retained afterwards. Nothing else in the module could see it: the job succeeded, the object
+published, and every byte-parity assertion passed.
+
+**The decision.** All staged file and directory creation goes through one new utility,
+`util/SecureStagedFiles`, which guarantees four properties.
+
+*Owner-only from the first byte.* The mode is supplied as a **creation attribute**, not applied afterwards.
+Creating first and tightening second leaves a window in which the file exists at the umask's mode, and a
+descriptor obtained inside that window keeps its access after the mode changes. Because neither
+`Files.newBufferedWriter` nor `Files.newOutputStream` accepts a creation attribute, creation and opening
+are two steps: `Files.createFile` with the attribute, then an open of what exists.
+
+*Never through a link, and never onto a directory.* The target is examined with `NOFOLLOW_LINKS` before
+anything is written, and the open itself carries `NOFOLLOW_LINKS` so that a link substituted in the
+interval between creating and opening makes the open fail rather than redirect it. A link is **refused
+rather than deleted**, because deleting it is a second thing whoever planted it could have wanted.
+
+*Never silently reused.* A file is created with `CREATE_NEW`. The legacy allocate-new disposition is
+honoured by **removing** what a previous run left and creating afresh, rather than by truncating in place —
+truncation keeps the previous run's mode and its owner.
+
+*Directories the module creates are owner-only too*, because a readable staging directory discloses the
+generation names and those names carry the execution identifiers the object keys are built from.
+
+**What this deliberately does not do, and why.** It does not change the mode of a directory that already
+exists. The default staging root resolved to `${java.io.tmpdir}`, which on every Unix host is
+world-writable and sticky by design and shared with the rest of the system; tightening it would be
+vandalism on a path the module does not own. The root's default therefore **moves to a named subdirectory**,
+`${java.io.tmpdir}/carddemo-batch-staging`, which the module does create and can therefore make owner-only.
+Overriding `CARDDEMO_BATCH_STAGING_DIRECTORY` to a shared directory gives up the guarantee for the
+directory listing; the generations within it stay owner-only either way. The utility does check, on a
+pre-existing directory, that it is a directory and is not a link, because both are how a staging path gets
+redirected.
+
+It does not encrypt. A staged file is short-lived local scratch on the way to object storage, where
+durability and encryption belong; a second key-management surface here would add a secret to protect
+without removing the exposure this addresses.
+
+Two paths that already made a weaker attempt were brought under the same policy. `util/ExternalStringSorter`
+created its work area and its spill files and tightened them afterwards, which is the window described
+above. `batch/step/StagedGenerationStore`'s fixed-name alias is produced by `Files.copy`, which without
+`COPY_ATTRIBUTES` creates its target at the umask rather than at the source's mode — so the alias, a
+byte-for-byte duplicate of the completed generation, was the one readable copy of it.
+
+**Divergence from the legacy behaviour, stated plainly.** This is stronger than the baseline, and the
+baseline had nothing to say. It is recorded here so that a reviewer does not read the tightening as a
+behavioural regression, and so that an operator who overrides the staging root understands exactly which
+of the four guarantees that override affects.
+
+*Cited by:* `util/SecureStagedFiles.java`, `util/ExternalStringSorter.java`,
+`batch/step/StagedGenerationStore.java`, `batch/BackupTransactionJobConfig.java`,
+`batch/CategoryBalanceReportJobConfig.java`, `batch/CombineTransactionsJobConfig.java`,
+`batch/CreateStatementJobConfig.java`, `batch/InterestCalculationJobConfig.java`,
+`batch/PostTransactionJobConfig.java`, `batch/TransactionReportJobConfig.java`,
+`src/main/resources/application.yml`.
+
+---
+
+### DL-179 — A release attempts everything it holds, keeps the first failure and carries the rest beneath it
+
+**Context.** The combine-transactions ordering stream holds three things: a reader over the ordered work
+file, that file, and the per-execution directory minted to hold it. Its release closed the reader and, if
+that close failed, **threw immediately** — so the work file, which holds the ordered concatenation of every
+posted transaction from both inputs, stayed on the host indefinitely with no diagnostic naming it. The same
+release ran from the preparation path's own failure handler, where a cleanup failure would additionally
+have **replaced** the preparation failure that was the actual diagnosis.
+
+**The decision.** Releasing is one method that always attempts all three, in the order a filesystem
+requires — descriptor, then file, then directory, because a directory cannot be removed until it is empty.
+Every handle is cleared whether its own release succeeded or not, so a second call cannot attempt the same
+release twice, which matters because the framework may close a stream it has already closed.
+
+Failures are **collected, not thrown as they occur**. The public close reports the first as the cause of one
+`ItemStreamException` and attaches every later one with `addSuppressed`. The preparation path reports the
+**preparation** failure as the cause and attaches the cleanup failures beneath it: a handle that could not
+be released is worth knowing about and is never the reason the step failed.
+
+The preparation path also now releases on **any** runtime failure and not only on an I/O failure. An input
+that cannot be allocated is a `IllegalStateException`, which the previous handler did not catch, so that
+path minted a work area and left it behind. Such a failure is rethrown as itself — neither its type nor its
+message changes — with the cleanup failures suppressed beneath it. What must not differ by failure type is
+the release, because leaving the work area behind on one path and not on another is how a leak survives
+every test written against the other path.
+
+*Cited by:* `batch/CombineTransactionsJobConfig.java`.
 
 ---
 

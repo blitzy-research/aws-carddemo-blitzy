@@ -21,7 +21,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -32,7 +31,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
@@ -89,8 +87,13 @@ import com.carddemo.util.ZonedDecimalCodec;
  * {@code getCurrentTimestamp}, 273 {@code returnToPrevScreen}, 289 {@code sendBillpayScreen}, 306
  * {@code receiveBillpayScreen}, 319 {@code populateHeaderInfo}, 343 {@code readAcctdatFile}, 377
  * {@code updateAcctdatFile}, 408 {@code readCxacaixFile}, 441 {@code startbrTransactFile}, 472
- * {@code readprevTransactFile}, 501 {@code endbrTransactFile}, 510 {@code writeTransactFile}, 552
- * {@code clearCurrentScreen}, 560 {@code initializeAllFields}.
+ * {@code readprevTransactFile}, 501 {@code endbrTransactFile}, 510 {@code resolveWriteResponse} with
+ * {@code applyWriteResponse}, 552 {@code clearCurrentScreen}, 560 {@code initializeAllFields}.
+ *
+ * <p>The insert paragraph at line 510 is the one paragraph that becomes two methods rather than one,
+ * and the split is on the unit-of-work boundary rather than on a functional line: the store half runs
+ * inside the unit and the response arms run after it has completed. Neither half is reachable without
+ * the other and both carry the same paragraph's line, so the traceability row for line 510 names both.
  *
  * <p>This member contains no backward {@code GO TO}, so no method here reproduces a loop, and every
  * performed range is the paired paragraph-and-exit idiom that becomes a private method with an early
@@ -122,6 +125,18 @@ import com.carddemo.util.ZonedDecimalCodec;
  * deliberately not aligned. Because the amount paid <em>is</em> the full current balance, the
  * resulting balance is exactly zero.
  *
+ * <p><strong>The two writes are two independent units of work, and that independence is part of the
+ * contract rather than an implementation convenience.</strong> Both files this member writes are
+ * defined to the region with {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}
+ * ({@code app/csd/CARDDEMO.CSD}), so neither is logged and neither is backed out: the record written
+ * at line 233 is durable the instant it is written, and whatever happens to the account rewrite at
+ * line 235 cannot undo it. A single unit of work spanning both would therefore be a behaviour the
+ * legacy does not have - a failed account rewrite would silently remove a transaction the operator
+ * has already been told about, and a handled write failure would leave the unit unable to commit the
+ * rewrite that the source performs regardless. Each write is consequently executed in its own
+ * {@link OnlineTransactionBoundary} unit, and each unit's failure is translated into its own
+ * paragraph's response arm <em>after</em> that unit has completed its rollback.
+ *
  * <h2>What this service is not</h2>
  *
  * <p>This member is not one of the five programs that include the attention-key copybook, so it
@@ -133,26 +148,19 @@ import com.carddemo.util.ZonedDecimalCodec;
  * concurrent turns cannot observe one another, and no identifier, account or balance is cached
  * between calls.
  *
- * <p>This type is deliberately <em>not</em> {@code final}. The {@code @Transactional} methods
- * declared below are advised through a CGLIB subclass proxy, and a final class cannot be
- * subclassed, so declaring this type final makes the application context fail to start with
- * {@code Cannot subclass final class}. The proxy is what applies the declared transaction
- * semantics, so the modifier and the annotation cannot both be present. The sibling services that
- * carry transactional methods are non-final for the same reason, and extension is not invited: the
- * constructor is the only way to build one, every field is final, and no method is designed to be
- * overridden.
+ * <p>This type declares no transactional method of its own and therefore needs no framework-generated
+ * subclass proxy, which is why it is {@code final} exactly as its four sibling screen services are.
+ * Every durable write is executed through {@link OnlineTransactionBoundary}, whose own proxy owns the
+ * unit of work; a service that additionally annotated itself would have to be non-final to be advised,
+ * and would drag the outer error-mapping code into the same rollback-only unit it is trying to report
+ * on.
  *
  * @see MessageCatalogService
  * @see NavigationService
+ * @see OnlineTransactionBoundary
  */
-// NOT FINAL, AND THAT IS A REQUIREMENT RATHER THAN AN OVERSIGHT. The transactional methods below
-// are advised by a framework-generated subclass proxy, and a final class cannot be subclassed - so
-// declaring this class final makes the application fail to start, rather than making it start with
-// the advice silently absent. The sibling services that carry transactional methods are non-final
-// for the same reason. Extension is not invited: the constructor is the only way to build one, every
-// field is final, and no method is designed to be overridden.
 @Service
-public class BillPaymentService {
+public final class BillPaymentService {
 
     private static final Logger LOG = LoggerFactory.getLogger(BillPaymentService.class);
 
@@ -880,6 +888,19 @@ public class BillPaymentService {
     private final NavigationService navigationService;
 
     /**
+     * The proxied unit of work each of this member's two durable writes runs inside.
+     *
+     * <p>Used twice per confirmed turn and never once: the allocate-and-insert span of lines 212 to
+     * 233 is one unit, and the account rewrite of line 235 is another. Both files are defined
+     * {@code RECOVERY(NONE)}, so the legacy outcomes are independent and ordered, and one shared unit
+     * would couple them. Because this service is not itself transactional, a failure inside either
+     * unit has finished rolling back by the time control returns here, which is what lets the
+     * corresponding paragraph report the source's own response arm instead of a rollback-only unit
+     * failing again at commit.
+     */
+    private final OnlineTransactionBoundary transactionBoundary;
+
+    /**
      * The clock standing in for the system time requests at lines 251 and 321.
      *
      * <p>A JDK abstraction injected as a bean, which is what makes the zero-fraction timestamp
@@ -896,6 +917,8 @@ public class BillPaymentService {
      * @param cardCrossReferenceRepository the cross-reference access path; mandatory
      * @param messageCatalogService        the common-message catalogue; mandatory
      * @param navigationService            the navigation rules; mandatory
+     * @param transactionBoundary          the proxied unit of work each durable write runs inside;
+     *                                     mandatory
      * @param clock                        the clock the timestamp and the screen header read;
      *                                     mandatory
      * @throws NullPointerException if any collaborator is {@code null}
@@ -905,6 +928,7 @@ public class BillPaymentService {
             final CardCrossReferenceRepository cardCrossReferenceRepository,
             final MessageCatalogService messageCatalogService,
             final NavigationService navigationService,
+            final OnlineTransactionBoundary transactionBoundary,
             final Clock clock) {
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
@@ -916,6 +940,8 @@ public class BillPaymentService {
                 "messageCatalogService must not be null");
         this.navigationService =
                 Objects.requireNonNull(navigationService, "navigationService must not be null");
+        this.transactionBoundary =
+                Objects.requireNonNull(transactionBoundary, "transactionBoundary must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -931,26 +957,43 @@ public class BillPaymentService {
      * 149 by re-arming the transaction. Nothing is retained between calls, so two concurrent turns are
      * wholly independent.
      *
-     * <h2>Why the whole turn is one transaction</h2>
+     * <h2>Why this method is not itself transactional, and where the units of work are</h2>
      *
-     * <p>The transactional boundary spans the entire turn because the legacy unit of work is the task,
-     * and because the identifier rule requires it: the maximum existing key is read, incremented and
-     * inserted inside one unit of work, and splitting the read from the write - or caching the value
-     * read - would let two concurrent payments mint the same identifier. The boundary also covers the
-     * account rewrite, so a conflict on that rewrite rolls the inserted transaction back with it,
-     * which is the behaviour the estate's single explicit rollback expresses on the online update path.
+     * <p>This method carries no transaction of its own. The two durable writes the source performs -
+     * the transaction insert at line 233 and the account rewrite at line 235 - each run inside their
+     * own {@link OnlineTransactionBoundary} unit, and every read outside those units runs
+     * non-transactionally. Two properties of the legacy make that the faithful arrangement rather than
+     * merely a convenient one.
      *
-     * <p><strong>The boundary alone is necessary and not sufficient, and the advisory lock is what
-     * completes it.</strong> Under the {@code READ COMMITTED} isolation this module runs at, a row
-     * another transaction has inserted but not yet committed is invisible, so a shared boundary does not
-     * by itself stop two concurrent payments from observing the same maximum. The payment stage
-     * therefore takes {@link TransactionRepository#lockIdentifierAllocation(long)} before the maximum is
-     * read; that lock is transaction-scoped, so this boundary is exactly what holds it across the
-     * increment, the insert and its flush, and releases it on commit and on rollback alike.
+     * <p><strong>The two files are unrecoverable, so their outcomes are independent.</strong> Both are
+     * defined to the region with {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}, so neither is logged
+     * and neither is backed out. The inserted transaction is durable the moment it is written and no
+     * later failure removes it; the source proves it relies on exactly that by performing the balance
+     * computation and the account rewrite unconditionally, testing no flag between the write and the
+     * rewrite. A unit of work spanning both writes would instead delete a transaction the operator has
+     * already been shown, which is a behaviour the legacy does not have.
      *
-     * <p>The turns that touch no data at all - a transfer, a cleared screen, an unmapped key - run
-     * inside the same boundary and commit nothing, which costs a boundary and buys a single, uniform
-     * rule instead of a conditional one.
+     * <p><strong>A handled write failure must not be able to poison the rest of the turn.</strong> The
+     * insert paragraph translates a refused write into an operator message and the sequence continues.
+     * Inside a shared unit that translation would be moot: the refused flush marks the unit for
+     * rollback, so the rewrite that follows could not commit and the turn would fail at commit with a
+     * failure no arm had chosen. Running the insert in its own unit and catching its failure
+     * <em>after</em> that unit has completed its rollback is what keeps the translated arm the actual
+     * outcome.
+     *
+     * <p><strong>The identifier rule still holds, because the allocation lock is taken inside the
+     * insert's own unit.</strong> Under the {@code READ COMMITTED} isolation this module runs at, a row
+     * another transaction has inserted but not yet committed is invisible, so a unit of work does not
+     * by itself stop two concurrent payments from observing the same maximum. The insert unit therefore
+     * takes {@link TransactionRepository#lockIdentifierAllocation(long)} as its first statement, before
+     * the maximum is read; the lock is transaction-scoped, so that unit holds it across the increment,
+     * the insert and its flush and releases it when the unit ends. The account rewrite needs no such
+     * lock and is deliberately outside it, so a payment does not serialise every other allocator behind
+     * an account write.
+     *
+     * <p>The turns that touch no data at all - a transfer, a cleared screen, an unmapped key - open no
+     * unit of work whatsoever, which is what makes an unconfirmed submission cost one keyed read and
+     * nothing else.
      *
      * <h2>What this method throws</h2>
      *
@@ -971,7 +1014,6 @@ public class BillPaymentService {
      * @throws OptimisticLockConflictException if another writer changed the account between this
      *                                         turn's read and its write
      */
-    @Transactional
     public BillPaymentResult processBillPayment(final BillPaymentScreenInput input) {
         Objects.requireNonNull(input, "input must not be null");
 
@@ -1271,18 +1313,19 @@ public class BillPaymentService {
      * line 488 writes zeros into the key, so an empty table seeds zero and the first identifier is one.
      *
      * <p><strong>The increment happens here, not in the repository.</strong> The repository supplies the
-     * maximum and nothing else, and the increment and the insert share this method's transaction.
+     * maximum and nothing else, and the increment and the insert share the unit of work that
+     * {@link #allocateAndWriteTransaction(TurnState)} opens.
      *
      * <p><strong>What actually prevents two concurrent payments from observing the same maximum is the
-     * advisory lock, taken before the browse.</strong> Sharing a transaction is not enough on its own:
-     * under {@code READ COMMITTED} an uncommitted insert is invisible, so two allocators inside their own
-     * transactions can both read the same maximum, derive the same successor and collide on the primary
-     * key. The lock admits one allocator at a time and is transaction-scoped, so it is held from before
-     * the browse until this turn ends - which is the serialisation the legacy region obtained by holding
-     * its browse position across its own read, increment and write. Lines 212 to 233 are then performed
-     * up to {@link #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an identifier taken by a writer that
-     * reached the table <em>without</em> the lock is re-minted from a re-read maximum rather than
-     * refused.
+     * advisory lock, taken before the browse and inside that same unit.</strong> Sharing a unit of work
+     * is not enough on its own: under {@code READ COMMITTED} an uncommitted insert is invisible, so two
+     * allocators inside their own units can both read the same maximum, derive the same successor and
+     * collide on the primary key. The lock admits one allocator at a time and is transaction-scoped, so
+     * it is held from before the browse until the insert's unit ends - which is the serialisation the
+     * legacy region obtained by holding its browse position across its own read, increment and write.
+     * Lines 212 to 233 are then performed up to {@link #IDENTIFIER_ALLOCATION_ATTEMPTS} times, so an
+     * identifier taken by a writer that reached the table <em>without</em> the lock is re-minted from a
+     * re-read maximum rather than refused.
      *
      * <p><strong>The first identifier on an empty table is the sixteen-character string
      * {@code 0000000000000001}, not {@code 1}</strong>, because the source moves a sixteen-digit numeric
@@ -1300,40 +1343,24 @@ public class BillPaymentService {
      * first rollback after an identifier is consumed guarantees a gap - after which a sequence would
      * diverge from the legacy numbering for the remaining life of the table.
      *
+     * <h2>Two writes, two units of work</h2>
+     *
+     * <p>The insert at line 233 and the account rewrite at line 235 are written in that order and each
+     * completes on its own. Both files are defined {@code RECOVERY(NONE)}, so the legacy backs neither
+     * out and a failure of the second cannot remove the first; the source relies on exactly that by
+     * performing lines 234 and 235 whether or not the write succeeded, testing no flag between them.
+     * That unconditional continuation is reproduced here, and it is only meaningful because the insert's
+     * unit of work has already completed by the time the rewrite is attempted.
+     *
      * @param state the turn's working storage
      */
     private void makeBillPayment(final TurnState state) {
-        // PERFORM READ-CXACAIX-FILE at line 211.
+        // PERFORM READ-CXACAIX-FILE at line 211. A keyed read, outside any unit of work.
         readCxacaixFile(state);
 
-        // Take the advisory lock that serialises identifier allocation BEFORE the browse reads the
-        // maximum, which is the obligation the repository's own contract places on this service. The
-        // lock is transaction-scoped, so it is held for the rest of this turn - across the increment,
-        // the insert and every flush of it - and is released by commit and by rollback alike. Taking it
-        // once is enough: it is re-entrant within a session, so the retry below does not re-take it.
-        transactionRepository.lockIdentifierAllocation(
-                TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
-
-        // Lines 212 to 233 are performed as one allocate-and-write span, and repeated only when the
-        // identifier the span minted turned out to be taken already - which the lock above makes
-        // impossible between two allocators that both take it, and which therefore reports a writer
-        // that reached the table without it. The last attempt lets the insert paragraph report the
-        // source's own duplicate arm instead of re-reading again, so the bound is observable.
-        for (int attempt = 1; attempt <= IDENTIFIER_ALLOCATION_ATTEMPTS; attempt++) {
-            state.finalAllocationAttempt = attempt == IDENTIFIER_ALLOCATION_ATTEMPTS;
-            state.identifierAlreadyTaken = false;
-
-            mintAndWriteTransaction(state);
-
-            if (!state.identifierAlreadyTaken) {
-                break;
-            }
-            // Neither the identifier nor the account is named: both are identifiers.
-            LOG.warn("The minted transaction identifier was already stored, which can only happen when"
-                            + " a writer reached the transaction master without the allocation lock;"
-                            + " re-reading the maximum under the lock: file=TRANSACT attempt={} of {}",
-                    attempt, IDENTIFIER_ALLOCATION_ATTEMPTS);
-        }
+        // Lines 212 to 233: allocate the identifier, assemble the record and insert it, as one
+        // independently completed unit of work whose failure is translated after it has rolled back.
+        allocateAndWriteTransaction(state);
 
         // COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT at line 234.
         //
@@ -1347,13 +1374,70 @@ public class BillPaymentService {
                 currentBalanceOfRecord(state).subtract(state.transactionRecord.getTranAmt()));
 
         // PERFORM UPDATE-ACCTDAT-FILE at line 235. Reached whether or not the write succeeded, because
-        // the source tests no flag between the two.
+        // the source tests no flag between the two, and reachable as a rewrite that can still commit
+        // because the insert's unit of work is already closed.
         updateAcctdatFile(state);
     }
 
     /**
-     * The allocate-and-write span of lines 212 to 233: position the browse, read the maximum backward,
-     * end the browse, increment, assemble the record and insert it.
+     * Runs lines 212 to 233 inside one unit of work and then applies the write paragraph's own response
+     * arms outside it.
+     *
+     * <p><strong>Why the arms are applied out here rather than where the store is called.</strong> A
+     * refused insert marks its unit of work for rollback. Translating that refusal into an operator
+     * message while still inside the unit leaves the message as the apparent outcome and the rollback as
+     * the real one, so the turn would fail at commit with a failure no arm had chosen, and the
+     * unconditional rewrite of line 235 could not commit either. Catching the failure out here - after
+     * {@link OnlineTransactionBoundary} has completed the rollback - is what makes the translated arm the
+     * actual outcome, which is the behaviour the legacy write paragraph has.
+     *
+     * <p><strong>Only the insert's own failure is translated.</strong> A failure of the advisory lock or
+     * of the existence probe is not a response to a write, has no arm in the source, and is left to
+     * propagate exactly as it did before; the flag the record assembly sets immediately before the
+     * insert is what distinguishes the two. A failure raised at commit rather than at flush is the
+     * insert's failure too, and reaches the same arm - which is only observable at all because the unit
+     * completes out here rather than at the end of the turn.
+     *
+     * @param state the turn's working storage
+     */
+    private void allocateAndWriteTransaction(final TurnState state) {
+        // Not final: it is resolved either by the unit of work or by the classification of that unit's
+        // failure, and a blank final cannot be assigned from both a try and its handler.
+        WriteResponse response;
+        try {
+            response = this.transactionBoundary.execute(() -> mintAndWriteTransaction(state));
+        } catch (final RuntimeException writeFailure) {
+            if (!state.insertAttempted) {
+                // Not a response to a write: the lock or the probe failed and the source has no arm for
+                // it. Propagating is what this service did before the two writes were separated, and
+                // separating them is not a licence to start swallowing it.
+                throw writeFailure;
+            }
+
+            // The unit that attempted the insert has finished rolling back before control reached here,
+            // so nothing of it is in the table and no arm may report a stored record.
+            state.createdTransaction = null;
+            if (isDuplicateKeyFailure(writeFailure)) {
+                // WHEN DFHRESP(DUPKEY) WHEN DFHRESP(DUPREC) at lines 533 and 534.
+                LOG.warn("The transaction master already holds the minted bill-payment identifier:"
+                                + " failureChain={}",
+                        FailureDiagnostics.failureChainOf(writeFailure));
+                response = WriteResponse.DUPLICATE;
+            } else {
+                // WHEN OTHER at lines 540 to 546.
+                LOG.error("Writing the bill-payment transaction failed: failureChain={}",
+                        FailureDiagnostics.failureChainOf(writeFailure));
+                response = WriteResponse.OTHER;
+            }
+        }
+
+        applyWriteResponse(state, response);
+    }
+
+    /**
+     * The allocate-and-write span of lines 212 to 233, executed inside the insert's unit of work:
+     * position the browse, read the maximum backward, end the browse, increment, assemble the record and
+     * insert it.
      *
      * <p><strong>Why this span is a method of its own, when no paragraph corresponds to it.</strong> The
      * bounded re-allocation the repository's contract obliges this service to carry has to repeat exactly
@@ -1364,13 +1448,66 @@ public class BillPaymentService {
      * the account rewrite at line 235 after it - so extracting the span is what keeps the repetition
      * honest. The paragraph map is unaffected: every paragraph this span performs keeps its own method.
      *
+     * <p>The advisory lock is taken here, as the span's first statement and therefore inside the unit of
+     * work, so it is held from before the maximum is read until that unit ends. Taking it once is enough:
+     * it is re-entrant within a session and one acquisition already covers every attempt this span makes,
+     * because all of them run inside the one unit.
+     *
+     * <p>No response arm is applied here. The span reports which arm the write resolved to and the caller
+     * applies it once the unit has completed, so that a refused write cannot be reported from inside the
+     * unit it refused.
+     *
+     * @param state the turn's working storage
+     * @return the arm the write resolved to, which the caller applies
+     */
+    private WriteResponse mintAndWriteTransaction(final TurnState state) {
+        // Take the advisory lock that serialises identifier allocation BEFORE the browse reads the
+        // maximum, which is the obligation the repository's own contract places on this service. The
+        // lock is transaction-scoped, so it is held for the rest of this unit of work - across the
+        // increment, the insert and its flush - and is released by commit and by rollback alike.
+        this.transactionRepository.lockIdentifierAllocation(
+                TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+
+        // Lines 212 to 233 are performed as one allocate-and-write span, and repeated only when the
+        // identifier the span minted turned out to be taken already - which the lock above makes
+        // impossible between two allocators that both take it, and which therefore reports a writer
+        // that reached the table without it. The last attempt lets the insert's own duplicate arm report
+        // the source's already-exists text instead of re-reading again, so the bound is observable.
+        WriteResponse response = WriteResponse.OTHER;
+        for (int attempt = 1; attempt <= IDENTIFIER_ALLOCATION_ATTEMPTS; attempt++) {
+            state.finalAllocationAttempt = attempt == IDENTIFIER_ALLOCATION_ATTEMPTS;
+            state.identifierAlreadyTaken = false;
+            state.insertAttempted = false;
+
+            // Lines 212 to 232.
+            mintTransactionRecord(state);
+
+            // PERFORM WRITE-TRANSACT-FILE at line 233, store half only.
+            response = resolveWriteResponse(state);
+
+            if (!state.identifierAlreadyTaken) {
+                break;
+            }
+            // Neither the identifier nor the account is named: both are identifiers.
+            LOG.warn("The minted transaction identifier was already stored, which can only happen when"
+                            + " a writer reached the transaction master without the allocation lock;"
+                            + " re-reading the maximum under the lock: file=TRANSACT attempt={} of {}",
+                    attempt, IDENTIFIER_ALLOCATION_ATTEMPTS);
+        }
+        return response;
+    }
+
+    /**
+     * Lines 212 to 232: position the browse, read the maximum backward, end the browse, increment and
+     * assemble the record.
+     *
      * <p>The first statement is the move of the high-value sentinel at line 212, which is also what makes
      * the span repeatable - the browse-start paragraph requires that sentinel, and a second attempt would
      * otherwise be positioned at the identifier the first attempt minted.
      *
      * @param state the turn's working storage
      */
-    private void mintAndWriteTransaction(final TurnState state) {
+    private void mintTransactionRecord(final TurnState state) {
         // MOVE HIGH-VALUES TO TRAN-ID at line 212: position the browse past the last record.
         state.transactionKey = HIGH_VALUES_TRANSACTION_KEY;
 
@@ -1424,9 +1561,6 @@ public class BillPaymentService {
                 tranCardNum,
                 tranOrigTs,
                 tranProcTs);
-
-        // PERFORM WRITE-TRANSACT-FILE at line 233.
-        writeTransactFile(state);
     }
 
     // ==============================================================================================
@@ -1792,6 +1926,31 @@ public class BillPaymentService {
      * The flush is deliberate and is the whole reason this is not a plain save: the provider's version
      * check has to run while this method is still on the stack.
      *
+     * <h2>Its own unit of work, and why</h2>
+     *
+     * <p>The rewrite runs in a unit of work of its own, separate from the one that inserted the
+     * transaction. Both files are defined {@code RECOVERY(NONE)}, so the legacy backs neither out and a
+     * failure here cannot remove the record written at line 233 - which is exactly the independence the
+     * source relies on when it performs this paragraph whether or not the write succeeded. Sharing one
+     * unit would instead delete a transaction the operator has already been shown, and would additionally
+     * make this rewrite uncommittable whenever the insert had reported a handled failure.
+     *
+     * <h2>Why the row is re-read inside that unit</h2>
+     *
+     * <p>The account was read at line 343 in a unit that has since ended, so the instance the turn is
+     * carrying is detached. Handing a detached versioned instance to a save would make the provider merge
+     * it, and a merge whose row has since been <em>deleted</em> inserts it again rather than reporting the
+     * invalid-key condition - a silent resurrection the legacy has no analogue for. Re-reading inside this
+     * unit removes that path at no cost, because the merge would have issued the same select anyway: an
+     * absent row is the source's own not-found response on rewrite at lines 390 to 395, and a version that
+     * no longer matches the one the read observed is the conflict.
+     *
+     * <p>The pair is race free without a pessimistic read. The explicit comparison catches a writer that
+     * committed between line 343 and this re-read, and the versioned update the flush issues names the
+     * re-read version in its predicate, so a writer that commits between the re-read and the flush turns
+     * it into a zero-row outcome that the provider reports as a stale-state failure. Nothing between the
+     * two can be lost.
+     *
      * @param state the turn's working storage
      * @return the arm the rewrite resolved to
      * @throws OptimisticLockConflictException if the version check failed
@@ -1804,18 +1963,61 @@ public class BillPaymentService {
             return FileResponse.OTHER;
         }
 
-        state.account.setAcctCurrBal(state.postPaymentBalance);
+        final String accountId = state.account.getAcctId();
+        final long versionRead = state.account.getVersion();
         try {
-            state.account = accountRepository.saveAndFlush(state.account);
-            return FileResponse.NORMAL;
+            return this.transactionBoundary.execute(() -> rewriteHeldAccount(state, accountId,
+                    versionRead));
+        } catch (final OptimisticLockConflictException conflict) {
+            // Already the domain conflict, raised by the version comparison inside the unit. Rethrown
+            // unchanged so the unit's rollback is what completed and not a second translation.
+            throw conflict;
         } catch (final OptimisticLockingFailureException | OptimisticLockException conflict) {
             // The second type is caught for the case where the provider's exception is not translated;
             // the first is what a translated repository raises. Either way the outcome is one domain
             // conflict, and the account key travels with it so a caller can name the record.
             throw new OptimisticLockConflictException(
                     OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
-                    ENTITY_NAME_ACCOUNT, state.account.getAcctId(), conflict);
+                    ENTITY_NAME_ACCOUNT, accountId, conflict);
+        } catch (final RuntimeException rewriteFailure) {
+            // Any other failure of the unit is a rewrite response that is neither normal nor not-found,
+            // which is the catch-all arm at lines 396 to 402. The unit has completed its rollback before
+            // control reached here, so reporting the arm is the turn's actual outcome.
+            LOG.error("Rewriting the account balance failed: file=ACCTDAT failureChain={}",
+                    FailureDiagnostics.failureChainOf(rewriteFailure));
+            return FileResponse.OTHER;
         }
+    }
+
+    /**
+     * The rewrite itself, executed inside its own unit of work.
+     *
+     * @param state       the turn's working storage
+     * @param accountId   the eleven-character account key the turn read
+     * @param versionRead the optimistic version that read observed
+     * @return the normal response, or the not-found response when no row carries the key
+     * @throws OptimisticLockConflictException if the row now carries a different version
+     */
+    private FileResponse rewriteHeldAccount(final TurnState state, final String accountId,
+            final long versionRead) {
+        final Optional<Account> held = this.accountRepository.findById(accountId);
+        if (held.isEmpty()) {
+            // DFHRESP(NOTFND) on the rewrite, lines 390 to 395. The account key is not logged: it is an
+            // identifier, and the arm reports it to the operator by message rather than by diagnostic.
+            LOG.warn("The account to be rewritten is no longer present: file=ACCTDAT");
+            return FileResponse.NOT_FOUND;
+        }
+
+        final Account row = held.get();
+        if (row.getVersion() != versionRead) {
+            throw new OptimisticLockConflictException(
+                    OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
+                    ENTITY_NAME_ACCOUNT, accountId);
+        }
+
+        row.setAcctCurrBal(state.postPaymentBalance);
+        state.account = this.accountRepository.saveAndFlush(row);
+        return FileResponse.NORMAL;
     }
 
     // ==============================================================================================
@@ -1846,8 +2048,10 @@ public class BillPaymentService {
      * @param state the turn's working storage
      */
     private void readCxacaixFile(final TurnState state) {
-        final Optional<CardCrossReference> found = firstXrefByBaseKey(
-                cardCrossReferenceRepository.findByXrefAcctId(state.xrefAcctIdKey));
+        // One keyed READ of the alternate-index path, expressed as the repository's ordered-first
+        // finder: bounded to one row and ordered on the base key, which is the row that read returns.
+        final Optional<CardCrossReference> found = cardCrossReferenceRepository
+                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(state.xrefAcctIdKey);
         final FileResponse response;
         if (found.isEmpty()) {
             response = FileResponse.NOT_FOUND;
@@ -2058,13 +2262,64 @@ public class BillPaymentService {
     // ==============================================================================================
 
     /**
-     * The transaction insert paragraph at lines 510 to 547.
+     * The store half of the transaction insert paragraph at lines 510 to 521, executed inside the
+     * insert's unit of work.
      *
-     * <p>Writes the assembled record and evaluates the response over three arms whose order is
-     * preserved. The normal arm at lines 523 to 532 blanks every field, recolours the message field to
-     * green and composes the success text. The duplicate arm covers both duplicate responses, which the
-     * source groups into one arm at lines 533 and 534. The catch-all reports that the payment
-     * transaction could not be added.
+     * <p>Resolves which of the three response arms the write reaches, and performs the insert itself. The
+     * arms are applied by {@link #applyWriteResponse(TurnState, WriteResponse)} once the unit of work has
+     * completed, because a refused write marks that unit for rollback and an arm applied from inside it
+     * would not be the turn's real outcome.
+     *
+     * <p><strong>The insert is an insert, never a merge.</strong> A generic persistence save of a record
+     * whose key is assigned may merge it and overwrite the existing row. This path uses the repository's
+     * persist-and-flush fragment, so the database reports a duplicate while the write is still in
+     * progress and the existing transaction remains unchanged.
+     *
+     * <p><strong>The existence probe is what keeps the common collision cheap.</strong> Because it runs
+     * before the insert, nothing has been sent to the store when it finds the identifier taken, so the
+     * caller can re-read the maximum under the allocation lock it still holds and mint again without
+     * having consumed the unit of work. A duplicate the store discovers instead abandons the unit and is
+     * reported by the caller under the source's own already-exists text, which is the arm the legacy
+     * write reaches when its own write is refused.
+     *
+     * <p>The catch-all response is resolved when the assembled record cannot be inserted at all: no
+     * identifier was resolved, or no card number was, which is the state the source reaches when the
+     * cross-reference read or the backward read failed and the sequence carried on regardless. Detecting
+     * it here rather than letting the store refuse the row keeps the outcome an operator message - which
+     * is what the legacy produced once its own write was refused - instead of a constraint failure.
+     *
+     * @param state the turn's working storage
+     * @return the arm the write resolved to
+     */
+    private WriteResponse resolveWriteResponse(final TurnState state) {
+        final Transaction record = state.transactionRecord;
+        if (record == null || record.getTranId() == null || !isSupplied(record.getTranCardNum())) {
+            return WriteResponse.OTHER;
+        }
+        if (this.transactionRepository.existsById(record.getTranId())) {
+            // The identifier is already visible, so the insert is never attempted and nothing has been
+            // sent to the store. Every attempt but the last therefore re-reads the maximum under the
+            // lock; the last one lets the caller report the source's own duplicate arm, so the bound on
+            // the re-allocation is observable.
+            state.identifierAlreadyTaken = !state.finalAllocationAttempt;
+            return WriteResponse.DUPLICATE;
+        }
+
+        // Set before the call, not after: it is what tells the caller that a failure escaping this unit
+        // of work is a response to the write rather than a failure of the lock or of the probe.
+        state.insertAttempted = true;
+        state.createdTransaction = this.transactionRepository.insertAndFlush(record);
+        return WriteResponse.NORMAL;
+    }
+
+    /**
+     * The response arms of the transaction insert paragraph at lines 522 to 547, applied outside the
+     * insert's unit of work.
+     *
+     * <p>Evaluates the response over three arms whose order is preserved. The normal arm at lines 523 to
+     * 532 blanks every field, recolours the message field to green and composes the success text. The
+     * duplicate arm covers both duplicate responses, which the source groups into one arm at lines 533
+     * and 534. The catch-all reports that the payment transaction could not be added.
      *
      * <p><strong>The success text carries two consecutive spaces after the first full stop.</strong> The
      * source assembles it from four fragments; the first ends with a space and the second begins with
@@ -2073,55 +2328,13 @@ public class BillPaymentService {
      * than by size, which takes the whole sixteen-character key because a well-formed identifier holds
      * no space.
      *
-     * <p><strong>The duplicate arm is driven by an insert-only flush.</strong> A generic persistence
-     * save of a record whose key is assigned may merge it and overwrite the existing row. This path
-     * instead uses the repository's persist-and-flush fragment, so the database reports a duplicate
-     * while this write paragraph is still executing and the existing transaction remains unchanged.
+     * <p>This method is reached exactly once per turn, after the re-allocation loop has ended, so the
+     * duplicate arm is unconditional here: an attempt that is going to be retried never gets this far.
      *
-     * <p><strong>The existence probe is also what makes the bounded re-allocation possible.</strong>
-     * Because it runs before the insert, nothing is pending when it finds the identifier taken, so the
-     * caller can re-read the maximum under the allocation lock it still holds and mint again. A duplicate
-     * discovered by the store instead would leave the transaction marked for rollback and no further
-     * attempt could succeed, which is exactly why the probe is not redundant with the constraint.
-     *
-     * <p>The catch-all arm fires when the assembled record cannot be inserted: no identifier was
-     * resolved, or no card number was, which is the state the source reaches when the cross-reference
-     * read or the backward read failed and the sequence carried on regardless. Detecting it here rather
-     * than letting the store refuse the row keeps the outcome an operator message - which is what the
-     * legacy produced once its own write was refused - instead of a constraint failure that would roll
-     * the turn back.
-     *
-     * @param state the turn's working storage
+     * @param state    the turn's working storage
+     * @param response the arm the write resolved to
      */
-    private void writeTransactFile(final TurnState state) {
-        final Transaction record = state.transactionRecord;
-        final WriteResponse response;
-        boolean takenBeforeTheInsert = false;
-        if (record == null || record.getTranId() == null || !isSupplied(record.getTranCardNum())) {
-            response = WriteResponse.OTHER;
-        } else if (transactionRepository.existsById(record.getTranId())) {
-            takenBeforeTheInsert = true;
-            response = WriteResponse.DUPLICATE;
-        } else {
-            WriteResponse insertResponse;
-            try {
-                state.createdTransaction = transactionRepository.insertAndFlush(record);
-                insertResponse = WriteResponse.NORMAL;
-            } catch (final RuntimeException writeFailure) {
-                if (isDuplicateKeyFailure(writeFailure)) {
-                    LOG.warn("The transaction master already holds the minted bill-payment identifier:"
-                                    + " failureChain={}",
-                            FailureDiagnostics.failureChainOf(writeFailure));
-                    insertResponse = WriteResponse.DUPLICATE;
-                } else {
-                    LOG.error("Writing the bill-payment transaction failed: failureChain={}",
-                            FailureDiagnostics.failureChainOf(writeFailure));
-                    insertResponse = WriteResponse.OTHER;
-                }
-            }
-            response = insertResponse;
-        }
-
+    private void applyWriteResponse(final TurnState state, final WriteResponse response) {
         // EVALUATE WS-RESP-CD at lines 522 to 547, clause order preserved, catch-all as the default arm.
         switch (response) {
             case NORMAL -> {
@@ -2142,16 +2355,6 @@ public class BillPaymentService {
                 sendBillpayScreen(state);
             }
             case DUPLICATE -> {
-                if (takenBeforeTheInsert && !state.finalAllocationAttempt) {
-                    // The existence probe found the identifier taken and the insert was therefore never
-                    // attempted, so nothing is pending and the caller can mint again from a re-read
-                    // maximum under the lock it still holds. The source's arm below is what reports once
-                    // the attempts are exhausted, so this path defers the message rather than replacing
-                    // it.
-                    state.identifierAlreadyTaken = true;
-                    return;
-                }
-
                 // Lines 533 to 539, one arm for both duplicate responses.
                 state.errorFlag = ErrorFlag.ON;
                 state.setMessage(MSG_TRAN_ID_ALREADY_EXISTS);
@@ -2689,6 +2892,17 @@ public class BillPaymentService {
          */
         private boolean finalAllocationAttempt;
 
+        /**
+         * Whether the insert of line 233 has been asked of the store.
+         *
+         * <p>Also not a legacy field. It is what lets the caller of the insert's unit of work tell a
+         * failure that <em>is</em> a response to the write - reported by the source's duplicate or
+         * catch-all arm - from a failure of the advisory lock or of the existence probe, for which the
+         * source has no response and no arm. Raised immediately before the store is called, so a failure
+         * raised at flush and a failure raised at commit are both attributed to the write.
+         */
+        private boolean insertAttempted;
+
         /** The pre-payment balance the moves at lines 193 and 194 read; absent before they run. */
         private BigDecimal screenBalance;
 
@@ -2867,27 +3081,5 @@ public class BillPaymentService {
                 context.reEntry()
                         ? ConversationState.EntryMode.RE_ENTRY
                         : ConversationState.EntryMode.FIRST_ENTRY);
-    }
-
-    /**
-     * Selects the row a keyed read of the non-unique cross-reference path would have returned: the one
-     * with the lowest card number.
-     *
-     * <p>A keyed {@code READ} of a duplicate-bearing VSAM alternate index returns the first record in
-     * ascending <em>base</em>-key order, and the base key of the cross-reference cluster is the card
-     * number. That is a property of the read being reproduced rather than of the index, so
-     * {@code CardCrossReferenceRepository} returns every matching row and the selection is made here,
-     * at the site whose behaviour depends on it. An empty result is the legacy not-found condition.
-     *
-     * <p>The comparison is on the raw sixteen-character value, neither trimmed nor numeric: every
-     * stored card number is exactly sixteen zero-padded digits, so lexicographic and numeric order
-     * coincide.
-     *
-     * @param candidates every row the account path resolved, possibly empty
-     * @return the row with the lowest card number, or an empty result when the account has none
-     */
-    private static Optional<CardCrossReference> firstXrefByBaseKey(
-            final List<CardCrossReference> candidates) {
-        return candidates.stream().min(Comparator.comparing(CardCrossReference::getXrefCardNum));
     }
 }

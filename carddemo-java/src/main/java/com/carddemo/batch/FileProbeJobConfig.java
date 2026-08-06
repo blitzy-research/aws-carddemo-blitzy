@@ -18,7 +18,6 @@ package com.carddemo.batch;
 
 import com.carddemo.batch.step.AbstractCobolStep;
 import com.carddemo.domain.enums.FileStatus;
-import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.FileMaintenanceService;
 import com.carddemo.util.BatchCancellation;

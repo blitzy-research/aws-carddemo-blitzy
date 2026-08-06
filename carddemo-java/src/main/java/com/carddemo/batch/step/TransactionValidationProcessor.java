@@ -20,6 +20,8 @@ import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.service.TransactionPostingService;
+import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SensitiveLogRedactor;
 import com.carddemo.util.ZonedDecimalCodec;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -445,8 +447,9 @@ public final class TransactionValidationProcessor
                 outcomeTimer = this.rejectedRecordTimer;
                 countRecord(reason);
                 LOGGER.warn("{} refused a daily-transaction record and will write a reject record"
-                                + " - program={} transactionId={} reasonCode={} reason={}",
-                        DIAGNOSTIC_PREFIX, LEGACY_PROGRAM, item.getDalytranId(), reasonCode,
+                                + " - program={} transactionRef={} reasonCode={} reason={}",
+                        DIAGNOSTIC_PREFIX, LEGACY_PROGRAM,
+                        SensitiveLogRedactor.redact(item.getDalytranId()), reasonCode,
                         reasonDescription);
                 return refused;
             }
@@ -601,7 +604,7 @@ public final class TransactionValidationProcessor
     static void requirePostedRecordFidelity(final DailyTransaction source, final Transaction posted) {
         final String transactionId = source.getDalytranId();
         if (posted == null) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " without building a transaction record");
         }
         requireCarriedVerbatim("TRAN-ID", source.getDalytranId(), posted.getTranId(), transactionId);
@@ -651,18 +654,18 @@ public final class TransactionValidationProcessor
      */
     static void requireBatchTimestampForm(final String candidate, final String transactionId) {
         if (candidate == null) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " without a processing timestamp; TRAN-PROC-TS is regenerated on every posted"
                     + " record and is never left absent");
         }
         final int encodedWidth = candidate.getBytes(StandardCharsets.US_ASCII).length;
         if (encodedWidth != AbstractCobolStep.BATCH_TIMESTAMP_LENGTH) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " with a TRAN-PROC-TS of " + encodedWidth + " encoded bytes, but the batch"
                     + " processing timestamp is fixed at " + AbstractCobolStep.BATCH_TIMESTAMP_LENGTH);
         }
         if (candidate.length() != BATCH_TIMESTAMP_TEMPLATE.length()) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " with a TRAN-PROC-TS of " + candidate.length() + " characters, but the batch"
                     + " processing timestamp holds exactly " + BATCH_TIMESTAMP_TEMPLATE.length());
         }
@@ -673,12 +676,13 @@ public final class TransactionValidationProcessor
                     ? isAsciiDigit(actual)
                     : templated == actual;
             if (!acceptable) {
-                throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction "
-                        + transactionId + " with a TRAN-PROC-TS that is not in the batch form at"
+                throw new IllegalStateException(postedRecordDiagnostic(transactionId)
+                        + " with a TRAN-PROC-TS that is not in the batch form at"
                         + " position " + position + "; the batch form has "
                         + (isAsciiDigit(templated) ? "a digit" : "'" + templated + "'")
-                        + " there and the value has '" + actual + "'. The online timestamp form is"
-                        + " the same width as the batch form and must never be substituted for it");
+                        + " there and the value has " + FailureDiagnostics.printableForm(actual)
+                        + ". The online timestamp form is the same width as the batch form and must"
+                        + " never be substituted for it");
             }
         }
     }
@@ -700,7 +704,7 @@ public final class TransactionValidationProcessor
     private static void requireCarriedVerbatim(final String field, final String expected,
             final String actual, final String transactionId) {
         if (!Objects.equals(expected, actual)) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " with a " + field + " that differs from the source record; this field is copied"
                     + " verbatim and is never normalised, reformatted or regenerated");
         }
@@ -726,11 +730,11 @@ public final class TransactionValidationProcessor
     private static void requireAmountCarried(final BigDecimal sourceAmount,
             final BigDecimal postedAmount, final String transactionId) {
         if (sourceAmount == null || postedAmount == null) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " with an absent amount; a fixed-width amount field is never absent");
         }
         if (ZonedDecimalCodec.toMonetaryScale(sourceAmount).compareTo(postedAmount) != 0) {
-            throw new IllegalStateException(DIAGNOSTIC_PREFIX + " posted transaction " + transactionId
+            throw new IllegalStateException(postedRecordDiagnostic(transactionId)
                     + " with a TRAN-AMT that is not worth what the source DALYTRAN-AMT was worth; the"
                     + " amount is carried across unchanged and is scaled only by the module's decimal"
                     + " codec, which truncates toward zero");
@@ -761,9 +765,9 @@ public final class TransactionValidationProcessor
         }
         LOGGER.warn("{} posted a daily-transaction record that carried reason code {} and deliberately"
                         + " wrote no reject record for it, because the reason was raised after the"
-                        + " decision to post - program={} transactionId={} reason={}",
-                DIAGNOSTIC_PREFIX, reasonCode, LEGACY_PROGRAM, item.getDalytranId(),
-                reasonDescription);
+                        + " decision to post - program={} transactionRef={} reason={}",
+                DIAGNOSTIC_PREFIX, reasonCode, LEGACY_PROGRAM,
+                SensitiveLogRedactor.redact(item.getDalytranId()), reasonDescription);
     }
 
     /**
@@ -829,4 +833,31 @@ public final class TransactionValidationProcessor
     private static boolean isAsciiDigit(final char character) {
         return character >= ASCII_ZERO && character <= ASCII_NINE;
     }
+
+    /**
+     * Opens a fidelity diagnostic, naming the record by a redacted reference rather than by its
+     * identifier.
+     *
+     * <p>Every fidelity message on this path is composed through this one method, so the identifier is
+     * redacted once and a message added later cannot reintroduce it by forgetting to.
+     *
+     * <p>The identifier is <strong>read out of the fixed-width daily-transaction image</strong>, so it
+     * is external input on two counts: it identifies a cardholder's transaction, and its bytes are
+     * whatever the record held. {@link SensitiveLogRedactor#redact(String)} answers both counts at once
+     * - it withholds the value and returns a stable per-value correlation reference whose token is
+     * lower-case ASCII hexadecimal, so a record carrying control bytes, a delimiter or a line terminator
+     * cannot inject any of them into a log record or an exception message through this route. The
+     * reference is stable within a run, so the several messages a single failing record produces can
+     * still be tied to one another, which is what the identifier was in the message for.
+     *
+     * @param  transactionId the record's identifier, as read from the image, never rendered
+     * @return the opening clause of the diagnostic, carrying a redacted reference
+     */
+    // See docs/decision-log.md entry DL-177 for why the identifier is withheld here and what the
+    // reference that replaces it retains.
+    private static String postedRecordDiagnostic(final String transactionId) {
+        return DIAGNOSTIC_PREFIX + " posted transaction "
+                + SensitiveLogRedactor.redact(transactionId);
+    }
+
 }

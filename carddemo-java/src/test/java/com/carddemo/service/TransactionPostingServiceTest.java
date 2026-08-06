@@ -252,6 +252,10 @@ class TransactionPostingServiceTest {
         Mockito.when(cardCrossReferenceRepository.findById(CARD))
                 .thenReturn(Optional.of(new CardCrossReference(CARD, "000000001", ACCT)));
         Mockito.when(accountRepository.findById(ACCT)).thenReturn(Optional.of(acct));
+        // The rewrite reads the row under a write lock before it rewrites it, so the ordinary case has
+        // the held read finding it. Absence there is the legacy invalid-key condition and is stubbed
+        // explicitly by the tests that want it.
+        Mockito.when(accountRepository.findByIdForUpdate(ACCT)).thenReturn(Optional.of(acct));
         Mockito.when(accountRepository.rewritePostingBalances(
                         ArgumentMatchers.eq(ACCT),
                         ArgumentMatchers.anyLong(),
@@ -430,7 +434,6 @@ class TransactionPostingServiceTest {
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
                     .thenReturn(0);
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
 
             assertThatExceptionOfType(OptimisticLockConflictException.class)
                     .isThrownBy(() -> service.post(record("T1", "10.00")))
@@ -457,7 +460,6 @@ class TransactionPostingServiceTest {
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
                     .thenReturn(0);
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
 
             assertThatExceptionOfType(OptimisticLockConflictException.class)
                     .isThrownBy(() -> service.post(record("T1", "10.00")));
@@ -482,7 +484,6 @@ class TransactionPostingServiceTest {
                             ArgumentMatchers.any(BigDecimal.class),
                             ArgumentMatchers.any(BigDecimal.class)))
                     .thenReturn(0);
-            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
             List<PostingResult> sink = new ArrayList<>();
 
             assertThatExceptionOfType(OptimisticLockConflictException.class)
@@ -493,6 +494,142 @@ class TransactionPostingServiceTest {
         }
     }
 
+    @Nested
+    @DisplayName("The invalid-key answer is settled under a write lock before the rewrite, not by a "
+            + "second question after it")
+    class TheInvalidKeyAnswerIsHeld {
+
+        @Test
+        @DisplayName("the row is read under a write lock, keyed on the account the cross-reference "
+                + "resolved, before the rewrite is attempted")
+        void theHeldReadPrecedesTheRewriteOnTheResolvedKey() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+
+            service.post(record("T1", "10.00"));
+
+            InOrder ordered = Mockito.inOrder(accountRepository);
+            ordered.verify(accountRepository).findByIdForUpdate(ACCT);
+            ordered.verify(accountRepository).rewritePostingBalances(
+                    ArgumentMatchers.eq(ACCT),
+                    ArgumentMatchers.anyLong(),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class),
+                    ArgumentMatchers.any(BigDecimal.class));
+        }
+
+        @Test
+        @DisplayName("exactly one held read is taken per record, so the hold is not re-acquired and the "
+                + "classification is not re-derived")
+        void oneHeldReadPerRecord() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+
+            service.postAll(List.of(record("T1", "10.00"), record("T2", "20.00")), result -> { });
+
+            Mockito.verify(accountRepository, Mockito.times(2)).findByIdForUpdate(ACCT);
+        }
+
+        @Test
+        @DisplayName("no unprotected existence probe is issued, because an answer obtained after the "
+                + "rewrite could have been inverted by a writer committing in between")
+        void noUnprotectedExistenceProbeIsIssued() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.post(record("T1", "10.00")));
+
+            Mockito.verify(accountRepository, Mockito.never())
+                    .existsById(ArgumentMatchers.anyString());
+        }
+
+        @Test
+        @DisplayName("absence seen by the held read reaches inert 109 even when an unheld read would "
+                + "now find the row, because the held answer is the one that decides")
+        void absenceSeenUnderTheHoldDecidesEvenIfTheRowIsFindableAfterwards() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.findByIdForUpdate(ACCT)).thenReturn(Optional.empty());
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+            // findById still resolves - an unheld read of the same key would report the row present.
+            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(true);
+
+            PostingResult result = service.post(record("T1", "10.00"));
+
+            assertThat(result.rejectReason())
+                    .isEqualTo(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE);
+            assertThat(result.posted()).isTrue();
+        }
+
+        @Test
+        @DisplayName("presence seen by the held read reaches the version refusal even when an unheld "
+                + "read would now report the row gone")
+        void presenceSeenUnderTheHoldDecidesEvenIfTheRowLooksGoneAfterwards() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+            Mockito.when(accountRepository.existsById(ACCT)).thenReturn(false);
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.post(record("T1", "10.00")))
+                    .satisfies(conflict -> assertThat(conflict.conflictKind()).isEqualTo(
+                            OptimisticLockConflictException.ConflictKind
+                                    .RECORD_CHANGED_BEFORE_UPDATE));
+        }
+
+        @Test
+        @DisplayName("the balances the paragraph computed are still carried on the result image when "
+                + "the rewrite took its invalid-key arm, because lines 547 to 552 ran before it")
+        void theComputedBalancesSurviveTheInvalidKeyArm() {
+            resolving(account("100.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.findByIdForUpdate(ACCT)).thenReturn(Optional.empty());
+            Mockito.when(accountRepository.rewritePostingBalances(
+                            ArgumentMatchers.eq(ACCT),
+                            ArgumentMatchers.anyLong(),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class),
+                            ArgumentMatchers.any(BigDecimal.class)))
+                    .thenReturn(0);
+
+            PostingResult result = service.post(record("T1", "25.00"));
+
+            assertThat(result.updatedAccount().getAcctCurrBal())
+                    .as("line 547 added the amount to the balance before the rewrite ran")
+                    .isEqualByComparingTo(new BigDecimal("125.00"));
+            assertThat(result.updatedAccount().getAcctCurrCycCredit())
+                    .isEqualByComparingTo(new BigDecimal("25.00"));
+        }
+
+        @Test
+        @DisplayName("a held read that fails technically abends the run rather than being read as an "
+                + "absent account")
+        void aFailingHeldReadIsNotReadAsAnAbsence() {
+            resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.findByIdForUpdate(ACCT))
+                    .thenThrow(new DataAccessResourceFailureException("lock unavailable"));
+
+            assertThatExceptionOfType(DataAccessResourceFailureException.class)
+                    .isThrownBy(() -> service.post(record("T1", "10.00")));
+
+            Mockito.verify(transactionRepository, Mockito.never())
+                    .insertAndFlush(ArgumentMatchers.any(Transaction.class));
+        }
+    }
     @Nested
     @DisplayName("Every record obtains its own unit of work, and the mainline loop cannot bypass it")
     class ThePerRecordUnitOfWork {
@@ -562,8 +699,7 @@ class TransactionPostingServiceTest {
         @DisplayName("the record still posts and the transaction is still written")
         void theTransactionIsStillWritten() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
-            Mockito.when(accountRepository.existsById(ACCT))
-                    .thenReturn(false);
+            Mockito.when(accountRepository.findByIdForUpdate(ACCT)).thenReturn(Optional.empty());
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
                             ArgumentMatchers.anyLong(),
@@ -598,6 +734,7 @@ class TransactionPostingServiceTest {
         @DisplayName("a run containing one produces no reject record and returns zero")
         void aRunProducesNoRejectRecord() {
             resolving(account("0.00", "99999.00", "0.00", "0.00", "2099-01-01"));
+            Mockito.when(accountRepository.findByIdForUpdate(ACCT)).thenReturn(Optional.empty());
             Mockito.when(accountRepository.rewritePostingBalances(
                             ArgumentMatchers.eq(ACCT),
                             ArgumentMatchers.anyLong(),
@@ -753,6 +890,9 @@ class TransactionPostingServiceTest {
                     transactionRepository);
             ordered.verify(categoryBalanceRepository)
                     .saveAndFlush(ArgumentMatchers.any(TransactionCategoryBalance.class));
+            // The held read belongs to the account stage and must precede the rewrite within it, which
+            // is what makes the invalid-key answer independent of a concurrent writer.
+            ordered.verify(accountRepository).findByIdForUpdate(ACCT);
             ordered.verify(accountRepository).rewritePostingBalances(
                     ArgumentMatchers.eq(ACCT),
                     ArgumentMatchers.anyLong(),

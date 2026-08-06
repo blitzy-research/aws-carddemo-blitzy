@@ -19,17 +19,16 @@ package com.carddemo.batch;
 import com.carddemo.batch.step.CombineTransactionsProcessor;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
-import com.carddemo.config.AwsProperties;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.util.ExternalStringSorter;
 import com.carddemo.util.FailureDiagnostics;
+import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
 import com.carddemo.util.TransactionRecordMapper;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -354,6 +353,23 @@ public final class CombineTransactionsJobConfig {
     /** Prefix of the per-execution combined object staged for downstream inspection or reuse. */
     private static final String COMBINED_OBJECT_KEY_PREFIX = JOB_NAME + "/combined/";
 
+    /** Local file-name prefix of the combined generation of one execution. */
+    private static final String COMBINED_GENERATION_NAME_PREFIX = JOB_NAME + ".combined.";
+
+    /** Local file-name suffix of the combined generation of one execution. */
+    private static final String COMBINED_GENERATION_NAME_SUFFIX = ".dat";
+
+    /**
+     * The record separator the combined generation writes, stated as a byte rather than taken from the
+     * platform.
+     *
+     * <p>The legacy dataset is record-format blocked, so its records are delimited by the access method
+     * and not by a character at all; a line-oriented local file is the closest local equivalent, and the
+     * delimiter must be the same byte on every platform this module builds on. A writer's own newline
+     * would be two bytes on one of them, which would change the external length of every record.
+     */
+    private static final char COMBINED_RECORD_SEPARATOR = '\n';
+
     /**
      * Property naming the one directory a supplied location may name a relative name beneath.
      *
@@ -374,6 +390,17 @@ public final class CombineTransactionsJobConfig {
      * Human-readable label for the second concatenated stream, used only in diagnostics.
      */
     private static final String SYNTHESIZED_STREAM = "synthesized transaction current generation";
+
+    /**
+     * Name prefix of the ordering work area and the file within it.
+     *
+     * <p>The work area is minted per execution rather than named, so two runs of the same job cannot
+     * collide and neither can predict the other's path.
+     */
+    private static final String ORDERING_WORK_PREFIX = "carddemo-combine-order-";
+
+    /** Name suffix of the ordering work file. */
+    private static final String ORDERING_WORK_SUFFIX = ".dat";
 
     /**
      * Commit granularity of both steps: one record.
@@ -605,8 +632,10 @@ public final class CombineTransactionsJobConfig {
         final long identifier = Objects.requireNonNull(jobExecutionId,
                 "the framework must assign a job execution identifier before creating the generation")
                 .longValue();
-        return new InMemoryCombinedGeneration(this.stagingArea,
-                COMBINED_OBJECT_KEY_PREFIX + identifier);
+        return new StagedCombinedGeneration(this.stagingArea,
+                COMBINED_OBJECT_KEY_PREFIX + identifier,
+                this.stagingDirectory.resolve(COMBINED_GENERATION_NAME_PREFIX + identifier
+                        + COMBINED_GENERATION_NAME_SUFFIX));
     }
 
     /**
@@ -878,30 +907,36 @@ public final class CombineTransactionsJobConfig {
      */
     public interface CombinedGeneration
             extends ItemStreamReader<Transaction>, ItemStreamWriter<Transaction> {
-
-        /**
-         * Renders the complete ordered generation at the fixed-width dataset boundary.
-         *
-         * @return the generation bytes, including record separators
-         */
-        byte[] content();
     }
 
     /**
-     * The combined generation held as an ordered result for the duration of one job execution.
+     * The combined generation held as a local sequential file for the duration of one job execution.
      *
      * <p>Records are appended in the order the ordering step wrote them and served in that same order,
      * once each, beginning at the first. Nothing sorts, re-sorts, re-groups, re-keys, deduplicates or
      * aggregates here: the ordering was established by the step before, and this type's entire job is
      * to preserve it.
      *
-     * <p>The state is confined to one job execution by the scope of the bean that publishes it, which
-     * is what makes a mutable list safe here and would make it unsafe as a singleton field. Execution
-     * is strictly sequential and single-threaded by the job's own design, so no synchronisation is
-     * required and none is added - adding it would suggest a concurrent access this job must never
-     * have.
+     * <p><strong>A file and not a list.</strong> The legacy generation is a sequential dataset whose size
+     * is bounded by the volume it sits on, and it is the whole of the transaction master concatenated
+     * with the whole of the synthesized interest stream. Holding it as a list of entities bounded the job
+     * by heap instead, and rendering it to a byte array to publish it held a second complete copy at the
+     * same moment. Each record is therefore written to the file as it arrives and read back from the file
+     * as it is served, so the cost is one buffer in each direction however large the generation is.
+     *
+     * <p>Serving a record means parsing the image that was written, which is what the legacy load step
+     * did: it read the sequential dataset the ordering step had written, record by record, through the
+     * same layout. The ordering reader of this same class already round-trips through that layout for its
+     * own external sort, so the round trip is not a new dependency introduced here.
+     *
+     * <p>The state is confined to one job execution by the scope of the bean that publishes it, which is
+     * what makes a mutable handle safe here and would make it unsafe as a singleton field. Execution is
+     * strictly sequential and single-threaded by the job's own design, so no synchronisation is required
+     * and none is added - adding it would suggest a concurrent access this job must never have.
+     *
+     * <p>See {@code docs/decision-log.md} entry DL-176.
      */
-    private static final class InMemoryCombinedGeneration implements CombinedGeneration {
+    private static final class StagedCombinedGeneration implements CombinedGeneration {
 
         /** Shared staging boundary that publishes the completed generation. */
         private final BatchStagingArea stagingArea;
@@ -909,11 +944,17 @@ public final class CombineTransactionsJobConfig {
         /** Per-execution object key under which the generation is published. */
         private final String objectKey;
 
-        /** The records of this execution's combined generation, in the order they were written. */
-        private final List<Transaction> records = new ArrayList<>();
+        /** Per-execution local file the generation occupies once it has been sealed. */
+        private final Path completedGeneration;
 
-        /** How many records have already been served to the load step. */
-        private int served;
+        /** Open while the generation is being composed; the working file is its sibling. */
+        private BufferedWriter composer;
+
+        /** Open while the generation is being served. */
+        private BufferedReader server;
+
+        /** Whether the generation has been sealed, so that the completed file is whole. */
+        private boolean sealed;
 
         /** Whether the ordering step has already published this generation. */
         private boolean published;
@@ -921,22 +962,38 @@ public final class CombineTransactionsJobConfig {
         /**
          * Creates an empty combined generation.
          *
-         * <p>Declared explicitly so that the absence of any constructor argument is visible: the
-         * artefact begins empty because the legacy generation began empty, and every record it holds
-         * arrives through the ordering step rather than through construction.
+         * @param stagingArea         the staging boundary that publishes it
+         * @param objectKey           the durable name of this execution's generation
+         * @param completedGeneration the local file this execution's generation occupies
          */
-        InMemoryCombinedGeneration(final BatchStagingArea stagingArea, final String objectKey) {
+        StagedCombinedGeneration(final BatchStagingArea stagingArea, final String objectKey,
+                final Path completedGeneration) {
             this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
             this.objectKey = Objects.requireNonNull(objectKey, "objectKey must not be null");
+            this.completedGeneration =
+                    Objects.requireNonNull(completedGeneration, "completedGeneration must not be null");
         }
 
+        /**
+         * Prepares whichever role this stream is being opened for.
+         *
+         * <p>Before the generation has been sealed this is the writing step opening its output, so a
+         * fresh composition begins and anything a previous attempt left behind is discarded - opening
+         * twice cannot append one pass to another. Afterwards it is the reading step opening its input,
+         * so the served position returns to the first record.
+         *
+         * @param  executionContext the framework's context for this stream; never {@code null}
+         * @throws NullPointerException if {@code executionContext} is {@code null}
+         */
         @Override
         public void open(final ExecutionContext executionContext) {
             Objects.requireNonNull(executionContext, "executionContext must not be null");
-            if (!this.published) {
-                this.records.clear();
+            if (this.sealed) {
+                closeServerQuietly();
+                return;
             }
-            this.served = 0;
+            closeComposerQuietly();
+            beginComposition();
         }
 
         /**
@@ -946,21 +1003,23 @@ public final class CombineTransactionsJobConfig {
          * @throws NullPointerException if {@code loaded} is {@code null}, which would mean the
          *                              framework contract was breached rather than that a group was
          *                              empty
+         * @throws ItemStreamException  if the generation cannot be written
          */
         @Override
         public void write(final Chunk<? extends Transaction> loaded) {
             Objects.requireNonNull(loaded, "loaded must not be null");
-            records.addAll(loaded.getItems());
-        }
-
-        @Override
-        public byte[] content() {
-            final ByteArrayOutputStream rendered = new ByteArrayOutputStream();
-            for (final Transaction record : this.records) {
-                rendered.writeBytes(TransactionRecordMapper.toRecordBytes(record));
-                rendered.write('\n');
+            if (this.composer == null) {
+                beginComposition();
             }
-            return rendered.toByteArray();
+            try {
+                for (final Transaction record : loaded.getItems()) {
+                    this.composer.write(TransactionRecordMapper.toRecord(record));
+                    this.composer.write(COMBINED_RECORD_SEPARATOR);
+                }
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be written", failure);
+            }
         }
 
         /**
@@ -970,23 +1029,168 @@ public final class CombineTransactionsJobConfig {
          * the <strong>only</strong> meaning it carries here: exhaustion is the normal end of a stream
          * and is never reported as, converted into or confused with an error.
          *
+         * <p>A generation still being composed is sealed first, because a record cannot be served from a
+         * file that is not yet whole. In a running job the writing step has already closed its output by
+         * this point, so the sealing is a no-op; the path exists so that serving is well defined however
+         * the stream is driven.
+         *
          * @return the next record in written order, or {@code null} once every record has been served
+         * @throws ItemStreamException if the generation cannot be read
          */
         @Override
         public Transaction read() {
-            if (served >= records.size()) {
-                return null;
+            seal();
+            if (this.server == null) {
+                this.server = openServer();
             }
-            final Transaction next = records.get(served);
-            served++;
-            return next;
+            try {
+                final String image = this.server.readLine();
+                return image == null ? null : TransactionRecordMapper.fromRecord(image);
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be read", failure);
+            }
         }
 
+        /**
+         * Closes whichever role this stream was serving.
+         *
+         * <p>The writing step's close seals the generation and publishes it once, which is what
+         * cataloguing one new generation of the dataset did. The reading step's close releases the served
+         * position and removes the local copy, because the durable object is the generation from that
+         * point on and a local copy left behind would accumulate one whole combined dataset per
+         * submission.
+         *
+         * @throws ItemStreamException if the generation cannot be released
+         */
         @Override
         public void close() {
+            if (this.server != null) {
+                closeServer();
+                discardLocalGeneration();
+                return;
+            }
+            seal();
             if (!this.published) {
-                this.stagingArea.publish(this.objectKey, content());
+                this.stagingArea.publish(this.objectKey, this.completedGeneration);
                 this.published = true;
+            }
+        }
+
+        /** Opens a fresh working file, discarding anything an earlier attempt left behind. */
+        private void beginComposition() {
+            final Path working = StagedGenerationStore.workingPath(this.completedGeneration);
+            try {
+                Files.deleteIfExists(this.completedGeneration);
+                // Owner-only from the first byte, and never through a link: the combined generation is
+                // every posted transaction from both inputs, at 350 bytes each.
+                // See docs/decision-log.md entry DL-178.
+                this.composer = SecureStagedFiles.newWriter(working, StandardCharsets.US_ASCII);
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be opened for writing",
+                        failure);
+            }
+        }
+
+        /**
+         * Makes the completed file whole, so that it may be served and published.
+         *
+         * <p>Idempotent: a generation that is already sealed is left alone, which is why both the
+         * writing step's close and the first read may call it.
+         */
+        private void seal() {
+            if (this.sealed) {
+                return;
+            }
+            if (this.composer == null) {
+                beginComposition();
+            }
+            try {
+                this.composer.close();
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be closed", failure);
+            } finally {
+                this.composer = null;
+            }
+            StagedGenerationStore.completeWorkingFile(
+                    StagedGenerationStore.workingPath(this.completedGeneration),
+                    this.completedGeneration);
+            this.sealed = true;
+        }
+
+        /**
+         * @return a reader positioned at the first record of the sealed generation
+         * @throws ItemStreamException if it cannot be opened
+         */
+        private BufferedReader openServer() {
+            try {
+                return Files.newBufferedReader(this.completedGeneration, StandardCharsets.US_ASCII);
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be opened for reading",
+                        failure);
+            }
+        }
+
+        /** Releases the served position, reporting a failure to release as a stream failure. */
+        private void closeServer() {
+            final BufferedReader open = this.server;
+            this.server = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException failure) {
+                throw new ItemStreamException(
+                        "the combine-transactions combined generation could not be released", failure);
+            }
+        }
+
+        /** Releases the served position without observing the outcome, for a re-open only. */
+        private void closeServerQuietly() {
+            final BufferedReader open = this.server;
+            this.server = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException failure) {
+                LOGGER.debug("The combined generation's served position could not be released;"
+                        + " failureType={}", failure.getClass().getSimpleName());
+            }
+        }
+
+        /** Releases a half-composed generation without observing the outcome, for a re-open only. */
+        private void closeComposerQuietly() {
+            final BufferedWriter open = this.composer;
+            this.composer = null;
+            if (open == null) {
+                return;
+            }
+            try {
+                open.close();
+            } catch (final IOException failure) {
+                LOGGER.debug("The combined generation's composer could not be released;"
+                        + " failureType={}", failure.getClass().getSimpleName());
+            }
+        }
+
+        /**
+         * Removes the local copy once the generation has been served in full.
+         *
+         * <p>A failure to remove it is reported and not raised: the load step has already read every
+         * record and the durable object already exists, so the run succeeded.
+         */
+        private void discardLocalGeneration() {
+            try {
+                Files.deleteIfExists(this.completedGeneration);
+            } catch (final IOException failure) {
+                LOGGER.warn("The combined generation could not be removed from the local staging root;"
+                        + " failureType={}", failure.getClass().getSimpleName());
             }
         }
     }
@@ -1031,6 +1235,14 @@ public final class CombineTransactionsJobConfig {
         /** The second concatenated input: the synthesized transactions at their current generation. */
         private final Resource synthesizedCurrentGeneration;
 
+        /**
+         * The per-execution work area the ordered stream is minted within.
+         *
+         * <p>Held so that it can be removed as well as the file inside it. A directory minted per
+         * execution and never removed accumulates one empty directory per run for the life of the host.
+         */
+        private Path orderedWorkArea;
+
         /** Disk-backed ordered stream served after both inputs have been externally sorted. */
         private Path orderedFile;
 
@@ -1074,11 +1286,16 @@ public final class CombineTransactionsJobConfig {
             Objects.requireNonNull(executionContext, "executionContext must not be null");
             close();
             try {
-                this.orderedFile = Files.createTempFile("carddemo-combine-order-", ".dat");
+                // Minted owner-only within an owner-only directory: this file holds the whole
+                // ordered concatenation while the merge runs, which is the same record content the
+                // published generation carries.
+                this.orderedWorkArea = SecureStagedFiles.newTemporaryDirectory(ORDERING_WORK_PREFIX);
+                this.orderedFile = SecureStagedFiles.newTemporaryFile(this.orderedWorkArea,
+                        ORDERING_WORK_PREFIX, ORDERING_WORK_SUFFIX);
                 try (ExternalStringSorter sorter = new ExternalStringSorter(
                         ConcatenatedOrderingReader::compareRecordImages,
                         ExternalStringSorter.DEFAULT_RECORDS_PER_RUN);
-                        BufferedWriter orderedWriter = Files.newBufferedWriter(
+                        BufferedWriter orderedWriter = SecureStagedFiles.newWriter(
                                 this.orderedFile, StandardCharsets.US_ASCII)) {
 
                     this.fromBackup =
@@ -1097,10 +1314,23 @@ public final class CombineTransactionsJobConfig {
                         CombineTransactionsProcessor.COMBINED_RECORD_LENGTH,
                         this.fromBackup, BACKUP_STREAM, this.fromSynthesized, SYNTHESIZED_STREAM);
             } catch (final IOException | UncheckedIOException failure) {
-                close();
-                throw new ItemStreamException(
-                        "the combine-transactions ordered work stream could not be prepared",
-                        failure);
+                // The preparation failure is the diagnosis and is reported as itself. Cleanup is
+                // attempted in full regardless of whether it succeeds, and a cleanup failure is
+                // attached beneath the primary rather than thrown in its place: a released handle that
+                // could not be released is worth knowing about and is never the reason the step failed.
+                final ItemStreamException reported = new ItemStreamException(
+                        "the combine-transactions ordered work stream could not be prepared", failure);
+                releaseEverything().forEach(reported::addSuppressed);
+                throw reported;
+            } catch (final RuntimeException failure) {
+                // Any other failure - an input that cannot be allocated, a resource the loader refuses,
+                // a comparator that rejects a record - already says what went wrong and is rethrown as
+                // itself so that neither its type nor its message changes. What must not differ by
+                // failure type is the release: the work area holds the ordered concatenation of both
+                // inputs, and leaving it behind on one path and not on another is how a leak survives
+                // every test written against the other path.
+                releaseEverything().forEach(failure::addSuppressed);
+                throw failure;
             }
         }
 
@@ -1125,13 +1355,41 @@ public final class CombineTransactionsJobConfig {
          */
         @Override
         public void close() {
+            final List<IOException> failures = releaseEverything();
+            if (failures.isEmpty()) {
+                return;
+            }
+            final ItemStreamException reported = new ItemStreamException(
+                    "the combine-transactions ordered work stream could not be fully released",
+                    failures.get(0));
+            failures.subList(1, failures.size()).forEach(reported::addSuppressed);
+            throw reported;
+        }
+
+        /**
+         * Releases every resource this stream holds, whatever happens to any one of them.
+         *
+         * <p>Three things are held and all three are attempted: the reader over the ordered stream, the
+         * ordered file itself, and the work area minted to hold it. They are attempted in that order
+         * because a file cannot be removed while a descriptor is open on some filesystems and a
+         * directory cannot be removed until it is empty.
+         *
+         * <p>Nothing is thrown from here, and nothing is swallowed. Each failure is collected and every
+         * later step still runs, because the alternative - returning at the first failure, as this
+         * method's predecessor did - leaves the ordered file on disk holding every posted transaction
+         * from both inputs, indefinitely, with no diagnostic naming it. Every handle is cleared whether
+         * its release succeeded or not, so a second call cannot attempt the same release twice.
+         *
+         * @return the failures, in the order they occurred, empty when everything was released
+         */
+        // See docs/decision-log.md entry DL-179.
+        private List<IOException> releaseEverything() {
+            final List<IOException> failures = new ArrayList<>();
             if (this.orderedReader != null) {
                 try {
                     this.orderedReader.close();
                 } catch (final IOException failure) {
-                    throw new ItemStreamException(
-                            "the combine-transactions ordered work stream could not be closed",
-                            failure);
+                    failures.add(failure);
                 } finally {
                     this.orderedReader = null;
                 }
@@ -1140,15 +1398,23 @@ public final class CombineTransactionsJobConfig {
                 try {
                     Files.deleteIfExists(this.orderedFile);
                 } catch (final IOException failure) {
-                    throw new ItemStreamException(
-                            "the combine-transactions ordered work stream could not be released",
-                            failure);
+                    failures.add(failure);
                 } finally {
                     this.orderedFile = null;
                 }
             }
+            if (this.orderedWorkArea != null) {
+                try {
+                    Files.deleteIfExists(this.orderedWorkArea);
+                } catch (final IOException failure) {
+                    failures.add(failure);
+                } finally {
+                    this.orderedWorkArea = null;
+                }
+            }
             this.fromBackup = 0;
             this.fromSynthesized = 0;
+            return failures;
         }
 
         /**

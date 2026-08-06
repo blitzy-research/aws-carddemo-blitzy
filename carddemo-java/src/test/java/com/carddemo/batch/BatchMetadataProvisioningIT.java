@@ -374,7 +374,7 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
     }
 
     /**
-     * Counts the business tables, excluding metadata, migration history and queue-delivery state.
+     * Counts the business tables, excluding framework metadata and migration history.
      *
      * @return the application table count
      * @throws SQLException when the catalogue read fails
@@ -385,7 +385,6 @@ class BatchMetadataProvisioningIT extends AbstractPostgresIT {
                  WHERE table_schema = 'public'
                    AND table_name NOT LIKE 'batch\\_%'
                    AND table_name <> 'flyway_schema_history'
-                   AND table_name <> 'job_submission_outbox'
                  ORDER BY table_name
                 """).size();
     }

@@ -274,9 +274,6 @@ public final class JobSubmissionService {
     /** Deployment-wide guard held for a whole card stream. */
     private final JobSubmissionCoordinator submissionCoordinator;
 
-    /** Persistent logical-submission and per-card delivery state. */
-    private final JobSubmissionOutbox submissionOutbox;
-
     /** Registry for the explicit outbound publish observation. */
     private final ObservationRegistry observationRegistry;
 
@@ -294,7 +291,6 @@ public final class JobSubmissionService {
             @Value("${" + JOB_QUEUE_PROPERTY + "}") final String queueName,
             @Value("${" + MESSAGE_GROUP_ID_PROPERTY + "}") final String messageGroupId,
             final JobSubmissionCoordinator submissionCoordinator,
-            final JobSubmissionOutbox submissionOutbox,
             final ObservationRegistry observationRegistry) {
         this.sqsOperations = Objects.requireNonNull(sqsOperations, "sqsOperations must not be null");
         this.queueName = requireFifoQueueName(queueName);
@@ -303,20 +299,8 @@ public final class JobSubmissionService {
                 MESSAGE_GROUP_ID_PROPERTY);
         this.submissionCoordinator = Objects.requireNonNull(submissionCoordinator,
                 "submissionCoordinator must not be null");
-        this.submissionOutbox = Objects.requireNonNull(
-                submissionOutbox, "submissionOutbox must not be null");
         this.observationRegistry = Objects.requireNonNull(observationRegistry,
                 "observationRegistry must not be null");
-    }
-
-    /**
-     * Direct-construction seam for tests that supply a coordinator and observation registry.
-     */
-    JobSubmissionService(final SqsOperations sqsOperations, final String queueName,
-            final String messageGroupId, final JobSubmissionCoordinator submissionCoordinator,
-            final ObservationRegistry observationRegistry) {
-        this(sqsOperations, queueName, messageGroupId, submissionCoordinator,
-                JobSubmissionOutbox.direct(), observationRegistry);
     }
 
     /**
@@ -325,7 +309,7 @@ public final class JobSubmissionService {
     JobSubmissionService(final SqsOperations sqsOperations, final String queueName,
             final String messageGroupId) {
         this(sqsOperations, queueName, messageGroupId, submission -> submission.get(),
-                JobSubmissionOutbox.direct(), ObservationRegistry.NOOP);
+                ObservationRegistry.NOOP);
     }
 
     /**
@@ -436,23 +420,8 @@ public final class JobSubmissionService {
 
         final SubmissionResult result;
         try {
-            result = this.submissionCoordinator.serialize(() -> {
-                final JobSubmissionOutbox.DeliveryOutcome delivery =
-                        this.submissionOutbox.publish(
-                                submission,
-                                cards,
-                                terminalOrdinal,
-                                (pendingSubmission, card, cardOrdinal) -> publishCard(
-                                        pendingSubmission,
-                                        card,
-                                        cardOrdinal,
-                                        deduplicationId(pendingSubmission, cardOrdinal),
-                                        streamEnvelope(pendingSubmission, cardOrdinal,
-                                                cards.size())));
-                return new SubmissionResult(submission, cards.size(), delivery.cardsPublished(),
-                        delivery.failed(),
-                        delivery.failed() ? JobSubmissionException.DEFAULT_MESSAGE : "");
-            });
+            result = this.submissionCoordinator.serialize(
+                    () -> publishOwnCardsOnce(submission, cards, terminalOrdinal));
         } catch (final JobSubmissionCoordinator.CoordinationFailure coordinationFailure) {
             LOGGER.error("{} submission={} queue={} messageGroup={} failureChain={}",
                     JobSubmissionException.DEFAULT_MESSAGE, submission, this.queueName,
@@ -472,6 +441,49 @@ public final class JobSubmissionService {
                     result.cardsPublished(), submission, this.queueName, this.messageGroupId);
         }
         return result;
+    }
+
+    /**
+     * Publishes this call's own cards, once each, in list order, and stops at the first refusal.
+     *
+     * <p>The direct translation of the emitting loop at {@code [app/cbl/CORPT00C.cbl:L498-L509]}, whose
+     * guard tests the card index against the declared array bound, the end-of-stream flag and the
+     * write-error flag. The loop walks <strong>the cards this task holds</strong> from the first through
+     * the transmitted end-of-stream card, and a refused write raises the write-error flag so the guard
+     * ends the loop with the remaining cards unsent. Nothing is remembered afterwards: the legacy task
+     * ends, and a later request for the same or another report builds and writes its own cards from the
+     * beginning with no reference to what an earlier task managed to write.
+     *
+     * <p><strong>There is deliberately no deferred retry and no cross-request replay.</strong> An earlier
+     * version persisted each logical submission and its next unsent ordinal so that a later request would
+     * first drain the oldest incomplete stream. That inverted the contract twice over: a caller's own
+     * cards could be preceded by another submission's remainder, and the count reported back described a
+     * stream the call had not published. {@code ERROROPTION(IGNORE)} on the queue definition at
+     * {@code [app/csd/CARDDEMO.CSD:L501]} states the opposite requirement - a refused write is reported
+     * and abandoned, not queued for another attempt - so this method attempts each of its own cards
+     * exactly once and reports only what it published itself. Recorded as decision D-36 and revised in
+     * {@code docs/decision-log.md} DL-148.
+     *
+     * @param submission the identity of this logical submission
+     * @param cards the validated card images this call holds
+     * @param terminalOrdinal the one-based ordinal of the last card the legacy loop transmits
+     * @return how many of this call's cards reached the queue and whether it stopped early
+     */
+    private SubmissionResult publishOwnCardsOnce(final String submission, final List<String> cards,
+            final int terminalOrdinal) {
+        int cardsPublished = 0;
+        for (int cardOrdinal = FIRST_CARD_ORDINAL; cardOrdinal <= terminalOrdinal; cardOrdinal++) {
+            final String card = cards.get(cardOrdinal - FIRST_CARD_ORDINAL);
+            if (!publishCard(submission, card, cardOrdinal,
+                    deduplicationId(submission, cardOrdinal),
+                    streamEnvelope(submission, cardOrdinal, cards.size()))) {
+                // The write-error flag of the legacy guard: the cards after this one are never sent.
+                return new SubmissionResult(submission, cards.size(), cardsPublished, true,
+                        JobSubmissionException.DEFAULT_MESSAGE);
+            }
+            cardsPublished++;
+        }
+        return new SubmissionResult(submission, cards.size(), cardsPublished, false, "");
     }
 
     /**
@@ -901,14 +913,6 @@ public final class JobSubmissionService {
      */
     public record SubmissionResult(String submissionId, int cardsRequested, int cardsPublished,
             boolean failed, String failureMessage) {
-
-        /**
-         * Alternate ordering used by the outbox-facing integration seam.
-         */
-        public SubmissionResult(final int cardsRequested, final int cardsPublished,
-                final boolean failed, final String failureMessage, final String submissionId) {
-            this(submissionId, cardsRequested, cardsPublished, failed, failureMessage);
-        }
 
         /**
          * Legacy-visible outcome constructor for callers that do not yet carry the retry identity.

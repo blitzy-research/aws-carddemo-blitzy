@@ -36,6 +36,8 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.Locale;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -73,6 +75,7 @@ import com.carddemo.service.TransactionReportService;
 import com.carddemo.service.TransactionReportService.TransactionReportResult;
 import com.carddemo.util.ReportLineFormatter;
 import com.carddemo.util.TransactionRecordMapper;
+import com.carddemo.support.OrderedTransactionScan;
 
 /**
  * What the transaction report job configuration publishes, and what its own documentation commits it
@@ -162,12 +165,8 @@ final class TransactionReportJobConfigTest {
      */
     private TransactionReportJobConfig configuration(final TransactionRepository repository,
             final TransactionReportService reportService) {
-        final TransactionScanRepository scanRepository = (cursor, limit) ->
-                repository.findAll(Sort.by(Sort.Direction.ASC, "tranId"))
-                        .stream()
-                        .filter(record -> record.getTranId().compareTo(cursor) > 0)
-                        .limit(limit.max())
-                        .toList();
+        final TransactionScanRepository scanRepository = new OrderedTransactionScan(
+                () -> repository.findAll(Sort.by(Sort.Direction.ASC, "tranId")));
 
         return new TransactionReportJobConfig(
                 mock(JobRepository.class),
@@ -731,8 +730,10 @@ final class TransactionReportJobConfigTest {
             program.run();
 
             assertThat(program.recordsExcluded()).isEqualTo(2L);
-            assertThat(program.orderedRecords()).hasSize(1);
-            assertThat(program.orderedRecords())
+            final List<String> ordered = new ArrayList<>();
+            program.forEachOrderedRecord(ordered::add);
+            assertThat(ordered).hasSize(1);
+            assertThat(ordered)
                     .allSatisfy(image -> assertThat(
                             image.getBytes(StandardCharsets.US_ASCII).length)
                             .isEqualTo(TransactionReportJobConfig.UNLOAD_RECORD_LENGTH));
@@ -849,11 +850,9 @@ final class TransactionReportJobConfigTest {
         @DisplayName("the report tasklet writes the report generation its job execution owns")
         void theReportTaskletWritesItsOwnGeneration() throws IOException {
             final TransactionReportService reportService = mock(TransactionReportService.class);
-            when(reportService.generateReportFromDateParameterCard(
-                    any(ReportTransactionSource.class), anyString()))
-                    .thenReturn(new TransactionReportResult(
-                            ReportLineFormatter.buildHeaderBlock(WINDOW_START, WINDOW_END),
-                            new BigDecimal("0.00"), 0, 4L, 0));
+            stubReportEmission(reportService,
+                    ReportLineFormatter.buildHeaderBlock(WINDOW_START, WINDOW_END),
+                    new BigDecimal("0.00"), 0, 4L, 0);
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class), reportService);
             Files.writeString(configuration.filteredGeneration(JOB_EXECUTION_ID), "",
@@ -908,6 +907,34 @@ final class TransactionReportJobConfigTest {
         }
     }
 
+    /**
+     * Stubs a report generator to offer the supplied records to the sink it is given.
+     *
+     * <p>The generator streams: it hands each record to the caller's destination as it composes it and
+     * reports only how many it offered. A stub that returned a list would not exercise the path the
+     * emitter actually takes. See {@code docs/decision-log.md} entry DL-176.
+     *
+     * @param reportService     the mocked generator
+     * @param emitted           the records to offer, in emission order
+     * @param grandTotal        the grand total to report
+     * @param pageCount         the page-total emissions to report
+     * @param lineCount         the line-counter value to report
+     * @param accountBreakCount the account-total emissions to report
+     */
+    private static void stubReportEmission(final TransactionReportService reportService,
+            final List<String> emitted, final BigDecimal grandTotal, final int pageCount,
+            final long lineCount, final int accountBreakCount) {
+
+        when(reportService.generateReportFromDateParameterCard(
+                any(ReportTransactionSource.class), any(), anyString()))
+                .thenAnswer(invocation -> {
+                    final Consumer<String> sink = invocation.getArgument(1);
+                    emitted.forEach(sink);
+                    return new TransactionReportResult(emitted.size(), grandTotal, pageCount,
+                            lineCount, accountBreakCount);
+                });
+    }
+
     // -----------------------------------------------------------------------------------------------
     // The report emission.
     // -----------------------------------------------------------------------------------------------
@@ -924,8 +951,8 @@ final class TransactionReportJobConfigTest {
         @DisplayName("every record that reaches the report generation is exactly 133 encoded bytes, in "
                 + "the order the report generator produced them")
         void everyReportRecordIsTheMeasuredWidth() throws IOException {
-            final TransactionReportResult report = report();
-            final TransactionReportJobConfig configuration = configurationEmitting(report);
+            final List<String> emitted = reportLines();
+            final TransactionReportJobConfig configuration = configurationEmitting(emitted);
 
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(),
@@ -937,8 +964,9 @@ final class TransactionReportJobConfigTest {
             final List<String> written =
                     recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID));
 
-            assertThat(program.recordsWritten()).isEqualTo(report.reportLines().size());
-            assertThat(written).containsExactlyElementsOf(report.reportLines());
+            assertThat(program.recordsWritten()).isEqualTo(emitted.size());
+            assertThat(program.result().reportRecordCount()).isEqualTo(emitted.size());
+            assertThat(written).containsExactlyElementsOf(emitted);
             assertThat(written).allSatisfy(record ->
                     assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
                             .as("the report record length is a byte contract, so it is measured on "
@@ -947,19 +975,44 @@ final class TransactionReportJobConfigTest {
         }
 
         @Test
-        @DisplayName("the emitter parses the filtered generation once and preserves that frozen order "
-                + "even if the backing file changes after report generation")
-        void theFilteredGenerationIsTheFrozenReportInput() throws IOException {
+        @DisplayName("the emitter walks the filtered generation once, forward only, and what a run "
+                + "produced is unaffected by a later change to the backing file")
+        void theFilteredGenerationIsWalkedOnceForwardOnly() throws IOException {
             final Transaction first =
                     transaction("0000000000000001", "4111111111111111", INSIDE_WINDOW, "10.00");
             final Transaction second =
                     transaction("0000000000000002", "4222222222222222", INSIDE_WINDOW, "20.00");
             final Transaction replacement =
                     transaction("0000000000000003", "4333333333333333", INSIDE_WINDOW, "30.00");
-            final TransactionReportResult report = report();
+            final List<String> identifiersSeen = new ArrayList<>();
             final TransactionReportService reportService = mock(TransactionReportService.class);
+            // The generator drives the walk itself, which is the only way to observe a streaming
+            // source: it is read during the run and holds nothing afterwards. Each record it sees
+            // becomes one report record, so the report content depends on the generation's content.
             when(reportService.generateReportFromDateParameterCard(
-                    any(ReportTransactionSource.class), anyString())).thenReturn(report);
+                    any(ReportTransactionSource.class), any(), anyString()))
+                    .thenAnswer(invocation -> {
+                        final ReportTransactionSource source = invocation.getArgument(0);
+                        final Consumer<String> sink = invocation.getArgument(1);
+                        int position = 0;
+                        Optional<Transaction> next = source.readAt(position);
+                        while (next.isPresent()) {
+                            identifiersSeen.add(next.get().getTranId());
+                            sink.accept(detailRecordFor(next.get()));
+                            position++;
+                            next = source.readAt(position);
+                        }
+                        // Reading the same position twice returns the same answer without a further
+                        // read, and a position already left behind cannot be revisited.
+                        assertThat(source.readAt(position)).isEmpty();
+                        assertThatExceptionOfType(IllegalStateException.class)
+                                .isThrownBy(() -> source.readAt(0))
+                                .withMessageContaining("read forward");
+                        assertThatExceptionOfType(IllegalArgumentException.class)
+                                .isThrownBy(() -> source.readAt(-1));
+                        return new TransactionReportResult(identifiersSeen.size(),
+                                new BigDecimal("30.00"), 1, 7L, 1);
+                    });
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class), reportService);
             final Path filtered = configuration.filteredGeneration(JOB_EXECUTION_ID);
@@ -974,20 +1027,31 @@ final class TransactionReportJobConfigTest {
                     filtered, configuration.reportGeneration(JOB_EXECUTION_ID));
             program.run();
 
-            final ArgumentCaptor<ReportTransactionSource> source =
-                    ArgumentCaptor.forClass(ReportTransactionSource.class);
-            verify(reportService).generateReportFromDateParameterCard(
-                    source.capture(), anyString());
+            assertThat(identifiersSeen)
+                    .containsExactly(first.getTranId(), second.getTranId());
+            final List<String> produced =
+                    recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID));
+            assertThat(produced)
+                    .containsExactly(detailRecordFor(first), detailRecordFor(second));
+
             Files.writeString(filtered, TransactionRecordMapper.toRecord(replacement) + "\n",
                     StandardCharsets.US_ASCII);
 
-            assertThat(source.getValue().readAt(0)).get().extracting(Transaction::getTranId)
-                    .isEqualTo(first.getTranId());
-            assertThat(source.getValue().readAt(1)).get().extracting(Transaction::getTranId)
-                    .isEqualTo(second.getTranId());
-            assertThat(source.getValue().readAt(2)).isEmpty();
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> source.getValue().readAt(-1));
+            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID)))
+                    .as("the run has finished; a later change to its input cannot alter what it wrote")
+                    .isEqualTo(produced);
+        }
+
+        /**
+         * One report detail record derived from a transaction, at the declared report record width.
+         *
+         * @param transaction the transaction the record reports
+         * @return the record image
+         */
+        private String detailRecordFor(final Transaction transaction) {
+            return ReportLineFormatter.buildTransactionDetailLine(transaction.getTranId(),
+                    "00000000001", "01", "Purchase", 5, "Restaurant", "POS TERM  ",
+                    transaction.getTranAmt());
         }
 
         @Test
@@ -998,9 +1062,8 @@ final class TransactionReportJobConfigTest {
             // legacy program feeds its grand total ONLY from page totals, and with truncating
             // arithmetic that indirect route can differ from a direct sum - so a configuration that
             // recomputed the figure would contradict the program it stands in for.
-            final TransactionReportResult report = new TransactionReportResult(
-                    reportLines(), new BigDecimal("1.23"), 1, 7L, 1);
-            final TransactionReportJobConfig configuration = configurationEmitting(report);
+            final TransactionReportJobConfig configuration =
+                    configurationEmitting(reportLines(), new BigDecimal("1.23"), 1, 7L, 1);
 
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(),
@@ -1023,7 +1086,7 @@ final class TransactionReportJobConfigTest {
                 + "failure, because the legacy read reports end of file and the driving loop then "
                 + "never iterates")
         void anEmptyParameterDatasetProducesNoReportRecord() throws IOException {
-            final TransactionReportJobConfig configuration = configurationEmitting(report());
+            final TransactionReportJobConfig configuration = configurationEmitting(reportLines());
 
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
                     configuration.transactionReportProcessor(), null,
@@ -1040,7 +1103,7 @@ final class TransactionReportJobConfigTest {
         @DisplayName("a report generation that cannot be opened abends after its status has been "
                 + "reported, and the handle it never obtained is released without a second failure")
         void aGenerationThatCannotBeOpenedAbends() throws IOException {
-            final TransactionReportJobConfig configuration = configurationEmitting(report());
+            final TransactionReportJobConfig configuration = configurationEmitting(reportLines());
             final Path generation = configuration.reportGeneration(JOB_EXECUTION_ID);
             Files.createDirectories(generation);
 
@@ -1078,17 +1141,33 @@ final class TransactionReportJobConfigTest {
         }
 
         /**
-         * Builds a configuration whose report generator returns the supplied report.
+         * Builds a configuration whose report generator emits the supplied records to its sink.
          *
-         * @param report the report to return
+         * @param emitted the records the generator offers to the sink, in emission order
          * @return the configuration
          */
-        private TransactionReportJobConfig configurationEmitting(
-                final TransactionReportResult report) {
+        private TransactionReportJobConfig configurationEmitting(final List<String> emitted) {
+            return configurationEmitting(emitted, new BigDecimal("30.00"), 1, 7L, 1);
+        }
+
+        /**
+         * Builds a configuration whose report generator emits the supplied records to its sink and
+         * reports the supplied figures.
+         *
+         * @param emitted           the records the generator offers to the sink, in emission order
+         * @param grandTotal        the grand total the generator reports
+         * @param pageCount         the page-total emissions the generator reports
+         * @param lineCount         the line-counter value the generator reports
+         * @param accountBreakCount the account-total emissions the generator reports
+         * @return the configuration
+         */
+        private TransactionReportJobConfig configurationEmitting(final List<String> emitted,
+                final BigDecimal grandTotal, final int pageCount, final long lineCount,
+                final int accountBreakCount) {
 
             final TransactionReportService reportService = mock(TransactionReportService.class);
-            when(reportService.generateReportFromDateParameterCard(
-                    any(ReportTransactionSource.class), anyString())).thenReturn(report);
+            stubReportEmission(reportService, emitted, grandTotal, pageCount, lineCount,
+                    accountBreakCount);
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class), reportService);
             try {
@@ -1100,14 +1179,6 @@ final class TransactionReportJobConfigTest {
             return configuration;
         }
 
-        /**
-         * Builds a report whose records are real report records at the declared width.
-         *
-         * @return the report
-         */
-        private TransactionReportResult report() {
-            return new TransactionReportResult(reportLines(), new BigDecimal("30.00"), 1, 7L, 1);
-        }
 
         /**
          * Builds the record images of a small report: the four-record header block, two detail

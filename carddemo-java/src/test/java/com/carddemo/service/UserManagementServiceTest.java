@@ -22,14 +22,15 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,12 +40,10 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.data.domain.Example;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.repository.query.FluentQuery.FetchableFluentQuery;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
@@ -371,18 +370,28 @@ class UserManagementServiceTest {
     /**
      * An in-memory stand-in for the repository.
      *
-     * <p>The repository declares no method of its own, so everything below is one of
-     * {@code JpaRepository}'s. Exactly the five the service uses are implemented - the keyed read, the
-     * paged scan, the single write, the single delete and the existence probe - and every other
-     * inherited operation <strong>refuses</strong> rather than answering. That refusal is the
-     * least-privilege rule expressed where it can actually be enforced: if a future change reaches for
-     * an unbounded {@code findAll()}, a bulk delete or a query by example, the test that exercises the
-     * new path fails immediately and names the operation, which an interface that simply did not
-     * declare the method could never do for a caller of the inherited one.
+     * <p>The repository is a <strong>closed</strong> interface: it extends the marker
+     * {@code Repository} rather than {@code JpaRepository}, so the nine operations below are the
+     * whole surface and there is no inherited operation to refuse. That is a stronger arrangement
+     * than the refusal list this fake used to carry, because an unbounded {@code findAll()} or a bulk
+     * delete is now a compilation failure at the call site rather than a test failure at run time.
+     *
+     * <p>Reads answer from a sorted map, so iteration order already is the ascending key order the
+     * browse positions against, and each read applies exactly the bound and the limit the derived
+     * name declares - strictly greater or strictly less, ordered, and truncated to the limit. Getting
+     * any of those wrong here would let the service pass a test it should fail, so they are
+     * reproduced literally rather than approximated.
+     *
+     * <p>Reads may be made to refuse by naming the operation, which is what makes each of the
+     * service's browse failure arms separately reachable: positioning, the row read, the anchor
+     * probe, the page-counter probe and the successor probe all fail through different operations.
      */
     private static final class FakeRepository implements UserSecurityRepository {
 
         private final TreeMap<String, UserSecurity> rows = new TreeMap<>();
+
+        /** Operations that raise instead of answering, named exactly as the interface declares them. */
+        private final Set<String> refusedOperations = new HashSet<>();
 
         private boolean failOnSave;
 
@@ -390,15 +399,28 @@ class UserManagementServiceTest {
 
         private boolean failOnDelete;
 
-        /**
-         * The ordinal of the paged read that should fail, counting from one. A browse positions itself
-         * and then reads rows through the same paged call, so this makes the two failure arms
-         * separately reachable: {@code 1} fails the positioning read and {@code 2} lets the browse
-         * position itself and then fails the first row read.
-         */
-        private int failProjectionFromCall = Integer.MAX_VALUE;
+        /** How many times the maintenance paths read the record through its held form. */
+        private int heldReads;
 
-        private int projectionCalls;
+        /**
+         * Makes one named read operation refuse.
+         *
+         * @param operation the interface method name that should raise
+         */
+        private void refuse(final String operation) {
+            refusedOperations.add(operation);
+        }
+
+        /**
+         * Raises when the named operation has been marked as refusing.
+         *
+         * @param operation the interface method name being invoked
+         */
+        private void guard(final String operation) {
+            if (refusedOperations.contains(operation)) {
+                throw new IllegalStateException("store unavailable");
+            }
+        }
 
         @Override
         public Optional<UserSecurity> findById(final String secUsrId) {
@@ -409,28 +431,72 @@ class UserManagementServiceTest {
         }
 
         /**
-         * The paged primary-key scan, which is the browse's only read path.
+         * The held form of the keyed read, which the two maintenance paths use.
          *
-         * <p>The map is sorted on the identifier, so iteration order is already the ascending key
-         * order the browse positions against; the requested window is sliced out of it. Entities are
-         * returned rather than a projection, because the repository declares no projection: the rule
-         * that a credential is loaded but never rendered is kept by the service, and the suite asserts
-         * it by scanning the response and the captured log rather than by the absence of a column.
+         * <p>Answers exactly as the unheld read does, and fails on exactly the same flag, because a
+         * unit test cannot observe a row lock and the arms under test do not depend on one. What it
+         * <em>does</em> let the tests observe is that the maintenance paths read through this method and
+         * the display paths do not, which is the whole substance of the change.
          */
         @Override
-        public Page<UserSecurity> findAll(final Pageable pageable) {
-            projectionCalls++;
-            if (projectionCalls >= failProjectionFromCall) {
+        public Optional<UserSecurity> findByIdForUpdate(final String secUsrId) {
+            heldReads++;
+            if (failOnFind) {
                 throw new IllegalStateException("store unavailable");
             }
-            final List<UserSecurity> all = List.copyOf(rows.values());
+            return Optional.ofNullable(rows.get(secUsrId));
+        }
+
+        /**
+         * The opening page of the browse, projected so no credential column is selected.
+         *
+         * <p>Only page zero is ever asked for, and the sort the service supplies is ascending on the
+         * identifier, which the map already provides. The window is sliced rather than filtered so a
+         * page size larger than the table yields a short page exactly as the store would.
+         */
+        @Override
+        public Page<AdminEntry> findAllProjectedBy(final Pageable pageable) {
+            guard("findAllProjectedBy");
+            final List<AdminEntry> all = rows.values().stream().map(FakeRepository::project).toList();
             final int from = (int) Math.min(pageable.getOffset(), all.size());
             final int to = Math.min(from + pageable.getPageSize(), all.size());
             return new PageImpl<>(List.copyOf(all.subList(from, to)), pageable, all.size());
         }
 
         @Override
-        public <S extends UserSecurity> S save(final S identity) {
+        public Optional<AdminEntry> findProjectedBySecUsrId(final String secUsrId) {
+            guard("findProjectedBySecUsrId");
+            return Optional.ofNullable(rows.get(secUsrId)).map(FakeRepository::project);
+        }
+
+        @Override
+        public List<AdminEntry> findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(final String secUsrId,
+                final Limit limit) {
+            guard("findBySecUsrIdGreaterThanOrderBySecUsrIdAsc");
+            return rows.tailMap(secUsrId, false).values().stream()
+                    .map(FakeRepository::project)
+                    .limit(limit.max())
+                    .toList();
+        }
+
+        @Override
+        public List<AdminEntry> findBySecUsrIdLessThanOrderBySecUsrIdDesc(final String secUsrId,
+                final Limit limit) {
+            guard("findBySecUsrIdLessThanOrderBySecUsrIdDesc");
+            return rows.headMap(secUsrId, false).descendingMap().values().stream()
+                    .map(FakeRepository::project)
+                    .limit(limit.max())
+                    .toList();
+        }
+
+        @Override
+        public long countBySecUsrIdLessThan(final String secUsrId) {
+            guard("countBySecUsrIdLessThan");
+            return rows.headMap(secUsrId, false).size();
+        }
+
+        @Override
+        public UserSecurity save(final UserSecurity identity) {
             if (failOnSave) {
                 throw new IllegalStateException("store unavailable");
             }
@@ -446,158 +512,50 @@ class UserManagementServiceTest {
             rows.remove(secUsrId);
         }
 
-        // ------------------------------------------------------------------------------------------
-        // Every other inherited operation refuses. Nothing in the module calls one, and a refusal is
-        // what turns "nothing calls it" from a claim into a test failure the moment something does.
-        // ------------------------------------------------------------------------------------------
-
-        @Override
-        public boolean existsById(final String secUsrId) {
-            if (failOnFind) {
-                throw new IllegalStateException("store unavailable");
-            }
-            return rows.containsKey(secUsrId);
-        }
-
-        @Override
-        public List<UserSecurity> findAll() {
-            throw refusal("findAll() would read every credential in the table");
-        }
-
-        @Override
-        public List<UserSecurity> findAll(final Sort sort) {
-            throw refusal("findAll(Sort) would read every credential in the table");
-        }
-
-        @Override
-        public List<UserSecurity> findAllById(final Iterable<String> ids) {
-            throw refusal("findAllById is not one of the five operations the service uses");
-        }
-
-        @Override
-        public long count() {
-            throw refusal("count is not one of the five operations the service uses");
-        }
-
-        @Override
-        public void delete(final UserSecurity identity) {
-            throw refusal("the legacy delete removes one row by key, so deleteById is the only path");
-        }
-
-        @Override
-        public void deleteAll() {
-            throw refusal("deleteAll would remove every sign-on identity in one statement");
-        }
-
-        @Override
-        public void deleteAll(final Iterable<? extends UserSecurity> identities) {
-            throw refusal("bulk delete has no legacy counterpart");
-        }
-
-        @Override
-        public void deleteAllById(final Iterable<? extends String> ids) {
-            throw refusal("bulk delete has no legacy counterpart");
-        }
-
-        @Override
-        public void deleteAllInBatch() {
-            throw refusal("deleteAllInBatch would remove every identity and bypass the context");
-        }
-
-        @Override
-        public void deleteAllInBatch(final Iterable<UserSecurity> identities) {
-            throw refusal("bulk delete has no legacy counterpart");
-        }
-
-        @Override
-        public void deleteAllByIdInBatch(final Iterable<String> ids) {
-            throw refusal("bulk delete has no legacy counterpart");
-        }
-
-        @Override
-        public <S extends UserSecurity> List<S> saveAll(final Iterable<S> identities) {
-            throw refusal("the legacy tier rewrote one record at a time");
-        }
-
-        @Override
-        public <S extends UserSecurity> List<S> saveAllAndFlush(final Iterable<S> identities) {
-            throw refusal("the legacy tier rewrote one record at a time");
-        }
-
-        @Override
-        public <S extends UserSecurity> S saveAndFlush(final S identity) {
-            throw refusal("flush ordering is the transaction's concern, not this service's");
-        }
-
-        @Override
-        public void flush() {
-            throw refusal("flush ordering is the transaction's concern, not this service's");
-        }
-
-        @Override
-        @Deprecated
-        public UserSecurity getById(final String secUsrId) {
-            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
-        }
-
-        @Override
-        @Deprecated
-        public UserSecurity getOne(final String secUsrId) {
-            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
-        }
-
-        @Override
-        public UserSecurity getReferenceById(final String secUsrId) {
-            throw refusal("a lazy proxy is a dereference failure this entity cannot otherwise reach");
-        }
-
-        @Override
-        public <S extends UserSecurity> Optional<S> findOne(final Example<S> example) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity> List<S> findAll(final Example<S> example) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity> List<S> findAll(final Example<S> example, final Sort sort) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity> Page<S> findAll(final Example<S> example,
-                final Pageable pageable) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity> long count(final Example<S> example) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity> boolean exists(final Example<S> example) {
-            throw refusal("query by example would query over the credential attribute");
-        }
-
-        @Override
-        public <S extends UserSecurity, R> R findBy(final Example<S> example,
-                final Function<FetchableFluentQuery<S>, R> queryFunction) {
-            throw refusal("the fluent query surface would query over the credential attribute");
-        }
-
         /**
-         * Builds the refusal an unused inherited operation raises.
+         * Projects one stored entity onto the credential-free list projection.
          *
-         * @param because why the module does not use the operation
-         * @return the exception to throw, never {@code null}
+         * <p>The projection is built field by field from the four screen columns, so the digest is
+         * unreachable from the returned object exactly as it is unreachable from the generated select.
+         *
+         * @param identity the stored entity
+         * @return the projected row, never {@code null}
          */
-        private static UnsupportedOperationException refusal(final String because) {
-            return new UnsupportedOperationException("the user-management service uses five"
-                    + " repository operations - findById, findAll(Pageable), save, deleteById and"
-                    + " existsById - and this is not one of them: " + because);
+        private static AdminEntry project(final UserSecurity identity) {
+            return new ProjectedEntry(identity.getSecUsrId(), identity.getSecUsrFname(),
+                    identity.getSecUsrLname(), identity.getSecUsrType());
+        }
+    }
+
+    /**
+     * The four screen columns of one sign-on identity, and deliberately nothing else.
+     *
+     * @param secUsrId    the eight-character identifier
+     * @param secUsrFname the given name
+     * @param secUsrLname the family name
+     * @param secUsrType  the one-character type
+     */
+    private record ProjectedEntry(String secUsrId, String secUsrFname, String secUsrLname,
+            String secUsrType) implements UserSecurityRepository.AdminEntry {
+
+        @Override
+        public String getSecUsrId() {
+            return secUsrId;
+        }
+
+        @Override
+        public String getSecUsrFname() {
+            return secUsrFname;
+        }
+
+        @Override
+        public String getSecUsrLname() {
+            return secUsrLname;
+        }
+
+        @Override
+        public String getSecUsrType() {
+            return secUsrType;
         }
     }
 
@@ -1269,6 +1227,188 @@ class UserManagementServiceTest {
         }
     }
 
+    // ==============================================================================================
+    // One unit of work per maintenance step
+    //
+    // Both maintenance transactions issue EXEC CICS READ ... UPDATE and then write in the SAME task:
+    // COUSR02C L322-L331 before its rewrite at L360, and COUSR03C L269-L278 before its delete at L307 -
+    // a delete that names no record identifier at all, so the only record it can remove is the one that
+    // read is holding. Reading in one unit and writing in a later one lets another administrator change
+    // or remove the same identity in between, and both statements still succeed, so the operator is
+    // never told.
+    //
+    // The display paths perform the same paragraph but write nothing, so they read without the hold: a
+    // lock held for the duration of a screen display buys nothing and serialises every other reader.
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("One unit of work per maintenance step, COUSR02C L215-L243 and COUSR03C L189-L191")
+    class MaintenanceUnitOfWork {
+
+        @Test
+        @DisplayName("the update SAVE path reads the record through the held form, so the rewrite "
+                + "cannot be interleaved with another administrator's")
+        void theUpdateSavePathReadsThroughTheHeldForm() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "HOLD0001", "OLD", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("HOLD0001", "NEW", "FAMILY", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(repository.heldReads)
+                    .as("exactly one held read, taken by the save path before the rewrite")
+                    .isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the update DISPLAY path takes no hold, because a row locked for the length of a "
+                + "screen display serialises every other reader and changes nothing")
+        void theUpdateDisplayPathTakesNoHold() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "HOLD0002", "GIVEN", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("HOLD0002", null, null, null, null, KeyAction.ENTER));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_PRESS_PF5);
+            assertThat(response.firstName()).isEqualTo("GIVEN");
+            assertThat(repository.heldReads).isZero();
+        }
+
+        @Test
+        @DisplayName("the delete CONFIRM path reads the record through the held form, because the "
+                + "legacy delete verb can only mean the record the read is holding")
+        void theDeleteConfirmPathReadsThroughTheHeldForm() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "HOLD0003", "GIVEN", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceFor(repository)
+                    .deleteUser(recordRequest("HOLD0003", null, null, null, null, KeyAction.PFK05));
+
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(repository.rows).doesNotContainKey("HOLD0003");
+            assertThat(repository.heldReads).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the delete DISPLAY path takes no hold")
+        void theDeleteDisplayPathTakesNoHold() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "HOLD0004", "GIVEN", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceFor(repository)
+                    .deleteUser(recordRequest("HOLD0004", null, null, null, null, KeyAction.ENTER));
+
+            assertThat(response.message()).isEqualTo(MSG_DELETE_PRESS_PF5);
+            assertThat(repository.rows).containsKey("HOLD0004");
+            assertThat(repository.heldReads).isZero();
+        }
+
+        @Test
+        @DisplayName("a rewrite that fails when its unit COMMITS reports the failure arm and leaves no "
+                + "success behind, which is only possible because the unit completes outside the service")
+        void aCommitFailureOnUpdateReportsTheFailureArm() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "COMMIT01", "OLD", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceWithBoundary(repository,
+                    new UnitFailingAtCommit(new IllegalStateException("commit refused")))
+                    .updateUser(recordRequest("COMMIT01", "NEW", "FAMILY", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_UNABLE_TO_UPDATE_USER);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.actionSucceeded())
+                    .as("the unit rolled back, so no success may be reported")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a removal that fails when its unit COMMITS reports the source's reused "
+                + "unable-to-update text and leaves no success behind")
+        void aCommitFailureOnDeleteReportsTheFailureArm() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "COMMIT02", "GIVEN", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceWithBoundary(repository,
+                    new UnitFailingAtCommit(new IllegalStateException("commit refused")))
+                    .deleteUser(recordRequest("COMMIT02", null, null, null, null, KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_UNABLE_TO_UPDATE_USER);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.actionSucceeded()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a read that fails inside the update unit still reports the LOOKUP text, not the "
+                + "rewrite text, because the two statements of one unit report differently")
+        void aHeldReadFailureOnUpdateReportsTheLookupArm() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "RDFAIL01", "OLD", "FAMILY", "U", FILLER_DIGEST);
+            repository.failOnFind = true;
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("RDFAIL01", "NEW", "FAMILY", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(repository.rows.get("RDFAIL01").getSecUsrFname())
+                    .as("nothing was rewritten")
+                    .isEqualTo("OLD");
+        }
+
+        @Test
+        @DisplayName("an unchanged record writes nothing at all, and the please-modify text survives "
+                + "the unit of work that read it")
+        void anUnchangedRecordWritesNothing() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "NOCHNG01", "GIVEN", "FAMILY", "U", FILLER_DIGEST);
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("NOCHNG01", "GIVEN", "FAMILY", null, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(repository.heldReads)
+                    .as("the record is still read under the hold: the comparison is what decides")
+                    .isEqualTo(1);
+        }
+
+        private UserManagementService serviceWithBoundary(final FakeRepository repository,
+                final OnlineTransactionBoundary boundary) {
+            return new UserManagementService(repository, messageCatalogService, navigationService,
+                    PAGE_TOKEN_SERVICE, boundary, recordWriterFor(repository), ENCODER, FIXED_CLOCK);
+        }
+    }
+
+    /**
+     * A unit of work that runs its operation and then fails, standing in for a failure raised when the
+     * unit commits rather than when a statement executes.
+     *
+     * <p>Only a unit that completes outside the service can fail this way, which is exactly the property
+     * under test: the response arm has to be chosen after the unit has rolled back, so no success text
+     * and no raised success flag can survive a refused commit.
+     */
+    private static final class UnitFailingAtCommit extends OnlineTransactionBoundary {
+
+        private final RuntimeException failure;
+
+        UnitFailingAtCommit(final RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public <T> T execute(final Supplier<T> operation) {
+            super.execute(operation);
+            throw this.failure;
+        }
+    }
+
     @Nested
     @DisplayName("CU00 list: a page of exactly ten rows, ascending in both directions")
     class ListPaging {
@@ -1796,7 +1936,7 @@ class UserManagementServiceTest {
         @DisplayName("a store that refuses the positioning read reports the lookup failure")
         void reportsAPositioningFailure() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 1;
+            repository.refuse("findAllProjectedBy");
 
             final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
@@ -1811,10 +1951,13 @@ class UserManagementServiceTest {
         @DisplayName("a store that refuses a row read after positioning reports the same failure")
         void reportsAReadFailureAfterPositioning() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 2;
+            // The inclusive primary-key seek positions the browse and the forward range read supplies
+            // every row after it, so refusing the range read alone fails a row read rather than the
+            // positioning that preceded it.
+            repository.refuse("findBySecUsrIdGreaterThanOrderBySecUsrIdAsc");
 
             final UserOutcome response = serviceFor(repository)
-                    .listUsers(listRequest(KeyAction.ENTER, null, null, null, List.of()));
+                    .listUsers(listRequest(KeyAction.ENTER, "USER0001", null, null, List.of()));
 
             assertThat(response.generalError()).isTrue();
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
@@ -2029,7 +2172,7 @@ class UserManagementServiceTest {
         @DisplayName("a store that refuses the backward probe reports it instead of escaping")
         void reportsAProbeFailureOnTheBackwardKey() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 1;
+            repository.refuse("findProjectedBySecUsrId");
 
             final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", null, List.of()));
@@ -2044,7 +2187,7 @@ class UserManagementServiceTest {
         @DisplayName("a store that refuses the forward probe reports it instead of escaping")
         void reportsAProbeFailureOnTheForwardKey() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 1;
+            repository.refuse("findProjectedBySecUsrId");
 
             final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, null, "USER0010", List.of()));
@@ -2058,7 +2201,8 @@ class UserManagementServiceTest {
         @DisplayName("a store that refuses the selection probe reports it instead of escaping")
         void reportsAProbeFailureWhileResolvingASelection() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 1;
+            repository.refuse("findProjectedBySecUsrId");
+            repository.refuse("findAllProjectedBy");
 
             final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.ENTER, null, "USER0001", null,
@@ -2070,17 +2214,58 @@ class UserManagementServiceTest {
         }
 
         @Test
-        @DisplayName("a store that refuses a row probe after positioning reports it the same way")
+        @DisplayName("a store that refuses the successor probe after positioning reports it the same way")
         void reportsARowProbeFailureOnTheForwardKey() {
             final FakeRepository repository = repositoryOf(25);
-            repository.failProjectionFromCall = 2;
+            // The anchor is found and its position counted; only the one-row read that asks whether a
+            // further row follows refuses, which is the successor probe's own arm.
+            repository.refuse("findBySecUsrIdGreaterThanOrderBySecUsrIdAsc");
 
             final UserOutcome response = serviceFor(repository)
                     .listUsers(listRequest(KeyAction.PFK08, null, null, "USER0010", List.of()));
 
             assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
             assertThat(response.generalError()).isTrue();
-            assertBoundedFailureDiagnostics(1, "User list row probe failed");
+            assertBoundedFailureDiagnostics(1, "User list successor probe failed");
+        }
+
+        @Test
+        @DisplayName("a store that refuses the page-counter aggregate reports it rather than paging "
+                + "from a counter it could not derive")
+        void reportsAPageCounterFailure() {
+            final FakeRepository repository = repositoryOf(25);
+            // The anchor is found; only the range count that turns its key into a page number refuses.
+            // The counter is what decides whether there is a page before this one at all, so a refusal
+            // here cannot be allowed to look like page one.
+            repository.refuse("countBySecUsrIdLessThan");
+
+            final UserOutcome response = serviceFor(repository)
+                    .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", null, List.of()));
+
+            assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.rows()).isEmpty();
+            assertBoundedFailureDiagnostics(1, "User list page-counter probe failed");
+        }
+
+        @Test
+        @DisplayName("a store that refuses the backward range read reports a read failure, not an "
+                + "end of sequence")
+        void reportsABackwardReadFailure() {
+            final FakeRepository repository = repositoryOf(25);
+            // The anchor is found and counted, so the walk starts; the descending range read that
+            // supplies every row below the anchor is the one that refuses. The distinction matters:
+            // end of sequence emits the reached-the-top text and leaves the error flag clear, while a
+            // refusal raises it, and a browse that confused the two would present a truncated page as
+            // if it were the top of the table.
+            repository.refuse("findBySecUsrIdLessThanOrderBySecUsrIdDesc");
+
+            final UserOutcome response = serviceFor(repository)
+                    .listUsers(listRequest(KeyAction.PFK07, null, "USER0011", null, List.of()));
+
+            assertThat(response.message()).isEqualTo(MSG_LIST_UNABLE_TO_LOOKUP_USER);
+            assertThat(response.generalError()).isTrue();
+            assertBoundedFailureDiagnostics(1, "User list read failed");
         }
 
         @Test

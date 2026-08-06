@@ -123,8 +123,8 @@ final class TransactionAddServiceTest {
     /** Stubs the cross reference so the account identifier resolves to the fixture card. */
     private void seedCrossReferenceByAccount() {
         Mockito.when(crossReferenceRepository
-                        .findByXrefAcctId(ACCOUNT_ID))
-                .thenReturn(List.of(new CardCrossReference(CARD_NUMBER, "000000011",
+                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, "000000011",
                         ACCOUNT_ID)));
     }
 
@@ -285,7 +285,7 @@ final class TransactionAddServiceTest {
 
             assertThat(result.screen().cardNumber()).contains(CARD_NUMBER);
             Mockito.verify(crossReferenceRepository)
-                    .findByXrefAcctId(ACCOUNT_ID);
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
         }
 
         @Test
@@ -345,8 +345,8 @@ final class TransactionAddServiceTest {
                 + "than a lookup failure, so the two arms stay distinguishable")
         void anUnknownAccountIdentifierReportsNotFound() {
             Mockito.when(crossReferenceRepository
-                            .findByXrefAcctId(ACCOUNT_ID))
-                    .thenReturn(List.of());
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
 
             final TransactionAddService.TransactionAddResult result =
                     service.processTransactionAdd(validTurn(""));
