@@ -52,6 +52,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.util.CobolStringUtils;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
@@ -234,6 +235,17 @@ class UserManagementServiceTest {
     /** A fresh throwaway credential. No legacy value is ever referenced. */
     private static String throwawayCredential() {
         return "T" + UUID.randomUUID().toString().substring(0, 7);
+    }
+
+    /**
+     * A stored digest in the form both write paths produce and the sign-on path verifies: taken over
+     * the credential folded to upper case, exactly as the terminal delivered it to the mainframe.
+     *
+     * @param credential the credential as an operator would key it
+     * @return the digest a stored row carries for that credential
+     */
+    private static String storedDigestOf(final String credential) {
+        return ENCODER.encode(CobolStringUtils.asciiUpperFold(credential));
     }
 
     private static ScreenNavigationState reEntered() {
@@ -580,10 +592,40 @@ class UserManagementServiceTest {
             assertThat(stored.credentialDigest()).hasSize(DIGEST_LENGTH)
                     .isNotEqualTo(submitted)
                     .startsWith("$2");
-            assertThat(ENCODER.matches(submitted, stored.credentialDigest())).isTrue();
+            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(submitted),
+                    stored.credentialDigest()))
+                    .as("the sign-on path verifies the folded credential, so that is what is stored")
+                    .isTrue();
             assertThat(response.actionSucceeded()).isTrue();
             assertThat(response.generalError()).isFalse();
             assertThat(response.message()).isEqualTo("User NEWUSR01 has been added ...");
+        }
+
+        @Test
+        @DisplayName("a credential keyed in lower case is admitted by the sign-on verifier afterwards, "
+                + "which is the only thing that makes a created identity usable")
+        void aMixedCaseCredentialIsUsableAtSignOn() {
+            // The defect this pins: the terminal folded every keystroke before the mainframe program
+            // saw it, and the sign-on program folds the submitted secret and compares the folded value.
+            // A digest taken over the value as typed is therefore unverifiable, and the screen still
+            // reports success - so the identity is silently locked out. The verifier used here is the
+            // module's own, driven exactly as the sign-on transaction drives it.
+            final FakeRepository repository = new FakeRepository();
+            final String keyed = "Qa" + throwawayCredential().substring(1);
+            assertThat(keyed).containsPattern("[a-z]");
+            final CredentialDigestService verifier = new CredentialDigestService();
+
+            serviceFor(repository)
+                    .addUser(recordRequest("MIXEDCS1", "NOELLE", "PARK", keyed, "U",
+                            KeyAction.ENTER));
+
+            final String stored = repository.rows.get("MIXEDCS1").credentialDigest();
+            assertThat(verifier.matches(CobolStringUtils.asciiUpperFold(keyed), stored))
+                    .as("the sign-on transaction folds the presented secret before verifying it")
+                    .isTrue();
+            assertThat(verifier.matches(keyed, stored))
+                    .as("an unfolded secret never reaches the verifier from the sign-on transaction")
+                    .isFalse();
         }
 
         @Test
@@ -845,7 +887,7 @@ class UserManagementServiceTest {
         void treatsAReTypedCredentialAsUnchanged() {
             final FakeRepository repository = new FakeRepository();
             final String known = throwawayCredential();
-            final String digestBefore = ENCODER.encode(known);
+            final String digestBefore = storedDigestOf(known);
             seed(repository, "UPDUSR02", "ANNE", "LEE", "U", digestBefore);
 
             final UserOutcome response = serviceFor(repository)
@@ -861,11 +903,50 @@ class UserManagementServiceTest {
         }
 
         @Test
+        @DisplayName("re-keying the same credential in a different case is not a change either, because "
+                + "the terminal could not have transmitted the difference")
+        void treatsAReCasedCredentialAsUnchanged() {
+            final FakeRepository repository = new FakeRepository();
+            final String known = "Qa" + throwawayCredential().substring(1);
+            final String digestBefore = storedDigestOf(known);
+            seed(repository, "UPDUSR07", "IVY", "NOLAN", "U", digestBefore);
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("UPDUSR07", "IVY", "NOLAN",
+                            known.toUpperCase(Locale.ROOT), "U", KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
+            assertThat(repository.rows.get("UPDUSR07").credentialDigest())
+                    .as("a re-hash here would be a new digest for a credential nobody changed")
+                    .isEqualTo(digestBefore);
+        }
+
+        @Test
+        @DisplayName("a replacement credential keyed in lower case is stored in the form the sign-on "
+                + "verifier will be given")
+        void aMixedCaseReplacementIsStoredFolded() {
+            final FakeRepository repository = new FakeRepository();
+            seed(repository, "UPDUSR08", "OWEN", "HALL", "U", storedDigestOf(throwawayCredential()));
+            final String replacement = "Qa" + throwawayCredential().substring(1);
+            final CredentialDigestService verifier = new CredentialDigestService();
+
+            final UserOutcome response = serviceFor(repository)
+                    .updateUser(recordRequest("UPDUSR08", "OWEN", "HALL", replacement, "U",
+                            KeyAction.PFK05));
+
+            assertThat(response.actionSucceeded()).isTrue();
+            final String digestAfter = repository.rows.get("UPDUSR08").credentialDigest();
+            assertThat(verifier.matches(CobolStringUtils.asciiUpperFold(replacement), digestAfter))
+                    .isTrue();
+            assertThat(verifier.matches(replacement, digestAfter)).isFalse();
+        }
+
+        @Test
         @DisplayName("a genuinely different credential is hashed and replaces the stored digest")
         void hashesAGenuinelyNewCredential() {
             final FakeRepository repository = new FakeRepository();
             final String previous = throwawayCredential();
-            final String digestBefore = ENCODER.encode(previous);
+            final String digestBefore = storedDigestOf(previous);
             seed(repository, "UPDUSR03", "BOB", "KING", "U", digestBefore);
             final String replacement = throwawayCredential();
 
@@ -876,8 +957,10 @@ class UserManagementServiceTest {
             final String digestAfter = repository.rows.get("UPDUSR03").credentialDigest();
             assertThat(response.actionSucceeded()).isTrue();
             assertThat(digestAfter).hasSize(DIGEST_LENGTH).isNotEqualTo(digestBefore);
-            assertThat(ENCODER.matches(replacement, digestAfter)).isTrue();
-            assertThat(ENCODER.matches(previous, digestAfter)).isFalse();
+            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(replacement), digestAfter))
+                    .isTrue();
+            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(previous), digestAfter))
+                    .isFalse();
             assertThat(String.valueOf(response)).doesNotContain(digestBefore)
                     .doesNotContain(digestAfter).doesNotContain(replacement);
             assertThat(noCapturedLogContains(digestAfter)).isTrue();

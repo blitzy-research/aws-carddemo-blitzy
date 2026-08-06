@@ -7749,6 +7749,134 @@ does not apply. It is reported, visible, and not suppressed.
 
 ---
 
+### DL-188 — The confirmation turn re-runs the edits, because the screen that made them redundant no longer exists
+
+**What the legacy does.** `1200-EDIT-MAP-INPUTS` leaves before its twenty-four edits when the conversation
+is already in the awaiting-confirmation state, at `app/cbl/COACTUPC.cbl` L1464. That is safe on the
+mainframe for a reason that is not visible in the edit driver at all: the confirmation screen protects
+every field. The attribute paragraph at L2986-L3006 selects the clause that leaves each field exactly as
+L3441-L3496 set it, and the attribute those lines set is *protected with the modified-data tag on* - so the
+terminal re-transmits the image the edits already passed, byte for byte, and the operator cannot alter a
+character of it. Re-editing it would have been redundant work on values that could not have changed.
+
+**Why the translation cannot inherit that.** This port is stateless. The awaiting-confirmation state is
+derived from the arriving request rather than read out of a communication area, and the image is supplied
+by the caller rather than by a protected screen. Both halves of the legacy's guarantee are therefore
+absent: nothing establishes that the submitted image is the one that was validated, and nothing prevents a
+caller from substituting a value the edits would have refused. Carried across literally, the skip made the
+entire edit cascade advisory - the credit-score range, the two permitted status codes and the date cascade
+were all reachable only on the turn *before* the one that wrote.
+
+**Decision.** The edits run on the confirmation turn as well. On a faithful echo they pass, L1671-L1675
+restores the awaiting-confirmation state and the write proceeds exactly as it did before, so an honest
+caller sees no difference at all; on an altered echo they refuse, which is what the legacy would have done
+had the operator been able to type the value on the detail screen. The validating turn and the confirming
+turn now report identically for the same image - same summary text, same field-error ordering - which is
+the property that makes the cascade enforceable rather than advisory.
+
+**One state the legacy could not be in, and what is done with it.** A derived confirmation state can arrive
+carrying an image that turns out to hold no change at all. The legacy could never reach that combination:
+the awaiting-confirmation state is reached only from a turn on which a difference was found, at L2585-L2591,
+and the save key is refused in every other state by the validity test at L905-L916. Rather than invent a
+behaviour for it, the derived state is demoted to the detail screen - the state the legacy would have been
+in - and the no-change arm at L2585 then leaves it there. Nothing is written and the information message is
+the prompt for changes, which is exactly what the legacy answers a submission that changed nothing. Before
+this, such a turn entered the write range: it reported "Changes committed to database" beside the
+no-change text and rewrote the customer row, which re-sealed a protected column under a fresh initialisation
+vector and left the caller's before-image stale for the turn that followed.
+
+**What does not change.** The two early exits the legacy actually reaches are untouched: a turn before any
+detail has been fetched still edits only the search key, and a turn whose predecessor completed still leaves
+without editing. Field flags are still cleared on the way out of the no-change exit, and a confirmation turn
+that passes its edits still carries no decoration, because a passed edit leaves the flag in the same cleared
+state the skip used to leave it in.
+
+*Cited by:* `service/AccountUpdateService`.
+
+---
+
+### DL-189 — A committed rewrite re-mints the before-image, because the response carries it instead of a communication area
+
+`9500-STORE-FETCHED-DATA` copies both fetched records into the communication area so the next turn can ask
+whether anybody else moved them, and `9700-CHECK-CHANGE-IN-REC` compares against that copy. This module
+seals the same question into a token the response carries and the caller echoes, and it deliberately does
+not re-mint when a token arrives: minting over records read moments earlier would compare them with
+themselves, which always agrees and would make the check unreachable.
+
+That left one point uncovered. When the write range commits, the records the caller was shown a moment ago
+are no longer the records on file. The legacy did not have to say anything about it, because its completed
+state at L2625-L2632 resets the conversation and the following turn re-fetches; a derived state has no such
+reset, so the caller continues with the token it was last given. Echoing the pre-write token presented an
+image and a before-image that disagreed, and the very next genuine change was refused as somebody else's -
+a conflict the turn had caused itself, escapable only by re-fetching.
+
+**Decision.** The before-image is re-minted from the rewritten records at the success point of the write
+range, and nowhere else. The two mint sites cannot overlap: the fetch paragraph mints only when no image
+arrived, and this one only after an image has been superseded. Conflict detection is not weakened by it -
+a token minted before an *unrelated* actor's change still fails to verify, which was confirmed by exercising
+both arms: the pre-write image is still refused, and the re-minted one is accepted.
+
+*Cited by:* `service/AccountUpdateService`.
+
+---
+
+### DL-190 — Two widths the screen owns, restated where the wire had lost them
+
+**The postal code, presented at the map item's width.** `CUST-ADDR-ZIP` is ten characters and the map item
+it is shown in is five, and the presentation move at `app/cbl/COACTUPC.cbl` L2843 crosses that boundary the
+way a COBOL `MOVE` into a narrower alphanumeric item always does: it keeps the leading characters and
+discards the rest. The update screen had been publishing the stored width instead. That broke a round trip
+rather than merely showing more than the screen could: the value exceeded the width the response contract
+declares for the component and was refused by the request contract when the caller echoed it back, so the
+thirty seeded customers whose postcode carries the wider form could not complete the screen at all - and the
+view turn, which had always cut the value, disagreed with the update turn about the same stored value. The
+move is now reproduced, through a helper that states the semantics once, and the two turns agree.
+
+**The account identifier, bounded at the field's own width.** A 3270 field cannot transmit more characters
+than it declares, so a longer value has no counterpart on the original screen. The view turn took its
+search key from an unbounded query parameter, and a longer value was not refused but silently narrowed
+further down: the turn then answered, with no error, for a *different* account than the one asked for,
+because every layer below saw a well-formed eleven-digit key. The parameter now declares the screen field's
+width, which the update screen's body-bound component already declared, so the two turns agree on what the
+field can hold. Nothing reachable was lost: an absent parameter still reaches the outcome that asks for one
+and an empty one still reaches the no-input answer, both of which are screens the legacy composed.
+
+*Cited by:* `service/AccountUpdateService`, `api/AccountController`.
+
+---
+
+### DL-191 — The credential is folded to upper case before it is hashed, because the terminal folded it before the program saw it
+
+**The two halves of a credential's life have to agree.** The sign-on program folds *both* submitted values
+at `app/cbl/COSGN00C.cbl` L132-L136 and compares the folded secret at L223, which DL-138 records: a
+lower-case secret authenticates on the mainframe, and it has to authenticate here. The maintenance programs
+store what they are handed - `app/cbl/COUSR01C.cbl` L157 and `app/cbl/COUSR02C.cbl` L227-L228 - and on the
+mainframe what they are handed is already folded, because a credential never reaches the program in any
+other form. The fold is not a rule those programs apply; it is a property of every value that arrives.
+
+**What went wrong without it.** There is no terminal in front of this module. The administrative screens
+were hashing the value exactly as submitted while the sign-on path verified the folded value, so every
+identity created or maintained with a lower-case character was locked out at its first sign-on - and the
+administrative screen reported success, because nothing on that path ever verifies what it just wrote. The
+defect was invisible against the seeded estate, whose credential literal is already upper case.
+
+**Decision.** The submitted credential is folded at the single point it enters the transaction, so the two
+write paths and the change detector all work on one form of it, and that form is the one the sign-on path
+verifies. The fold is the estate's own ASCII table substitution rather than the platform method, for the
+reason recorded against every other fold in this module - D-18 and DL-023 - and it changes no length, so the
+width the request contract asserts still holds and the emptiness cascade reports exactly what it did before.
+An unsupplied credential stays unsupplied: the update screen distinguishes a credential that was not
+submitted from one submitted empty, and folding absence into emptiness would turn a name-only update into a
+rejected turn.
+
+**What this is not.** It is not a credential rule. No strength, expiry, history or lockout is introduced,
+because the legacy tests only that the field is non-blank and adding a rule would reject input it accepted.
+It does not weaken verification either: a genuinely different credential is still refused, and a re-keyed
+credential differing only in case is correctly reported as no change rather than re-hashed - which is the
+same answer the mainframe gave, since the difference could not have been transmitted.
+
+*Cited by:* `service/UserManagementService`.
+
 ---
 
 *This log is authored alongside the target module and is never edited by the code that cites it. A

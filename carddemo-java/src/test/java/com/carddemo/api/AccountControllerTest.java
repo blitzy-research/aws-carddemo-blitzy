@@ -49,6 +49,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -56,8 +58,12 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * The account screens' boundary: the view route carrying legacy transaction CAVW and the update route
@@ -1071,6 +1077,63 @@ class AccountControllerTest {
                     .isEqualTo(AccountController.ACCOUNTS_PATH + AccountController.UPDATE_SUBPATH);
             assertThat(AccountController.ACCOUNT_ID_PARAM).isEqualTo("accountId");
             assertThat(AccountController.ATTENTION_KEY_PARAM).isEqualTo("attentionKey");
+        }
+    }
+
+    /**
+     * The width of the one field the view screen lets an operator type into.
+     *
+     * <p>A 3270 field transmits at most the characters it declares, so a longer value has no counterpart
+     * on the original screen. Driven through the servlet contract rather than by calling the method,
+     * because the refusal is the framework's parameter validation and the translated body comes from the
+     * shared advice - neither of which is exercised by a direct call.
+     */
+    @Nested
+    @DisplayName("the account-identifier parameter is bounded by the screen field's own width")
+    class AccountIdentifierParameterWidth {
+
+        private MockMvc mockMvc;
+
+        @BeforeEach
+        void standUpTheBoundary() {
+            mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                    .setControllerAdvice(new GlobalExceptionHandler())
+                    .build();
+        }
+
+        @Test
+        @DisplayName("a value wider than the field is refused, and no turn is run for a narrowed key")
+        void anOverLongIdentifierIsRefused() throws Exception {
+            mockMvc.perform(post(AccountController.ACCOUNT_VIEW_PATH)
+                            .principal(identityOf(UserType.ADMIN))
+                            .param(AccountController.ACCOUNT_ID_PARAM, "000000000010000"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.fieldErrors[0].fieldName")
+                            .value(AccountController.ACCOUNT_ID_PARAM))
+                    .andExpect(jsonPath("$.fieldErrors[0].state").value("INVALID"));
+
+            verify(accountViewService, never()).viewAccount(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a value at the field's own width is served, so the bound refuses nothing the "
+                + "screen could carry")
+        void anIdentifierAtTheFieldWidthIsServed() throws Exception {
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            mockMvc.perform(post(AccountController.ACCOUNT_VIEW_PATH)
+                            .principal(identityOf(UserType.ADMIN))
+                            .param(AccountController.ACCOUNT_ID_PARAM, ACCOUNT_ID))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.accountId").value(ACCOUNT_ID));
+
+            verify(accountViewService).viewAccount(any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("the declared bound is the account key's own width")
+        void theDeclaredBoundIsTheKeyWidth() {
+            assertThat(AccountController.ACCOUNT_ID_SCREEN_WIDTH).isEqualTo(ACCOUNT_ID.length());
         }
     }
 }

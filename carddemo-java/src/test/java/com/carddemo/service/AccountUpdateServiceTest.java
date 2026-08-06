@@ -455,6 +455,36 @@ class AccountUpdateServiceTest {
             Mockito.verify(accountRepository, Mockito.never())
                     .findById(ArgumentMatchers.anyString());
         }
+
+        @Test
+        @DisplayName("a stored postcode wider than its map item is shown at the map item's width, so the "
+                + "presented screen can be submitted back unaltered")
+        void widePostcodeIsShownAtTheScreenWidth() {
+            // Line 2843 moves a ten-character stored value into a five-character map item. Thirty of the
+            // fifty seeded rows hold the wider form, and publishing it would exceed the width the
+            // response contract declares and be refused on the way back in.
+            final Customer wideZip = new Customer(CUSTOMER_ID, "Aniya Von", "Q", "Smith",
+                    "1 High Street", "Flat 2", "Springfield", "NY", "USA", "10001-2345",
+                    "(201)555-0100", "(202)555-0101", null, null, "1980-02-03", "1234567890", "Y",
+                    "700");
+            Mockito.when(crossReferenceRepository
+                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
+                            ACCOUNT_ID)));
+            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededAccount()));
+            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+                    .thenReturn(Optional.of(wideZip));
+            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, KeyAction.ENTER, reEntered(), null, false);
+
+            final AccountUpdateOutcome response = service.handle(request);
+
+            assertThat(response.zipCode()).isEqualTo("10001");
+        }
     }
 
     @Nested
@@ -939,6 +969,124 @@ class AccountUpdateServiceTest {
             assertThat(response.fieldErrors()).isEmpty();
             assertThat(response.error()).isFalse();
             assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION);
+        }
+    }
+
+    /**
+     * The confirmation turn, which the legacy could leave unedited and this translation cannot.
+     *
+     * <p>The legacy's confirmation screen protects every field with the modified-data tag on, so the
+     * image the terminal returns is the image the edits already passed and re-editing it would be
+     * redundant. Here the caller supplies the image, so the edits run again and the awaiting-confirmation
+     * state is a claim rather than a fact. These tests hold that line: an altered image is refused and
+     * nothing is written, an image carrying no change at all is neither confirmed nor written, and a
+     * faithful echo still reaches the same commit it always did.
+     */
+    @Nested
+    @DisplayName("the confirmation turn re-edits the image the caller submits")
+    class ConfirmationTurnIsEdited {
+
+        @Test
+        @DisplayName("an out-of-range credit score on the save turn is refused and nothing is written")
+        void alteredCreditScoreOnTheSaveTurnIsRefused() {
+            seedRecords();
+
+            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
+                    ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029", "01", "15", "2000.00",
+                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
+                    "123", "45", "6789", "1980", "02", "03", "999", "Aniya Von", "Q", "Smith",
+                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
+                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
+                    reEntered(), mintedToken(), false));
+
+            assertThat(response.error()).isTrue();
+            assertThat(response.errorMessage()).endsWith(SUFFIX_FICO_OUT_OF_RANGE);
+            assertThat(screenFieldIdsOf(response)).containsExactly("ACSTFCO");
+            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+            Mockito.verify(customerRepository, Mockito.never()).compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
+        }
+
+        @Test
+        @DisplayName("a status outside the two permitted codes on the save turn is refused")
+        void alteredStatusOnTheSaveTurnIsRefused() {
+            seedRecords();
+
+            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
+                    ACCOUNT_ID, "X", "2020", "01", "15", "5000.00", "2029", "01", "15", "2000.00",
+                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
+                    "123", "45", "6789", "1980", "02", "03", "700", "Aniya Von", "Q", "Smith",
+                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
+                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
+                    reEntered(), mintedToken(), false));
+
+            assertThat(response.error()).isTrue();
+            assertThat(screenFieldIdsOf(response)).containsExactly("ACSTTUS");
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+        }
+
+        @Test
+        @DisplayName("an impossible month on the save turn is refused by the date cascade")
+        void alteredExpiryMonthOnTheSaveTurnIsRefused() {
+            seedRecords();
+
+            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
+                    ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029", "99", "15", "2000.00",
+                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
+                    "123", "45", "6789", "1980", "02", "03", "700", "Aniya Von", "Q", "Smith",
+                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
+                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
+                    reEntered(), mintedToken(), false));
+
+            assertThat(response.error()).isTrue();
+            assertThat(screenFieldIdsOf(response)).contains("EXPMON");
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a save turn carrying no change at all writes nothing and prompts again")
+        void unchangedImageOnTheSaveTurnWritesNothing() {
+            seedRecords();
+
+            final AccountUpdateOutcome response =
+                    service.handle(unchangedDetailTurn(mintedToken(), KeyAction.PFK05));
+
+            // The no-change text is the ungated assignment at line 1769; the information message is the
+            // detail-screen prompt, because the derived confirmation state is demoted when the submitted
+            // image turns out to carry no change.
+            assertThat(response.errorMessage())
+                    .isEqualTo("No change detected with respect to values fetched.");
+            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
+            assertThat(response.fieldErrors()).isEmpty();
+            Mockito.verify(accountRepository, Mockito.never())
+                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+            Mockito.verify(customerRepository, Mockito.never()).compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
+        }
+
+        @Test
+        @DisplayName("a committed save re-mints the before-image so the next change is not refused")
+        void committedSaveRemintsTheBeforeImage() {
+            seedRecords();
+            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            Mockito.when(customerRepository.compareAndSet(
+                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
+                    .thenReturn(1);
+            final String submitted = mintedToken();
+
+            final AccountUpdateOutcome response =
+                    service.handle(changedDetailTurn(submitted, KeyAction.PFK05));
+
+            assertThat(response.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
+            assertThat(response.concurrencyToken())
+                    .as("the records were rewritten, so the presented before-image must move with them")
+                    .isNotNull()
+                    .isNotEqualTo(submitted);
         }
     }
 

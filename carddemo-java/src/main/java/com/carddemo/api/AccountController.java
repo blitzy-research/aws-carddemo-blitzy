@@ -32,6 +32,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Size;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -153,6 +154,19 @@ public class AccountController {
      * would make both unreachable.
      */
     public static final String ACCOUNT_ID_PARAM = "accountId";
+
+    /**
+     * Width of the account-identifier field on both screens, and therefore the widest value either
+     * parameter or body may carry.
+     *
+     * <p>A 3270 field cannot transmit more characters than it declares, so a longer value has no
+     * counterpart on the original screen at all. Bounding the parameter is what keeps that true: without
+     * the bound a longer value is not refused but silently narrowed downstream, and the turn then answers
+     * for a different account than the one asked for - with no error, because every layer below sees a
+     * well-formed key. The identical bound is declared on the update screen's body-bound component, so
+     * the two turns agree on what the field can hold.
+     */
+    public static final int ACCOUNT_ID_SCREEN_WIDTH = 11;
 
     /**
      * Name of the request parameter carrying the terminal attention identifier as transmitted.
@@ -358,13 +372,15 @@ public class AccountController {
                         + "messages it composed, the field the cursor returns to, the next route and "
                         + "the communication area to echo on the following turn."),
         @ApiResponse(responseCode = "400",
-                description = "The echoed communication area exceeded the widths it declares."),
+                description = "The account-identifier parameter, or the echoed communication area, "
+                        + "exceeded the widths the screen declares."),
         @ApiResponse(responseCode = "401",
                 description = "No session was presented, or the one presented did not verify."),
         @ApiResponse(responseCode = "403",
                 description = "The authenticated principal is not an approved online-data operator.")})
     public ResponseEntity<AccountViewResponse> viewAccount(
             @RequestParam(name = ACCOUNT_ID_PARAM, required = false)
+            @Size(max = ACCOUNT_ID_SCREEN_WIDTH)
             @Parameter(description = "Account-identifier search field of the view screen, eleven "
                     + "digits. Optional: an absent field is the outcome that asks for one.")
             final String accountId,

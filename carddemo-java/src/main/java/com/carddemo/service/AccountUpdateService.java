@@ -465,6 +465,15 @@ public final class AccountUpdateService {
     /** Characters of the postcode that join the state code, from the substring at line 2538. */
     private static final int ZIP_PREFIX_WIDTH = 2;
 
+    /**
+     * Width of the postal-code item on the screen, from {@code ACSZIPC} of the symbolic map.
+     *
+     * <p>The stored column is ten characters wide and the map item is five, and the presentation move at
+     * line 2843 crosses that boundary by discarding the surplus. The width is stated once here so the
+     * screen and the response contract cannot drift apart.
+     */
+    private static final int ZIP_CODE_SCREEN_WIDTH = 5;
+
     /** Inclusive lower bound of {@code FICO-RANGE-IS-VALID}, line 848. */
     static final int FICO_SCORE_MINIMUM = 300;
 
@@ -1354,9 +1363,22 @@ public final class AccountUpdateService {
      *
      * <p>Two early exits shape everything. Before any detail has been fetched, only the account key is
      * edited and the paragraph leaves at line 1446. Once details are on the screen, the comparison at
-     * lines 1460 to 1468 leaves as well when nothing changed, when the changes are already validated and
-     * awaiting confirmation, or when the previous turn completed - and it clears every field flag on the
-     * way out, which is why a confirmation turn shows no decoration.
+     * lines 1460 to 1468 leaves as well when nothing changed or when the previous turn completed - and it
+     * clears every field flag on the way out, which is why an accepted turn shows no decoration.
+     *
+     * <p><strong>The awaiting-confirmation state is not a third reason to leave here, and that is a
+     * deliberate divergence.</strong> Line 1464 lets the legacy skip all twenty-four edits on the
+     * confirmation turn, and the legacy is safe doing so because that screen is protected: lines 2986 to
+     * 3006 select the clause that leaves every field as lines 3441 to 3496 set it, and the attribute they
+     * set is protected <em>with the modified-data tag on</em>. The terminal therefore re-transmits the
+     * very image the edits had already passed, byte for byte, and the operator cannot alter a character
+     * of it. This translation is stateless: the confirmation turn re-accepts the image from the caller,
+     * so that guarantee does not exist and an unedited write would accept any value a caller chose to
+     * substitute. The edits are consequently re-run on the confirmation turn as well. On a faithful echo
+     * they pass, lines 1671 to 1675 restore the awaiting-confirmation state and the save proceeds exactly
+     * as before; on an altered echo they reject, which is what the legacy would have done had the
+     * operator been able to type the value on the detail screen. Recorded in
+     * {@code docs/decision-log.md}.
      *
      * <p>The twenty-four edits that follow run in source order, and the order is contractual because the
      * first one to fail claims the single summary message slot while every one of them sets its own field
@@ -1405,9 +1427,18 @@ public final class AccountUpdateService {
         state.receivedDetails = submitted;
 
         compareOldNew(state, submitted);
-        if (!state.changeHasOccurred
-                || state.action == ChangeAction.CHANGES_OK_NOT_CONFIRMED
-                || state.action == ChangeAction.CHANGES_OKAYED_AND_DONE) {
+        if (!state.changeHasOccurred || state.action == ChangeAction.CHANGES_OKAYED_AND_DONE) {
+            if (state.action == ChangeAction.CHANGES_OK_NOT_CONFIRMED) {
+                // NO-CHANGES-FOUND and the awaiting-confirmation state cannot coexist in the legacy:
+                // that state is reached only from a turn on which a difference was found, at lines 2585
+                // to 2591, and the save key is rejected in every other state by the validity test at
+                // lines 905 to 916. A confirmation state that was derived from the arriving key rather
+                // than carried in the commarea is therefore demoted here to the detail screen, which is
+                // the state the legacy would have been in. The no-change arm at line 2585 then leaves it
+                // there, so nothing is written and the information message is the prompt for changes -
+                // both of which are what the legacy does with a submission that changed nothing.
+                state.action = ChangeAction.SHOW_DETAILS;
+            }
             state.clearFieldFlags();
             editMapInputsExit();
             return;
@@ -2590,6 +2621,13 @@ public final class AccountUpdateService {
      * migrated columns hold authenticated ciphertext rather than cleartext, and neither is ever logged.
      * The national identifier is the schema's only nullable column and is null in every seeded row, so
      * absence is normal here rather than exceptional.
+     *
+     * <p>The postal code is the one component whose stored column is wider than the screen item it is
+     * shown in, and line 2843 moves the ten-character stored value into a five-character map field -
+     * which keeps its leading five characters and discards the rest. The move is reproduced rather than
+     * widened, for two reasons that agree: publishing ten characters would exceed the width the response
+     * contract declares for the component and would be refused when the caller echoed it back, and it
+     * would show the operator characters the screen never had room for.
      */
     private void showOriginalValues(final EditState state, final MapOutput output) {
         final Account account = state.account;
@@ -2631,7 +2669,8 @@ public final class AccountUpdateService {
         output.city = customer.getAddrLine3();
         output.stateCode = customer.getAddrStateCd();
         output.countryCode = customer.getAddrCountryCd();
-        output.zipCode = customer.getAddrZip();
+        // Line 2843: the stored ten-character value is moved into a five-character map item.
+        output.zipCode = atScreenWidth(customer.getAddrZip(), ZIP_CODE_SCREEN_WIDTH);
         output.eftAccountId = customer.getEftAccountId();
         output.primaryCardHolderIndicator = customer.getPriCardHolderInd();
         output.ficoScore = customer.getFicoCreditScore();
@@ -3292,6 +3331,10 @@ public final class AccountUpdateService {
      *
      * <p>When either record is absent the area is left as the caller initialised it at line 3610, which
      * is why nothing is minted and nothing is dereferenced.
+     *
+     * <p>The other place a before-image is established is the success point of the write range, which
+     * re-mints over the records it has just rewritten. The two do not overlap: this paragraph mints only
+     * when no image arrived, and that one only after an image has been superseded.
      */
     private void storeFetchedData(final EditState state) {
         if (state.account == null || state.customer == null) {
@@ -3448,6 +3491,15 @@ public final class AccountUpdateService {
 
             state.account = account;
             state.customer = customer;
+            // Both rewrites committed, so the records the caller was shown a moment ago are no longer
+            // the records on file. The legacy did not have to say anything here: its old-image copy
+            // became irrelevant because the completed state at lines 2625 to 2632 resets the
+            // conversation and the next turn re-fetches. This translation carries the old image in the
+            // response instead of in a commarea, so the before-image is re-minted over the rewritten
+            // records. Leaving the pre-write token in place would present an image and a before-image
+            // that disagree, and the very next change would be refused as somebody else's - a conflict
+            // this turn caused itself.
+            state.concurrencyToken = this.concurrencyTokenService.mint(account, customer);
             break writeRange;
         }
         writeProcessingExit();
@@ -3881,6 +3933,25 @@ public final class AccountUpdateService {
     }
 
     /**
+     * A stored value as the screen item it is moved into holds it.
+     *
+     * <p>A COBOL {@code MOVE} into a narrower alphanumeric item keeps the leading characters and discards
+     * the surplus, so a value already inside the width is returned untouched and a wider one is cut. Only
+     * the presentation of a value uses this: no comparison, no edit and no write narrows anything, so the
+     * stored value keeps its own width everywhere except on the screen.
+     *
+     * @param storedValue the value as the record holds it, or {@code null} when the record holds none
+     * @param screenWidth the declared width of the map item the value is shown in
+     * @return the value at the screen item's width, or {@code null} when there was none
+     */
+    private static String atScreenWidth(final String storedValue, final int screenWidth) {
+        if (storedValue == null || storedValue.length() <= screenWidth) {
+            return storedValue;
+        }
+        return storedValue.substring(0, screenWidth);
+    }
+
+    /**
      * One transmitted screen field as the receive paragraph takes it: the decoration marker and an
      * all-space value both read as the cleared state, per the shape at lines 1051 to 1058.
      */
@@ -4240,6 +4311,14 @@ public final class AccountUpdateService {
      * both records have been fetched. A turn arriving with the save key must have come from the
      * confirmation screen, because that is the only screen on which the attribute paragraphs free the save
      * legend, at lines 3578 to 3581. Anything else is a turn on the detail screen.
+     *
+     * <p><strong>What a derived state cannot be trusted for.</strong> The legacy read this state out of
+     * its own storage, so it was evidence that the previous turn had validated an image and that the
+     * screen the image came back from was protected. Derived from an arriving request, it is evidence of
+     * neither: the caller chose the key and the caller supplied the image. Two consumers therefore treat
+     * the awaiting-confirmation state as a claim to be checked rather than a fact - the edit driver
+     * re-runs the edits over the submitted image, and it demotes the state to the detail screen when the
+     * image turns out to carry no change at all, which is a combination the legacy could not reach.
      */
     private static ChangeAction resolveIncomingChangeAction(final AccountUpdateCommand request) {
         if (isUnsuppliedScreenValue(request.concurrencyToken())) {

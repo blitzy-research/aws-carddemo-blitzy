@@ -133,6 +133,15 @@ import com.carddemo.util.FailureDiagnostics;
  * non-blank and stores whatever arrived. There is therefore no strength rule, no expiry, no history
  * and no lockout here, because adding one would reject input the legacy accepted.</p>
  *
+ * <p><strong>The credential is folded to upper case before it is hashed, because the terminal folded
+ * it before the program ever saw it.</strong> The maintenance programs store what arrives, and what
+ * arrives at a 3270 is already folded; the sign-on program folds the submitted secret and compares the
+ * folded value, so a lower-case secret authenticates on the mainframe. With no terminal in front of it
+ * this transaction has to fold the submitted credential itself, at the single point it enters the turn -
+ * see {@link #asKeyedAtTheTerminal(String)}. Both write paths and the change detector therefore work on
+ * one form of the credential, which is the same form the sign-on path verifies. Omitting the fold
+ * silently locks out every identity created with a lower-case character while reporting success.</p>
+ *
  * <p><strong>The type field is accepted, not policed.</strong> The column is a raw single character
  * with no constraint, no enumerated mapping and no validation, so a code outside the declared
  * {@code A} and {@code U} pair must load rather than fail. Translation to the domain enumeration
@@ -2054,7 +2063,8 @@ public final class UserManagementService {
      *
      * <p>The counterpart of the receive command at L203-L209: it copies the submitted items into the
      * turn's state so the validating paragraph reads the operator's own values. The credential is
-     * copied to a field the response never reads, which is what keeps it inbound-only.
+     * copied to a field the response never reads, which is what keeps it inbound-only, and it is
+     * folded on the way in for the reason {@link #asKeyedAtTheTerminal(String)} gives.
      *
      * @param request the submitted screen
      * @param state   the turn being assembled
@@ -2064,7 +2074,7 @@ public final class UserManagementService {
         state.firstName = request.firstName();
         state.lastName = request.lastName();
         state.userType = request.userType();
-        state.submittedCredential = request.password();
+        state.submittedCredential = asKeyedAtTheTerminal(request.password());
     }
 
     /**
@@ -2513,7 +2523,9 @@ public final class UserManagementService {
      *
      * <p>The counterpart of the receive command at L285-L291. The identifier this screen maintains is
      * the one the add, update and delete screens share, which is deliberately not the search
-     * identifier the list screen uses.
+     * identifier the list screen uses. The credential is folded on the way in for the reason
+     * {@link #asKeyedAtTheTerminal(String)} gives, so the comparison that decides whether it is new and
+     * the digest that replaces it are both taken over the folded value.
      *
      * @param request the submitted screen
      * @param state   the turn being assembled
@@ -2523,7 +2535,7 @@ public final class UserManagementService {
         state.firstName = request.firstName();
         state.lastName = request.lastName();
         state.userType = request.userType();
-        state.submittedCredential = request.password();
+        state.submittedCredential = asKeyedAtTheTerminal(request.password());
     }
 
     /**
@@ -3414,6 +3426,40 @@ public final class UserManagementService {
             return false;
         }
         return !passwordEncoder.matches(submittedCredential, identity.credentialDigest());
+    }
+
+    /**
+     * Returns a submitted credential in the form the terminal would have keyed it.
+     *
+     * <p><strong>Why the credential is folded to upper case before it is stored.</strong> The sign-on
+     * program folds <em>both</em> submitted values at {@code app/cbl/COSGN00C.cbl} L132-L136 and compares
+     * the folded secret at L223, so an operator's lower-case keystrokes authenticate on the mainframe.
+     * The maintenance programs store what they were handed - {@code app/cbl/COUSR01C.cbl} L157 and
+     * {@code app/cbl/COUSR02C.cbl} L227-L228 - and on the mainframe that is already the folded value,
+     * because the credential never reaches the program in any other form. There is no terminal here to
+     * do that folding, so it is done at the one place the submitted credential enters this transaction.
+     *
+     * <p>Without it the two halves of the credential's life disagree: this path would store a digest of
+     * the value as typed while the sign-on path verifies the folded value, so every identity created or
+     * maintained with a lower-case character would be locked out at its first sign-on - and the screen
+     * would report success, because nothing on this path ever verifies what it just wrote.
+     *
+     * <p>The fold is the estate's own ASCII table substitution rather than the platform method, for the
+     * reason recorded against every other fold in this module: the intrinsic is locale-sensitive and
+     * would transform characters a fixed-width field cannot hold. It changes no length, so the width the
+     * request contract asserts still holds, and it leaves a blank value blank, so the emptiness cascade
+     * reports exactly what it did before.
+     *
+     * <p><strong>Absence is preserved.</strong> An unsupplied credential stays unsupplied: the update
+     * screen distinguishes a credential that was not submitted at all from one submitted empty, and the
+     * change detector reads the same distinction. Folding an absent value into an empty one would turn a
+     * name-only update into a rejected turn.
+     *
+     * @param submitted the credential as submitted, which may be {@code null}
+     * @return the folded credential, or {@code null} when none was submitted
+     */
+    private static String asKeyedAtTheTerminal(final String submitted) {
+        return submitted == null ? null : CobolStringUtils.asciiUpperFold(submitted);
     }
 
     /**
