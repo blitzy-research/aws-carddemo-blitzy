@@ -40,9 +40,15 @@ import org.junit.jupiter.params.provider.ValueSource;
  * Unit specification for {@link BatchJobLaunchRequest}, the closed typed parameter surface of a batch job
  * launch.
  *
- * <p>Three properties are asserted here because each of them is what makes the launch surface bounded
+ * <p>Four properties are asserted here because each of them is what makes the launch surface bounded
  * rather than open: an unknown property is refused rather than dropped, every component is bounded in
- * width and character class, and each component's wire name is the job parameter key it becomes.
+ * width and character class, each component's wire name is the job parameter key it becomes, and the set
+ * of components is exactly the set of names the job catalog accepts - no wider and no narrower.
+
+ * <p>That last one is a defect that shipped. The record once published two generation names that no job
+ * accepted, so a request carrying either was refused by the per-job rule while the published document
+ * invited it. Asserting the record against the catalog rather than against a written-down count is what
+ * makes a future divergence a failure here instead of a surprise at runtime.
  *
  * <p>The last of those is the reason this test exists at all. The record declares its component names as
  * literals - a record component's name is not readable without reflection, and this module's reflection
@@ -61,6 +67,16 @@ class BatchJobLaunchRequestTest {
     /** Checks the declarative bounds exactly as the request-binding validation would. */
     private final Validator validator =
             Validation.buildDefaultValidatorFactory().getValidator();
+
+    /**
+     * The wire names the record publishes, written out because a record component's name is not readable
+     * without reflection and this module's reflection budget is zero.
+     *
+     * <p>Kept in one place so the component-count assertion and the catalog-agreement assertion are the
+     * same statement made twice rather than two figures that can drift.
+     */
+    private static final List<String> PUBLISHED_PROPERTY_NAMES = List.of(
+            "interestParmDate", "reportStartDate", "reportEndDate", "fileProbeMode");
 
     @Nested
     @DisplayName("The wire contract")
@@ -104,6 +120,13 @@ class BatchJobLaunchRequestTest {
             assertThat(declared)
                     .as("every transmittable component is a parameter some job in the inventory declares")
                     .isEqualTo(accepted);
+            assertThat(accepted)
+                    .as("THE DEFECT THIS PINS. Two generation names were once published here and accepted "
+                            + "by no job, so every request carrying one was refused while the published "
+                            + "document invited it. A name published without a job to take it is an "
+                            + "unusable input, and a name a job takes without being published cannot be "
+                            + "supplied at all")
+                    .containsExactlyInAnyOrderElementsOf(PUBLISHED_PROPERTY_NAMES);
         }
 
         @ParameterizedTest

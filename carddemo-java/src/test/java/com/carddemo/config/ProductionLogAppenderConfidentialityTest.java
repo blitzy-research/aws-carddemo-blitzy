@@ -383,8 +383,9 @@ class ProductionLogAppenderConfidentialityTest {
         @DisplayName("the record a boundary site produces - a sanitised failure chain, and no "
                 + "throwable - carries none of the four canaries the chain was holding")
         void aSanitisedBoundaryRecordCarriesNoCanary(@TempDir final Path directory) throws Exception {
-            // Exactly what GlobalExceptionHandler now does: the chain is described, the object is not
-            // passed. The failure below carries a different canary at every level.
+            // Exactly what GlobalExceptionHandler now does: the chain, the deepest type and the code
+            // location are described, and the object is not passed. The failure below carries a
+            // different canary at every level, and its own frames are this test's.
             final Throwable failure = new IllegalStateException(JDBC_CANARY,
                     new IllegalArgumentException(TOKEN_CANARY,
                             new UnsupportedOperationException(NATIONAL_ID_CANARY,
@@ -392,9 +393,11 @@ class ProductionLogAppenderConfidentialityTest {
 
             final ch.qos.logback.classic.Logger root =
                     configureShippedAppender(directory.resolve("event.json"));
-            root.error("Unhandled failure reached the REST boundary: failureChain={} rootFailureType={}",
+            root.error("Unhandled failure reached the REST boundary: failureChain={} rootFailureType={}"
+                            + " failureOrigin={}",
                     com.carddemo.util.FailureDiagnostics.failureChainOf(failure),
-                    com.carddemo.util.FailureDiagnostics.rootFailureTypeOf(failure));
+                    com.carddemo.util.FailureDiagnostics.deepestFailureTypeOf(failure),
+                    com.carddemo.util.FailureDiagnostics.failureOriginOf(failure));
             this.stopContext();
 
             final String rendered =
@@ -408,6 +411,12 @@ class ProductionLogAppenderConfidentialityTest {
                     .contains("IllegalStateException<-IllegalArgumentException"
                             + "<-UnsupportedOperationException<-NoSuchElementException")
                     .contains("NoSuchElementException");
+            assertThat(rendered)
+                    .as("and it now says WHERE, which is the part a reader could not previously get from "
+                            + "the record at all - published as code locations only, so it carries no "
+                            + "message and cannot carry a canary")
+                    .contains("failureOrigin=")
+                    .contains("aSanitisedBoundaryRecordCarriesNoCanary");
             assertThat(rendered)
                     .as("no stack trace field is emitted, because no throwable was passed")
                     .doesNotContain("\"stackTrace\"");

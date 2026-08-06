@@ -17,15 +17,19 @@
 package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.awspring.cloud.s3.S3Operations;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
@@ -128,6 +132,9 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
 
     /** Logical name prefix of a backup generation, as the configuration resolves it by default. */
     private static final String GENERATION_PREFIX = "AWS.M2.CARDDEMO.TCATBALF.BKUP.G";
+
+    /** Logical name prefix of a report generation, which the fixed alias above is replaced from. */
+    private static final String REPORT_GENERATION_PREFIX = REPORT_DATASET + ".G";
 
     /** Width of the key prefix a report line carries: the three keys and their two separators. */
     private static final int KEY_PREFIX_WIDTH = 19;
@@ -255,7 +262,13 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 verifyUnload(generation);
                 verify(stagingArea).publish(generation);
             }
-            verify(stagingArea, times(2)).publish(report());
+            // The sealed REPORT generation of each execution, not the fixed logical alias. The alias is
+            // replaced only by the durable publication that ends a job, so a step that published it
+            // read a path that did not exist yet - which the staging boundary below now refuses.
+            for (final Path generation : reportGenerations()) {
+                verify(stagingArea).publish(generation);
+            }
+            verify(stagingArea, times(4)).publish(any(Path.class));
 
             assertThat(explorer.findRunningJobExecutions(CategoryBalanceReportJobConfig.JOB_NAME))
                     .as("nothing may be left running")
@@ -285,7 +298,8 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         CompositeMeterRegistryAutoConfiguration.class,
                         SimpleMetricsExportAutoConfiguration.class))
                 .withUserConfiguration(JobUnderTest.class)
-                .withBean(BatchStagingArea.class, () -> mock(BatchStagingArea.class))
+                .withBean(BatchStagingArea.class,
+                        CategoryBalanceReportJobConfigIT::stagingAreaRefusingAnAbsentFile)
                 .withPropertyValues(
                         "spring.datasource.url=" + jdbcUrl(),
                         "spring.datasource.username=" + databaseUser(),
@@ -366,12 +380,59 @@ final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
      * @throws java.io.IOException if the directory cannot be listed
      */
     private List<Path> generations() throws java.io.IOException {
+        return generationsNamed(GENERATION_PREFIX);
+    }
+
+    /**
+     * Every report generation present in the staging directory, in name order.
+     *
+     * <p>Held separately from the backup generations because the two are published by different steps
+     * and only one of them is aliased to a fixed logical name.
+     *
+     * @return the report generations
+     * @throws java.io.IOException if the directory cannot be listed
+     */
+    private List<Path> reportGenerations() throws java.io.IOException {
+        return generationsNamed(REPORT_GENERATION_PREFIX);
+    }
+
+    /**
+     * Lists the staging directory entries whose names begin with one generation prefix.
+     *
+     * @param prefix the logical generation prefix
+     * @return matching entries in name order
+     * @throws java.io.IOException if the directory cannot be listed
+     */
+    private List<Path> generationsNamed(final String prefix) throws java.io.IOException {
         try (Stream<Path> entries = Files.list(this.stagingDirectory)) {
             return entries
-                    .filter(path -> path.getFileName().toString().startsWith(GENERATION_PREFIX))
+                    .filter(path -> path.getFileName().toString().startsWith(prefix))
                     .sorted()
                     .toList();
         }
+    }
+
+    /**
+     * A staging boundary that refuses a file which does not exist, as the real one does.
+     *
+     * <p>An unstubbed mock accepts any path silently, and that is what allowed a step publishing a
+     * logical alias no run had created yet to pass here and fail in the delivered container. The real
+     * boundary opens the file it uploads, so absence surfaces as an {@link UncheckedIOException} wrapping
+     * a {@link NoSuchFileException}; this reproduces exactly that, and nothing else about the upload.
+     *
+     * @return the mocked boundary
+     */
+    private static BatchStagingArea stagingAreaRefusingAnAbsentFile() {
+        final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
+        doAnswer(invocation -> {
+            final Path published = invocation.getArgument(0);
+            if (!Files.exists(published)) {
+                throw new UncheckedIOException("staged batch file could not be read for publication: "
+                        + published, new NoSuchFileException(published.toString()));
+            }
+            return null;
+        }).when(stagingArea).publish(any(Path.class));
+        return stagingArea;
     }
 
     /**

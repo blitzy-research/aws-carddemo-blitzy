@@ -491,14 +491,16 @@ public final class BatchJobController {
 
     @Operation(summary = "Launch one batch job on demand",
             description = "Starts one of the nine registered jobs by its stable name. Nothing runs when "
-                    + "the application starts, so this is the only way a job begins. The launch is "
-                    + "idempotent: no run identifier, timestamp or unique value is added to the "
-                    + "parameters, so submitting the same job with the same parameters twice is refused "
-                    + "by the framework's own metadata rather than starting a duplicate run. Parameter "
-                    + "values are passed through unchanged and are validated by the job itself. The jobs "
-                    + "are independent - there is no run-everything operation and no ordering imposed "
-                    + "here. Requires the administrative authority: starting a job is an operational act "
-                    + "no legacy transaction exposed, and one of the nine clears the transaction master.")
+                    + "the application starts, so this is the only way a job begins. Each launch is "
+                    + "serialized per job and its single identifying run parameter is minted on the "
+                    + "server, so the same job submitted twice with the same parameters starts a second, "
+                    + "distinct instance rather than being refused; a caller can neither supply that "
+                    + "parameter nor influence it, because the only names accepted are the ones the "
+                    + "addressed job declares. Parameter values are otherwise passed through unchanged "
+                    + "and are validated by the job itself. The jobs are independent - there is no "
+                    + "run-everything operation and no ordering imposed here. Requires the administrative "
+                    + "authority: starting a job is an operational act no legacy transaction exposed, and "
+                    + "one of the nine clears the transaction master.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "The job was started. Carries the execution identifier to ask after and "
@@ -577,10 +579,10 @@ public final class BatchJobController {
      */
     @Operation(summary = "Run one batch job again, as a new instance",
             description = "Starts the next instance of one of the nine registered jobs: the parameters it "
-                    + "last ran with, with the single identifying run parameter advanced. This is the one "
-                    + "way to repeat work deliberately - the launch operation is idempotent and refuses a "
-                    + "repeat out of the framework's own metadata. No parameter is accepted here, so this "
-                    + "operation can only say 'again' and can never introduce a value.")
+                    + "last ran with, with the single identifying run parameter advanced. It repeats work "
+                    + "without restating it - no parameter is accepted here, so this operation can only "
+                    + "say 'again' and can never introduce a value, which is what distinguishes it from a "
+                    + "launch that carries a body.")
     @ApiResponses({
         @ApiResponse(responseCode = "200",
                 description = "A new instance was started. Carries the execution identifier to ask after "

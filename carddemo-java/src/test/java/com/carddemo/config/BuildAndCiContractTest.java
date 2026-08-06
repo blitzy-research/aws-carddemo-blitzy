@@ -45,6 +45,7 @@ import org.junit.jupiter.api.Test;
 final class BuildAndCiContractTest {
 
     private static final Path POM_PATH = Path.of("pom.xml");
+    private static final Path SUPPRESSIONS_PATH = Path.of("owasp-suppressions.xml");
     private static final Path DOCKERFILE_PATH = Path.of("Dockerfile");
     private static final Path COMPOSE_PATH = Path.of("docker-compose.yml");
     private static final Path README_PATH = Path.of("README.md");
@@ -76,6 +77,72 @@ final class BuildAndCiContractTest {
                 .doesNotContain("<dependency-check.skipTestScope>true"
                         + "</dependency-check.skipTestScope>")
                 .doesNotContain("Test scoped artifacts are OUTSIDE the scan");
+    }
+
+    @Test
+    @DisplayName("every suppressed finding is scoped, evidenced and self-expiring, and the gate keeps "
+            + "its threshold")
+    void suppressedFindingsStayScopedAndSelfExpiring() throws IOException {
+        final String pom = read(POM_PATH);
+
+        // The three settings that decide how much the gate can be talked out of. A suppression file
+        // is only defensible while all three hold, so they are asserted together with it rather than
+        // somewhere else where one could be relaxed without the other being noticed.
+        assertThat(pom)
+                .contains("<dependency-check.failBuildOnCVSS>7.0"
+                        + "</dependency-check.failBuildOnCVSS>")
+                .contains("<dependency-check.skip>false</dependency-check.skip>")
+                .contains("<suppressionFile>${project.basedir}/owasp-suppressions.xml"
+                        + "</suppressionFile>")
+                .contains("<failBuildOnUnusedSuppressionRule>true"
+                        + "</failBuildOnUnusedSuppressionRule>");
+
+        final String suppressions = read(SUPPRESSIONS_PATH);
+
+        // Scoping is asserted against the declarations alone. That file documents the rules it holds
+        // itself to, and doing so requires naming the element types it forbids, so counting tokens
+        // across the whole text would count the prohibition as an instance of the thing prohibited.
+        final String declarations = withoutXmlComments(suppressions);
+
+        // Every rule names an artifact and an identifier. A bare identifier with no artifact scope, a
+        // wildcard platform record, or a coordinate regex broad enough to absorb an unexamined future
+        // finding would each turn one determination into standing permission.
+        final int rules = countOccurrences(declarations, "<suppress>");
+        assertThat(rules)
+                .as("a suppression file that grows without review is the failure mode this test "
+                        + "exists to catch; every rule here is accounted for in DL-159")
+                .isEqualTo(1);
+        assertThat(countOccurrences(declarations, "<packageUrl"))
+                .as("each rule is scoped to named artifacts, so the count of package-URL scopes "
+                        + "matches the count of rules")
+                .isEqualTo(rules);
+        assertThat(countOccurrences(declarations, "<cve>"))
+                .as("each rule names exactly one identifier")
+                .isEqualTo(rules);
+        assertThat(declarations)
+                .doesNotContain("<cpe>")
+                .doesNotContain("<gav")
+                .doesNotContain("<vulnerabilityName");
+
+        // Evidence. The one carried finding is the Tomcat examples-application match, and the rule
+        // covers all three embedded jars because the product CPE migrated between them between
+        // scans. Both halves of the justification - nothing published to upgrade to, and nothing
+        // vulnerable present - have to stay written down beside the rule.
+        assertThat(suppressions)
+                .contains("<cve>CVE-2026-66299</cve>")
+                .contains("^pkg:maven/org\\.apache\\.tomcat\\.embed/"
+                        + "tomcat-embed-(core|websocket|el)@.*$")
+                .contains("10.1.58")
+                .contains("webapps")
+                .contains("../docs/decision-log.md DL-159");
+
+        // Disclosure. A determination that only exists in a build file is a silent one, so the
+        // operator manual has to carry it where it states the gate result.
+        assertThat(read(README_PATH))
+                .contains("owasp-suppressions.xml")
+                .contains("CVE-2026-66299")
+                .contains("failBuildOnUnusedSuppressionRule")
+                .doesNotContain("`dependency-check.skipTestScope` is **`true`**");
     }
 
     @Test
@@ -525,5 +592,55 @@ final class BuildAndCiContractTest {
     private static String read(final Path path) throws IOException {
         assertThat(path).isRegularFile();
         return Files.readString(path, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Counts non-overlapping occurrences of a literal token.
+     *
+     * <p>Used to compare rule count against scope count in the suppression file, which is the check
+     * that catches a rule added without an artifact scope or without an identifier.</p>
+     *
+     * @param haystack text to search, never {@code null}
+     * @param token    literal token to count, never empty
+     * @return the number of occurrences, zero when absent
+     */
+    private static int countOccurrences(final String haystack, final String token) {
+        int count = 0;
+        int from = haystack.indexOf(token);
+        while (from >= 0) {
+            count++;
+            from = haystack.indexOf(token, from + token.length());
+        }
+        return count;
+    }
+
+    /**
+     * Removes XML comments, leaving only declarations.
+     *
+     * <p>The suppression file carries its governing rules and its evidence as comments, and stating a
+     * prohibition means naming the element it prohibits. Counting element tokens over the raw text
+     * would therefore count the prohibition as an instance of the thing prohibited, so structural
+     * assertions run over the declarations and the evidence assertions run over the whole file.</p>
+     *
+     * @param xml document text, never {@code null}
+     * @return the same text with every {@code <!-- ... -->} span removed
+     */
+    private static String withoutXmlComments(final String xml) {
+        final StringBuilder kept = new StringBuilder(xml.length());
+        int cursor = 0;
+        int open = xml.indexOf("<!--");
+        while (open >= 0) {
+            kept.append(xml, cursor, open);
+            final int close = xml.indexOf("-->", open + "<!--".length());
+            if (close < 0) {
+                // An unterminated comment cannot be reasoned about; treat the remainder as commented
+                // rather than silently admitting text that the parser would never see as markup.
+                return kept.toString();
+            }
+            cursor = close + "-->".length();
+            open = xml.indexOf("<!--", cursor);
+        }
+        kept.append(xml.substring(cursor));
+        return kept.toString();
     }
 }

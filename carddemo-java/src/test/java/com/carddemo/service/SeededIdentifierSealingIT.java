@@ -70,36 +70,37 @@ import com.carddemo.util.SensitiveFieldCodec;
  * locations, and drops it afterwards. The server, its version and its credentials are the shared
  * ones, so what is exercised is still the pinned PostgreSQL 16 the module targets.
  *
- * <h2>Two sealing conventions meet in this column, and they do not overlap</h2>
+ * <h2>Two producers write this column, and they use one sealing convention</h2>
  *
- * <p>A value can arrive in {@code customer.govt_issued_id} two ways, and the two produce different
- * envelopes on purpose.
+ * <p>A value can arrive in {@code customer.govt_issued_id} two ways - as a checked-in literal in
+ * {@code V3__seed_reference_data.sql}, or sealed by {@link SeededIdentifierSealingCallback} over a
+ * value that reached the column unsealed - and both bind the value to the column it is stored in.
  *
- * <p>The fifty seeded values arrive as checked-in literals in
- * {@code V3__seed_reference_data.sql}, and each seals the identifier alone. That is what lets the
- * migration assert a width on every row while holding no key at all: an unbound twenty-character
- * payload produces an envelope of exactly sixty-nine characters, and the migration asserts exactly
- * that. A column-bound payload would additionally carry the twenty-three-character column name and a
- * separator, and would measure a hundred and one - so the migration's own width assertion is itself
- * the evidence that the seeded form is unbound.
+ * <p>That single convention is not a tidiness preference. Every reader of this column in the module
+ * opens it through the field-bound reveal, which refuses an envelope written for any other column, so
+ * a value sealed without the binding authenticates under the key and is then refused by every reader:
+ * the account view transaction, the account update transaction and the statement job would each fail
+ * on every seeded row. An earlier revision seeded the unbound form deliberately, and that is exactly
+ * the failure it produced.
  *
- * <p>{@link SeededIdentifierSealingCallback} binds the values <em>it</em> seals to their column,
- * which its unit companion asserts directly. The two conventions never write the same value, because
- * the callback leaves an already-sealed value alone: every seeded row arrives sealed, so the
- * callback's binding can only ever apply to a value that reached the column unsealed. Both
- * properties are asserted here so that neither can be changed on the assumption that only one
- * producer exists.
+ * <p>The convention is also what lets the migration assert a width on every row while holding no key
+ * at all: a column-bound payload carries the twenty-three-character column name, a separator and the
+ * twenty-character identifier, and produces an envelope of exactly a hundred and one characters,
+ * which the migration asserts. An unbound twenty-character payload would measure sixty-nine - so the
+ * migration's own width assertion is itself the evidence that the seeded form is bound, which is the
+ * one property no marker check can see.
  *
  * <h2>What is asserted</h2>
  *
  * <ol>
  *   <li>Every seeded row's government-issued identifier is an envelope, and there are fifty of
  *       them - the count the reference seed inserts.</li>
- *   <li>Each envelope opens and yields a twenty-character identifier, so the value was sealed
- *       rather than merely overwritten.</li>
- *   <li>The seeded envelopes carry no column binding, and the column-bound form is refused against
- *       them - which is the observable difference between the two ways a value can arrive in this
- *       column, asserted rather than assumed.</li>
+ *   <li>Each envelope opens through the same field-bound reveal the application's own readers use and
+ *       yields a twenty-character identifier, so the value was sealed rather than merely overwritten
+ *       and is readable by the code that has to read it.</li>
+ *   <li>Every seeded envelope carries this column's binding, and another column's binding is refused
+ *       against it - which is what makes the seed readable and keeps the binding check from being
+ *       vacuous, asserted rather than assumed.</li>
  *   <li>No stored value is one of the fixture's cleartext identifiers, checked against a
  *       cleartext value read out of the seed script itself rather than transcribed here.</li>
  *   <li>Migrating a second time converts nothing, so the pass is idempotent against a real
@@ -159,13 +160,16 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     /**
      * Width of a seeded envelope, which {@code V3__seed_reference_data.sql} asserts on every row.
      *
-     * <p>Sixty-nine is not an arbitrary observation: a twelve-byte nonce, a twenty-byte payload and a
-     * sixteen-byte authentication tag are forty-eight bytes, which Base64 renders as sixty-four
-     * characters, and the five-character scheme marker brings it to sixty-nine. The number is
-     * therefore a statement about the payload, and it is the reason the seeded form has to be the
-     * unbound one.
+     * <p>A hundred and one is not an arbitrary observation: the sealed payload is the column's binding
+     * name {@code customer.govt_issued_id} - twenty-three characters - the one-byte unit separator and
+     * the twenty-character identifier, which is forty-four bytes; a twelve-byte nonce and a sixteen-byte
+     * authentication tag bring the body to seventy-two bytes, which Base64 renders as ninety-six
+     * characters, and the five-character scheme marker brings it to a hundred and one. The number is
+     * therefore a statement about the payload, and it is what makes the seeded form the <em>bound</em>
+     * one: an unbound twenty-character payload would measure sixty-nine, so the width alone
+     * distinguishes a literal the application can read from one it cannot.
      */
-    private static final int SEEDED_ENVELOPE_WIDTH = 69;
+    private static final int SEEDED_ENVELOPE_WIDTH = 101;
 
     /** Reads both protected columns of every seeded customer row, in key order. */
     private static final String SELECT_IDENTITIES =
@@ -321,11 +325,15 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("each envelope opens and yields the twenty-character identifier the record holds")
+    @DisplayName("each envelope opens under its column's binding and yields the twenty-character "
+            + "identifier the record holds")
     void eachEnvelopeOpensAndYieldsTheRecordWidthIdentifier() throws SQLException {
         for (final StoredIdentity row : storedIdentities()) {
-            assertThat(ENCRYPTION.reveal(row.governmentIdentifier()))
-                    .as("row %s must open and yield the identifier the legacy record carries at "
+            assertThat(ENCRYPTION.reveal(
+                    SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                    row.governmentIdentifier()))
+                    .as("row %s must open through the same field-bound reveal the application's own "
+                            + "readers use, and yield the identifier the legacy record carries at "
                             + "offset 288", row.customerKey())
                     .hasSize(GOVERNMENT_IDENTIFIER_WIDTH)
                     .containsOnlyDigits();
@@ -333,22 +341,22 @@ class SeededIdentifierSealingIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("no seeded envelope carries a column binding, so the seeded form and the callback's "
-            + "form stay distinguishable")
-    void theSeededEnvelopesCarryNoColumnBinding() throws SQLException {
+    @DisplayName("every seeded envelope carries this column's binding, which is what makes the seed "
+            + "readable by the application that reads the column")
+    void theSeededEnvelopesCarryThisColumnsBinding() throws SQLException {
         for (final StoredIdentity row : storedIdentities()) {
             assertThat(row.governmentIdentifier())
-                    .as("row %s must measure the width an unbound twenty-character payload produces;"
-                            + " a column-bound payload would measure a hundred and one",
-                            row.customerKey())
+                    .as("row %s must measure the width a column-bound twenty-character payload"
+                            + " produces; an unbound payload would measure sixty-nine, and every"
+                            + " reader of this column would refuse it", row.customerKey())
                     .hasSize(SEEDED_ENVELOPE_WIDTH);
             assertThatExceptionOfType(IllegalStateException.class)
-                    .as("row %s must be refused under the column binding. The refusal is the point:"
-                            + " it proves the seeded literals were produced without one, which is"
-                            + " what the migration's width assertion depends on, and it proves the"
-                            + " binding check itself is live rather than vacuous", row.customerKey())
+                    .as("row %s must be refused under ANOTHER column's binding. The refusal is the"
+                            + " point: it proves the seeded literals carry a binding rather than none,"
+                            + " and it proves the binding check itself is live rather than vacuous",
+                            row.customerKey())
                     .isThrownBy(() -> ENCRYPTION.reveal(
-                            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                            SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
                             row.governmentIdentifier()))
                     .withMessageContaining("field binding");
         }

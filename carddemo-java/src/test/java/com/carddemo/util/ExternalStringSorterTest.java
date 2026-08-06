@@ -19,13 +19,39 @@ package com.carddemo.util;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.io.IOException;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
 
 final class ExternalStringSorterTest {
+
+    /** Prefix the sorter gives every work area it allocates. */
+    private static final String WORK_AREA_PREFIX = "carddemo-sort-";
+
+    /** Suffix every spilled run file carries. */
+    private static final String RUN_FILE_SUFFIX = ".bin";
+
+    /**
+     * Reports whether this filesystem carries POSIX permissions.
+     *
+     * <p>Referenced by {@link EnabledIf} rather than asserted, because the sorter deliberately tolerates
+     * a filesystem that has no permission model and there is nothing to assert about one.
+     *
+     * @return {@code true} when permissions can be read back
+     */
+    static boolean posixPermissionsAreSupported() {
+        return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    }
 
     @Test
     void sortsAcrossMultipleRunsWithoutChangingFixedWidthImages() {
@@ -58,6 +84,74 @@ final class ExternalStringSorterTest {
 
         assertThat(output).isSortedAccordingTo(Comparator.reverseOrder());
         assertThat(output).hasSize(recordCount);
+    }
+
+    @Test
+    @EnabledIf("posixPermissionsAreSupported")
+    void theWorkAreaIsPrivateAndSearchableSoAnUnprivilegedOwnerCanResolveItsRunFiles()
+            throws IOException {
+        // Written after a delivered image could not run four batch jobs: the work area was created
+        // rw------- and the owning container account, which is not root and therefore carries no
+        // CAP_DAC_OVERRIDE, could not resolve any name inside it. The search bit is the fix, and this
+        // asserts it on the directory itself so a root-only test bed cannot hide its removal again.
+        final Path workArea;
+        try (ExternalStringSorter sorter =
+                new ExternalStringSorter(Comparator.naturalOrder(), 1)) {
+            workArea = sorter.workArea();
+
+            assertThat(workArea).isDirectory();
+            assertThat(workArea.getFileName()).asString().startsWith(WORK_AREA_PREFIX);
+            assertThat(Files.getPosixFilePermissions(workArea))
+                    .containsExactlyInAnyOrder(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.OWNER_EXECUTE);
+            assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(workArea)))
+                    .isEqualTo("rwx------");
+        }
+
+        assertThat(workArea).doesNotExist();
+    }
+
+    @Test
+    @EnabledIf("posixPermissionsAreSupported")
+    void everySpilledRunFileStaysOwnerReadWriteWithoutAnExecuteBit() throws IOException {
+        try (ExternalStringSorter sorter =
+                new ExternalStringSorter(Comparator.naturalOrder(), 1)) {
+            sorter.add("02   ");
+            sorter.add("01   ");
+
+            final List<Path> runFiles = runFilesIn(sorter.workArea());
+            assertThat(runFiles)
+                    .as("one record per run means one spilled run file per record")
+                    .hasSize(2);
+            assertThat(runFiles).allSatisfy(runFile -> {
+                assertThat(Files.getPosixFilePermissions(runFile))
+                        .containsExactlyInAnyOrder(
+                                PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+                assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(runFile)))
+                        .isEqualTo("rw-------");
+            });
+
+            final List<String> output = new ArrayList<>();
+            assertThat(sorter.writeTo(output::add)).isEqualTo(2L);
+            assertThat(output).containsExactly("01   ", "02   ");
+        }
+    }
+
+    /**
+     * Lists the run files the sorter has spilled into its work area.
+     *
+     * @param workArea the sorter's private work area
+     * @return spilled run files in directory order
+     * @throws IOException if the work area cannot be listed
+     */
+    private static List<Path> runFilesIn(final Path workArea) throws IOException {
+        try (Stream<Path> entries = Files.list(workArea)) {
+            return entries
+                    .filter(entry -> entry.getFileName().toString().endsWith(RUN_FILE_SUFFIX))
+                    .toList();
+        }
     }
 
     @Test

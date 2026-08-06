@@ -140,6 +140,24 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
     /** Width of the government-issued identifier within the record. */
     private static final int IDENTIFIER_WIDTH = 20;
 
+    /**
+     * The binding name every value in this column is sealed under, and the one this test opens with.
+     *
+     * <p>Not incidental. Every reader of the column in the module opens it through the field-bound
+     * reveal, so a test that opened with the unbound form would pass over a seed no reader could use -
+     * which is exactly how an unbound seed once reached a delivered database and made the account view
+     * transaction fail on every row.
+     */
+    private static final String IDENTIFIER_FIELD =
+            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD;
+
+    /**
+     * Width of the payload a column-bound seal of one identifier produces: the binding name, the
+     * one-character separator and the identifier.
+     */
+    private static final int BOUND_PAYLOAD_WIDTH =
+            IDENTIFIER_FIELD.length() + 1 + IDENTIFIER_WIDTH;
+
     /** Number of customer rows {@code V3__seed_reference_data.sql} loads. */
     private static final int SEEDED_CUSTOMERS = 50;
 
@@ -407,9 +425,10 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("is exactly the length the codec predicts for a twenty-character payload")
+        @DisplayName("is exactly the length the codec predicts for a column-bound twenty-character "
+                + "payload")
         void everyStoredIdentifierMeasuresThePredictedLength() {
-            final int predicted = SensitiveFieldCodec.envelopeLengthFor(IDENTIFIER_WIDTH);
+            final int predicted = SensitiveFieldCodec.envelopeLengthFor(BOUND_PAYLOAD_WIDTH);
             for (final SeededCustomer row : SEEDED) {
                 assertThat(row.storedIdentifier())
                         .describedAs("customer %s: a different length means the literal was altered,"
@@ -449,7 +468,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void everyStoredIdentifierOpensToItsFixtureValue() {
             for (final SeededCustomer row : SEEDED) {
                 final String expected = fixtureIdentifier(row);
-                assertThat(SERVICE.reveal(row.storedIdentifier()))
+                assertThat(SERVICE.reveal(IDENTIFIER_FIELD, row.storedIdentifier()))
                         .describedAs("customer %s must open to %s[%d] offset %d width %d",
                                 row.custId(), FIXTURE_FILE, row.ordinal(),
                                 IDENTIFIER_OFFSET, IDENTIFIER_WIDTH)
@@ -462,7 +481,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void theRecoveredIdentifiersKeepTheLegacyWidthAndRemainDistinct() {
             final List<String> recovered = new ArrayList<>(SEEDED_CUSTOMERS);
             for (final SeededCustomer row : SEEDED) {
-                recovered.add(SERVICE.reveal(row.storedIdentifier()));
+                recovered.add(SERVICE.reveal(IDENTIFIER_FIELD, row.storedIdentifier()));
             }
             assertThat(recovered).hasSize(SEEDED_CUSTOMERS).doesNotHaveDuplicates();
             assertThat(recovered).allSatisfy(value -> assertThat(value)
@@ -476,7 +495,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
             final String stored = SEEDED.getFirst().storedIdentifier();
             assertThatExceptionOfType(IllegalStateException.class)
                     .describedAs("authentication is key-bound, so a wrong key must fail loudly")
-                    .isThrownBy(() -> FOREIGN_SERVICE.reveal(stored));
+                    .isThrownBy(() -> FOREIGN_SERVICE.reveal(IDENTIFIER_FIELD, stored));
         }
 
         @Test
@@ -493,7 +512,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
             assertThatExceptionOfType(IllegalStateException.class)
                     .describedAs("the trailing tag authenticates the whole envelope, so one altered"
                             + " character must fail rather than yield corrupted cleartext")
-                    .isThrownBy(() -> SERVICE.reveal(altered));
+                    .isThrownBy(() -> SERVICE.reveal(IDENTIFIER_FIELD, altered));
         }
     }
 
@@ -509,7 +528,7 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
                 assertThat(customer.getGovtIssuedId())
                         .describedAs("customer %s must survive its own entity's guard", row.custId())
                         .isEqualTo(row.storedIdentifier());
-                assertThat(SERVICE.reveal(customer.getGovtIssuedId()))
+                assertThat(SERVICE.reveal(IDENTIFIER_FIELD, customer.getGovtIssuedId()))
                         .isEqualTo(fixtureIdentifier(row));
             }
         }
@@ -532,14 +551,14 @@ class SeededProtectedIdentifierIT extends AbstractPostgresIT {
         void aFreshlySealedValueIsAlsoAccepted() {
             final SeededCustomer row = SEEDED.getFirst();
             final String cleartext = fixtureIdentifier(row);
-            final String resealed = SERVICE.protect(cleartext);
+            final String resealed = SERVICE.protect(IDENTIFIER_FIELD, cleartext);
 
             assertThat(resealed)
                     .describedAs("a fresh initialisation vector makes every seal different, which is"
                             + " why the seeded literals cannot be regenerated")
                     .isNotEqualTo(row.storedIdentifier());
             assertThatCode(() -> row.toEntity(resealed)).doesNotThrowAnyException();
-            assertThat(SERVICE.reveal(resealed)).isEqualTo(cleartext);
+            assertThat(SERVICE.reveal(IDENTIFIER_FIELD, resealed)).isEqualTo(cleartext);
         }
     }
 }

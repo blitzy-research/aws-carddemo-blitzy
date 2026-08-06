@@ -319,16 +319,22 @@ public final class BatchConfig {
      * same processing date would be rejected rather than run. Attaching this incrementer is what makes that
      * repeat expressible at all.</p>
      *
-     * <p><strong>The incrementer is applied by exactly one operation, and knowing which one matters.</strong>
-     * This framework generation advances it only through the operator's next-instance call; a plain start
-     * takes the parameters it is given and advances nothing. So a launch through
-     * {@code api/BatchJobController} is deliberately <em>not</em> incremented - which is what makes a launch
-     * idempotent, because the same request twice is the same job identity twice and the framework answers
-     * the second out of its own metadata - and repeating work is a separate, separately authorised
-     * next-instance operation that carries no parameter of its own. Reading this bean as though it
-     * distinguished every launch automatically is the mistake that turns "run once" into "run again": the
-     * two operations exist precisely so that a repeat is an explicit act rather than a side effect of a
-     * resubmitted request.</p>
+     * <p><strong>Who applies it, and what that means for a repeated request.</strong> The framework itself
+     * advances it only through the operator's next-instance call; a plain start takes the parameters it is
+     * given and advances nothing. This module therefore does not leave a plain start to the framework:
+     * {@code batch/BatchLaunchCoordinator} mints the identifying value from this same incrementer on the
+     * server, inside the advisory-locked coordination transaction, so an HTTP launch through
+     * {@code api/BatchJobController} carries a fresh run identity and the same request submitted twice
+     * starts two distinct instances rather than being answered out of the framework's metadata. That is
+     * deliberate: the on-demand surface has to be able to run a job a second time - a repeat timing run,
+     * or a rerun after the inputs were restaged - and the mainframe member it replaces could be submitted
+     * again with an identical parameter set.
+     *
+     * <p>What a caller still cannot do is choose that value. The identifying parameter is minted by the
+     * server from framework metadata and is not in the closed set of names
+     * {@code api/BatchJobController} accepts, so a caller can neither set it nor collide with it. The
+     * separate next-instance operation remains the way to repeat a run <em>without restating its
+     * parameters</em>, which is a different thing from being the only way to repeat one at all.</p>
      *
      * <p>The framework's own run-identifier incrementer is used rather than a bespoke one: it contributes a
      * single monotonic identifying parameter and nothing else, so it cannot collide with the parameter keys

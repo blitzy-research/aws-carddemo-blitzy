@@ -493,9 +493,10 @@ public final class GlobalExceptionHandler {
     @ExceptionHandler(FileStatusException.class)
     public ResponseEntity<ErrorResponse> handleFileStatus(FileStatusException exception) {
         LOG.error("Unhandled file operation failure reached the REST boundary: failureChain={}"
-                        + " rootFailureType={}",
+                        + " rootFailureType={} failureOrigin={}",
                 FailureDiagnostics.failureChainOf(exception),
-                FailureDiagnostics.rootFailureTypeOf(exception));
+                FailureDiagnostics.deepestFailureTypeOf(exception),
+                FailureDiagnostics.failureOriginOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
     }
@@ -995,9 +996,16 @@ public final class GlobalExceptionHandler {
             return ResponseEntity.status(status)
                     .body(new ErrorResponse(neutralSummaryFor(status)));
         }
-        LOG.error("Unhandled failure reached the REST boundary: failureChain={} rootFailureType={}",
+        // Three fields, and each answers a question the other two cannot. The chain says what surfaced,
+        // the deepest type says what actually went wrong - naming the failure itself when it has no
+        // cause, which an empty field never did - and the origin says where. The throwable itself is
+        // still not handed to the logger: a rendered trace carries every message in the chain, and a
+        // message may hold a connection string, a token or an identifier. Frames carry none of those.
+        LOG.error("Unhandled failure reached the REST boundary: failureChain={} rootFailureType={}"
+                        + " failureOrigin={}",
                 FailureDiagnostics.failureChainOf(exception),
-                FailureDiagnostics.rootFailureTypeOf(exception));
+                FailureDiagnostics.deepestFailureTypeOf(exception),
+                FailureDiagnostics.failureOriginOf(exception));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ErrorResponse(AbendException.DEFAULT_MESSAGE));
     }
@@ -1017,10 +1025,16 @@ public final class GlobalExceptionHandler {
      * status that resolves to no enum constant at all, and a numeric comparison handles that without
      * a nullable intermediate.
      *
+     * <p>Package-private rather than private because {@link ModuleErrorController} publishes the same
+     * summaries for the same statuses. That controller answers the requests this advice never sees - the
+     * ones the framework refuses before a handler is resolved, which reach the container's error
+     * dispatch instead of an exception handler - and the two must agree on what a status is called. One
+     * method read by both is the only arrangement in which they cannot drift.
+     *
      * @param status the status the framework fault declared
      * @return the summary to publish, never {@code null}
      */
-    private static String neutralSummaryFor(HttpStatusCode status) {
+    static String neutralSummaryFor(HttpStatusCode status) {
         if (!status.is4xxClientError()) {
             return AbendException.DEFAULT_MESSAGE;
         }

@@ -44,6 +44,23 @@ import java.util.function.Consumer;
  * <p>The sorter owns no output destination and emits no path or record content. Callers supply the
  * final consumer, which lets line-terminated and fixed-unblocked datasets share the same ordering
  * implementation without changing either external contract.
+ *
+ * <h2>Why the work area carries a search bit and its run files do not</h2>
+ *
+ * <p>Both the directory and the files inside it are private to the owner, but a directory needs one
+ * more bit than a file does: on POSIX the execute bit on a directory is the <em>search</em> permission,
+ * and without it the owner cannot resolve any name inside the directory at all. A work area created
+ * {@code rw-------} therefore accepts no run file, and the first spill fails with an access denial
+ * rather than with anything that names a permission.
+ *
+ * <p>That distinction is load-bearing here rather than academic, because the delivered runtime is a
+ * container running as an unprivileged account on a read-only root filesystem with only a temporary
+ * filesystem writable. A process running as {@code root} carries {@code CAP_DAC_OVERRIDE} and resolves
+ * names inside a directory that grants no search permission anyway, so a test bed that runs as root
+ * cannot observe the fault at all - which is exactly how it reached a delivered image. The directory
+ * permissions are asserted directly by {@code ExternalStringSorterTest}, and a spill is executed as the
+ * unprivileged container account by {@code ExternalSortNonRootRuntimeIT}, so neither half can regress
+ * silently again.
  */
 public final class ExternalStringSorter implements AutoCloseable {
 
@@ -89,6 +106,20 @@ public final class ExternalStringSorter implements AutoCloseable {
             throw new UncheckedIOException("unable to allocate the bounded external-sort work area",
                     failure);
         }
+    }
+
+    /**
+     * Reports the private work area this sorter allocated.
+     *
+     * <p>Package-visible and free of side effects, so the permission contract documented above can be
+     * asserted directly rather than by scanning the temporary directory for a name that looks like one
+     * of ours. Nothing outside this package needs the path, and no caller is given a way to write into
+     * it: the sorter owns every file it creates there and removes the whole area when it closes.
+     *
+     * @return the work-area path, never {@code null}
+     */
+    Path workArea() {
+        return this.workDirectory;
     }
 
     /**

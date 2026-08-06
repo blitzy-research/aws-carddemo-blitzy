@@ -19,6 +19,7 @@ package com.carddemo.config;
 import com.carddemo.api.BatchJobController;
 import com.carddemo.api.GlobalExceptionHandler;
 import com.carddemo.api.JsonRefusalBodyRenderer;
+import com.carddemo.api.ModuleErrorController;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.service.CredentialDigestService;
@@ -27,6 +28,7 @@ import com.carddemo.support.InMemoryCredentialMaster;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.OctetSequenceKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.Filter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -1045,6 +1047,78 @@ class SecurityConfigTest {
         void permitTheDescriptionWherePublished() throws Exception {
             runner(false, true).run(context -> clientFor(context).perform(get(API_DOCS))
                     .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+    }
+
+    @Nested
+    @DisplayName("The container's error dispatch, which the rules must not answer a second time")
+    class TheContainerErrorDispatch {
+
+        /**
+         * Marks a request as the container's internal error dispatch rather than a client's request.
+         *
+         * @return a post-processor setting the dispatch type the container sets
+         */
+        private static org.springframework.test.web.servlet.request.RequestPostProcessor errorDispatch() {
+            return request -> {
+                request.setDispatcherType(DispatcherType.ERROR);
+                return request;
+            };
+        }
+
+        @Test
+        @DisplayName("is permitted, so the status the framework already decided survives instead of being "
+                + "overwritten with 401 - which is the whole of the reported defect")
+        void theErrorDispatchIsPermitted() throws Exception {
+            plainTransport().run(context -> {
+                final MockMvc client = clientFor(context);
+
+                // The dispatch carries no credential, and cannot: the bearer filter is a
+                // once-per-request filter, so it does not run on an error dispatch and no authentication
+                // is established. Before the permit the closing catch-all answered 401 here, and that 401
+                // replaced the 405, 415, 406 or 404 the framework had already decided - which is exactly
+                // what the QA report observed.
+                client.perform(get(ORDINARY_ROUTE).with(errorDispatch()))
+                        .andExpect(result -> {
+                            assertThat(result.getResponse().getStatus())
+                                    .as("the dispatch reaches a handler rather than being refused")
+                                    .isEqualTo(200);
+                            assertThat(result.getResponse().getContentAsString()).isEqualTo("ordinary");
+                        });
+
+                // The same path, the same absent credential, as an ordinary client request: still refused.
+                // Asserting both in one slice is what shows the permit is keyed on the dispatch type and
+                // not on a path, so it opens nothing a client can address.
+                client.perform(get(ORDINARY_ROUTE))
+                        .andExpect(result -> assertThat(result.getResponse().getStatus())
+                                .as("an ordinary request dispatch is unaffected by the permit")
+                                .isEqualTo(401));
+            });
+        }
+
+        @Test
+        @DisplayName("is permitted ahead of the administrative rules too, which is what makes the permit's "
+                + "position first rather than merely present")
+        void theErrorDispatchPrecedesTheEntitlementRules() throws Exception {
+            // An error dispatch that happens to carry an administrative path must still be answered, or a
+            // wrong method on an administrative route would report an entitlement failure instead of the
+            // method refusal. A permit written after the entitlement rules would fail this while passing
+            // the test above.
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ADMIN_ROUTE).with(errorDispatch()))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("does not make the error path itself reachable, because a client's request to it is an "
+                + "ordinary dispatch and falls to the closing catch-all")
+        void theErrorPathStaysAuthenticatedForAClient() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ModuleErrorController.ERROR_PATH_DEFAULT))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus())
+                            .as("the permit is on the dispatch, so a client addressing the path gains "
+                                    + "nothing from it")
+                            .isEqualTo(401)));
         }
     }
 

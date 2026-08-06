@@ -694,11 +694,30 @@ management:
       probability: ${CARDDEMO_TRACING_SAMPLE_RATE:0.1}
   otlp:
     tracing:
-      # NO FALLBACK, and guarded. The sample rate above may default - it is a sampling decision, not
-      # a destination - but a collector address must not: a defaulted address would send production
-      # spans to whatever host the fallback named, or silently to nothing. An unset variable would
-      # otherwise bind the literal placeholder text and the exporter would treat it as a malformed
-      # address at export time, long after start-up. See docs/decision-log.md DL-105.
+      # NO FALLBACK. The sample rate above may default - it is a sampling decision, not a destination
+      # - but a collector address must not: a defaulted address would send production spans to
+      # whatever host the fallback named, or silently to nothing.
+      #
+      # THIS IS THE ONE REQUIRED SETTING THE GUARD DOES NOT GET TO REPORT, and the reason is an
+      # ordering fact rather than an omission. Actuator's own trace autoconfiguration carries a
+      # property condition on this key, and conditions are evaluated by ConfigurationClassPostProcessor
+      # - a bean-DEFINITION-registry post-processor, which the container runs to completion before it
+      # runs any plain BeanFactoryPostProcessor, which is what the guard is. So an unset variable is
+      # resolved strictly, and fails, one phase earlier than the guard can speak:
+      #
+      #   PlaceholderResolutionException: Could not resolve placeholder
+      #   'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT' in value "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
+      #   Wrapped by: Error processing condition on
+      #   …tracing.otlp.OtlpTracingConfigurations$ConnectionDetails.otlpTracingConnectionDetails
+      #
+      # That outcome is the required one - start-up aborts, and the message names this exact variable
+      # - so nothing here needs correcting. What differs is only the WORDING: this one arrives as the
+      # framework's placeholder message instead of the guard's twelve-setting summary, and a deployer
+      # missing this variable alongside others learns about it in two messages rather than one. The
+      # variable stays a bare reference regardless, because the alternative that would let the guard
+      # report it first is a fallback value, and a defaulted collector address is exactly what the
+      # no-fallback discipline exists to prevent. Measured against Spring Boot 3.5.16 / Spring
+      # Framework 6.2.19; see docs/decision-log.md DL-105.
       endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}
 
 # Restated for the same reason as the management block above: both switches - the generated interface

@@ -233,6 +233,156 @@ class FailureDiagnosticsTest {
     }
 
     @Nested
+    @DisplayName("the deepest type, which answers a question the cause-only field could not")
+    class DeepestFailureType {
+
+        @Test
+        @DisplayName("a failure with no cause is named by its own type, because a boundary record that "
+                + "names nothing locates nothing")
+        void aFailureWithNoCauseIsNamedByItsOwnType() {
+            assertThat(FailureDiagnostics.deepestFailureTypeOf(new RootFailure(JDBC_CANARY)))
+                    .as("THE DEFECT THIS PINS. The boundary published the cause-only field, which is "
+                            + "empty for a failure raised directly - and a defensive refusal inside this "
+                            + "module is raised directly - so an unhandled failure's own record named no "
+                            + "type at all and could not be diagnosed from it")
+                    .isEqualTo("RootFailure");
+        }
+
+        @Test
+        @DisplayName("a chain is named by the type at the bottom of it, agreeing with the cause-only "
+                + "field wherever that field has an answer")
+        void aChainIsNamedByTheTypeAtTheBottom() {
+            final Throwable failure = new OuterFailure("x",
+                    new MiddleFailure("y", new RootFailure("z")));
+
+            assertThat(FailureDiagnostics.deepestFailureTypeOf(failure)).isEqualTo("RootFailure");
+            assertThat(FailureDiagnostics.rootFailureTypeOf(failure))
+                    .as("the two agree whenever there is a cause; they differ only where one has no "
+                            + "honest answer")
+                    .isEqualTo(FailureDiagnostics.deepestFailureTypeOf(failure));
+        }
+
+        @Test
+        @DisplayName("a self-causing failure is named once rather than walked, and an unbounded chain "
+                + "still terminates")
+        void aSelfCausingOrUnboundedChainStillTerminates() {
+            assertThat(FailureDiagnostics.deepestFailureTypeOf(new SelfCausingFailure("x")))
+                    .isEqualTo("SelfCausingFailure");
+            assertThat(FailureDiagnostics.deepestFailureTypeOf(chainOfDepth(500)))
+                    .as("the depth bound applies here as it does to the chain rendering")
+                    .isNotBlank();
+        }
+
+        @Test
+        @DisplayName("no message of any failure in the chain is published")
+        void noMessageIsPublished() {
+            final Throwable failure = new OuterFailure(JDBC_CANARY,
+                    new MiddleFailure(TOKEN_CANARY, new RootFailure(NATIONAL_ID_CANARY)));
+
+            assertThat(FailureDiagnostics.deepestFailureTypeOf(failure))
+                    .doesNotContain(JDBC_CANARY)
+                    .doesNotContain(TOKEN_CANARY)
+                    .doesNotContain(NATIONAL_ID_CANARY);
+        }
+
+        @Test
+        @DisplayName("a null failure is refused by name rather than dereferenced")
+        void aNullFailureIsRefused() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FailureDiagnostics.deepestFailureTypeOf(null))
+                    .withMessageContaining("failure");
+        }
+    }
+
+    @Nested
+    @DisplayName("the origin, which publishes where a failure was raised and nothing else")
+    class FailureOrigin {
+
+        @Test
+        @DisplayName("names the code location the failure was raised at, so a record locates a defect "
+                + "rather than only classifying it")
+        void namesTheCodeLocationTheFailureWasRaisedAt() {
+            final String origin = FailureDiagnostics.failureOriginOf(new RootFailure("x"));
+
+            assertThat(origin)
+                    .as("the outermost frame is this method, because that is where the failure was "
+                            + "constructed; the declaring type is reduced to its simple name, so the "
+                            + "package is not published")
+                    .startsWith("FailureDiagnosticsTest$FailureOrigin"
+                            + ".namesTheCodeLocationTheFailureWasRaisedAt:")
+                    .doesNotContain("com.carddemo");
+        }
+
+        @Test
+        @DisplayName("publishes no message, no argument and no field value, because a frame carries "
+                + "none of them")
+        void publishesNoMessageOfAnyKind() {
+            final Throwable failure = new OuterFailure(JDBC_CANARY,
+                    new MiddleFailure(TOKEN_CANARY,
+                            new RootFailure(NATIONAL_ID_CANARY + PAN_CANARY)));
+
+            assertThat(FailureDiagnostics.failureOriginOf(failure))
+                    .as("THE REASON THE THROWABLE IS STILL NOT HANDED TO THE LOGGER. A rendered trace "
+                            + "carries every message in the chain; frame metadata carries none, which "
+                            + "is what makes a location publishable when a trace is not")
+                    .doesNotContain(JDBC_CANARY)
+                    .doesNotContain(TOKEN_CANARY)
+                    .doesNotContain(NATIONAL_ID_CANARY)
+                    .doesNotContain(PAN_CANARY);
+        }
+
+        @Test
+        @DisplayName("names at most the declared number of frames, so a failure raised beneath a deep "
+                + "chain cannot set the size of a record")
+        void namesAtMostTheDeclaredNumberOfFrames() {
+            final String origin = FailureDiagnostics.failureOriginOf(new RootFailure("x"));
+
+            assertThat(origin.split(FailureDiagnostics.FAILURE_CHAIN_SEPARATOR, -1))
+                    .hasSizeLessThanOrEqualTo(FailureDiagnostics.MAX_ORIGIN_FRAME_COUNT);
+            assertThat(FailureDiagnostics.MAX_ORIGIN_FRAME_COUNT).isPositive();
+        }
+
+        @Test
+        @DisplayName("carries no whitespace, control byte or structural character, so it cannot inject "
+                + "a token into a structured record")
+        void carriesNothingThatCouldInjectAToken() {
+            final String origin = FailureDiagnostics.failureOriginOf(new RootFailure("x"));
+
+            assertThat(origin).isNotBlank();
+            for (int index = 0; index < origin.length(); index++) {
+                final char character = origin.charAt(index);
+                assertThat(character >= 'A' && character <= 'Z'
+                        || character >= 'a' && character <= 'z'
+                        || character >= '0' && character <= '9'
+                        || character == '$' || character == '_'
+                        || character == '.' || character == ':'
+                        || character == '<' || character == '-')
+                        .describedAs("character %s at %d is admissible", character, index)
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("a failure carrying no stack trace reports the substitute rather than an empty "
+                + "field, because the two say different things")
+        void aFailureWithNoStackTraceReportsTheSubstitute() {
+            final Throwable withoutTrace = new RootFailure("x");
+            withoutTrace.setStackTrace(new StackTraceElement[0]);
+
+            assertThat(FailureDiagnostics.failureOriginOf(withoutTrace))
+                    .isEqualTo(FailureDiagnostics.UNKNOWN_ORIGIN);
+        }
+
+        @Test
+        @DisplayName("a null failure is refused by name rather than dereferenced")
+        void aNullFailureIsRefused() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> FailureDiagnostics.failureOriginOf(null))
+                    .withMessageContaining("failure");
+        }
+    }
+
+    @Nested
     @DisplayName("the depth bound, which is what makes the rendered size computable")
     class DepthBound {
 

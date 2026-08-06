@@ -137,6 +137,32 @@
 #   docker compose up -d --build
 #
 # -------------------------------------------------------------------------------------------------
+# LOG GROWTH IS BOUNDED, BECAUSE THIS STACK IS MEANT TO BE LEFT RUNNING
+#
+# Every service declares the json-file driver explicitly, with a size ceiling and a file count,
+# rather than inheriting whatever the host daemon happens to default to. On a stock daemon that
+# default is json-file with NO rotation, which means a container log file grows until the filesystem
+# it sits on is full. The services here are precisely the ones that log continuously and are meant to
+# be left up: the application emits a log line per request and per chunk - readable console format on
+# the local profile, JSON elsewhere - Prometheus scrapes every fifteen seconds, and the performance
+# baseline and any overnight parity run are gathered from a stack nobody is watching. Unbounded is therefore not a theoretical exposure here,
+# it is the expected operating mode.
+#
+# This is a growth ceiling and NOT a retention policy; it makes no promise about how much history
+# survives, only that leaving the stack running cannot fill a developer's disk. Both halves are
+# overridable, because the right ceiling depends on how much history a particular run needs to read
+# back out of `docker compose logs`:
+#
+#   CARDDEMO_LOG_MAX_SIZE   size at which a container log rotates     default 10m
+#   CARDDEMO_LOG_MAX_FILE   rotated files kept per container          default 3
+#
+# The worst case is max-size x max-file per service - 30 MiB by default, 180 MiB for all six - and
+# raising it is a single variable rather than an edit here. Rotation never truncates a file a running
+# `logs -f` is streaming, so following a long run is unaffected; only history already written past
+# the ceiling is discarded. ContainerLifecycleContractTest fails if any service in this file loses
+# its bounded driver or hard-codes either ceiling.
+#
+# -------------------------------------------------------------------------------------------------
 # IMAGE PINNING
 #
 # Every image not built here is pinned by tag AND by digest, in the `tag@sha256:...` form the two
@@ -260,6 +286,13 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    # Bounded exactly as every other service is; see LOG GROWTH IS BOUNDED in the header for why the
+    # daemon default is not inherited and what the two overrides cost.
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -377,6 +410,11 @@ services:
       timeout: 10s
       retries: 20
       start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -412,6 +450,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -513,6 +556,15 @@ services:
     # Spring allows 30 seconds for each graceful shutdown phase; five additional seconds cover
     # signal delivery and container bookkeeping before Docker is permitted to send SIGKILL.
     stop_grace_period: 35s
+    # This is the service the ceiling matters most for. logback-spring.xml gives the local profile the
+    # readable console appender rather than the JSON one, and it writes a line per request and per
+    # chunk either way: a single batch run over the 300-record daily-transaction fixture produces
+    # thousands of lines in a few seconds.
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -555,6 +607,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
   # -----------------------------------------------------------------------------------------------
@@ -609,6 +666,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+        max-file: "${CARDDEMO_LOG_MAX_FILE:-3}"
     restart: unless-stopped
 
 # Named volumes, so `down` keeps state and `down -v` discards it deliberately. PostgreSQL retains

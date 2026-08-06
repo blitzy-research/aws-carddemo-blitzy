@@ -688,7 +688,13 @@ public final class CategoryBalanceReportJobConfig {
         return new StepBuilder(SORT_AND_REPROJECT_STEP_NAME, this.jobRepository)
                 .tasklet((contribution, chunkContext) -> {
                     final RepeatStatus result = sortAndReproject(contribution, chunkContext);
-                    stagingArea.publish(reportResource());
+                    // The GENERATION this execution just sealed, never the fixed logical alias: the
+                    // alias is replaced only after the durable publication that ends the job, so at
+                    // this point in a first run there is no file under that name at all. Publishing
+                    // the alias therefore read a path that did not exist and failed the step. The
+                    // unload step above, the interest job and the transaction-report job all publish
+                    // the sealed generation for the same reason.
+                    stagingArea.publish(reportGeneration(jobExecutionIdOf(chunkContext)));
                     return result;
                 }, this.transactionManager)
                 .meterRegistry(this.meterRegistry)

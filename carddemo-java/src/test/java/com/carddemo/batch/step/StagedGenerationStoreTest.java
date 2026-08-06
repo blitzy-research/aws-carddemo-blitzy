@@ -241,6 +241,34 @@ class StagedGenerationStoreTest {
             assertThat(completed).doesNotExist();
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
         }
+
+        @Test
+        @DisplayName("a step that never composed a working file is closed without a secondary failure "
+                + "that would replace its own")
+        void aStepThatProducedNothingIsClosedQuietly() {
+            // Written after a posting run whose strict reader refused a missing input reported a
+            // NoSuchFileException raised while sealing a reject file that had never been created. That
+            // secondary failure arrived from this adapter and displaced the reader's own diagnostic,
+            // which is the only one an operator can act on.
+            final JobExecution execution = completedJob(4);
+            final StepExecution step = stepOf(execution);
+            final Path completed =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 4);
+            final Path working = StagedGenerationStore.workingPath(completed);
+            final ItemStreamWriter<String> delegate = mock();
+            final ItemStreamWriter<String> writer = StagedGenerationStore.completingWriter(
+                    delegate, step, BASE, working, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(working).doesNotExist();
+            assertThatNoException().isThrownBy(writer::close);
+
+            verify(delegate).close();
+            assertThat(completed)
+                    .as("nothing was composed, so nothing may be published under a completed name")
+                    .doesNotExist();
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
+        }
     }
 
     @Nested

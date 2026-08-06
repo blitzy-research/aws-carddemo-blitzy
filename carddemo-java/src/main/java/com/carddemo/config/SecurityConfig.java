@@ -20,6 +20,7 @@ import com.carddemo.domain.enums.UserType;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.util.ApiRoutePaths;
 import com.carddemo.util.RefusalBodyRenderer;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -794,10 +795,12 @@ public class SecurityConfig {
     /**
      * Builds the filter chain that decides every request outside the management base path.
      *
-     * <p>Rule order is the contract. The permits come first and name individual surfaces; the
-     * administrative prefix follows; the batch-control prefix follows that; and the catch-all closes the
-     * chain. Reordering these changes behaviour, so the order is asserted by tests that exercise real
-     * responses rather than inspect the configuration.</p>
+     * <p>Rule order is the contract. The error-dispatch permit comes first and names no surface at all -
+     * it excuses the container's internal re-dispatch of an already-refused request, which carries no
+     * authentication because the bearer filter does not run on it, and which a client cannot issue; the
+     * permits follow and name individual surfaces; the administrative prefix follows; the batch-control
+     * prefix follows that; and the catch-all closes the chain. Reordering these changes behaviour, so the
+     * order is asserted by tests that exercise real responses rather than inspect the configuration.</p>
      *
      * <p><strong>No management rule appears here, and its absence is deliberate.</strong> Every request
      * beneath the management base path is matched by {@link #managementSecurityFilterChain(HttpSecurity)},
@@ -843,6 +846,20 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(requests -> {
+                    // FIRST, and it decides nothing about what a client may reach. This permits the
+                    // container's ERROR dispatch - the internal re-dispatch that carries an already
+                    // refused request to the error path so a body can be written for it. A client cannot
+                    // issue one: a request addressed to the error path is an ordinary REQUEST dispatch
+                    // and is still answered by the closing catch-all below.
+                    //
+                    // Without it, the rules ran a second time over a request that no longer carried an
+                    // authentication - the bearer filter is a once-per-request filter and does not run
+                    // on an error dispatch - so the catch-all answered 401 and OVERWROTE the status the
+                    // framework had already decided. A wrong method read as an authentication failure, an
+                    // unreadable media type read as one, an unsatisfiable Accept header read as one, and
+                    // an unknown path read as one, on the anonymous sign-on route as much as anywhere
+                    // else. ModuleErrorController answers the dispatch once it is permitted.
+                    requests.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll();
                     // NO MANAGEMENT RULE APPEARS HERE ANY MORE, and its absence is the fix rather than an
                     // omission. This chain used to permit /actuator/health/** and then require bare
                     // authenticated() for every other management path - a rule every signed-on cardholder

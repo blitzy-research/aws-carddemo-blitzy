@@ -60,6 +60,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
+import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.util.SensitiveFieldCodec;
 
 /**
@@ -446,6 +447,21 @@ final class ConfigurationProfileBaselineTest {
     /** Width of the government-issued identifier in the legacy customer record. */
     private static final int SEALED_IDENTIFIER_WIDTH = 20;
 
+    /**
+     * Width of the payload each seeded literal actually seals.
+     *
+     * <p>Not the identifier's width. Every value in that column is sealed <em>bound to the column</em>,
+     * so the payload is the column's binding name, the one-character unit separator, and the identifier.
+     * The binding is what lets the application read the seed at all: every reader of the column opens it
+     * through the field-bound reveal, which refuses an envelope sealed for another column or for none, so
+     * an unbound literal authenticates under the key and is then refused on every request that reads a
+     * customer. Deriving the width from the binding name keeps this file's pattern correct without
+     * restating a figure.</p>
+     */
+    private static final int SEALED_IDENTIFIER_PAYLOAD_WIDTH =
+            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD.length()
+                    + 1 + SEALED_IDENTIFIER_WIDTH;
+
     /** Decoded length the field-encryption key must have, as AES-256 requires. */
     private static final int FIELD_ENCRYPTION_KEY_BYTES = SensitiveFieldCodec.KEY_LENGTH_BYTES;
 
@@ -459,7 +475,7 @@ final class ConfigurationProfileBaselineTest {
      */
     private static final Pattern SEALED_IDENTIFIER_LITERAL = Pattern.compile(
             "'" + Pattern.quote(PROTECTED_VALUE_MARKER) + "[A-Za-z0-9+/=]{"
-                    + (SensitiveFieldCodec.envelopeLengthFor(SEALED_IDENTIFIER_WIDTH)
+                    + (SensitiveFieldCodec.envelopeLengthFor(SEALED_IDENTIFIER_PAYLOAD_WIDTH)
                             - SensitiveFieldCodec.ENVELOPE_PREFIX.length()) + "}'");
 
     /** A quoted run of digits at the legacy identifier width, which no seeded row may carry. */

@@ -35,9 +35,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongFunction;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.StreamSupport;
 
 import org.junit.jupiter.api.DisplayName;
@@ -75,6 +80,35 @@ class MonitoringQueriesIT {
     private static final String ITEM_READ_JOB_LABEL = "spring_batch_item_read_job_name";
     private static final String ITEM_READ_STEP_LABEL = "spring_batch_item_read_step_name";
 
+    private static final String ACTIVE_JOB_METRIC = "spring_batch_job_active_seconds_count";
+    private static final String RUNNING_BATCH_JOB = "postTransactionJob";
+    private static final String IDLE_BATCH_JOB = "interestCalculationJob";
+
+    /**
+     * The exposition a Micrometer {@code LongTaskTimer} actually publishes for
+     * {@code spring.batch.job.active}: a summary family whose {@code _count} is the number of
+     * currently active tasks. No {@code _active_count} suffix exists, which is precisely the naming
+     * trap that left the delivered panel permanently empty.
+     */
+    // Locale.ROOT is pinned, and String.format is used rather than the String.formatted shorthand,
+    // because that shorthand has no locale-accepting overload and resolves the ambient default -
+    // which LocaleDeterminismAuditTest bans outright across this module for that reason.
+    private static final String ACTIVE_JOB_EXPOSITION = String.format(Locale.ROOT, """
+            # HELP spring_batch_job_active_seconds Active batch job executions.
+            # TYPE spring_batch_job_active_seconds summary
+            spring_batch_job_active_seconds_count{spring_batch_job_active_name="%1$s"} 1
+            spring_batch_job_active_seconds_sum{spring_batch_job_active_name="%1$s"} 0.75
+            spring_batch_job_active_seconds_max{spring_batch_job_active_name="%1$s"} 0.75
+            spring_batch_job_active_seconds_count{spring_batch_job_active_name="%2$s"} 0
+            spring_batch_job_active_seconds_sum{spring_batch_job_active_name="%2$s"} 0.0
+            spring_batch_job_active_seconds_max{spring_batch_job_active_name="%2$s"} 0.0
+            """, RUNNING_BATCH_JOB, IDLE_BATCH_JOB);
+
+    private static final Pattern GROUPING_LABEL =
+            Pattern.compile("by\\s*\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\)");
+    private static final Pattern LEGEND_PLACEHOLDER =
+            Pattern.compile("\\{\\{\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*}}");
+
     @TempDir
     private Path temporaryDirectory;
 
@@ -85,25 +119,8 @@ class MonitoringQueriesIT {
     @Test
     @DisplayName("both committed item-read expressions return the populated job and step series")
     void itemReadQueriesReturnPopulatedSeries() throws Exception {
-        try (MetricEndpoint metrics = MetricEndpoint.start()) {
-            Testcontainers.exposeHostPorts(metrics.port());
-            final Path configuration = writePrometheusConfiguration(metrics.port());
-
-            try (GenericContainer<?> prometheus =
-                    new GenericContainer<>(DockerImageName.parse(PROMETHEUS_IMAGE))
-                            .withCopyToContainer(
-                                    MountableFile.forHostPath(configuration),
-                                    "/etc/prometheus/prometheus.yml")
-                            .withExposedPorts(PROMETHEUS_PORT)
-                            .waitingFor(Wait.forHttp("/-/ready")
-                                    .forPort(PROMETHEUS_PORT)
-                                    .withStartupTimeout(Duration.ofSeconds(30)))) {
-                prometheus.start();
-
-                final URI queryEndpoint = URI.create("http://"
-                        + prometheus.getHost() + ":"
-                        + prometheus.getMappedPort(PROMETHEUS_PORT)
-                        + "/api/v1/query?query=");
+        try (MetricEndpoint metrics = MetricEndpoint.start(MetricEndpoint::itemReadExposition)) {
+            withPrometheusScraping(metrics, queryEndpoint -> {
                 for (final String dashboardExpression : itemReadExpressions()) {
                     final JsonNode result = awaitPopulatedResult(
                             queryEndpoint, resolveDashboardVariables(dashboardExpression));
@@ -112,8 +129,104 @@ class MonitoringQueriesIT {
                     assertThat(labels.path(ITEM_READ_JOB_LABEL).asText()).isEqualTo(BATCH_JOB);
                     assertThat(labels.path(ITEM_READ_STEP_LABEL).asText()).isEqualTo(BATCH_STEP);
                 }
+            });
+        }
+    }
+
+    /**
+     * Executes the committed active-job expression against a real Prometheus server.
+     *
+     * <p>The delivered panel queried {@code spring_batch_job_active_seconds_active_count}, a suffix
+     * the exporter never publishes, so it read "No data" under every condition. A name-only contract
+     * test closes half of that hole: it proves each name exists in the exposition, but it cannot
+     * prove the expression selects anything, and it cannot prove the {@code sum by (...)} grouping
+     * label matches the label the legend interpolates. A grouping label that drifts by one character
+     * still returns a series - an unlabelled one, which renders as a blank legend entry. This test
+     * therefore requires Prometheus itself to return one populated series per job name, each
+     * carrying the very label the panel's {@code legendFormat} names.</p>
+     */
+    @Test
+    @DisplayName("the committed active-job expression returns one labelled series per job name")
+    void activeJobQueryReturnsOneLabelledSeriesPerJobName() throws Exception {
+        final JsonNode target = activeJobTarget();
+        final String expression = target.path("expr").asText();
+        final String legendLabel = soleCapture(
+                LEGEND_PLACEHOLDER, target.path("legendFormat").asText(), "legend placeholder");
+        assertThat(soleCapture(GROUPING_LABEL, expression, "grouping label"))
+                .as("the panel must group by the same label its legend interpolates")
+                .isEqualTo(legendLabel);
+
+        try (MetricEndpoint metrics =
+                MetricEndpoint.start(ignoredScrapeCount -> ACTIVE_JOB_EXPOSITION)) {
+            withPrometheusScraping(metrics, queryEndpoint -> {
+                final JsonNode result = awaitPopulatedResult(
+                        queryEndpoint, resolveDashboardVariables(expression));
+                final Map<String, String> activeCountByJob = new LinkedHashMap<>();
+                for (final JsonNode series : iterable(result)) {
+                    final String jobName = series.path("metric").path(legendLabel).asText();
+                    assertThat(jobName)
+                            .as("every returned series must carry the interpolated legend label")
+                            .isNotEmpty();
+                    activeCountByJob.put(jobName, series.path("value").path(1).asText());
+                }
+                assertThat(activeCountByJob)
+                        .as("one series per job name, reading the number of active executions")
+                        .containsExactlyInAnyOrderEntriesOf(
+                                Map.of(RUNNING_BATCH_JOB, "1", IDLE_BATCH_JOB, "0"));
+            });
+        }
+    }
+
+    private void withPrometheusScraping(
+            final MetricEndpoint metrics, final QueryAssertions assertions) throws Exception {
+        Testcontainers.exposeHostPorts(metrics.port());
+        final Path configuration = writePrometheusConfiguration(metrics.port());
+
+        try (GenericContainer<?> prometheus =
+                new GenericContainer<>(DockerImageName.parse(PROMETHEUS_IMAGE))
+                        .withCopyToContainer(
+                                MountableFile.forHostPath(configuration),
+                                "/etc/prometheus/prometheus.yml")
+                        .withExposedPorts(PROMETHEUS_PORT)
+                        .waitingFor(Wait.forHttp("/-/ready")
+                                .forPort(PROMETHEUS_PORT)
+                                .withStartupTimeout(Duration.ofSeconds(30)))) {
+            prometheus.start();
+
+            assertions.verify(URI.create("http://"
+                    + prometheus.getHost() + ":"
+                    + prometheus.getMappedPort(PROMETHEUS_PORT)
+                    + "/api/v1/query?query="));
+        }
+    }
+
+    private static JsonNode activeJobTarget() throws IOException {
+        final List<JsonNode> targets = new ArrayList<>();
+        final JsonNode dashboard = JSON.readTree(DASHBOARD_PATH.toFile());
+        for (final JsonNode panel : iterable(dashboard.path("panels"))) {
+            final JsonNode panelTargets = panel.path("targets");
+            if (!panelTargets.isArray()) {
+                continue;
+            }
+            for (final JsonNode target : iterable(panelTargets)) {
+                if (target.path("expr").asText().contains(ACTIVE_JOB_METRIC)) {
+                    targets.add(target);
+                }
             }
         }
+        assertThat(targets)
+                .as("exactly one dashboard target reads the active-job family")
+                .hasSize(1);
+        return targets.get(0);
+    }
+
+    private static String soleCapture(
+            final Pattern pattern, final String text, final String description) {
+        final Matcher matcher = pattern.matcher(text);
+        assertThat(matcher.find()).as("%s present in %s", description, text).isTrue();
+        final String captured = matcher.group(1);
+        assertThat(matcher.find()).as("exactly one %s in %s", description, text).isFalse();
+        return captured;
     }
 
     private Path writePrometheusConfiguration(final int metricsPort) throws IOException {
@@ -197,6 +310,19 @@ class MonitoringQueriesIT {
         return () -> StreamSupport.stream(array.spliterator(), false).iterator();
     }
 
+    /** Assertions executed while a Prometheus server is scraping the local endpoint. */
+    @FunctionalInterface
+    private interface QueryAssertions {
+
+        /**
+         * Runs the assertions.
+         *
+         * @param queryEndpoint the instant-query endpoint, ending in {@code ?query=}
+         * @throws Exception when an assertion or the query transport fails
+         */
+        void verify(URI queryEndpoint) throws Exception;
+    }
+
     /** A local scrape endpoint whose counter increases once per Prometheus collection. */
     private static final class MetricEndpoint implements AutoCloseable {
 
@@ -204,14 +330,17 @@ class MonitoringQueriesIT {
 
         private final HttpServer server;
         private final AtomicLong count = new AtomicLong();
+        private final LongFunction<String> exposition;
 
-        private MetricEndpoint(final HttpServer server) {
+        private MetricEndpoint(final HttpServer server, final LongFunction<String> exposition) {
             this.server = server;
+            this.exposition = exposition;
         }
 
-        private static MetricEndpoint start() throws IOException {
+        private static MetricEndpoint start(final LongFunction<String> exposition)
+                throws IOException {
             final HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
-            final MetricEndpoint endpoint = new MetricEndpoint(server);
+            final MetricEndpoint endpoint = new MetricEndpoint(server, exposition);
             server.createContext("/actuator/prometheus", endpoint::writeMetrics);
             server.start();
             return endpoint;
@@ -221,14 +350,20 @@ class MonitoringQueriesIT {
             return this.server.getAddress().getPort();
         }
 
-        private void writeMetrics(final HttpExchange exchange) throws IOException {
-            final long value = this.count.addAndGet(RECORDS_PER_SCRAPE);
+        /**
+         * Renders a monotonically increasing item-read counter, so that the rate and increase
+         * expressions the dashboard commits have two distinct samples to work from.
+         *
+         * @param recordsRead the cumulative record count observed by this scrape
+         * @return the exposition text for that scrape
+         */
+        private static String itemReadExposition(final long recordsRead) {
             // Locale.ROOT is pinned because %d renders the sample value into an exposition body a real
             // Prometheus scrapes. The shorthand String.formatted accepts no locale, so under a default
             // locale whose numbering system is not Latin this stub would have served a sample Prometheus
             // rejects, and the assertion below would have failed on an empty result rather than on the
             // digits that caused it.
-            final byte[] body = String.format(Locale.ROOT, """
+            return String.format(Locale.ROOT, """
                     # HELP spring_batch_item_read_seconds Item read calls.
                     # TYPE spring_batch_item_read_seconds summary
                     %s{%s="%s",%s="%s"} %d
@@ -238,7 +373,12 @@ class MonitoringQueriesIT {
                             BATCH_JOB,
                             ITEM_READ_STEP_LABEL,
                             BATCH_STEP,
-                            value)
+                            recordsRead);
+        }
+
+        private void writeMetrics(final HttpExchange exchange) throws IOException {
+            final byte[] body = this.exposition
+                    .apply(this.count.addAndGet(RECORDS_PER_SCRAPE))
                     .getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set(
                     "Content-Type", "text/plain; version=0.0.4; charset=utf-8");

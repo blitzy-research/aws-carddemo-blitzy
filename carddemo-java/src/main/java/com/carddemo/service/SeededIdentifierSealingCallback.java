@@ -58,12 +58,15 @@ import org.springframework.stereotype.Component;
  *       leave a cleartext identifier in a protected column. {@code Customer}'s constructor and its
  *       setter both refuse such a value, but object-relational hydration assigns fields directly and
  *       consults neither, so nothing else would object. Every unsealed value found is sealed.</li>
- *   <li><strong>Key.</strong> An envelope opens under exactly one key. Fifty of them are fixed
- *       literals in a committed script, so a process whose configured key is not the key they were
- *       sealed under holds fifty rows of regulated data it cannot read. <strong>The marker check that
- *       decides the first invariant is blind to this</strong>, because an envelope sealed under a
- *       foreign key is still shaped like an envelope. Every stored value is therefore <em>opened</em>
- *       rather than merely recognised, and one that does not open fails the migration.</li>
+ *   <li><strong>Key and column binding.</strong> An envelope opens under exactly one key and carries
+ *       exactly one column binding. Fifty of them are fixed literals in a committed script, so a
+ *       process whose configured key is not the key they were sealed under - or a literal sealed
+ *       without the binding of the column it sits in - holds fifty rows of regulated data it cannot
+ *       read. <strong>The marker check that decides the first invariant is blind to both</strong>,
+ *       because an envelope sealed under a foreign key, and one sealed for another column, are each
+ *       still shaped like an envelope. Every stored value is therefore <em>opened under its column's
+ *       own binding</em> rather than merely recognised, which is the same question every reader of
+ *       these columns asks, and one that does not open that way fails the migration.</li>
  * </ol>
  *
  * <p>The second invariant is what gives this class teeth on a delivered database, and it is why the
@@ -295,16 +298,22 @@ public final class SeededIdentifierSealingCallback implements Callback {
      * {@code V3__seed_reference_data.sql} are fixed literals that no pass can re-key, so the only way
      * to know they are readable by the process that just migrated them is to read them.
      *
-     * <p><strong>The check is authentication under the key, and deliberately not the column binding.</strong>
-     * Two forms of envelope legitimately occupy these columns. The fifty seeded literals are
-     * <em>unbound</em> - their payload is the twenty characters and nothing else, which is what makes a
-     * seeded envelope sixty-nine characters wide and what lets the seeded form stay distinguishable from
-     * this class's - while a value this class seals is <em>bound</em> to its column. Opening through the
-     * binding would therefore refuse all fifty delivered rows, which is the opposite of the intent.
-     * Authenticated decryption is what the key invariant is actually about: it succeeds for both forms
-     * and fails for neither reason other than the key being wrong or the bytes being altered. The
-     * binding is a separate invariant, satisfied by what this class writes, deliberately not satisfied
-     * by the seed, and enforced where a value is read into the domain rather than here.
+     * <p><strong>The check is authenticated decryption <em>under the column binding</em>, and the binding
+     * half is the half that matters most.</strong> Only one form of envelope legitimately occupies these
+     * columns: one bound to the column it is stored in. The fifty seeded literals carry that binding and
+     * so does every value this class seals, because both are produced by
+     * {@link SensitiveFieldEncryptionService#protect(String, String)}. Opening under the binding is
+     * therefore the same question the application asks: every reader of these two columns - the account
+     * view transaction, the account update transaction and the statement job - opens them through
+     * {@link SensitiveFieldEncryptionService#reveal(String, String)}, which refuses an envelope written
+     * for any other column.
+     *
+     * <p>Checking only authentication would leave the more likely defect invisible, and it once did. An
+     * unbound envelope authenticates under the key and is refused by every one of those readers, so a
+     * seed carrying unbound literals starts cleanly, reports a successful migration, and then fails every
+     * request that reads a customer. Verifying here exactly what the application verifies is what turns
+     * that from a runtime failure on the most-used read screen into a start-up failure naming the column.
+     * Recorded as {@code DL-103}.
      *
      * <p>The recovered cleartext is deliberately discarded. Nothing is compared against an expected
      * value, because the expected values are regulated identifiers and this class must not hold them;
@@ -342,29 +351,56 @@ public final class SeededIdentifierSealingCallback implements Callback {
      * @param column the column the value was read from, one of this class's own literals
      * @param stored the value read from the column, possibly {@code null}
      * @return {@code 1} when a value was present and opened, {@code 0} when there was no value
-     * @throws FlywayException when a present value does not open under the configured key
+     * @throws FlywayException when a present value does not open under the configured key, or does not
+     *                         carry this column's binding
      */
     private int verifyOpens(final String column, final String stored) {
         if (stored == null || stored.isBlank()) {
             return 0;
         }
         try {
-            this.encryption.reveal(stored);
+            this.encryption.reveal(bindingNameOf(column), stored);
             return 1;
         } catch (final RuntimeException unreadable) {
             // Names the column and the property key, both of which are literals of this module. The
             // value, the recovered cleartext and the key are all withheld - decision DL-041 - and the
             // chained cause carries only the service's own verdict, which names no value either.
-            throw new FlywayException("a stored value in customer." + column + " does not open under"
-                    + " the key configured by "
+            throw new FlywayException("a stored value in customer." + column + " does not open as"
+                    + " a value bound to " + bindingNameOf(column) + " under the key configured by "
                     + SensitiveFieldEncryptionService.FIELD_ENCRYPTION_KEY_PROPERTY
-                    + "; an envelope opens under exactly one key, and the seeded envelopes are fixed"
-                    + " literals that no migration can re-key, so an overridden or rotated key leaves"
-                    + " regulated data unreadable. The migration is failed rather than reported"
-                    + " successful over rows the application cannot read. Restore the key this"
-                    + " profile declares, or rebuild the database from the migrations under the key"
-                    + " now configured", unreadable);
+                    + "; an envelope opens under exactly one key and carries exactly one column"
+                    + " binding, and the seeded envelopes are fixed literals that no migration can"
+                    + " re-key or re-bind, so an overridden or rotated key - or a literal sealed"
+                    + " without this column's binding - leaves regulated data unreadable by every"
+                    + " reader of the column. The migration is failed rather than reported successful"
+                    + " over rows the application cannot read. Restore the key this profile declares,"
+                    + " or rebuild the database from the migrations under the key now configured",
+                    unreadable);
         }
+    }
+
+    /**
+     * Names the binding one of this class's two columns seals its values under.
+     *
+     * <p>The mapping is stated once, here, and both halves of the class read it: the sealing pass binds a
+     * value it writes, and the verifying pass opens a value it reads. A second spelling anywhere would
+     * let one half write what the other cannot read, which is exactly the defect the verifying pass now
+     * catches.
+     *
+     * @param column one of this class's own column literals
+     * @return the canonical binding name the field-encryption service declares for that column
+     * @throws IllegalStateException if asked for a column this class does not own, which is a wiring
+     *                               fault rather than a data condition
+     */
+    private static String bindingNameOf(final String column) {
+        if (NATIONAL_IDENTIFIER_COLUMN.equals(column)) {
+            return SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD;
+        }
+        if (GOVERNMENT_IDENTIFIER_COLUMN.equals(column)) {
+            return SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD;
+        }
+        throw new IllegalStateException("customer." + column + " is not one of the two protected"
+                + " columns this callback owns, so it has no binding name here");
     }
 
     /**

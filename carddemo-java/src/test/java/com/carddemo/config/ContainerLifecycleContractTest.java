@@ -131,6 +131,58 @@ final class ContainerLifecycleContractTest {
     }
 
     /**
+     * Requires every service to bound its own log growth through an overridable ceiling.
+     *
+     * <p>A container that inherits the daemon's default logging configuration inherits, on a stock
+     * daemon, {@code json-file} with no rotation at all - a log that grows until the filesystem
+     * holding it is full. This stack is designed to be left running unattended while a performance
+     * baseline or a parity run is gathered, and its services are the ones that log continuously, so
+     * the unbounded case is the expected operating mode rather than an edge case. The ceiling is
+     * asserted per service because a single service added later without one reintroduces the whole
+     * exposure, and it is asserted as a variable reference rather than a literal because an operator
+     * who needs more history must not have to edit the shipped file to get it.</p>
+     *
+     * @throws IOException if the Compose file cannot be read
+     */
+    @Test
+    @DisplayName("every service bounds its log growth through an overridable ceiling")
+    void everyServiceBoundsItsLogGrowth() throws IOException {
+        final Map<?, ?> services = mappingAt(document(COMPOSE), "services");
+        final List<String> serviceNames = keyNamesOf(services);
+
+        assertThat(serviceNames)
+                .as("the stack the gates are validated against is these six services")
+                .containsExactlyInAnyOrder(
+                        "postgres", "localstack", "jaeger", "app", "prometheus", "grafana");
+
+        for (final String serviceName : serviceNames) {
+            assertThat(valueAt(services, serviceName, "logging", "driver"))
+                    .as("%s must declare its logging driver rather than inherit the daemon default",
+                            serviceName)
+                    .isEqualTo("json-file");
+            assertThat(valueAt(services, serviceName, "logging", "options", "max-size"))
+                    .as("%s must bound each log file, and the bound must stay overridable",
+                            serviceName)
+                    .isEqualTo("${CARDDEMO_LOG_MAX_SIZE:-10m}");
+            assertThat(valueAt(services, serviceName, "logging", "options", "max-file"))
+                    .as("%s must bound how many rotated files are kept, overridably", serviceName)
+                    .isEqualTo("${CARDDEMO_LOG_MAX_FILE:-3}");
+        }
+    }
+
+    @Test
+    @DisplayName("the operator guide states the ceiling, both overrides and what it is not")
+    void readmeDocumentsTheBoundedLogContract() throws IOException {
+        final String normalizedGuide = read(README).replaceAll("\\s+", " ");
+
+        assertThat(normalizedGuide)
+                .contains("Container log growth is bounded")
+                .contains("CARDDEMO_LOG_MAX_SIZE")
+                .contains("CARDDEMO_LOG_MAX_FILE")
+                .contains("growth ceiling, not a retention policy");
+    }
+
+    /**
      * Reads and parses one YAML document.
      *
      * @param path document path relative to the module root

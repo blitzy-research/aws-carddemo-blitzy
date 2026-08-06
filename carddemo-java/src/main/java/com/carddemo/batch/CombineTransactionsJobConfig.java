@@ -350,6 +350,16 @@ public final class CombineTransactionsJobConfig {
     public static final String SYNTHESIZED_RESOURCE_PROPERTY =
             RESOURCE_PROPERTY_PREFIX + "synthesized-transaction";
 
+
+    /*
+     * There is deliberately no launch-parameter name for either configured input. Two such names were
+     * once published on the launch contract as "typed-launch compatibility" spellings, and no job ever
+     * accepted either, so every request carrying one was refused while the published document invited
+     * it. Naming them here would reopen the question the two properties above have already answered:
+     * the locations are the deployment's to name and not a caller's, which is what keeps an untrusted
+     * value away from a resource loader. The names are therefore absent rather than unused.
+     */
+
     /** Prefix of the per-execution combined object staged for downstream inspection or reuse. */
     private static final String COMBINED_OBJECT_KEY_PREFIX = JOB_NAME + "/combined/";
 

@@ -2730,10 +2730,46 @@ keeps anything credential-shaped out of the repository, since the guard judges u
 enforcement now credits the guard and states the three framework behaviours above. The header's claim that
 "an unresolvable placeholder is raised while the context is being refreshed" is replaced; the two required
 lists now say what aborts the start; the signing-material block carries the `@NotBlank` illustration
-because it is the clearest case; the data-source, key-store, region, trace-collector and queue blocks each
-record what would have happened without the guard and how it would have been misreported. The header's
+because it is the clearest case; the data-source, key-store, region and queue blocks each record what would
+have happened without the guard and how it would have been misreported, and the trace-collector block
+records the measured ordering set out in the addendum below, which is the one key the guard never reports. The header's
 count of required values - which said six where the list below it named eight - is removed rather than
 corrected, for the DL-104 reason.
+
+**Measured addendum - the guard reports eleven of the twelve, and the twelfth is an ordering fact.** A
+runtime reproduction of the production profile with every variable supplied except one found that
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` never reaches the guard's summary. Actuator's own trace
+autoconfiguration carries a property condition on `management.otlp.tracing.endpoint`, and conditions are
+evaluated by `ConfigurationClassPostProcessor`, a bean-**definition**-registry post-processor. The
+container runs every post-processor of that kind to completion before it runs any plain
+`BeanFactoryPostProcessor`, which is what the guard is published as. The condition resolves the key
+strictly one phase earlier, so start-up aborts with
+
+```
+org.springframework.util.PlaceholderResolutionException: Could not resolve placeholder
+'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT' in value "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
+Wrapped by: java.lang.IllegalStateException: Error processing condition on
+org.springframework.boot.actuate.autoconfigure.tracing.otlp.OtlpTracingConfigurations
+    $ConnectionDetails.otlpTracingConnectionDetails
+```
+
+This is behaviour 2 above, and it is the only one of the twelve keys it applies to, because it is the only
+one a framework condition reads. **The outcome is the required one** - the deployment stops, and the
+message names the exact variable a deployer must set - so nothing about the setting is corrected. What
+differs is the wording: this fault arrives as the framework's placeholder message rather than as a line in
+the guard's twelve-setting summary, so a deployment missing this variable *and* others learns about it in
+two messages instead of one.
+
+**Why the bare reference stays.** The only change that would let the guard speak first about this key is
+to give the reference a fallback, so that lenient resolution succeeds during condition evaluation and the
+guard then rejects the value it bound. That is precisely what the no-fallback discipline exists to
+prevent, and a defaulted collector address is the exposure it prevents: production spans quietly leaving
+for whatever host the default named. Republishing the guard as an `EnvironmentPostProcessor` would also
+reorder it ahead of condition evaluation, but that restructures a security control - one whose ordering
+guarantee, profile confinement and three-fault vocabulary are asserted by their own suites - to change
+which of two correct messages a deployer reads. Neither trade is worth making, and the profile document
+now states the ordering at the setting itself so the next reader is not surprised by it. Recorded rather
+than repaired, per the same reasoning as the earlier paragraphs of this entry.
 
 *Cited by:* `application-prod.yml`, `ProductionConfigurationValidator`.
 
@@ -6245,6 +6281,173 @@ eight-character bound and JSON write-only credential contract.
 `api/GlobalExceptionHandler.java`, `api/dto/SignOnRequest.java`, and their authentication,
 controller, exception-handler, DTO-boundary and JSON-contract tests.
 
+### DL-152 - The active-job panel reads the exported name, and the meter-collision warning beside it is two framework instrumentation paths colliding, not a defect to suppress
+
+**Context.** The "Active job executions" panel of the provisioned dashboard queried
+`spring_batch_job_active_seconds_active_count`. It returned nothing under every condition, so the panel
+read "No data" permanently, and the existing dashboard test could not see it because that test compared
+panel names against a hard-coded set of counter names rather than against an exposition.
+
+**What was measured, against the resolved Micrometer 1.15.12 this module builds on.** A `LongTaskTimer`
+is exported by the Prometheus registry as a **summary** family - `_count`, `_sum` and `_max`, and nothing
+else. There is no `_active_count` suffix at any Micrometer version this module can resolve. For a
+long-task timer the `_count` **is** the number of currently active tasks: it reads 1 while one task is
+running and 0 once it stops, which is precisely what the panel wanted. The exported tag key is
+`spring_batch_job_active_name` - the meter name is folded into it - and not `spring_batch_job_name`, so
+the panel's legend format had nothing to interpolate either.
+
+**Decision.** The panel queries `sum by (spring_batch_job_active_name) (spring_batch_job_active_seconds_count{job="$job"})`
+with a matching legend format, and its axis label and unit - which had been transposed with the
+neighbouring item-read panel - now describe active executions. Two tests hold it, deliberately at
+different levels, because each catches what the other cannot. `GrafanaDashboardMetricsContractTest`
+asserts **every** metric name in **every** panel target and template query against one real
+`PrometheusMeterRegistry.scrape()`, so a name that the exporter does not publish fails the build in
+either direction. `MonitoringQueriesIT` then executes the shipped expression against a real Prometheus
+server and requires one populated series per job name, each carrying the label the legend interpolates -
+because a grouping label that drifts by one character still returns a series, just an unlabelled one that
+renders as a blank legend entry, and no name-comparison test can see that.
+
+**The warning that appears beside it, and why nothing suppresses it.** Launching any job logs one
+Micrometer warning:
+
+```
+The meter (MeterId{name='spring.batch.job.active', tags=[application, spring.batch.job.name,
+spring.batch.job.status]}) registration has failed: Prometheus requires that all meters with the same
+name have the same set of tag keys. There is already an existing meter named
+'spring_batch_job_active_seconds' containing tag keys [application, spring_batch_job_active_name].
+```
+
+Two framework instrumentation paths address one meter name with different tag keys: Spring Batch's own
+long-task timer for an active job, and the observation handler's `<observation>.active` timer derived from
+the batch observation convention. Neither is application code. The **first** registration is the one that
+wins, and it is the one the panel reads - the nine live series prove it - so the collision costs nothing
+but the line, and Micrometer itself de-escalates the message to debug after the first occurrence.
+
+It is left alone rather than filtered. The only suppression available is a meter filter denying a meter
+that differs from the exported one **only in its tag keys**, and a filter written one character wide of
+that distinction removes the exported series instead - which is exactly the class of mistake that made
+this entry necessary. A cosmetic log line is not worth reintroducing the defect. The zero-warning
+commitment this module holds itself to is a compiler contract enforced by `-Xlint:all -Werror`, and it
+excepts framework-generated code; a runtime diagnostic emitted by a framework component is outside it.
+
+*Cited by:* `config/grafana/dashboards/carddemo-overview.json`, and the dashboard metric-name and
+executed-query suites that hold it.
+
+---
+
+### DL-159 - A high-severity finding whose fix has not been published is carried as a measured determination, because the two alternatives are a disarmed gate or a red build
+
+**Context.** The supply-chain gate is bound to `verify` and fails at CVSS 7.0. It had been passing with
+two sub-threshold findings. A vulnerability-database refresh then produced `CVE-2026-66299` at CVSS 7.5
+against the embedded servlet container, and every online `./mvnw verify` began failing:
+
+```
+[ERROR] One or more dependencies were identified with vulnerabilities that have a CVSS score
+        greater than or equal to '7.0':
+[ERROR] tomcat-embed-core-10.1.57.jar (pkg:maven/org.apache.tomcat.embed/tomcat-embed-core@10.1.57,
+        cpe:2.3:a:apache:tomcat:10.1.57:*): CVE-2026-66299(7.5)
+```
+
+Nothing in the module caused it. The finding arrived from outside and had to be answered anyway, because
+a gate that fails is not a gate that can be left failing.
+
+**The preferred remediation was attempted first and does not exist.** This module already pins
+`tomcat.version` **upward**, above the framework's managed floor, as earlier CVE remediation - so the
+obvious move was one more property bump. The advisory names 10.1.58 as the fixed release on the 10.1
+line (`versionEndExcluding` 10.1.58 in the record) and 11.0.25 on the 11 line. Neither is published:
+
+```
+$ for v in 10.1.58 10.1.59 10.1.60 11.0.25; do curl -sI -o /dev/null -w "$v -> %{http_code}\n" \
+    https://repo1.maven.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/$v/tomcat-embed-core-$v.jar; done
+10.1.58 -> 404
+10.1.59 -> 404
+10.1.60 -> 404
+11.0.25 -> 404
+```
+
+The newest 10.1.x that resolves is the 10.1.57 already pinned. The advisory has been published ahead of
+the artifact, which is a state a build has to survive rather than a state it can fix.
+
+**The finding does not describe code this module carries, and that is measured.** The vulnerability is
+uncontrolled resource consumption in Tomcat's **WebSocket chat example**, part of the examples web
+application shipped in the full server distribution under `webapps/examples`. The advisory says so in
+its own text: users who followed the guidance to remove the examples web application are not affected. A
+Spring Boot application embeds the container as a library and has no `webapps` directory from which an
+examples application could be deployed. The archive listings confirm there is nothing there to exploit:
+
+```
+tomcat-embed-core-10.1.57.jar        1681 entries,  0 matching webapps/|examples/|websocket/chat
+tomcat-embed-websocket-10.1.57.jar    191 entries,  0
+tomcat-embed-el-10.1.57.jar           164 entries,  0
+```
+
+The match is on the product-level platform record `cpe:2.3:a:apache:tomcat:10.1.57`, which addresses the
+Tomcat product at a version rather than any file inside it. The report carries no evidence tying the
+match to the examples application, because the artifact contains none to find.
+
+**Decision.** One narrowly scoped rule in `carddemo-java/owasp-suppressions.xml` records that
+determination - the first rule the file has ever carried - and nothing else about the gate changes. The
+threshold stays at 7.0, the test graph stays in scope, the scan stays bound to `verify`, and the rule
+names one identifier on three named artifacts of one library at one version.
+
+**Why the rule names three jars when one was flagged.** Because the CPE assignment is not stable between
+scans, and relying on it would leave the gate failing again for a determination already made. Two runs
+six minutes apart over the same graph and the same pinned version attributed the finding differently:
+the first named `tomcat-embed-core` only; the second, after `core` was covered, named
+`tomcat-embed-websocket`, which had carried the identical pair of Tomcat CPEs all along; a third named
+`core` again. `tomcat-embed-el` currently carries no Tomcat CPE at all. Naming all three is admissible
+only because the evidence above was taken for each jar **individually**, which is the condition the
+suppression file's own rules impose on a multi-artifact entry.
+
+**Why not each of the alternatives.**
+
+- *Lower `failBuildOnCVSS`.* Disarms the gate for every future finding, in order to answer one. It trades
+  a bounded, documented exception for an unbounded, undocumented one.
+- *Skip the scan, or narrow it back out of the test graph.* "A gate that is skipped by default is not a
+  gate", as the property's own comment in `pom.xml` puts it. Narrowing would also hide more than this
+  finding, and the scope was widened deliberately once the shaded transport was replaced.
+- *Substitute a different embedded container.* Contradicts the plan's pinned dependency inventory, which
+  names this coordinate, and rewrites the servlet layer to answer a finding in an examples application
+  the module does not deploy.
+- *Wait for the upstream release.* Leaves every online build red in the meantime, including CI, which
+  turns a real gate into noise everyone learns to step over.
+
+**Two mechanisms keep this entry honest, and both were verified rather than asserted.** The plugin runs
+with `failBuildOnUnusedSuppressionRule` set true - a flag that was enabled before any rule existed for it
+to police, precisely for a moment like this one. Pointing the rule at a non-matching identifier makes the
+build fail:
+
+```
+[ERROR] Suppression Rule had zero matches: SuppressionRule{packageUrl=...tomcat-embed-(core|websocket|el)...}
+[ERROR] There are 1 unused suppression rule(s): check logs.
+[INFO] BUILD FAILURE
+```
+
+So when a patched release is adopted the rule stops matching and the build demands the entry's removal.
+That is a sharper trigger than a review date, which would fire on the calendar whether or not anything
+had changed, and it is why no entry in that file carries one. Second, the gate remains armed for
+everything else: re-running the scan with the threshold lowered to 5.0 on the command line fails the
+build on the sub-threshold finding below, proving the determination excludes one named identifier on
+named artifacts and nothing more.
+
+**The remaining finding is left visible on purpose.** `CVE-2026-41178` at CVSS 5.3 MEDIUM is reported
+against `opentelemetry-semconv` and is not suppressed. It describes baggage-header parsing in
+OpenTelemetry **Go**; its CPE carries `go` as the target software and has been matched to a Java
+artifact. It sits below the threshold, so it does not gate anything, and hiding a sub-threshold finding
+would buy nothing while costing the next reader the chance to re-judge it.
+
+**A stale claim was corrected while writing this.** The Gate 8 section of the module README described a
+narrower scan scope - test scope excluded - and two unfixable HIGH findings inside that excluded graph.
+Both statements had been superseded: the shaded transport carrying those findings was replaced rather
+than excluded, and `dependency-check.skipTestScope` is now `false`, as the property's own comment in
+`pom.xml` and `BuildAndCiContractTest` both state. The section now describes the full-scope scan, the one
+carried determination and the one sub-threshold finding, so that a suppression is never the quiet part of
+a document that claims a clean gate elsewhere.
+
+*Cited by:* `carddemo-java/owasp-suppressions.xml`, the `dependency-check-maven` configuration in
+`carddemo-java/pom.xml`, the Gate 8 section of `carddemo-java/README.md`, and
+`BuildAndCiContractTest`, which holds the shape of all three.
+
 ---
 
 ### DL-159 - The category-balance report's edit mask prints every digit position it declares, so a zero balance is nine zeros and not a blank field
@@ -7467,6 +7670,84 @@ audit forbids the construct everywhere.
 `src/test/java/com/carddemo/repository/TransactionRepositoryIT.java`,
 `src/test/java/com/carddemo/config/MonitoringQueriesIT.java`,
 `.github/workflows/carddemo-java-ci.yml`.
+
+
+### DL-159 - A newly published high-severity finding against the servlet container has no released fix on any line, so the pin stays at the newest published release, the gate keeps reporting it, and nothing is suppressed
+
+> **Reconciliation note.** This entry and the `DL-159` entry above were written independently about the
+> same finding. Both measurements stand and neither is withdrawn: no released artifact clears the finding
+> on any line, and the practical exposure of an embedded container that ships none of the example
+> applications is low. The delivered build takes the determination recorded above - one narrowly scoped
+> suppression rule, named against the three embed artifacts and the single identifier, with
+> `failBuildOnUnusedSuppressionRule` left `true` so the rule fails the build the moment it stops matching
+> and a patched release can no longer be adopted quietly. Read the sentences below that say the gate keeps
+> reporting the finding and that no suppression file exists as the position at the time this entry was
+> written; the evidence in them is unchanged, the disposition is the one above.
+
+
+**Why this entry exists.** `pom.xml` carries `<tomcat.version>` as a security override, documented as
+clearing "a cluster of high severity findings against the container shipped by default on this
+framework line". A reader who now runs the supply-chain gate sees it fail on that same coordinate and
+is entitled to know whether the pin was neglected, whether a fix was declined, or whether something
+else is true. Something else is true, and this entry records it with its evidence.
+
+**What the executed scan reports.** `dependency-check-maven` 12.1.3, running as the `verify`-bound gate
+against the vulnerability database in the build user's home directory, reports `CVE-2026-66299` at base
+score 7.5 against `tomcat-embed-core-10.1.57.jar`. The gate fails at 7.0, so the build fails. The
+database's own affected ranges are `10.1.24` up to but excluding `10.1.58`, `9.0.89` up to but excluding
+`9.0.121`, and `11.0.1` up to but excluding `11.0.25`.
+
+**The upgrade was attempted, and it cannot be taken yet.** Raising the property to `10.1.58` was tried
+first, because that is what every other override in the file did when a finding crossed the threshold.
+It fails: `10.1.58` is not published. Maven Central's version metadata for the coordinate lists
+`10.1.57` as the newest final release of the 10.1 line, and resolution of `10.1.58` fails identically
+for the core, websocket and expression-language artifacts. The neighbouring line offers no route out
+either - the fix named there is `11.0.25` and Central's newest 11.0 release is `11.0.24`, itself inside
+the affected range - and that line implements a later servlet specification than this framework line
+manages, so moving to it would be a framework change rather than a patch. **No released artifact clears
+this finding on any line as of this checkout.** The advisory has been published ahead of the artifacts,
+which is an ordinary and temporary state.
+
+**What was decided, and what was refused.** The value stays at `10.1.57`, the newest published release,
+because a pin that cannot resolve fails the build for every reader and protects none of them. No
+suppression file is added. This file has never had one, DL-090 and DL-115 both record findings being
+answered by upgrading rather than by argument, and a suppression here would convert a reported finding
+into a silent one while changing nothing about the software. The gate therefore continues to fail on
+this finding, visibly, until `10.1.58` publishes, at which point the remedy is a single-digit change to
+one line - the fix is identified, not undecided.
+
+**This finding is not attributable to any change in this module.** No dependency declaration, no
+managed version and no exclusion moved. The finding was published after the pin's value was chosen and
+entered the vulnerability database the gate reads. A supply-chain gate that is genuinely executed rather
+than declared will fail from time to time with no local change; that is the gate working.
+
+**Exposure while it stands, measured rather than assumed.** The finding's text describes uncontrolled
+resource consumption in the container's WebSocket chat *example* application, and states that
+deployments which removed the examples web application are unaffected. This module embeds the container
+and deploys none of its examples. That was verified by inspecting the artifacts rather than by
+reasoning about them: across `tomcat-embed-core`, `tomcat-embed-websocket` and `tomcat-embed-el` at
+10.1.57 - 2,036 entries in total - there is not one entry whose name contains `example` or `chat`, and
+not one `.jsp`, `.war` or `webapps/` entry of any kind. The vulnerable component is absent from the
+classpath, so practical exposure for this deployment is low. That lowers urgency and settles nothing
+else: the match is at product level, the gate compares versions, and the finding stays reported.
+
+**How the rest of the build is evidenced while this stands.** The compilation, test, coverage and
+determinism gates are run with the scan explicitly skipped for that pass, and the scan is then run on
+its own so its output is recorded rather than folded into a single pass/fail. Both results belong in the
+evidence: the module's own gates pass, and the supply chain carries one unremediable high finding named
+here.
+
+**One neighbouring finding is deliberately left standing, and it is a different case.** The same scan
+reports `CVE-2026-41178` at 5.3 against `opentelemetry-semconv-1.43.0.jar`. It sits below the gate
+threshold and is a coordinate mismatch on its face: the advisory describes OpenTelemetry-Go, the Go
+implementation, and the database's own affected range ends *below* the version installed here. That
+version is itself a security override, recorded in `pom.xml` as clearing two findings at 7.3 and 7.0,
+so moving it on the strength of a mismatched advisory would trade two applicable findings for one that
+does not apply. It is reported, visible, and not suppressed.
+
+*Cited by:* `pom.xml`.
+
+---
 
 ---
 

@@ -20,11 +20,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.LongTaskTimer;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
+import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
+import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
+import io.micrometer.core.instrument.binder.system.UptimeMetrics;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -36,6 +46,22 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Holds the Gate 3 dashboard to the metric names and labels the application actually exports.
+ *
+ * <h2>Why one of these tests scrapes a registry instead of reading the file</h2>
+ *
+ * <p>A panel expression is a string in a JSON document that no Java class reads, so a name that the
+ * exporter never publishes is not a compilation error, not a failed context refresh and not a broken
+ * query - it is a panel that renders "No data" for ever, which is indistinguishable from a quiet system.
+ * That is exactly what happened to the active-executions panel: it asked for an {@code _active_count}
+ * suffix that Micrometer's Prometheus exporter does not produce for a long-task timer, and every
+ * string-comparing test on this dashboard passed anyway because they compared the file with an
+ * expectation written from the same misunderstanding.
+ *
+ * <p>{@link #everyDashboardMetricNameIsPublishedByTheExporter()} therefore takes every metric name out
+ * of every panel target <em>and</em> every template query, and requires each one to appear in a single
+ * real {@link PrometheusMeterRegistry#scrape()} exposition built from the real meter types and the real
+ * framework binders. Nothing about a suffix, a base unit or a name-mangling rule is restated here: the
+ * exporter supplies them, so drift on either side of the boundary fails the build.
  */
 @DisplayName("Grafana batch throughput panels use exact counters and real labels")
 class GrafanaDashboardMetricsContractTest {
@@ -45,6 +71,16 @@ class GrafanaDashboardMetricsContractTest {
 
     private static final Pattern COUNTER =
             Pattern.compile("(?:rate|increase)\\(([a-zA-Z0-9_:]+)\\{");
+
+    /**
+     * Every metric selector in a PromQL expression: a name immediately followed by a label matcher.
+     *
+     * <p>Every expression on this dashboard scopes itself with at least {@code job="$job"}, so a
+     * selector always carries a brace. A PromQL function name is never followed by one, which is what
+     * makes this a metric-name reader rather than a token reader.
+     */
+    private static final Pattern METRIC_SELECTOR =
+            Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*\\{");
 
     private static final Set<String> EXACT_COUNTERS = Set.of(
             "carddemo_batch_posting_records_total",
@@ -203,6 +239,173 @@ class GrafanaDashboardMetricsContractTest {
         } finally {
             registry.close();
         }
+    }
+
+    @Test
+    @DisplayName("every metric name on the dashboard - in a panel target or in a template query - is a "
+            + "name the Prometheus exporter actually publishes")
+    void everyDashboardMetricNameIsPublishedByTheExporter() {
+        final Set<String> queried = queriedMetricNames();
+        final Set<String> published = publishedMetricNames();
+
+        assertThat(queried)
+                .as("the reader must find the dashboard's queries; an empty set would pass vacuously")
+                .hasSizeGreaterThan(20);
+        assertThat(published)
+                .as("a name absent from a real exposition is a panel that renders no data under any "
+                        + "condition")
+                .containsAll(queried);
+        assertThat(queried)
+                .as("a long-task timer publishes _count, _sum and _max; there is no _active_count "
+                        + "suffix in the exposition at all")
+                .noneMatch(name -> name.endsWith("_active_count"));
+    }
+
+    /**
+     * Every metric name the dashboard queries, from panel targets and from template variables alike.
+     *
+     * @return the queried metric names
+     */
+    private static Set<String> queriedMetricNames() {
+        final Set<String> names = new LinkedHashSet<>();
+        for (final JsonNode panel : dashboard.path("panels")) {
+            for (final JsonNode target : panel.path("targets")) {
+                collectMetricNames(target.path("expr").asText(), names);
+            }
+        }
+        for (final JsonNode variable : dashboard.path("templating").path("list")) {
+            collectMetricNames(variable.path("query").asText(), names);
+            collectMetricNames(variable.path("definition").asText(), names);
+        }
+        return names;
+    }
+
+    /**
+     * Adds every metric selector of one expression to the accumulating set.
+     *
+     * @param expression a panel expression or a template query
+     * @param names      set the names are added to
+     */
+    private static void collectMetricNames(final String expression, final Set<String> names) {
+        final Matcher matcher = METRIC_SELECTOR.matcher(expression);
+        while (matcher.find()) {
+            names.add(matcher.group(1));
+        }
+    }
+
+    /**
+     * Scrapes one registry carrying a representative meter of every family the dashboard reads.
+     *
+     * <p>Each meter is registered through the same type the production code or the framework registers -
+     * a counter with its base unit, a timer, a long-task timer, a real JVM or processor binder, the real
+     * connection-pool tracker - so the exposition's suffixes and name mangling are the exporter's own
+     * rather than this test's. Only the base names are stated here, because a base name is the part the
+     * dashboard and the code have to agree on.
+     *
+     * @return every metric name the exposition publishes
+     */
+    private static Set<String> publishedMetricNames() {
+        final PrometheusMeterRegistry registry =
+                new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
+        try (HikariDataSource pool = connectionPool(registry)) {
+            registerApplicationCounters(registry);
+            registerTimers(registry);
+            new JvmMemoryMetrics().bindTo(registry);
+            new JvmThreadMetrics().bindTo(registry);
+            new ProcessorMetrics().bindTo(registry);
+            new UptimeMetrics().bindTo(registry);
+
+            // Scraped while the pool is still open: the pool removes its own meters on shutdown, so a
+            // scrape taken afterwards would report the connection-pool family as unpublished.
+            assertThat(pool.isClosed()).isFalse();
+            return expositionNames(registry.scrape());
+        } finally {
+            registry.close();
+        }
+    }
+
+    /**
+     * Registers the application-owned counters, with the base units the production code declares.
+     *
+     * @param registry registry to publish into
+     */
+    private static void registerApplicationCounters(final PrometheusMeterRegistry registry) {
+        Counter.builder("carddemo.batch.posting.records").register(registry).increment();
+        Counter.builder("carddemo.batch.interest.rows").register(registry).increment();
+        Counter.builder("carddemo.batch.report.records")
+                .baseUnit("records").register(registry).increment();
+        Counter.builder("carddemo.batch.statement.records")
+                .baseUnit("records").register(registry).increment();
+        Counter.builder("carddemo.batch.statement.htmlRecords")
+                .baseUnit("records").register(registry).increment();
+        Counter.builder("carddemo.batch.fileprobe.records").register(registry).increment();
+        Counter.builder("carddemo.batch.reject.records")
+                .baseUnit("records").register(registry).increment();
+    }
+
+    /**
+     * Registers every timed family the dashboard reads, framework-owned and application-owned alike.
+     *
+     * @param registry registry to publish into
+     */
+    private static void registerTimers(final PrometheusMeterRegistry registry) {
+        Timer.builder("http.server.requests").publishPercentileHistogram()
+                .register(registry).record(Duration.ofMillis(5));
+        Timer.builder("spring.batch.job").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("spring.batch.step").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("spring.batch.item.read").register(registry).record(Duration.ofMillis(1));
+        Timer.builder("carddemo.batch.cobol.step").register(registry).record(Duration.ofMillis(5));
+        Timer.builder("carddemo.batch.reject.write").register(registry).record(Duration.ofMillis(1));
+        Timer.builder("carddemo.online.signon.turn").register(registry).record(Duration.ofMillis(5));
+        // The collection-pause family is registered by its binder only when the first collection
+        // notification arrives, which a short test cannot provoke deterministically, so it is stated by
+        // base name exactly as the framework families above are. The suffixes remain the exporter's.
+        Timer.builder("jvm.gc.pause").register(registry).record(Duration.ofMillis(1));
+        LongTaskTimer.builder("spring.batch.job.active").register(registry).start().stop();
+    }
+
+    /**
+     * Opens a connection pool that publishes the pool family through the pool's own Micrometer tracker.
+     *
+     * <p>Initialisation failure is deferred and no connection is ever requested, so no database is
+     * involved; the meters are registered when the pool starts, which is all this needs. The caller
+     * closes the pool, and must do so only after the scrape.
+     *
+     * @param registry registry to publish into
+     * @return the open pool
+     */
+    private static HikariDataSource connectionPool(final PrometheusMeterRegistry registry) {
+        final HikariConfig configuration = new HikariConfig();
+        configuration.setPoolName("dashboard-contract");
+        configuration.setJdbcUrl("jdbc:postgresql://127.0.0.1:1/none");
+        configuration.setUsername("none");
+        configuration.setPassword("none");
+        configuration.setMinimumIdle(0);
+        configuration.setMaximumPoolSize(1);
+        configuration.setInitializationFailTimeout(-1L);
+        configuration.setConnectionTimeout(250L);
+        configuration.setMetricsTrackerFactory(new MicrometerMetricsTrackerFactory(registry));
+        return new HikariDataSource(configuration);
+    }
+
+    /**
+     * Reads the metric names out of one Prometheus exposition.
+     *
+     * @param exposition the scraped text
+     * @return every published metric name, comments and label sets removed
+     */
+    private static Set<String> expositionNames(final String exposition) {
+        final Set<String> names = new LinkedHashSet<>();
+        for (final String line : exposition.split("\n")) {
+            if (line.isBlank() || line.startsWith("#")) {
+                continue;
+            }
+            final int labels = line.indexOf('{');
+            final int space = line.indexOf(' ');
+            final int end = labels >= 0 && (space < 0 || labels < space) ? labels : space;
+            names.add(end < 0 ? line : line.substring(0, end));
+        }
+        return names;
     }
 
     private static JsonNode panel(final int id) {

@@ -178,7 +178,53 @@
 
     <!-- Servlet container. Clears a cluster of high severity findings
          against the container shipped by default on this framework
-         line. -->
+         line.
+
+         THIS VALUE IS THE NEWEST PUBLISHED RELEASE OF THE 10.1 LINE AND
+         IT CARRIES ONE STANDING FINDING THE GATE REPORTS. An executed
+         scan reports CVE-2026-66299 at 7.5 here, above this build's 7.0
+         threshold, with the affected range running from 10.1.24 through
+         10.1.57 and the fix named as 10.1.58. The upgrade was attempted
+         and could not be taken: 10.1.58 is not published. Maven Central's
+         own version metadata for this coordinate lists 10.1.57 as the
+         newest final release of the 10.1 line, and resolution of 10.1.58
+         fails for the core, websocket and expression-language artifacts
+         alike. The neighbouring line is no escape either - the finding's
+         fix there is 11.0.25 and Central's newest 11.0 release is
+         11.0.24 - and that line targets a different servlet
+         specification than this framework line manages. So no released
+         artifact clears this finding today, on any line.
+
+         Three things follow, and each is stated because the alternative
+         is worse. The value stays at the newest published release rather
+         than at a version that cannot be resolved, because an
+         unresolvable pin fails the build for everyone and protects
+         nobody. The finding is carried as a written determination rather
+         than as silence: owasp-suppressions.xml holds ONE rule, named
+         against the three embed artifacts and this single identifier and
+         carrying the commands that reproduce both halves of it, and
+         failBuildOnUnusedSuppressionRule stays true so the rule fails
+         the build the moment it stops matching - which is what stops an
+         accepted risk from outliving the finding it was written for.
+         Concealing a finding to obtain a green gate is still the one
+         remedy this build refuses, and the difference between that and
+         this is that a determination is readable, scoped to one
+         coordinate, and self-expiring. And the value moves to 10.1.58 as
+         soon as it publishes, which is a single-digit change to this
+         line - the fix is identified, not undecided, and adopting it
+         retires the rule because an unused rule fails the build.
+
+         Worth knowing while it stands: the finding's own text describes
+         uncontrolled resource consumption in the container's WebSocket
+         chat EXAMPLE application and says deployments that removed the
+         examples web application are unaffected. This module embeds the
+         container and deploys none of its example applications - no
+         embed artifact ships that webapp - so the practical exposure of
+         this deployment is low. That lowers urgency; it does not close
+         the finding, and it is not offered as a reason to stop
+         reporting it - it is the measured exposure the suppression rule
+         records. Recorded as DL-159, with the suppression rule's own
+         reasoning in the sibling DL-159 entry. -->
     <tomcat.version>10.1.57</tomcat.version>
 
     <!-- Asynchronous transport used by the AWS SDK object storage
@@ -1250,13 +1296,26 @@
                matters because that output would otherwise sit alongside
                genuine errors in the archived report. -->
           <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
-          <!-- Retained although no suppression file is configured, and retained BECAUSE none is.
-               There are no rules for this to police today, so it changes nothing about this build;
-               its whole value is prospective. If a future change reintroduces a suppression file,
-               a rule that has stopped matching fails the build instead of being quietly kept, so
-               a stale accepted-risk entry cannot outlive the finding it was written for. Removing
-               it as dead configuration would remove that protection at exactly the moment it
-               became relevant again. -->
+          <!-- Analyst determinations, and the flag that makes each one self-expiring.
+
+               The file was empty of rules until a HIGH finding arrived against the embedded
+               servlet container naming a fixed release that is not published - so there was
+               nothing to upgrade to - for a vulnerability in the examples web application, which
+               an embedded container does not carry. One narrowly scoped rule records that, with
+               the commands that reproduce both halves of it. The file's own header states the
+               three rules that govern what may be written in it, and the case this module
+               deliberately did NOT suppress, which is documented under Gate 8 in README.md.
+
+               failBuildOnUnusedSuppressionRule is what keeps that entry honest, and it was set
+               true before any rule existed for it to police, precisely so this moment would be
+               covered. A rule that has stopped matching fails the build instead of being quietly
+               kept, so an accepted risk cannot outlive the finding it was written for: when a
+               patched container release is adopted the rule stops matching and the build demands
+               its removal. That is a sharper trigger than a review date, which would fire on the
+               calendar whether or not anything had changed. -->
+          <suppressionFiles>
+            <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+          </suppressionFiles>
           <failBuildOnUnusedSuppressionRule>true</failBuildOnUnusedSuppressionRule>
           <nvdValidForHours>24</nvdValidForHours>
           <formats>

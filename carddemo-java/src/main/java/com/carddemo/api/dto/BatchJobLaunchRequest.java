@@ -42,6 +42,17 @@ import jakarta.validation.constraints.Size;
  * exist - because those belong to {@code com.carddemo.batch.JobParameterValidators} and to the job
  * configurations, and run inside the framework's own launch.
  *
+ * <p><strong>The union is exactly the union, and nothing wider.</strong> Four components, because
+ * {@code com.carddemo.service.BatchJobCatalog} accepts exactly four distinct parameter names across the
+ * nine jobs. An earlier revision published two more - a transaction-backup generation name and a
+ * synthesized-transaction generation name - that no job accepted, so every request carrying either was
+ * refused by the per-job rule while the published document invited it. They are not restored here and
+ * they are not added to a job's accepted set either: the combine and backup jobs name their datasets
+ * from the deployment's own configuration precisely so that no caller-supplied location reaches a
+ * resource loader, and admitting one would be both feature the estate never had and the hazard that
+ * arrangement exists to remove. {@code BatchJobLaunchRequestTest} now asserts the union against the
+ * catalog itself, so the two cannot drift apart again.
+ *
  * <p><strong>Every value is transmitted byte for byte.</strong> Nothing here trims, pads, upper-folds,
  * parses or reformats: the interest parameter's ten characters become the leading characters of every
  * transaction identifier that run synthesises, and the report window is read as a fixed-width layout, so

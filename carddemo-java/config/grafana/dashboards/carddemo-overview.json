@@ -1358,7 +1358,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "active executions",
+            "axisLabel": "reader calls",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -2804,7 +2804,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Point-in-time gauge of Spring Batch job executions that are currently active. Jobs are launched on demand, so this series is absent until an execution is running.",
+      "description": "Point-in-time count of Spring Batch job executions that are currently active, one series per job name. Jobs are launched on demand, so every series reads zero until an execution is running. The series is the _count of the spring_batch_job_active_seconds summary, which for a long-task timer is the number of ACTIVE tasks rather than a completion count - the exporter publishes no _active_count suffix at all, and a panel written against one returns nothing under any condition. GrafanaDashboardMetricsContractTest asserts every name on this dashboard against a real registry exposition, and MonitoringQueriesIT executes this expression against a real Prometheus server, for exactly that reason. See docs/decision-log.md DL-152.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2814,7 +2814,7 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "reader calls/s",
+            "axisLabel": "active executions",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -2848,7 +2848,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -2856,7 +2856,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 116
       },
       "id": 33,
       "options": {
@@ -2882,10 +2882,10 @@
             "uid": "carddemo-prometheus"
           },
           "editorMode": "code",
-          "expr": "spring_batch_job_active_seconds_active_count{job=\"$job\"}",
+          "expr": "sum by (spring_batch_job_active_name) (spring_batch_job_active_seconds_count{job=\"$job\"})",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "{{spring_batch_job_name}}",
+          "legendFormat": "{{spring_batch_job_active_name}}",
           "range": true,
           "refId": "A"
         }

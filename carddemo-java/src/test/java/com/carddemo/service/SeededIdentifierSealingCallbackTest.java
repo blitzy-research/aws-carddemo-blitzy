@@ -438,7 +438,8 @@ class SeededIdentifierSealingCallbackTest {
     }
 
     @Nested
-    @DisplayName("the key invariant - a stored value must OPEN, not merely look like an envelope")
+    @DisplayName("the key-and-binding invariant - a stored value must OPEN UNDER ITS COLUMN, not merely "
+            + "look like an envelope")
     class TheKeyInvariant {
 
         /**
@@ -504,34 +505,38 @@ class SeededIdentifierSealingCallbackTest {
         }
 
         @Test
-        @DisplayName("a SEEDED-STYLE unbound envelope opens, which the column-bound reading would have "
-                + "refused - so the check is authentication under the key and not the binding")
-        void anUnboundEnvelopeOpens() throws SQLException {
-            final String seededStyle = encryption.protect(CLEARTEXT_GOVERNMENT_IDENTIFIER);
+        @DisplayName("an UNBOUND envelope is refused, because every reader of the column would refuse "
+                + "it too - which is the defect this pass now catches at start-up")
+        void anUnboundEnvelopeIsRefused() throws SQLException {
+            final String unbound = encryption.protect(CLEARTEXT_GOVERNMENT_IDENTIFIER);
             assertThatExceptionOfType(IllegalStateException.class)
-                    .as("THE REASON THIS INVARIANT CANNOT BE THE BOUND READING. All fifty envelopes in "
-                            + "V3__seed_reference_data.sql are produced in this unbound form, precisely "
-                            + "so the seeded form stays distinguishable from the callback's; reading "
-                            + "them through the column binding refuses every one of them, as here")
+                    .as("PINS WHY THE PASS HAS TO READ THE BINDING. This is the form an earlier "
+                            + "revision of V3__seed_reference_data.sql delivered, and the field-bound "
+                            + "reveal every reader of the column uses refuses it - so a seed carrying "
+                            + "it starts cleanly and then fails every request that reads a customer")
                     .isThrownBy(() -> encryption.reveal(
                             SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
-                            seededStyle))
+                            unbound))
                     .withMessageContaining("field binding");
 
             final Connection connection = mock(Connection.class);
             scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
-                    new String[] {seededStyle});
+                    new String[] {unbound});
 
-            assertThat(callback.verifyEveryStoredValueOpens(connection))
-                    .as("and the key invariant accepts it, because it authenticates under the "
-                            + "configured key, which is the whole of what this invariant asserts")
-                    .isEqualTo(1);
+            assertThatExceptionOfType(FlywayException.class)
+                    .as("and this pass now refuses it for the same reason, naming the column and the "
+                            + "binding it failed to carry, so the failure is a start-up failure rather "
+                            + "than a 500 on the account view screen")
+                    .isThrownBy(() -> callback.verifyEveryStoredValueOpens(connection))
+                    .withMessageContaining("govt_issued_id")
+                    .withMessageContaining(
+                            SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD);
         }
 
         @Test
-        @DisplayName("an envelope written for the OTHER column still opens, because the binding is a "
-                + "separate invariant enforced where a value is read into the domain")
-        void anEnvelopeBoundToTheOtherColumnStillOpens() throws SQLException {
+        @DisplayName("an envelope written for the OTHER column is refused, so a value lifted from one "
+                + "protected column into the other cannot pass as native")
+        void anEnvelopeBoundToTheOtherColumnIsRefused() throws SQLException {
             final String misbound = encryption.protect(
                     SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD,
                     CLEARTEXT_GOVERNMENT_IDENTIFIER);
@@ -539,18 +544,17 @@ class SeededIdentifierSealingCallbackTest {
             scriptRead(connection, new String[] {FIRST_CUSTOMER_KEY}, new String[] {null},
                     new String[] {misbound});
 
-            assertThat(callback.verifyEveryStoredValueOpens(connection))
-                    .as("PINS A DELIBERATE BOUNDARY. It decrypts under this key, so the key invariant "
-                            + "is satisfied and this pass accepts it. Refusing it here would require "
-                            + "the bound reading, which would refuse all fifty seeded rows instead - so "
-                            + "cross-column binding is checked by the service at the point of read, not "
-                            + "by this migration-time key check")
-                    .isEqualTo(1);
+            assertThatExceptionOfType(FlywayException.class)
+                    .as("it decrypts under this key, so a key-only check would accept it; the binding "
+                            + "is what tells the two columns apart, and this pass asks exactly what "
+                            + "the service asks when the value is read into the domain")
+                    .isThrownBy(() -> callback.verifyEveryStoredValueOpens(connection))
+                    .withMessageContaining("govt_issued_id");
         }
 
         @Test
-        @DisplayName("both envelope forms open together and every present value is counted, while an "
-                + "absent one is not")
+        @DisplayName("every present column-bound value is counted, in either column, while an absent "
+                + "one is not")
         void everyValueUnderTheConfiguredKeyOpens() throws SQLException {
             final Connection connection = mock(Connection.class);
             scriptRead(connection,
@@ -560,16 +564,17 @@ class SeededIdentifierSealingCallbackTest {
                                 CLEARTEXT_NATIONAL_IDENTIFIER),
                         null},
                     new String[] {
-                        encryption.protect(CLEARTEXT_GOVERNMENT_IDENTIFIER),
+                        encryption.protect(
+                                SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
+                                CLEARTEXT_GOVERNMENT_IDENTIFIER),
                         encryption.protect(
                                 SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
                                 CLEARTEXT_GOVERNMENT_IDENTIFIER)});
 
             assertThat(callback.verifyEveryStoredValueOpens(connection))
-                    .as("three values are present across the two rows - one seeded-style unbound "
-                            + "government identifier, one column-bound one, and one bound national "
-                            + "identifier - and the absent national identifier of the second row is not "
-                            + "a value and is not counted")
+                    .as("three values are present across the two rows - two bound government "
+                            + "identifiers and one bound national identifier - and the absent national "
+                            + "identifier of the second row is not a value and is not counted")
                     .isEqualTo(3);
         }
 

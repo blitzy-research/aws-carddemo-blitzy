@@ -895,6 +895,22 @@ public final class StagedGenerationStore {
     /**
      * Writer adapter that completes and registers only after its delegate closes successfully.
      *
+     * <h2>A step that never opened its writer has no artifact to seal</h2>
+     *
+     * <p>The framework closes every registered stream of a step whether that step succeeded or failed,
+     * including a step that failed while <em>opening</em> a different stream - a strict reader refusing a
+     * missing input, for instance. In that case the delegate never created its working file, so sealing
+     * would move a file that does not exist and the resulting failure would arrive from this adapter and
+     * replace the reader's own diagnostic, which is the one an operator needs. Absence of the working
+     * file is therefore treated as "this step produced nothing", reported once at warning level and
+     * followed by neither a seal nor a registration.
+     *
+     * <p>That cannot hide a real artifact. The writers this adapter wraps create their output when the
+     * stream opens and are configured not to remove it when nothing was written, so a step that opened
+     * its writer always leaves a working file - even one whose dataset is empty, which is itself a
+     * result the legacy allocation produced too. A missing working file consequently means the delegate
+     * never opened, and never opening is only reachable from a failure the step is already reporting.
+     *
      * @param <T> item type
      */
     private static final class CompletingItemStreamWriter<T> implements ItemStreamWriter<T> {
@@ -936,6 +952,13 @@ public final class StagedGenerationStore {
         @Override
         public void close() {
             this.delegate.close();
+            if (!Files.exists(this.workingPath)) {
+                LOGGER.warn("No working file was composed for logical base {} by jobExecutionId={},"
+                                + " so nothing is sealed and nothing is registered; the step's own"
+                                + " failure is the one to read",
+                        this.logicalBase, this.stepExecution.getJobExecutionId());
+                return;
+            }
             completeWorkingFile(this.workingPath, this.completedPath);
             register(this.stepExecution, this.logicalBase, this.completedPath, this.retentionLimit);
         }

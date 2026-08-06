@@ -70,6 +70,15 @@ import java.util.Objects;
  * declares no logger of its own - a diagnostic helper that logged would be a diagnostic helper with
  * its own disclosure surface.
  *
+ * <h2>Messages are never read; code locations are</h2>
+ *
+ * <p>Every method here refuses to read a throwable's message, its arguments or its suppressed
+ * throwables, because those are where a value can hide. {@link #failureOriginOf(Throwable)} does read
+ * the stack trace, and the distinction is exact and deliberate: a frame carries a declaring type, a
+ * method name and a line, all fixed at compile time and identical for every request, so no value of any
+ * kind can travel through one. That is why a location can be published while a rendered stack trace -
+ * which carries every message in the chain - still may not be handed to the logger.
+ *
  * <h2>Provenance</h2>
  *
  * <p>This class has no legacy antecedent. The migrated estate's only diagnostic channel was the
@@ -119,6 +128,25 @@ public final class FailureDiagnostics {
      * amplification: depth times per-name length, and nothing else.
      */
     public static final int MAX_FAILURE_CHAIN_DEPTH = 6;
+
+    /**
+     * Greatest number of code locations {@link #failureOriginOf(Throwable)} may name.
+     *
+     * <p>Three is the number that locates a defect without publishing a call graph: the frame that
+     * raised the failure, the frame that called it, and one more for the case where the first two are a
+     * shared helper and its immediate caller. The bound is also what fixes the rendered field's maximum
+     * size, so a failure raised beneath a deep chain costs the same as one raised near the top.
+     */
+    public static final int MAX_ORIGIN_FRAME_COUNT = 3;
+
+    /**
+     * Substitute reported when a failure carries no stack trace at all.
+     *
+     * <p>A throwable may be constructed with its stack trace suppressed, and a deserialised one may
+     * arrive without one. Neither is a failure with no location; it is a failure whose location was not
+     * recorded, and an empty field would state the first while meaning the second.
+     */
+    public static final String UNKNOWN_ORIGIN = "UnknownOrigin";
 
     /**
      * Greatest number of characters one sanitised type name may occupy.
@@ -262,6 +290,139 @@ public final class FailureDiagnostics {
             deepest = beneath;
         }
         return typeNameOf(deepest.getClass());
+    }
+
+    /**
+     * Names the deepest failure type the depth bound reaches, naming the failure itself when it carries
+     * no cause.
+     *
+     * <p><strong>Why this exists beside {@link #rootFailureTypeOf(Throwable)}.</strong> That method
+     * answers the empty string for a failure with no cause, deliberately: it publishes what is
+     * <em>beneath</em> a failure, and beneath a cause-less failure there is nothing, so a token there
+     * would describe a two-element chain where there is one. A caller that relies on exactly that
+     * distinction still needs it - the queue bridge reports a reason code only when there genuinely is
+     * one beneath the response code.
+     *
+     * <p>A boundary log wants the other question answered. It asks "what, at the bottom, went wrong",
+     * and for a failure raised directly - which is what a defensive refusal inside this module is - the
+     * answer is that failure's own type. An empty field there is not a distinction, it is a diagnostic
+     * that names nothing, which is precisely the condition that made an unhandled boundary failure
+     * undiagnosable from its own log record. This method answers that question, and the two are kept
+     * separate so that neither has to compromise.
+     *
+     * <p>Reads no message, no frame and no suppressed throwable; the answer is composed entirely of a
+     * sanitised type name, so it is safe to write into a log record.
+     *
+     * @param failure the failure to describe; must not be {@code null}
+     * @return the sanitised name of the deepest reachable failure type, which is {@code failure}'s own
+     *         type when it carries no cause; never {@code null} and never blank
+     * @throws NullPointerException if {@code failure} is {@code null}
+     */
+    public static String deepestFailureTypeOf(final Throwable failure) {
+        Objects.requireNonNull(failure, "failure must not be null");
+        Throwable deepest = failure;
+        for (int depth = 1; depth < MAX_FAILURE_CHAIN_DEPTH; depth++) {
+            final Throwable beneath = deepest.getCause();
+            if (beneath == null || beneath == deepest) {
+                break;
+            }
+            deepest = beneath;
+        }
+        return typeNameOf(deepest.getClass());
+    }
+
+    /**
+     * Renders where a failure was raised, as code locations and nothing else.
+     *
+     * <p><strong>What it adds, and why it is the one thing missing.</strong> A boundary record already
+     * names the failure types involved; what it cannot say is <em>where</em>, and a type on its own does
+     * not locate a defect. Two of this module's classes raise the same refusal type from several places,
+     * so a record naming only the type leaves a reader to guess between them - which is what happened,
+     * and what made a live boundary failure undiagnosable from its log at all.
+     *
+     * <p><strong>Why passing the throwable to the logger is not the answer.</strong> A rendered stack
+     * trace carries every message in the chain, and a message may hold a connection string, a bearer
+     * token, a national identifier or a card number - the four things the module's logging controls
+     * exist to keep out of a log. So the throwable is still never handed to the logger. What is
+     * published here is strictly the frame metadata: the declaring type's sanitised simple name, the
+     * method name, and the line. Those are properties of the <em>code</em>, fixed at compile time and
+     * identical for every request, so no value of any kind can reach a record through them.
+     *
+     * <p><strong>Bounds.</strong> At most {@link #MAX_ORIGIN_FRAME_COUNT} frames, outermost first,
+     * joined by {@link #FAILURE_CHAIN_SEPARATOR}, each name cut to {@link #MAX_TYPE_NAME_LENGTH} and
+     * sanitised by {@link #typeNameOf(Class)}'s own character policy. The rendered size is therefore a
+     * fixed maximum rather than a function of how deep a stack happens to be, so a failure raised
+     * beneath a deep call chain cannot set the size of a log record.
+     *
+     * <p>A failure whose stack trace is absent - which a throwable constructed without writable stack
+     * trace has, and which a deserialised one may have - renders as {@value #UNKNOWN_ORIGIN}, because an
+     * empty field would read as "no location" rather than "location not recorded".
+     *
+     * @param failure the failure to locate; must not be {@code null}
+     * @return the bounded rendering, never {@code null}, never blank, and free of any message, argument
+     *         or field value
+     * @throws NullPointerException if {@code failure} is {@code null}
+     */
+    public static String failureOriginOf(final Throwable failure) {
+        Objects.requireNonNull(failure, "failure must not be null");
+        final StackTraceElement[] frames = failure.getStackTrace();
+        if (frames == null || frames.length == 0) {
+            return UNKNOWN_ORIGIN;
+        }
+        final int rendered = Math.min(frames.length, MAX_ORIGIN_FRAME_COUNT);
+        final StringBuilder origin = new StringBuilder();
+        for (int index = 0; index < rendered; index++) {
+            if (index > 0) {
+                origin.append(FAILURE_CHAIN_SEPARATOR);
+            }
+            origin.append(frameNameOf(frames[index]));
+        }
+        return origin.toString();
+    }
+
+    /**
+     * Renders one frame as declaring type, method and line, with every part sanitised.
+     *
+     * <p>The declaring type is reduced to its simple name by the same rule a failure type is, so a
+     * package name is not published and a generated class name cannot set the field's size. The line is
+     * emitted only when the frame carries one; a frame from a native or synthetic method carries none,
+     * and an invented zero would read as a real line.
+     *
+     * @param frame the frame being named; must not be {@code null}
+     * @return the sanitised rendering of that frame
+     */
+    private static String frameNameOf(final StackTraceElement frame) {
+        final String qualified = frame.getClassName();
+        final int lastDot = qualified.lastIndexOf('.');
+        final String declaring = lastDot < 0 ? qualified : qualified.substring(lastDot + 1);
+        final StringBuilder name = new StringBuilder()
+                .append(sanitisedIdentifier(declaring))
+                .append('.')
+                .append(sanitisedIdentifier(frame.getMethodName()));
+        if (frame.getLineNumber() > 0) {
+            name.append(':').append(frame.getLineNumber());
+        }
+        return name.toString();
+    }
+
+    /**
+     * Bounds and sanitises one identifier read off a frame, by the same character policy a type name is
+     * held to.
+     *
+     * @param declared the identifier as the frame reports it, possibly empty
+     * @return the sanitised identifier, or {@value #UNNAMED_FAILURE_TYPE} when nothing is left
+     */
+    private static String sanitisedIdentifier(final String declared) {
+        if (declared == null || declared.isEmpty()) {
+            return UNNAMED_FAILURE_TYPE;
+        }
+        final int retained = Math.min(declared.length(), MAX_TYPE_NAME_LENGTH);
+        final StringBuilder sanitised = new StringBuilder(retained);
+        for (int index = 0; index < retained; index++) {
+            final char character = declared.charAt(index);
+            sanitised.append(isTypeNameCharacter(character) ? character : TYPE_NAME_REPLACEMENT);
+        }
+        return sanitised.toString();
     }
 
     /**

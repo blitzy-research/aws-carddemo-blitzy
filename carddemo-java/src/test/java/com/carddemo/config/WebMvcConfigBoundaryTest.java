@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.carddemo.api.dto.BatchJobLaunchRequest;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -173,6 +174,81 @@ class WebMvcConfigBoundaryTest {
                         "strictScalarCoercionCustomizer",
                         "declaredClosedBodyCustomizer",
                         "defaultValidator");
+    }
+
+    @Test
+    @DisplayName("a type that declared itself closed refuses an unknown property, which is the refusal "
+            + "the batch launch schema publishes and once did not perform")
+    void aClosedContractRefusesAnUnknownProperty() {
+        ObjectMapper mapper = mapperWithBothCustomisers();
+
+        assertThatThrownBy(() -> mapper.readValue(
+                "{\"text\":\"x\",\"notDeclaredAnywhere\":\"1\"}", ClosedHolder.class))
+                .as("THE DEFECT THIS PINS. The shared configuration turns the mapper-wide "
+                        + "fail-on-unknown switch off so a client may echo a field this version does not "
+                        + "read; a launch contract that publishes an unknown-property refusal was "
+                        + "therefore silently permissive, and a mistyped parameter name started a job "
+                        + "with an empty parameter set instead of being refused")
+                .isInstanceOf(UnrecognizedPropertyException.class);
+    }
+
+    @Test
+    @DisplayName("a type that did not declare itself closed still ignores an unknown property, so the "
+            + "echoed-context tolerance the configuration file declares is untouched")
+    void anOpenContractStillIgnoresAnUnknownProperty() throws Exception {
+        ObjectMapper mapper = mapperWithBothCustomisers();
+
+        assertThat(mapper.readValue("{\"text\":\"x\",\"echoedByAnOlderClient\":\"1\"}",
+                TextHolder.class).text())
+                .as("abstaining rather than refusing is the second half of the rule: the handler answers "
+                        + "for the types that asked to be closed and leaves the mapper's own policy in "
+                        + "force for every other")
+                .isEqualTo("x");
+        assertThat(mapper.readValue("{\"text\":\"x\",\"echoed\":\"1\"}", OpenHolder.class).text())
+                .as("and a type that declares the annotation permissively is explicitly open")
+                .isEqualTo("x");
+    }
+
+    @Test
+    @DisplayName("the strictness customiser leaves the coercion customiser's own refusals in force, so "
+            + "the two are additive rather than competing")
+    void bothCustomisersRemainInForceTogether() {
+        ObjectMapper mapper = mapperWithBothCustomisers();
+
+        assertThatThrownBy(() -> mapper.readValue("{\"text\":1}", ClosedHolder.class))
+                .isInstanceOf(MismatchedInputException.class);
+    }
+
+    /**
+     * Builds a mapper through both of the class's customisers, in the order the framework applies beans.
+     *
+     * @return the mapper a request body is read by
+     */
+    private static ObjectMapper mapperWithBothCustomisers() {
+        Jackson2ObjectMapperBuilder builder = Jackson2ObjectMapperBuilder.json();
+        WebMvcConfig config = new WebMvcConfig();
+        config.strictScalarCoercionCustomizer().customize(builder);
+        config.declaredClosedBodyCustomizer().customize(builder);
+        return builder.build();
+    }
+
+    /**
+     * Stand-in for a closed request contract, declared closed exactly as the launch contract declares
+     * itself.
+     *
+     * @param text the one component it publishes
+     */
+    @JsonIgnoreProperties(ignoreUnknown = false)
+    private record ClosedHolder(String text) {
+    }
+
+    /**
+     * Stand-in for a contract that declares itself open, which the handler must leave alone.
+     *
+     * @param text the one component it publishes
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record OpenHolder(String text) {
     }
 
     @Test
@@ -338,16 +414,6 @@ class WebMvcConfigBoundaryTest {
                 ClosedHolder.class))
                 .as("a type this configuration has never heard of, closed by its own declaration")
                 .isInstanceOf(UnrecognizedPropertyException.class);
-    }
-
-    /**
-     * Stand-in for a body that declares itself closed, used to show that the rule follows the
-     * declaration and not a list of known types.
-     *
-     * @param text the single value the body declares
-     */
-    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = false)
-    private record ClosedHolder(String text) {
     }
 
     /**

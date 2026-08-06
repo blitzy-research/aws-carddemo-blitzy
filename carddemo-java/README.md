@@ -371,7 +371,10 @@ scanned; 178 of 179 bundled libraries resolved and exactly one did not.
 It is now declared at `runtime` scope with the plugin's own extraction turned off, so the graph is the
 single source of the library and the shipped bytes are the scanned bytes — the two sources are digest-
 identical, which `DeployableSupplyChainIT` asserts rather than assumes. **Coverage is 180 of 180 packaged
-JARs, with zero critical or high findings.** Reproduce it:
+JARs.** One HIGH finding is currently reported against that graph and is recorded as an examined
+determination rather than fixed, because no patched release of the affected library is published yet; it
+is set out in full under [Gate 8](#gate-8--integration-sign-off) and in
+[`owasp-suppressions.xml`](owasp-suppressions.xml). Reproduce it:
 
 ```bash
 ./mvnw -B dependency-check:check   # writes target/dependency-check-report.{html,json,xml}
@@ -517,6 +520,34 @@ half; read `docker-compose.yml` for the digest that actually resolves.
 | `prometheus` | `prom/prometheus:v3.5.0` | `127.0.0.1`:**9090** (`PROMETHEUS_BIND_ADDRESS`, `PROMETHEUS_PORT`) | — the metric half of the diagnostic channel |
 | `grafana` | `grafana/grafana:11.6.6` | `127.0.0.1`:**3000** (`GRAFANA_BIND_ADDRESS`, `GRAFANA_PORT`) | — the dashboard half |
 | `jaeger` | `jaegertracing/all-in-one:1.71.0` | `127.0.0.1`:**16686** UI (`JAEGER_BIND_ADDRESS`, `JAEGER_UI_PORT`), 4317 OTLP/gRPC, 4318 OTLP/HTTP | — the trace half |
+
+#### Container log growth is bounded
+
+Every service declares the `json-file` logging driver **explicitly, with a ceiling**, instead of
+inheriting the daemon default — which on a stock daemon is `json-file` with *no* rotation, meaning a
+container log grows until the filesystem holding it is full. That is not a hypothetical here: this
+stack is meant to be left running. The application writes a log line per request and per chunk — the
+readable console format on the `local` profile this stack runs, JSON on the others — Prometheus scrapes
+every fifteen seconds, and both the performance baseline and any overnight parity run are gathered while
+nobody is watching.
+
+```bash
+# the defaults: 10 MiB per file, 3 files kept — 30 MiB per service, 180 MiB for all six
+docker compose up -d --build
+
+# raise the ceiling when a long run's history must be readable afterwards
+CARDDEMO_LOG_MAX_SIZE=64m CARDDEMO_LOG_MAX_FILE=5 docker compose up -d --build
+
+# confirm what a running container actually enforces
+docker inspect "$(docker compose ps -q app)" --format '{{json .HostConfig.LogConfig}}'
+# → {"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}
+```
+
+This is a **growth ceiling, not a retention policy**: it promises only that leaving the stack up cannot
+fill your disk, and it makes no promise about how much history survives. Rotation never truncates a
+file that a running `docker compose logs -f` is streaming, so following a long run is unaffected —
+only history already written past the ceiling is discarded. `ContainerLifecycleContractTest` fails the
+build if any service loses its bounded driver or hard-codes either ceiling.
 
 #### Reaching the stack from another machine
 
@@ -705,27 +736,40 @@ without an `Authorization` header, so `$AUTH` simply comes back empty.
 #### Launching a job over HTTP, and asking after it
 
 ```bash
-# launch: parameters are query parameters, passed through to the job's own validator
+# launch: six of the nine jobs read no parameter, so no body is needed at all
 curl -sS -X POST "$BASE/api/batch/jobs/postTransactionJob/launch" -H "Authorization: $AUTH"
 # → {"executionId":1,"jobName":"postTransactionJob"}
 
-# one with parameters — they are query parameters on the launch URL
-curl -sS -X POST -H "Authorization: $AUTH" \
-     "$BASE/api/batch/jobs/transactionReportJob/launch?reportStartDate=2022-01-01&reportEndDate=2022-07-06"
+# one with parameters — they travel in a TYPED JSON BODY, not as query parameters
+curl -sS -X POST -H "Authorization: $AUTH" -H 'Content-Type: application/json' \
+     -d '{"reportStartDate":"2022-01-01","reportEndDate":"2022-07-06"}' \
+     "$BASE/api/batch/jobs/transactionReportJob/launch"
 
 # status: the identifier the launch answered with
 curl -sS "$BASE/api/batch/jobs/executions/1" -H "Authorization: $AUTH"
 # → the execution identifier, the job name, the batch status and the exit code, and nothing else
 ```
 
+**Parameters are a typed body and a closed schema, and a query string is not read at all.** Appending
+`?reportStartDate=…` to the launch URL does not fail loudly — the value is simply not part of the request,
+so the job starts with no parameters and is then refused by its *own* validator, which reports a missing
+parameter rather than a misplaced one. Only three of the nine jobs declare any parameter:
+`interestCalculationJob` reads `interestParmDate`, `transactionReportJob` reads `reportStartDate` and
+`reportEndDate`, and `fileProbeJob` reads `fileProbeMode`. The other six declare none, so naming anything
+for them is refused with *“The request supplied a parameter this job does not declare.”* — as is naming a
+parameter that belongs to one of the other two jobs.
+
 Both answers are flat JSON objects; the launch carries `executionId` and `jobName`, and the status
 carries those two plus `status` and `exitCode`. Member *order* is not part of the contract — read them by
 name.
 
-The launch is idempotent by refusal rather than by repetition: no run identifier or timestamp is added
-to the parameters, so submitting the same job with the same parameters twice is rejected by the
-framework's own metadata instead of starting a duplicate run. A name outside the nine reads as absent,
-and so does an execution belonging to a job this surface does not own.
+**A repeat launch runs again, and the run identity is the server's to mint.** Each launch is serialized
+per job behind a database advisory lock, and the identifying `run.id` parameter is advanced *on the
+server* from the framework's own metadata — a caller can neither supply it nor influence it, because the
+only names a caller may write are the declared ones above. So submitting the same job with the same body
+twice starts a second, distinct instance rather than being refused, which is what makes a second timing
+run possible at all. A name outside the nine reads as absent, and so does an execution belonging to a job
+this surface does not own.
 
 ### Spring profiles
 
@@ -797,7 +841,7 @@ ceiling* — not the location list — is the profile scoping mechanism:
 | Migration | Applied in | Content |
 |---|---|---|
 | `V1__create_schema.sql` | every profile | **11 tables**, one per verified record layout |
-| `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and foreign keys |
+| `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and foreign keys — **and `job_submission_outbox`**, which is delivery state rather than a record layout (see below) |
 | `V3__seed_reference_data.sql` | `local`, `test` | Reference and sample data at the measured fixture counts |
 | `V4__seed_user_security.sql` | `local`, `test` | The ten seed users — five administrator, five standard — stored as **BCrypt hashes** |
 
@@ -810,6 +854,21 @@ outside `local`, and `validate-on-migrate` is on everywhere.
 
 The third alternate-index equivalent is defined even though no online endpoint depends on it: the
 report job's date-range filter would otherwise scan the whole transaction table.
+
+**Counting tables in a running database will give you nineteen, not eleven, and all eight extras are
+accounted for.** The eleven are the migrated record layouts — `account`, `card`, `card_cross_reference`,
+`customer`, `daily_transaction`, `disclosure_group`, `transaction`, `transaction_category`,
+`transaction_category_balance`, `transaction_type`, `user_security`. Beside them sit the **six** Spring
+Batch metadata tables the framework's own PostgreSQL schema creates — `batch_job_instance`,
+`batch_job_execution`, `batch_job_execution_params`, `batch_job_execution_context`,
+`batch_step_execution`, `batch_step_execution_context`, plus its three sequences, which are sequences
+rather than tables and so do not enter this count — Flyway's own `flyway_schema_history`, and
+**`job_submission_outbox`**.
+The last one is the only application-authored table that is *not* a record layout: it holds the
+online-to-batch bridge's delivery progress, so the eighty-character cards of one submission cannot be
+interleaved with another's after a retry — the legacy queue's append disposition, preserved. Keeping it
+out of the eleven is deliberate; `V2__create_indexes.sql` says so at the table itself, and the reasoning
+is recorded in the decision log with the coordination semantics it supports.
 
 ### AWS resources
 
@@ -1180,22 +1239,31 @@ refused, and an eleven-character value is refused rather than truncated.
 BASE=http://localhost:8080     # $AUTH from step 2
 
 curl -sS -X POST "$BASE/api/batch/jobs/postTransactionJob/launch" -H "Authorization: $AUTH"
-curl -sS -X POST -H "Authorization: $AUTH" \
-     "$BASE/api/batch/jobs/interestCalculationJob/launch?interestParmDate=2022071800"
+curl -sS -X POST -H "Authorization: $AUTH" -H 'Content-Type: application/json' \
+     -d '{"interestParmDate":"2022071800"}' \
+     "$BASE/api/batch/jobs/interestCalculationJob/launch"
 
 # each answers {"executionId":…}; confirm each FINISHED before reading any timing
 curl -sS "$BASE/api/batch/jobs/executions/1" -H "Authorization: $AUTH"
 ```
 
-**A run consumes its identity.** Because no run identifier is added to the parameters, the *same* job with
-the *same* parameters cannot be launched twice — the second attempt is refused with "vary a parameter to
-run it again", and that applies to a run that failed as much as to one that succeeded. So stage the input
-*before* the first launch, and when you do need a second measurement, vary a parameter deliberately:
+**A second measurement needs no ceremony, but it does need the input staged again.** The identifying
+`run.id` is minted on the server for every launch, so repeating the *same* request starts a second
+instance rather than being refused — repeat the identical command and read the new execution identifier
+it answers with:
 
 ```bash
-curl -sS -X POST -H "Authorization: $AUTH" \
-     "$BASE/api/batch/jobs/postTransactionJob/launch?runNote=baseline-2"
+# the same request again: a second instance, a second set of timings
+curl -sS -X POST "$BASE/api/batch/jobs/postTransactionJob/launch" -H "Authorization: $AUTH"
 ```
+
+What a repeat does *not* do is guarantee the inputs are still there. The emulator runs with
+`PERSISTENCE: 0` and holds its state on a `tmpfs`, so **every staged S3 object dies with the LocalStack
+container** — recreating or restarting that one service is enough to lose a staged dataset, and the next
+launch then fails in its reader rather than measuring anything. Re-run step 3 before the second launch if
+the stack has been touched in between. Nothing a caller writes can influence `run.id` either: the only
+names accepted are the declared parameters of the addressed job, so a home-made `runNote`-style
+discriminator is refused rather than honoured.
 
 **Step 5 — read elapsed time and records per second from the per-step timers**, which are the same
 meters Prometheus scrapes and Grafana plots:
@@ -1431,32 +1499,51 @@ from an actual run.
 | Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **mechanism met and run-scoped**; no baseline row recorded yet, because a figure belongs to one machine on one date |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
-| Zero critical or high CVEs **in the compile and runtime graph** | `dependency-check-maven` 12.1.3 bound to `verify` | `./mvnw -B clean verify` | **met for that scope** — see the scope statement below |
+| Zero critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included | `./mvnw -B clean verify` | **met** — with one HIGH carried as an examined determination, set out below |
 | Traceability 100% | `docs/traceability-matrix.md` (**not yet published**) and the row-count assertion that will check it | — | **outstanding** |
 
-**The supply-chain result is narrower than "the dependency tree", and the narrowing is deliberate.**
-The scan is bound to `verify` and actually executed, not merely declared; it fails the build at a CVSS
-threshold of 7.0, which catches every critical and high finding, and emits HTML, JSON and XML reports
-that CI uploads as artifacts. But `dependency-check.skipTestScope` is **`true`**, so the clean result
-covers **the compile and runtime graph — the code that actually ships — and not the test and build
-graph**. That exclusion is not cosmetic and is not a false negative to be discovered later:
+**The supply-chain result covers the whole build graph, and exactly one finding inside it is carried
+rather than fixed.** The scan is bound to `verify` and actually executed, not merely declared; it fails
+the build at a CVSS threshold of 7.0, which catches every critical and high finding; it emits HTML, JSON
+and XML reports that CI uploads as artifacts; and `dependency-check.skipTestScope` is **`false`**, so the
+result covers the compile, runtime **and test** graph — 168 dependencies. An earlier revision of this
+section described a narrower scope and two unfixable HIGH findings in an excluded test graph. Both
+statements are withdrawn: the shaded transport that carried those findings was **replaced** by the
+visible Apache HTTP client 5 transport rather than excluded, which is what made the full-scope claim
+enforceable, and the scope was widened to match.
 
-- The excluded graph contains **two real findings at CVSS 7.5 HIGH**, in the relocated HTTP transport
-  embedded inside the container-testing library. The vulnerable classes were confirmed physically
-  present in the shaded artifact, so no false-match argument was available.
-- They are unfixable in place: the copy is relocated, so no managed coordinate reaches it; the
-  transport is the only one that library will construct, so it cannot be excluded or substituted; the
-  library's newest release on this line embeds the same version; and moving to its next major line is
-  excluded by this module's pinned dependency inventory.
-- The two honest options were to scan a scope this module cannot remediate and then suppress the
-  result, or to scan the scope it can stand behind and say so. Suppression would report a clean gate
-  while accepting a known risk silently, so the scope was narrowed and is disclosed here instead.
-- **The boundary is enforced by a test, not by a promise.** `DeployableSupplyChainIT` opens the
-  repackaged jar and fails if any test-scoped artifact — the container transport by name — appears among
-  its bundled libraries, so the claim that the unscanned graph does not ship is checked on every run.
-- **Residual risk, stated:** that transport still executes on developer machines and hosted CI runners,
-  so it remains part of the surface the *build* presents. It is not part of the surface the *product*
-  presents. Read every "zero critical or high" statement in this document with that boundary attached.
+What remains is one HIGH and one MEDIUM, and neither is left implicit:
+
+- **CVE-2026-66299, CVSS 7.5 HIGH, against the embedded Tomcat 10.1.57 jars — carried as a
+  determination in [`owasp-suppressions.xml`](owasp-suppressions.xml), not fixed.** The advisory is
+  against Tomcat's **WebSocket chat example**, and says in its own text that users who removed the
+  examples web application are unaffected. An embedded container has no `webapps` directory to deploy an
+  examples application from, and that is measured rather than assumed: the three embedded jars carry
+  2,036 archive entries between them and **not one** is a `webapps/`, `examples/` or chat-example entry.
+  The match is on the product-level CPE `cpe:2.3:a:apache:tomcat:10.1.57`, by version alone.
+- **There is nothing to upgrade to.** The advisory names 10.1.58 and 11.0.25 as the fixed releases and
+  **neither is published** — a direct request to Maven Central returns 404 for 10.1.58, 10.1.59, 10.1.60
+  and 11.0.25, and the newest 10.1.x that resolves is the 10.1.57 this module already pins upward. A
+  version bump is the preferred remediation and was the first one attempted; it does not exist yet.
+- **The determination expires by itself, and that is checked.** The plugin runs with
+  `failBuildOnUnusedSuppressionRule` set true, so the moment a patched release is adopted the rule stops
+  matching and the build **fails on the unused rule**, demanding the entry's removal. That behaviour was
+  verified by pointing the rule at a non-matching identifier and observing
+  `Suppression Rule had zero matches` fail the build — it is a mechanism, not an intention.
+- **The gate is still armed for everything else.** Also verified rather than asserted: re-running the
+  scan with the threshold lowered to 5.0 fails the build on the MEDIUM below, proving the determination
+  excludes one named identifier on named artifacts and nothing more.
+- **CVE-2026-41178, CVSS 5.3 MEDIUM, against `opentelemetry-semconv` — reported, under threshold, and
+  deliberately not suppressed.** It describes baggage-header parsing in OpenTelemetry **Go**; the CPE
+  carries `go` as its target software and has been matched to a Java artifact. It is left visible in the
+  report because hiding a sub-threshold finding buys nothing and costs the next reader the chance to
+  re-judge it.
+- **The rules for writing a determination are in the file itself**, and the first of them is that a fix
+  outranks a determination. The header also records the case that went the other way: where vulnerable
+  classes are physically *present*, this module does not suppress.
+- **What ships is still enforced by a test, not by a promise.** `DeployableSupplyChainIT` opens the
+  repackaged jar and fails if any test-scoped artifact appears among its bundled libraries, so the
+  boundary between the build's surface and the product's surface stays checked on every run.
 
 The traceability matrix is the largest single deliverable of this gate, and it is **not yet published**.
 Its specified shape is exact — **544 rows**, one per paragraph unit, each naming the source member, the
