@@ -629,6 +629,53 @@ must reproduce a different filler byte states that byte explicitly at the call s
 run belongs, so the default is a default and not a normalisation the mapper cannot escape.
 *Embodied in:* `util/FixedWidthFieldReader.java`.
 
+**Settlement, for the author of a golden fixture.** The consequence of the paragraph above is that
+record-image parity has two different bounds depending on the layout, and which bound applies is a
+property of the layout rather than a choice the fixture author makes. Stating it once, exhaustively,
+so no golden fixture is generated against the wrong bound:
+
+| Layout | Fixture | Filler in the fixture | Parity bound a round trip is asserted at |
+|---|---|---|---|
+| Account, 300 B | `acctdata.txt` | 178 spaces | **whole record** — byte-identical, 50/50 |
+| Card, 150 B | `carddata.txt` | 59 spaces | **whole record** — byte-identical, 50/50 |
+| Customer, 500 B | `custdata.txt` | 168 spaces | **whole record** — byte-identical, 50/50 |
+| Daily transaction, 350 B | `dailytran.txt` | 20 spaces | **whole record** — byte-identical, 300/300 |
+| Card cross reference | `cardxref.txt` | none — the text stride is 36, not 50 | **whole 36-byte data record** — byte-identical, 50/50 (DL-193) |
+| Transaction category balance, 50 B | `tcatbal.txt` | 22 × ASCII zero | **mapped prefix `[0, 28)`** |
+| Disclosure group, 50 B | `discgrp.txt` | 28 × ASCII zero | **mapped prefix `[0, 22)`** |
+| Transaction type, 60 B | `trantype.txt` | 8 × ASCII zero | **mapped prefix `[0, 52)`** |
+| Transaction category, 60 B | `trancatg.txt` | 4 × ASCII zero | **mapped prefix `[0, 56)`** |
+| Transaction, 350 B | — no fixture; the table is seeded empty | n/a | whole record against a constructed image |
+
+**Why the four bounded layouts are bounded rather than changed.** Emitting ASCII zero for them would
+make every one of the nine bounds a whole-record bound, which is superficially tidier and is not what
+the estate says. Three reasons, in order of weight. First, the byte is genuinely undefined: `FILLER`
+with no `VALUE` clause is uninitialised storage, and the two halves of the shipped sample data
+disagree with each other, so "reproduce the fixture" is not a single instruction — it is one
+instruction for the master files and the opposite one for the reference files. Second, the estate
+never *creates* a record of any of the four bounded layouts: they are read by `CBACT03C`, `CBTRN02C`
+and `CBTRN03C`, and the only write anywhere is the category-balance `REWRITE` in `CBACT04C`, which
+carries the filler back out exactly as it read it in — a behaviour a constant emitted by a writer
+cannot reproduce and a mapped-field entity cannot carry, since the filler is deliberately not a
+column. Third and decisively, **none of the four bounded layouts is a gated output format.** Gate 1
+gates four widths — the 430-byte reject record, the 80-byte statement record, the 100-byte HTML
+statement record and the 133-byte report line — and all four are assembled from mapped fields by
+`RejectRecordWriter`, `StatementTextTemplates`, `StatementHtmlTemplates` and `ReportLineFormatter`,
+none of which places a reference-layout filler byte. The one production path that does emit a bounded
+layout's image is the category-balance report job, whose 50-byte unload and sort records are
+*internal* intermediates of that job: the artefact it publishes is the report line, built from the
+mapped prefix. So the filler byte reaches no external contract, and a golden fixture generated at the
+bounds in the table above cannot be wrong about one.
+
+**What makes the divergence safe rather than merely tolerated.** It is asserted in both directions
+rather than worked around. Each of the four mappers declares its emitted filler character as a named
+constant, states the bound in its Javadoc together with the warning that a whole-record comparison
+against its fixture will fail, and its specification asserts both that the mapped prefix is
+byte-identical to the fixture and that the emitted filler character is *not* the fixture's. A future
+edit that silently normalised either side therefore fails a test whose name says what it is
+protecting. What is deliberately absent is a comparison that trims, masks or ignores the filler run:
+that would hide the divergence permanently, which is the one outcome worse than having it.
+
 ### D-11 — Malformed input uses `IllegalArgumentException`, not a module exception type
 **Decision:** none of the module's own exception types models "the caller handed me 297 bytes instead
 of 300". The abend exception is the terminal abend path; the file-status exception carries a raw
@@ -8821,13 +8868,19 @@ the context refresh itself: schema validation is active, so a borrowed column na
 starting.
 
 **Decision four - the source column is asserted as the seed stores it, and is never trimmed.** The legacy
-field is ten characters space-padded and the enumerated contract carries that padding, but the seed stores
-the right-trimmed eight-character form, because the column is a bounded variable-width type rather than a
-blank-padded one. An assertion derived from the layout width fails against the seed, and the tempting repair
-- trimming inside the assertion - would hide the divergence permanently and would contradict DL-035, which
-holds for keys and says nothing about this column. The assertion therefore carries what the seed actually
-writes, and additionally asserts the stored value is *shorter* than the layout field it came from, so the
-divergence is recorded as a property rather than absorbed.
+field is ten characters space-padded, the enumerated contract carries that padding, and - as of DL-204 - the
+seed stores that same padded form, because the column is a coded field drawn from a closed vocabulary rather
+than display text. An assertion derived from the layout width is therefore the correct assertion, and the
+tempting repair that was *not* taken - trimming inside the assertion - would have hidden any future
+divergence permanently and would have contradicted DL-035, which holds for keys and says nothing about this
+column. The assertion carries what the seed actually writes, additionally asserts the stored value occupies
+the *whole* layout field, and additionally resolves every stored value through the enumeration that models
+the column, so the seed and that enumeration cannot drift apart without a test failing.
+
+> **Superseded in part by DL-204.** This paragraph originally recorded the opposite property: that the seed
+> stored the right-trimmed eight-character spelling and that the assertion carried a value *shorter* than
+> its layout field. That reading treated a coded field as display text; DL-204 states why the padded form is
+> the correct one and what the trimmed form actually broke. The rest of DL-203 is unaffected.
 
 **What this is not.** No constraint, index, association, validation annotation or generated identifier is
 added to the table or its entity, and no method is added to its repository - the specification exercises the
@@ -9142,6 +9195,149 @@ eight-character bound and JSON write-only credential contract.
 *Cited by:* `service/AuthenticationService.java`, `api/AuthController.java`,
 `api/GlobalExceptionHandler.java`, `api/dto/SignOnRequest.java`, and their authentication,
 controller, exception-handler, DTO-boundary and JSON-contract tests.
+
+---
+
+### DL-204 — A coded field is seeded at its layout width; only display text is right-trimmed, and `dalytran_source` was on the wrong side of that line
+
+**Context.** `V3__seed_reference_data.sql` carries one rule for character data: *display text is
+right-trimmed for relational storage, because the fixed-width writers pad on output, and trailing blanks are
+preserved only where they are behaviourally significant.* The rule is right. Its application to
+`daily_transaction.dalytran_source` was not. The column was seeded `'POS TERM'` and `'OPERATOR'` — eight
+characters — while three other shipped artefacts describe the same field at ten:
+
+| Artefact | What it declares |
+|---|---|
+| `app/cpy/CVTRA06Y.cpy` → `V1__create_schema.sql` | `DALYTRAN-SOURCE PIC X(10)` → `dalytran_source VARCHAR(10)` |
+| `util/DailyTransactionRecordMapper` | reads record bytes `[22:32)` **untrimmed**, at width 10 |
+| `domain/enums/TransactionSourceType` | `POS_TERM("POS TERM  ")`, `OPERATOR("OPERATOR  ")`, `SYSTEM("System    ")`, `VALUE_LENGTH = 10`, and `fromValue` is an exact match |
+
+The consequence was measured, not inferred: **`TransactionSourceType.fromValue` resolved 0 of the 300
+seeded rows**, and the one column held two different representations depending on which path wrote it —
+eight characters from the seed, ten from the record mapper. Nothing failed at the time, because the
+enumeration had no production consumer yet and every unit test built its own padded fixture; the seed and the
+enumeration were each internally consistent and mutually contradictory.
+
+**Decision — the seed is what changes, and the rule gains the distinction it was missing.** All 300 values
+are seeded at the full ten characters. The rule in the V3 header now names the distinction explicitly, so the
+next column does not have to be guessed at:
+
+- **display text** — free-form prose written for a human: a name, an address line, a description, a merchant
+  name or city. Nothing compares it to a fixed vocabulary, so its padding carries no information and the
+  fixed-width writer re-applies it on output. Right-trimmed.
+- **coded field** — a value drawn from a closed vocabulary, or one a key or a lookup is built from. Its
+  padding is part of the value, because the vocabulary is declared at the legacy field's width and an
+  equality test against a trimmed value matches nothing. Preserved, at the exact layout width.
+
+Applied across every coded column the seeds write: `dalytran_source` and `dis_acct_group_id` are ten
+characters and are seeded padded; `acct_group_id` is ten blanks, which is itself the value the fixture holds
+(anomaly 1); `dalytran_proc_ts` is twenty-six blanks, which is how the record says "not yet processed"
+(anomaly 5); `acct_active_status`, `card_active_status`, `pri_card_holder_ind` and V4's `sec_usr_type` are
+single characters and so cannot be trimmed at all. `tran_source` is the posted twin of `dalytran_source` and
+is equally coded, but no seed writes a `transaction` row — the posting job does, moving the ten characters
+across at the same width, which is a same-width COBOL `MOVE` and therefore needs no padding step.
+
+**Why not the other repair.** Trimming the enumeration instead — carrying `"POS TERM"` and comparing on the
+trimmed form — was rejected. That enumeration exists to model a *record-image* field, and the record image is
+untrimmed at width ten; a trimmed enumeration could not classify a value read from a file without first
+undoing the mapper's own faithfulness, it would falsify `VALUE_LENGTH`, and it would push a normalising trim
+into every future consumer. Per the tie-break, faithful beats convenient: the artefact that disagrees with
+the record layout is the one that moves.
+
+**What keeps it from happening again.** Three assertions, deliberately layered so that each catches what the
+others cannot:
+1. V3's own verification block counts the two padded literals **without `btrim` on either side**, so a
+   re-shortened seed fails the migration rather than the tests.
+2. The same block asserts `length(dalytran_source) = 10` on all 300 rows and asserts every row is inside the
+   declared vocabulary — the counts alone would still pass if two other ten-character spellings were
+   substituted.
+3. `repository/DailyTransactionRepositoryIT` resolves every stored value through `TransactionSourceType`
+   itself rather than against a constant restated in the test, which is the only assertion that can fail when
+   the seed and the enumeration disagree while both remain internally consistent.
+
+**What deliberately did not change.** No column type, no entity, no record mapper, no enumeration constant
+and no width. `TransactionPostingService` still copies the source verbatim with no padding, because a
+same-width move is what the legacy program performs and adding a pad would mask a width violation instead of
+surfacing it. The right-trim treatment of genuine display text — customer and merchant names, address lines,
+descriptions, `card_embossed_name`, the two reference-table descriptions — is untouched, and the record-image
+round trips that prove it lossless (account 300 B, card 150 B, cross-reference 36 B, daily transaction 350 B,
+customer 500 B) are unaffected because the writers pad on output either way.
+
+*Embodied in:* `src/main/resources/db/migration/V3__seed_reference_data.sql`.
+*Cited by:* `repository/DailyTransactionRepositoryIT`, `config/SeedMigrationIT`. Amends DL-203 decision four;
+consistent with DL-035 and with the truncating-scale policy of DL-013.
+
+---
+
+### DL-205 — Two things a reader of the runtime is entitled to be told rather than surprised by: the pessimistic lock renders as `FOR NO KEY UPDATE`, and the shared developer database is not the seed baseline
+
+Neither of these is a defect and neither changes any code. Both are recorded because each looks like a
+defect to someone reading the evidence for the first time, and an unrecorded surprise costs more than
+a paragraph.
+
+**One — `@Lock(PESSIMISTIC_WRITE)` renders as PostgreSQL `FOR NO KEY UPDATE`, not `FOR UPDATE`.**
+`AccountRepository.findByIdForUpdate` and `UserSecurityRepository.findByIdForUpdate` both declare
+`PESSIMISTIC_WRITE`, and the SQL Hibernate emits for it on PostgreSQL ends `for no key update`. A
+reader who expected the stronger `for update` will wonder whether the lock is doing anything. It is:
+the two modes differ only in their conflict with `FOR KEY SHARE`, which is taken by a foreign-key
+reference check and by nothing else in this module. Measured, not argued: two sessions contending for
+the same account row serialise, the second blocking until the first commits and then failing with
+SQLState `55P03` under a lock timeout. Nothing is changed to force `FOR UPDATE` — that would take a
+strictly stronger lock than the operation needs, and the weaker mode is what lets a concurrent
+foreign-key check against the same parent proceed instead of queueing behind an unrelated update.
+
+**Two — the long-running Compose database is a developer convenience, not the deterministic seed
+baseline.** The Compose stack keeps `postgres` in a named volume so a developer does not re-migrate on
+every restart. That is the point of it, and it is also why its *data* drifts as soon as anything is
+exercised against it: optimistic-locking versions advance, and every sealed identifier is re-sealed
+under a fresh initialisation vector whenever the encryption path runs, so a row-by-row comparison
+against a freshly migrated server will differ while remaining entirely correct. Its *schema* does not
+drift, and Flyway `validate` against it is meaningful. **Anything asserting seeded content must
+migrate a fresh container**, which is exactly what `AbstractPostgresIT` does — one Testcontainers
+server per run, migrated to head, never reused, and the integration suite consequently reproduces a
+byte-identical seed state on every run. Two corollaries follow and are worth stating plainly: a
+developer diagnosing seed behaviour against the shared server is reading the wrong database; and
+because the seed migrations are the artefacts that carry reference content, **amending one changes its
+checksum, at which point the shared server fails `validate` until its volume is recreated** — that is
+the mechanism working, not a fault, and recreating the volume is the correct response rather than
+`flyway repair`, which would leave the drifted data behind.
+
+*Embodied in:* `repository/AccountRepository.java`, `repository/UserSecurityRepository.java`,
+`docker-compose.yml`, `support/AbstractPostgresIT.java`.
+
+---
+
+### DL-206 — A deliberately scoped test run gets a named profile, because the coverage gate is bound to the phase such a run has to reach
+
+**Context.** The JaCoCo `check` goal binds to `verify`, and `verify` is the phase a Failsafe run must
+reach for `failsafe:verify` to assert its results. A deliberately scoped run — `-Dit.test=SomeIT` or
+`-Dtest=SomeTest`, which is the first thing anyone does when diagnosing a single failure — therefore
+measures the coverage produced by a fraction of the suite against the whole module's floor, and fails.
+The failure is real: coverage genuinely is below the floor for that execution. It is also entirely
+misattributed, and misattribution during diagnosis is expensive, because the reader has to rule out a
+coverage regression before believing the test result in front of them.
+
+**Decision — bundle the two overrides behind a name, and change nothing else.** `pom.xml` gains its
+first and only profile, `scoped-tests`, which sets `jacoco.line.coverage.minimum` to zero and
+`jacoco.wholly.untested.classes.maximum` to `Integer.MAX_VALUE`. Both are already properties precisely
+so that the enforced numbers are visible without reading plugin configuration, so the profile adds no
+new mechanism — it names an override that was always available and always required two things to be
+remembered at once.
+
+**What it deliberately does not do.** It has no activation block: no default, no property trigger, no
+file trigger, no operating-system trigger. It is reachable only by `-Pscoped-tests`, so `mvn verify`,
+`mvn install`, the release build and the CI workflow are byte-for-byte unaffected and continue to
+enforce 0.80 line coverage and zero wholly untested classes — verified by evaluating both properties
+with and without the flag. It relaxes only those two properties: the compiler's `-Werror`, the
+supply-chain gate, every test, and `failsafe:verify` itself all still run exactly as they do without
+it. And it adds no plugin, no dependency, no goal binding and no source change.
+
+**The corollary is the part that matters, and it is stated at the profile itself.** A green scoped run
+is **not** a green build. Coverage is a property of the whole suite and is only ever established by a
+full, unscoped `verify`. The profile exists so that a scoped run fails for the reason the reader is
+investigating and for no other reason — not so that a subset can be presented as a passing build.
+
+*Embodied in:* `carddemo-java/pom.xml`.
 
 ---
 

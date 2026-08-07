@@ -43,6 +43,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.domain.DailyTransaction;
+import com.carddemo.domain.enums.TransactionSourceType;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.support.TestDataFactory.FieldSpec;
@@ -145,11 +146,15 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * the seeded content is what the byte-equivalence gate compares against.</p>
  *
  * <p>One further measured detail governs how the source column is asserted. The legacy field is ten
- * characters, space padded, and the enumerated contract carries that padding - but the seed stores the
- * <em>right-trimmed</em> form, because the column is a bounded variable-width type rather than a
- * blank-padded one. This specification asserts exactly what the seed stores and never a form derived
- * from the layout width, and it never trims or strips inside an assertion, so a change to either the
- * seed or the column type surfaces here instead of being absorbed.</p>
+ * characters, space padded; the column is declared at that width; the record mapper reads the slice
+ * untrimmed; and {@link com.carddemo.domain.enums.TransactionSourceType} declares its three values
+ * carrying that padding. The seed stores the same padded form, because the column is a coded field
+ * drawn from a closed vocabulary rather than display text - padding a human-readable description
+ * would carry no information, while trimming a coded value puts a value in the column that the
+ * enumeration modelling the column cannot resolve. This specification therefore asserts the padded
+ * form, asserts that every seeded row occupies the whole layout field, and asserts that every seeded
+ * row resolves through the enumeration; and it never trims or strips inside an assertion, so a change
+ * to the seed, to the column type or to the enumeration surfaces here instead of being absorbed.</p>
  *
  * <h2>Container, context and isolation</h2>
  *
@@ -238,11 +243,14 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      */
     private static final String UNPADDED_KEY = "683580";
 
-    /** The source value the seed stores on its two hundred and fifty purchases, exactly as stored. */
-    private static final String PURCHASE_SOURCE = "POS TERM";
+    /**
+     * The source value the seed stores on its two hundred and fifty purchases, exactly as stored:
+     * the coded field at its full {@code PIC X(10)} width, trailing blanks included.
+     */
+    private static final String PURCHASE_SOURCE = "POS TERM  ";
 
-    /** The source value the seed stores on its fifty returns, exactly as stored. */
-    private static final String RETURN_SOURCE = "OPERATOR";
+    /** The source value the seed stores on its fifty returns, exactly as stored, padding included. */
+    private static final String RETURN_SOURCE = "OPERATOR  ";
 
     /**
      * The reserved identifier band, chosen clear of every seeded value and of every band a sibling
@@ -749,8 +757,8 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the source is stored in exactly the form the seed writes, which is the "
-                + "right-trimmed form and not the padded layout width")
+        @DisplayName("the source is stored in exactly the form the seed writes, which is the coded "
+                + "field at its full layout width and never a right-trimmed spelling of it")
         void theSourceIsStoredExactlyAsTheSeedWritesIt() {
             final List<String> sources = seededRows().stream()
                     .map(DailyTransaction::getDalytranSource)
@@ -760,13 +768,54 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
 
             assertThat(sources)
                     .as("two source values across the whole fixture, asserted as the seed stores them "
-                            + "rather than as the layout pads them")
+                            + "and as the record layout places them")
                     .containsExactly(RETURN_SOURCE, PURCHASE_SOURCE);
             assertThat(sources)
-                    .as("the column is a bounded variable-width type, so a stored value is shorter than "
-                            + "the layout field it came from and nothing is trimmed on the way out")
-                    .allSatisfy(source -> assertThat(source.length())
-                            .isLessThan(layoutField("DALYTRAN-SOURCE").width()));
+                    .as("the field is coded rather than display text, so a stored value occupies the "
+                            + "whole layout field and nothing is trimmed on either the way in or out")
+                    .allSatisfy(source -> assertThat(source)
+                            .hasSize(layoutField("DALYTRAN-SOURCE").width())
+                            .endsWith("  "));
+        }
+
+        /**
+         * The assertion that ties the seed to the enumeration that models the column.
+         *
+         * <p>The two preceding tests would both pass on a right-trimmed seed, because each compares
+         * against a constant declared in this class. This one cannot: it resolves what the column
+         * actually holds through {@link TransactionSourceType}, whose values are declared at the legacy
+         * field width in production code. A seed that stored an eight-character spelling would leave
+         * every one of the three hundred rows unresolvable while the column, the entity and the mapper
+         * all still looked correct - which is precisely the drift this test exists to catch.
+         *
+         * <p>It is asserted row by row rather than over the distinct set, so the count in the failure
+         * message states how many rows are affected rather than how many spellings are.
+         */
+        @Test
+        @DisplayName("every seeded source value resolves through the enumeration that models the "
+                + "column, so the seed and that enumeration cannot drift apart silently")
+        void everySeededSourceResolvesThroughTheEnumeration() {
+            final List<DailyTransaction> rows = seededRows();
+
+            assertThat(rows)
+                    .as("all three hundred rows, each resolved through production code rather than "
+                            + "against a constant restated in this class")
+                    .allSatisfy(row -> assertThat(
+                            TransactionSourceType.fromValue(row.getDalytranSource()))
+                            .as("stored source [%s] of length %d", row.getDalytranSource(),
+                                    row.getDalytranSource().length())
+                            .isPresent());
+            assertThat(rows.stream()
+                    .map(DailyTransaction::getDalytranSource)
+                    .map(TransactionSourceType::fromValue)
+                    .filter(Optional::isPresent)
+                    .count())
+                    .as("counted rather than sampled, so a single unresolvable row fails the test")
+                    .isEqualTo(TestDataFactory.SEEDED_DAILY_TRANSACTION_COUNT);
+            assertThat(TransactionSourceType.VALUE_LENGTH)
+                    .as("and the width the enumeration declares is the width the layout field occupies, "
+                            + "which is what makes an exact match the right comparison")
+                    .isEqualTo(layoutField("DALYTRAN-SOURCE").width());
         }
 
         @Test

@@ -1597,6 +1597,55 @@
     </plugins>
   </build>
 
+  <!-- ================================================================
+       Profiles. Exactly one, opt-in, and it changes no plugin, no
+       dependency and no goal binding - only two of the threshold
+       properties declared above.
+       ================================================================ -->
+  <profiles>
 
+    <!-- Diagnosing one failing test should not require knowing which
+         two properties to override.
+
+         The coverage gate is bound to `verify`, and `verify` is the
+         phase a Failsafe run has to reach, so a deliberately SCOPED
+         run - `-Dit.test=SomeIT` or `-Dtest=SomeTest` - measures the
+         coverage of a fraction of the suite against the whole module's
+         floor and fails for a reason that has nothing to do with the
+         tests being run. The failure is real but it is misattributed,
+         and misattribution during diagnosis is expensive: the reader
+         has to rule out a coverage regression before believing the
+         test result in front of them.
+
+         This profile bundles the two overrides that remove that
+         misattribution, so a scoped run is one flag rather than a
+         remembered incantation:
+
+             ./mvnw -B verify -Pscoped-tests -Dit.test='*RepositoryIT'
+             ./mvnw -B test   -Pscoped-tests -Dtest='SomeTest'
+
+         It is activated only by name. No activation block, no
+         property trigger, no file trigger, no default - so `mvn verify`,
+         `mvn install`, the release build and the CI workflow are all
+         byte-for-byte unaffected and continue to enforce the full
+         thresholds. It relaxes ONLY the two coverage properties; the
+         supply-chain gate, the compiler's -Werror, every test and
+         `failsafe:verify` itself all still run exactly as they do
+         without it, which is what keeps this an ergonomic convenience
+         rather than a second, weaker definition of a passing build.
+
+         The corollary is the part that matters: a green scoped run is
+         NOT a green build. Coverage is a property of the whole suite,
+         so it is only ever established by a full unscoped `verify`.
+         Recorded as DL-206. -->
+    <profile>
+      <id>scoped-tests</id>
+      <properties>
+        <jacoco.line.coverage.minimum>0.00</jacoco.line.coverage.minimum>
+        <jacoco.wholly.untested.classes.maximum>2147483647</jacoco.wholly.untested.classes.maximum>
+      </properties>
+    </profile>
+
+  </profiles>
 
 </project>

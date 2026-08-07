@@ -189,11 +189,16 @@ final class SeedMigrationIT extends AbstractPostgresIT {
     /** The higher of the two non-zero rates the reference data carries. */
     private static final BigDecimal RATE_TWENTY_FIVE = new BigDecimal("25.00");
 
-    /** Purchases: the transaction source of two hundred and fifty of the three hundred records. */
-    private static final String SOURCE_POS_TERMINAL = "POS TERM";
+    /**
+     * Purchases: the transaction source of two hundred and fifty of the three hundred records, at the
+     * full {@code PIC X(10)} width the coded field occupies. The trailing blanks are part of the value,
+     * not padding the seed is expected to shed - the enumeration that models the column declares its
+     * values at this width.
+     */
+    private static final String SOURCE_POS_TERMINAL = "POS TERM  ";
 
-    /** Returns: the transaction source of the remaining fifty, and the negative amounts. */
-    private static final String SOURCE_OPERATOR = "OPERATOR";
+    /** Returns: the transaction source of the remaining fifty, and the negative amounts, padded alike. */
+    private static final String SOURCE_OPERATOR = "OPERATOR  ";
 
     /** The one origination instant every daily-transaction record carries. */
     private static final String ORIGINATION_TIMESTAMP = "2022-06-10 19:27:53.000000";
@@ -455,8 +460,8 @@ final class SeedMigrationIT extends AbstractPostgresIT {
         void bothSourcesAreSeededAndNoOther() throws SQLException {
             assertThat(countsBy("SELECT dalytran_source, count(*) FROM " + HEAD_SCHEMA
                     + ".daily_transaction GROUP BY 1 ORDER BY 1"))
-                    .as("display text is stored right-trimmed, so these are the fixture's padded "
-                            + "values without their padding")
+                    .as("a coded field is stored at its layout width, so these are the fixture's values "
+                            + "with the padding the fixture itself holds - only display text is trimmed")
                     .containsExactly(
                             Map.entry(SOURCE_OPERATOR, 50L),
                             Map.entry(SOURCE_POS_TERMINAL, 250L));
@@ -533,7 +538,8 @@ final class SeedMigrationIT extends AbstractPostgresIT {
             assertThat(row)
                     .as("the amount is the fixture's zoned image 0000005047G decoded with its "
                             + "overpunched sign and its two implied decimals")
-                    .containsExactly("01|0001|POS TERM|504.77|4859452612877065|800000000|"
+                    .containsExactly("01|0001|" + SOURCE_POS_TERMINAL
+                            + "|504.77|4859452612877065|800000000|"
                             + "Purchase at Abshire-Lowe|" + ORIGINATION_TIMESTAMP);
         }
 
@@ -547,7 +553,7 @@ final class SeedMigrationIT extends AbstractPostgresIT {
 
             assertThat(row)
                     .as("the amount is the fixture's zoned image 0000006032B decoded the same way")
-                    .containsExactly("01|0001|POS TERM|603.22|3260763612337560|"
+                    .containsExactly("01|0001|" + SOURCE_POS_TERMINAL + "|603.22|3260763612337560|"
                             + "Purchase at Kilback LLC");
         }
     }

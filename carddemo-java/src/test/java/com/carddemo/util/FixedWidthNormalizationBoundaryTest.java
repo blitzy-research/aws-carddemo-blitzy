@@ -28,6 +28,7 @@ import com.carddemo.domain.DisclosureGroup;
 import com.carddemo.domain.TransactionCategory;
 import com.carddemo.domain.TransactionType;
 import com.carddemo.domain.UserSecurity;
+import com.carddemo.domain.enums.TransactionSourceType;
 import com.carddemo.domain.id.DisclosureGroupId;
 import com.carddemo.support.SchemaColumnCatalog;
 import com.carddemo.support.SeededRecordFixture;
@@ -62,9 +63,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * something to take on trust from a comment, so every mapper that carries a display-text field
  * proves it below by rendering both forms and comparing the images byte for byte.</p>
  *
- * <h2>Three fields where a trailing blank is the value, not padding</h2>
+ * <h2>Four fields where a trailing blank is the value, not padding</h2>
  *
- * <p>Trimming is safe for display text precisely because nothing keys on it. Three columns are the
+ * <p>Trimming is safe for display text precisely because nothing keys on it. Four columns are the
  * exception, and the seed deliberately keeps their blanks:</p>
  * <ul>
  *   <li>{@code account.acct_group_id} - ten spaces in all fifty seeded rows, which is what sends the
@@ -73,8 +74,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code 'DEFAULT   '} and {@code 'DEFAULT'} are different rows and only the padded form
  *       resolves;</li>
  *   <li>{@code daily_transaction.dalytran_proc_ts} - twenty-six spaces in all three hundred seeded
- *       rows, meaning "not yet posted" rather than "no value".</li>
+ *       rows, meaning "not yet posted" rather than "no value";</li>
+ *   <li>{@code daily_transaction.dalytran_source} - a coded field rather than display text, whose
+ *       ten-character vocabulary is declared by {@link com.carddemo.domain.enums.TransactionSourceType}
+ *       at that width, so only the padded form resolves. See DL-204.</li>
  * </ul>
+ *
+ * <p>The distinction those four share, and the one this class exists to draw, is between <em>display
+ * text</em> - free-form prose nothing compares against a fixed vocabulary - and a <em>coded field</em>
+ * - a value drawn from a closed set, or one a key or a lookup is built from. The first may be trimmed
+ * because its padding carries no information and the writer re-applies it; the second may not, because
+ * an equality test against a trimmed coded value matches nothing.</p>
  *
  * <p>Because the writer pads, a record image cannot police any of these: trimming them would emit
  * identical bytes and fail silently at the database instead. The assertions below therefore hold
@@ -241,8 +251,8 @@ class FixedWidthNormalizationBoundaryTest {
         }
 
         @Test
-        @DisplayName("the five trimmable daily-transaction fields: channel, description, merchant name, "
-                + "merchant city and merchant postal code")
+        @DisplayName("the four trimmable daily-transaction fields: description, merchant name, merchant "
+                + "city and merchant postal code - the channel is not among them")
         void everyTrimmableDailyTransactionField() {
             final SeededRecordFixture fixture =
                     SeededRecordFixture.load("dailytran.txt", DailyTransactionRecordMapper.RECORD_LENGTH);
@@ -251,17 +261,20 @@ class FixedWidthNormalizationBoundaryTest {
             final DailyTransaction padded = DailyTransactionRecordMapper.fromRecord(image);
             assertThat(padded.getDalytranSource())
                     .as("the channel label arrives at its full 10 bytes, which is why the enum keys on "
-                            + "the padded form")
+                            + "the padded form and why the channel is a coded field rather than a "
+                            + "trimmable one - it is exercised in the blank-bearing nest instead")
                     .hasSize(DailyTransactionRecordMapper.DALYTRAN_SOURCE_LENGTH);
 
             final DailyTransaction trimmed = DailyTransactionRecordMapper.fromRecord(image);
-            trimmed.setDalytranSource(rightTrim(padded.getDalytranSource()));
             trimmed.setDalytranDesc(rightTrim(padded.getDalytranDesc()));
             trimmed.setDalytranMerchantName(rightTrim(padded.getDalytranMerchantName()));
             trimmed.setDalytranMerchantCity(rightTrim(padded.getDalytranMerchantCity()));
             trimmed.setDalytranMerchantZip(rightTrim(padded.getDalytranMerchantZip()));
 
-            assertThat(trimmed.getDalytranSource()).isNotEqualTo(padded.getDalytranSource());
+            assertThat(trimmed.getDalytranDesc()).isNotEqualTo(padded.getDalytranDesc());
+            assertThat(trimmed.getDalytranSource())
+                    .as("and the channel was left exactly as the record carries it")
+                    .isEqualTo(padded.getDalytranSource());
             assertThat(DailyTransactionRecordMapper.toRecord(trimmed))
                     .isEqualTo(DailyTransactionRecordMapper.toRecord(padded));
             assertThat(DailyTransactionRecordMapper.toRecordBytes(trimmed))
@@ -296,7 +309,7 @@ class FixedWidthNormalizationBoundaryTest {
     }
 
     @Nested
-    @DisplayName("Three fields whose trailing blanks are the value and must never be trimmed")
+    @DisplayName("Four fields whose trailing blanks are the value and must never be trimmed")
     class BlanksThatCarryMeaning {
 
         @Test
@@ -402,9 +415,48 @@ class FixedWidthNormalizationBoundaryTest {
             assertThat(emptied.getDalytranProcTs()).isNotEqualTo(record.getDalytranProcTs());
         }
 
+        /**
+         * The channel label, which is a coded field and not the display text it was once treated as.
+         *
+         * <p>Its vocabulary is declared in production code at the legacy field's width, so the padded
+         * and trimmed spellings are not two renderings of one value - one resolves and the other does
+         * not. Like the other three, the record image cannot police it, because the writer pads either
+         * form back to ten bytes; the difference is only ever real in the stored value and in the
+         * enumeration that reads it. See DL-204.
+         */
+        @Test
+        @DisplayName("daily_transaction.dalytran_source is a coded field: the padded form resolves "
+                + "through the source enumeration and the trimmed form resolves to nothing")
+        void theTransactionChannel() {
+            final SeededRecordFixture fixture =
+                    SeededRecordFixture.load("dailytran.txt", DailyTransactionRecordMapper.RECORD_LENGTH);
+            final String image = fixture.record(1);
+
+            assertThat(fixture.field(1, DailyTransactionRecordMapper.DALYTRAN_SOURCE_OFFSET,
+                    DailyTransactionRecordMapper.DALYTRAN_SOURCE_LENGTH))
+                    .as("the authority record carries the label padded to the whole field")
+                    .isEqualTo(TransactionSourceType.POS_TERM.getValue())
+                    .hasSize(TransactionSourceType.VALUE_LENGTH);
+
+            final DailyTransaction record = DailyTransactionRecordMapper.fromRecord(image);
+            assertThat(TransactionSourceType.fromValue(record.getDalytranSource()))
+                    .as("so the value the reader returns resolves through the enumeration unchanged")
+                    .contains(TransactionSourceType.POS_TERM);
+
+            final DailyTransaction trimmed = DailyTransactionRecordMapper.fromRecord(image);
+            trimmed.setDalytranSource(rightTrim(record.getDalytranSource()));
+            assertThat(TransactionSourceType.fromValue(trimmed.getDalytranSource()))
+                    .as("and the trimmed spelling resolves to nothing at all, which is the whole reason "
+                            + "the seed stores the padded form")
+                    .isEmpty();
+            assertThat(DailyTransactionRecordMapper.toRecord(trimmed))
+                    .as("while the record image again cannot police it - both forms emit the same bytes")
+                    .isEqualTo(DailyTransactionRecordMapper.toRecord(record));
+        }
+
         @Test
         @DisplayName("the seed itself keeps every one of those blanks: 50 ten-space group identifiers, "
-                + "300 twenty-six-space timestamps and no trimmed group key")
+                + "300 twenty-six-space timestamps, 300 padded channel labels and no trimmed group key")
         void theSeedKeepsTheBlanks() {
             final String seed = seedText();
 
@@ -420,11 +472,19 @@ class FixedWidthNormalizationBoundaryTest {
                     .isGreaterThanOrEqualTo(17);
             assertThat(countOf(seed, "'ZEROAPR   '"))
                     .isGreaterThanOrEqualTo(17);
+            assertThat(countOf(seed, "'" + TransactionSourceType.POS_TERM.getValue() + "'")
+                    + countOf(seed, "'" + TransactionSourceType.OPERATOR.getValue() + "'"))
+                    .as("one padded channel literal for each of the three hundred seeded daily "
+                            + "transactions, plus the two the verification block compares against")
+                    .isGreaterThanOrEqualTo(300);
             assertThat(seed)
-                    .as("no trimmed group key may appear anywhere in the seed, in a value or in a "
-                            + "comment, because either would invite the same mistake")
+                    .as("no trimmed group key and no trimmed channel label may appear anywhere in the "
+                            + "seed, in a value or in a comment, because either would invite the same "
+                            + "mistake")
                     .doesNotContain("'DEFAULT'")
-                    .doesNotContain("'ZEROAPR'");
+                    .doesNotContain("'ZEROAPR'")
+                    .doesNotContain("'" + rightTrim(TransactionSourceType.POS_TERM.getValue()) + "'")
+                    .doesNotContain("'" + rightTrim(TransactionSourceType.OPERATOR.getValue()) + "'");
         }
     }
 
@@ -433,7 +493,7 @@ class FixedWidthNormalizationBoundaryTest {
     class ColumnWidthsMatchRecordSpans {
 
         @Test
-        @DisplayName("the eighteen trimmable columns across six tables agree with their mappers")
+        @DisplayName("the seventeen trimmable columns across six tables agree with their mappers")
         void theTrimmableColumnsAgree() {
             final SchemaColumnCatalog catalog = SchemaColumnCatalog.load();
 
@@ -452,8 +512,6 @@ class FixedWidthNormalizationBoundaryTest {
             assertWidth(catalog, "customer", "phone_num_1", CustomerRecordMapper.PHONE_NUM_1_LENGTH);
             assertWidth(catalog, "customer", "phone_num_2", CustomerRecordMapper.PHONE_NUM_2_LENGTH);
 
-            assertWidth(catalog, "daily_transaction", "dalytran_source",
-                    DailyTransactionRecordMapper.DALYTRAN_SOURCE_LENGTH);
             assertWidth(catalog, "daily_transaction", "dalytran_desc",
                     DailyTransactionRecordMapper.DALYTRAN_DESC_LENGTH);
             assertWidth(catalog, "daily_transaction", "dalytran_merchant_name",
@@ -470,7 +528,7 @@ class FixedWidthNormalizationBoundaryTest {
         }
 
         @Test
-        @DisplayName("the three blank-bearing columns are declared exactly as wide as their spans too, "
+        @DisplayName("the four blank-bearing columns are declared exactly as wide as their spans too, "
                 + "so a full-width blank always fits")
         void theBlankBearingColumnsAgree() {
             final SchemaColumnCatalog catalog = SchemaColumnCatalog.load();
@@ -480,6 +538,8 @@ class FixedWidthNormalizationBoundaryTest {
                     DisclosureGroupRecordMapper.DIS_ACCT_GROUP_ID_LENGTH);
             assertWidth(catalog, "daily_transaction", "dalytran_proc_ts",
                     DailyTransactionRecordMapper.DALYTRAN_PROC_TS_LENGTH);
+            assertWidth(catalog, "daily_transaction", "dalytran_source",
+                    DailyTransactionRecordMapper.DALYTRAN_SOURCE_LENGTH);
         }
 
         @Test

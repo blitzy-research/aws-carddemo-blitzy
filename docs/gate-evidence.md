@@ -44,6 +44,22 @@ export JAVA_HOME=/opt/java/current
 docker compose --profile observability up -d
 ```
 
+Two notes on running these, both recorded so a reader is not surprised by them:
+
+- **Do not scope a run and read its coverage.** The coverage gate is bound to `verify`, which is the
+  phase a Failsafe run has to reach, so `-Dit.test=…` or `-Dtest=…` measures a fraction of the suite
+  against the whole module's floor and fails for a reason unrelated to the tests being run. Add
+  `-Pscoped-tests` for a diagnostic run; the profile relaxes only the two coverage properties and is
+  reachable only by name, so the unscoped build above is unaffected. A green scoped run is not a green
+  build — the figures on this page come only from a full `verify`. See DL-206.
+- **The Compose database is a developer convenience, not the seed baseline.** Its schema does not
+  drift and Flyway `validate` against it is meaningful, but its data does drift as soon as anything is
+  exercised against it. Anything asserting seeded content migrates a fresh container, which is what
+  the integration suite does. Amending a seed migration changes its checksum, at which point the
+  shared server fails `validate` until `docker compose stop postgres && docker compose rm -f postgres
+  && docker volume rm carddemo_postgres-data && docker compose up -d postgres` recreates it — that is
+  the mechanism working, and it is the correct response rather than a Flyway repair. See DL-205.
+
 ---
 
 ## Gate 1 — End-to-end boundary verification
@@ -69,6 +85,32 @@ The parity traps these comparisons exist to catch are recorded in `decision-log.
 here: truncating arithmetic with no `ROUNDED` clause anywhere in the estate, zoned-decimal sign overpunch,
 the five reject reason codes, the statement banner literals, and the literal HTML constants including the
 malformed table tag that must be emitted exactly as the source emits it.
+
+### The bound a golden fixture is generated at, per record layout
+
+A fixture author needs one thing this page can state and nothing else can: whether a given layout's
+round trip is asserted over its **whole record image** or only over its **mapped data prefix**. The
+answer is a property of the layout, not a choice, because `FILLER` with no `VALUE` clause is
+uninitialised and the two halves of the shipped sample data disagree about what it holds — the four
+master files carry space filler, the four reference-table files carry ASCII zero. **D-10 in
+`decision-log.md` settles it and carries the full table and the reasoning**; the operative summary is:
+
+- **Whole record, byte-identical:** account 300 B, card 150 B, customer 500 B, daily transaction 350 B,
+  and the cross reference's 36-byte data record. Verified at 50 / 50 / 50 / 300 / 50 records.
+- **Mapped prefix only:** transaction category balance `[0, 28)`, disclosure group `[0, 22)`,
+  transaction type `[0, 52)`, transaction category `[0, 56)`. Their fixtures hold ASCII zero in the
+  filler run and the writers emit spaces, so a whole-record comparison against them fails **on the
+  filler bytes alone** — which is why each of the four mappers declares its emitted filler character
+  as a named constant, states the bound in its Javadoc, and has that bound asserted in both
+  directions rather than trimmed away.
+
+**None of the four bounded layouts is one of the four gated output formats above.** The 430-, 80-,
+100- and 133-byte records are assembled from mapped fields by `RejectRecordWriter`,
+`StatementTextTemplates`, `StatementHtmlTemplates` and `ReportLineFormatter`, none of which places a
+reference-layout filler byte. The one production path that emits a bounded layout's image at all is
+the category-balance report job, whose 50-byte unload and sort records are internal intermediates of
+that job — what it publishes is the report line, built from the mapped prefix. So no gated artefact
+carries a filler byte, and a fixture generated at the bounds above cannot disagree with one.
 
 ---
 
@@ -309,6 +351,32 @@ Coverage dimensions the scope tier requires, and where each is exercised:
 | Inter-program calls | Twenty-seven static call sites become injected collaborators; twenty-five transfer-control transitions and nineteen pseudo-conversational return points become route constants |
 | JCL orchestration | Twenty-nine job members and two procedures; condition-code dependencies on exactly four steps; three distinct sort specifications; six generation-data-group bases |
 | AWS service integration | Object storage, an SQS FIFO queue and SNS, all exercised against LocalStack Community |
+
+### The three alternate-index equivalents, and where the third one's predicate lives
+
+The `File I/O` row above names three alternate indexes. Two of them are reached by a repository finder
+and one is not, which is a design decision rather than an omission and is worth naming here because a
+reader auditing the row will look for three finders and find two:
+
+| Alternate index | B-tree equivalent in `V2` | Reached by |
+| --- | --- | --- |
+| `CARDAIX` on `CARD-ACCT-ID` | `idx_card_card_acct_id` | `CardRepository.findByCardAcctId` |
+| `CXACAIX` on `XREF-ACCT-ID` | `idx_card_cross_reference_xref_acct_id` | `CardCrossReferenceRepository.findByXrefAcctId` |
+| The `TRANSACT` timestamp index on `TRAN-PROC-TS` | `idx_transaction_tran_proc_ts` | **no repository finder** — the reporting window is applied over the unloaded sequential file, which is where the legacy `INCLUDE COND` applied it. DL-199. |
+
+The index is nevertheless created, is a non-unique B-tree, and is demonstrably indexable: on a
+purpose-built selective set of 3,000 posted rows spread across 100 processing dates and `ANALYZE`d, the
+window's **bare lower bound is taken as an index condition** and the ten-character **prefix upper bound
+is applied as a filter** — `Bitmap Index Scan on idx_transaction_tran_proc_ts, Index Cond:
+((tran_proc_ts)::text >= …), Filter: (SUBSTRING(tran_proc_ts FROM 1 FOR 10) <= …)`, then a sort on
+`tran_card_num` alone. Whether the planner picks a plain or a bitmap index scan is a cost decision that
+varies with the selectivity of the window; both take the index. The shape is what matters, and it is
+the reason the upper bound is a prefix rather than a whole-column comparison: **a whole-column upper
+bound silently drops an end-date row that carries a time** — reproduced deliberately, 31 rows selected
+with the prefix bound against 0 with the naive one — and it is also why the lower bound is left bare,
+since wrapping it would make the predicate unindexable. The twenty-six-blank "not yet processed"
+sentinel is excluded by the lower bound alone. If a repository-level date-range finder is ever added
+for the report job, it must keep exactly this shape.
 
 ---
 
