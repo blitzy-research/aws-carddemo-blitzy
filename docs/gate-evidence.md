@@ -228,6 +228,67 @@ grep for SQL text would count the versioned schema definition as raw concatenati
 Test sources are likewise excluded, since assertion helpers legitimately use constructs production code
 does not.
 
+### Credential-literal audit — the legacy sign-on value
+
+| | |
+| --- | --- |
+| **Requirement** | The eight-character cleartext credential the legacy provisioning member carries for all ten sign-on identities must not be a stored or compared value anywhere in the module. |
+| **Command** | The scan below, over `carddemo-java/src/main/java`, `carddemo-java/src/main/resources`, `carddemo-java/src/test`, `Dockerfile`, `docker-compose.yml`, `pom.xml`, both `README.md` files, `localstack/`, `config/`, `.github/` and `docs/` |
+| **Evidence artefact** | This subsection |
+| **Standing result** | **No column stores it and no code path compares it.** Every stored credential is a BCrypt digest, and verification goes through the encoder rather than an equality test. |
+
+The value is recovered at run time, by offset, from the read-only reference tree — the credential window
+of the ten fixed-width card images the provisioning member supplies in stream — and is never printed by
+the scan:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+python3 - <<'PY'
+import pathlib
+cards = pathlib.Path('app/jcl/DUSRSECJ.jcl').read_text().splitlines()[34:44]
+window = {c[48:56] for c in cards}          # the credential window, 1-based columns 49-56
+assert len(window) == 1                     # all ten records share one value
+secret = window.pop()
+roots = ['carddemo-java/src/main/java', 'carddemo-java/src/main/resources', 'carddemo-java/src/test',
+         'carddemo-java/docker-compose.yml', 'carddemo-java/pom.xml', 'carddemo-java/README.md',
+         'carddemo-java/localstack', 'carddemo-java/config', 'README.md', 'docs', '.github']
+for r in roots:
+    p = pathlib.Path(r)
+    for q in ([p] if p.is_file() else [f for f in p.rglob('*') if f.is_file()]):
+        n = q.read_text(errors='replace').count(secret)
+        if n:
+            print(f'{n:4d}  {q}')            # the path and the count only, never the value
+PY
+```
+
+**Why a raw hit count is the wrong measure here, and what was measured instead.** The legacy value is an
+ordinary eight-letter English word. It is therefore also a substring of the framework's own vocabulary and
+of this project's own identifiers — `spring.datasource.password`, `server.ssl.key-store-password`,
+`POSTGRES_PASSWORD`, `CARDDEMO_DB_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, `FIELD_PASSWORD`,
+`PASSWORD_LENGTH`, `PASSWORD_HASHING_STRENGTH`, and the sign-on decision constants `PASSWORD_MISSING`
+and `WRONG_PASSWORD`. A case-insensitive scan returns well over a hundred such matches and none of them
+is a credential. Each exact-case hit was therefore classified by hand, and every one falls into one of
+four categories:
+
+| Category | What it is | Why it is not an exposure |
+| --- | --- | --- |
+| Setting and variable names | `POSTGRES_PASSWORD`, `CARDDEMO_DB_PASSWORD`, `CARDDEMO_TLS_KEYSTORE_PASSWORD`, `spring.datasource.password` | A name, not a value. Production binds each to a bare environment reference with no fallback, which is what `application-prod.yml` and `ProductionConfigurationValidator` enforce. |
+| Constant and enum names | `FIELD_PASSWORD`, `PASSWORD_LENGTH`, `PASSWORD_HASHING_STRENGTH`, `Decision.PASSWORD_MISSING`, `Decision.WRONG_PASSWORD` | A name, not a value. Removing the word would obscure the field and decision each identifies. |
+| Negative assertions | The eight domain `*SecurityTest` classes, `GlobalExceptionHandlerTest`, `OpenApiConfigBaselineTest`, `ConfigurationProfileBaselineTest`, `SeedMigrationIT` | These hold the literal in order to assert it is **absent** from a rendering, a published interface description, a configuration file or a migrated row. Removing it would delete the assertion that protects the value. |
+| Sign-on and administration input fixtures | `AuthenticationServiceTest`, `AuthControllerTest`, `UserCommandTest`, `UserContractAdapterTest`, `AdminUserControllerTest`, the `UserRequest`/`UserResponse` tests, the two `UserSecurityRecordMapper` tests | A submitted value on the way in, which is what a sign-on test must submit. None of them stores it: the digest service hashes before the persistence boundary, and the entity refuses any value that is not digest-shaped. |
+
+**What the audit found in no category at all.** No `.sql` migration carries it — `V4__seed_user_security.sql`
+inserts ten independently salted 60-character digests and no cleartext. No configuration file carries it as
+a value. No production class carries it as a value. And no repository publishes a finder that could match on
+it: a salted digest cannot be compared by equality, so `findBySecUsrIdAndSecUsrPwd`,
+`existsBySecUsrIdAndSecUsrPwd` and `findBySecUsrPwd` do not exist and cannot be added by convention, which
+`repository/UserSecurityRepositoryIT.java` asserts through its frozen-contract nest.
+
+Two documentation files mention the value in prose — the repository README, which documents how to sign on
+to the legacy mainframe estate, and `docs/project-guide.md`, which shows a sign-on request. Both describe a
+sample login of a demonstration application whose ten identities are published in the upstream project, and
+neither is a stored secret of this module.
+
 ---
 
 ## Gate 7 — Scope matching

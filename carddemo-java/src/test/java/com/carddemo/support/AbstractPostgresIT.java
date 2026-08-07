@@ -220,6 +220,28 @@ public abstract class AbstractPostgresIT {
     private static final int SCHEMA_CEILING_VERSION = 2;
 
     /**
+     * Concurrent client ceiling the one shared server is started with.
+     *
+     * <p>A capacity setting for the integration suite, not a tuning figure for the application: nothing
+     * the module ships reads it, and no assertion anywhere depends on its value. It is raised above the
+     * server image's own default of one hundred because of how this base is shared. Every integration
+     * class reaches the same server, and each class that boots a context over its own explicit slice -
+     * which the repository suites deliberately do, so that a scan cannot sweep the test tree into the
+     * context - is a distinct context that the Spring TestContext Framework caches for the whole JVM,
+     * holding its connection pool open long after its own class has finished. The clients therefore
+     * accumulate across classes rather than being released between them, and a suite that has simply
+     * grown a class starts failing on {@code sorry, too many clients already} in whichever class happens
+     * to run once the ceiling is crossed - a failure that names capacity rather than the contract under
+     * test, and that appears in classes whose own assertions are sound.</p>
+     *
+     * <p>Raising the ceiling on the server is the narrowest answer available. Bounding each pool instead
+     * would put a connection-pool figure into a shipped profile, which the plan excludes outright, and
+     * would risk starving the assertions that deliberately hold two sessions at once to prove that a
+     * row-level hold is exclusive.</p>
+     */
+    private static final int MAX_CONCURRENT_CLIENTS = 400;
+
+    /**
      * The instant every date-sensitive assertion is anchored to, and the reason it is this instant.
      *
      * <p>All three hundred records of the delivered daily-transaction fixture carry one and the same
@@ -320,7 +342,9 @@ public abstract class AbstractPostgresIT {
                 new PostgreSQLContainer<>(POSTGRES_IMAGE)
                         .withDatabaseName(DATABASE_NAME)
                         .withUsername(DATABASE_USER)
-                        .withPassword(DATABASE_PASSWORD);
+                        .withPassword(DATABASE_PASSWORD)
+                        .withCommand("postgres", "-c",
+                                "max_connections=" + MAX_CONCURRENT_CLIENTS);
         container.start();
         Flyway.configure()
                 .dataSource(container.getJdbcUrl(), container.getUsername(), container.getPassword())

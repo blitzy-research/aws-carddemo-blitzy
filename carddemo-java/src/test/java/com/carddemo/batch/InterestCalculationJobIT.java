@@ -84,7 +84,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * The interest accrual job, launched by name against a real PostgreSQL server carrying the real
@@ -129,11 +130,27 @@ import org.springframework.test.context.TestPropertySource;
                 "management.endpoint.health.validate-group-membership=false",
                 "management.tracing.enabled=false"})
 @ActiveProfiles("test")
-@TestPropertySource(properties = "carddemo.batch.interest-calculation.staging-directory="
-        + "${java.io.tmpdir}/carddemo-interest-calculation-it")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("InterestCalculationJobIT - one pass, account-group commits, one SYSTRAN generation")
 class InterestCalculationJobIT extends AbstractPostgresIT {
+
+    /**
+     * The staging directory this run owns, named for the process that owns it.
+     *
+     * <p><strong>The name must be unique per run, and a fixed name is not.</strong> The platform
+     * temporary directory is shared by every process on the host, so a fixed child of it is shared by
+     * every build on the host - and {@link #clearStagedGenerations()} deletes every file it finds there.
+     * Two concurrent builds under one fixed name therefore delete each other's in-flight generation, and
+     * the run that loses the race reports a step that succeeded and a job that failed at its terminal
+     * publication, because the completed artifact it registered is no longer a regular file. Naming the
+     * directory for the owning process removes the sharing rather than trying to time around it, which is
+     * the same approach the combine job's test already takes.
+     *
+     * <p>Resolved once, in a static initialiser, so the registration below and the cleanup helper cannot
+     * disagree about which directory is being used.
+     */
+    private static final Path STAGING_DIRECTORY = Path.of(System.getProperty("java.io.tmpdir"),
+            "carddemo-interest-calculation-it-" + ProcessHandle.current().pid());
 
     /** The ten-character run date, with no separator, exactly as the legacy step supplies one. */
     private static final String RUN_DATE = "2022071800";
@@ -252,17 +269,36 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
     }
 
     /**
-     * Removes completed and in-progress generations left by a prior test JVM.
+     * Publishes the staging directory this run owns, at a precedence above every property document.
+     *
+     * <p>Declared here rather than as an inline property because the directory name is computed - it
+     * carries the owning process identifier, for the reason given on {@link #STAGING_DIRECTORY} - and an
+     * annotation cannot compute one. The base class's own registration is unaffected: the framework
+     * collects every such method in the hierarchy, and this one publishes a different key.
+     *
+     * @param registry the registry the Spring TestContext Framework supplies; must not be null
+     */
+    @DynamicPropertySource
+    static void registerStagingDirectory(final DynamicPropertyRegistry registry) {
+        registry.add("carddemo.batch.interest-calculation.staging-directory",
+                STAGING_DIRECTORY::toString);
+    }
+
+    /**
+     * Removes completed and in-progress generations left by an earlier test in this same run.
      *
      * <p>The integration database is recreated between Maven runs, so its execution identifiers start
-     * again at one while the platform temporary directory survives. Without this cleanup, a failed
-     * execution can appear to own an old completed file that merely reused its identifier.
+     * again at one while the staging directory survives for the length of the run. Without this cleanup, a
+     * failed execution can appear to own an old completed file that merely reused its identifier.
+     *
+     * <p>The deletion is unconditional over everything it finds, which is safe only because
+     * {@link #STAGING_DIRECTORY} belongs to this process alone. Pointing it at a directory another build
+     * could also be writing into would make this helper delete that build's artifacts.
      *
      * @throws Exception if the namespaced staging directory cannot be inspected or cleaned
      */
     private static void clearStagedGenerations() throws Exception {
-        final Path directory = Path.of(System.getProperty("java.io.tmpdir"),
-                "carddemo-interest-calculation-it");
+        final Path directory = STAGING_DIRECTORY;
         if (!Files.isDirectory(directory)) {
             return;
         }
@@ -376,7 +412,11 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
                         .addString(InterestCalculationJobConfig.PARM_DATE_KEY, RUN_DATE)
                         .toJobParameters());
 
-        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(execution.getStatus())
+                .as("a run whose step succeeded can still be failed by its terminal durable-artifact"
+                        + " publication, so the reasons the execution recorded are reported here"
+                        + " rather than left in the log: %s", execution.getAllFailureExceptions())
+                .isEqualTo(BatchStatus.COMPLETED);
         assertThat(execution.getStepExecutions())
                 .as("the legacy member declares one application step and no condition-code gate")
                 .hasSize(1);

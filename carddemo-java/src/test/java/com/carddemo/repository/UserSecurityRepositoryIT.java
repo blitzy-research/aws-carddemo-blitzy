@@ -49,11 +49,14 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.data.repository.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TestDataFactory.SeededIdentity;
 
 /**
  * Drives the credential repository against a real migrated PostgreSQL server and verifies its frozen
@@ -80,26 +83,138 @@ import com.carddemo.support.AbstractPostgresIT;
  * halves against real SQL: the bound is strict, the order is the one the derived name declares, and the
  * limit truncates.
  *
- * <h2>Why a real context</h2>
+ * <h2>Why a real context, and why it is assembled by a runner rather than by {@code @SpringBootTest}</h2>
  *
  * <p>Only assembling the persistence context proves that every derived method name resolves - a
  * misspelled property in a derived name is a startup failure, not a compile failure - and that the five
  * columns, including the 60-character digest column, match the migrated schema under
- * {@code ddl-auto=validate}.
+ * {@code ddl-auto=validate}. A context that mapped a column at the wrong width would abort during
+ * refresh rather than pass quietly, so {@link KeyedAccess#bootstrapsAtAll()} is the assertion that the
+ * whole mapping is honoured.
+ *
+ * <p>The context is assembled by {@link ApplicationContextRunner} over three auto-configurations and
+ * this one repository, which is what all six repository integration tests in this package do. Two
+ * reasons, either sufficient. It registers <em>only</em> the repository and the entity, so this test's
+ * dependency surface is {@code repository} plus {@code domain} - exactly the production package's own
+ * one-way surface - whereas booting the application class would pull the api, service and batch tiers
+ * into a test of a repository. And a failure then names this interface rather than whichever unrelated
+ * bean happened to be constructed first. What matters for the no-mocked-input rule is unaffected: the
+ * server is the real PostgreSQL 16 container the base class owns, every migration has been applied to
+ * it, and nothing here substitutes an in-memory engine or a mock.
+ *
+ * <h2>What this table's own seed migration guarantees, and what this test re-establishes</h2>
+ *
+ * <p>This is the only one of the eleven tables seeded by {@code V4__seed_user_security.sql} rather than
+ * by {@code V3__seed_reference_data.sql}: after V3 the table is <strong>empty</strong>, and V3 raises
+ * rather than continues if it is not. V4 then loads exactly ten identities, five carrying the
+ * administrative role code and five the standard one. Both seeds sit above the production version
+ * ceiling, so no production deployment receives a seeded login. V4 verifies its own content in SQL;
+ * {@link SeedContract} verifies the same facts a second time <em>through the repository</em>, which is
+ * the surface every caller actually uses and the only one that can show a mapping defect turning a
+ * correct row into a wrong object.
+ *
+ * <h2>The credential column is the migration's flagship parity exception</h2>
+ *
+ * <p>The legacy record holds the credential as eight cleartext characters at record offset 48 and the
+ * legacy sign-on path compares it for direct equality. Storing cleartext would satisfy byte parity and
+ * breach the binding no-hardcoded-credentials requirement at the same time, so {@code sec_usr_pwd} is
+ * {@code VARCHAR(60)} - sized for a BCrypt digest rather than the legacy width of 8. It is the one
+ * column in the eleven-table schema widened <em>for a credential</em>; the migrated schema widens two
+ * others, {@code customer.cust_ssn} and {@code customer.govt_issued_id}, and both of those are widened
+ * to hold a value protected at rest rather than a digest. Every remaining column matches its legacy
+ * byte width. That divergence is a deliberate, documented improvement rather than a behavioural
+ * regression, and it is recorded as such in {@code docs/decision-log.md}.
+ *
+ * <p>Two consequences shape this test. No credential-matching finder exists or can exist - an
+ * independently salted digest cannot be matched by equality, and the legacy flow reads by key and only
+ * then compares - so nothing here queries by credential. And the legacy cleartext value appears nowhere
+ * in this file, in any form: the only credential-shaped values used are produced by
+ * {@link TestDataFactory}, which owns credential handling for the whole test estate, and the assertions
+ * about a stored digest are confined to its shape, its length, its distinctness and its unlikeness to
+ * the row's own visible fields.
+ *
+ * <h2>The role code is stored unconstrained, and that tolerance is asserted rather than trusted</h2>
+ *
+ * <p>{@code sec_usr_type} is a raw one-character string. It carries no enumerated mapping, no converter,
+ * no check constraint and no validation pattern, because the legacy sign-on path tests <em>only</em> the
+ * administrative code and reaches the main menu through an <strong>unconditional</strong> alternative -
+ * there is no third branch and no error path for a code the estate never declared, so every other value
+ * routes without raising anything. Constraining the column would refuse a row the legacy system stored
+ * and routed, which is a regression rather than a hardening. The enumerated form lives in the service
+ * tier and is deliberately not referenced from this package. Recorded as {@code docs/decision-log.md}
+ * DL-194.
+ *
+ * <p>Tolerance nothing exercises is tolerance a later change can remove silently, because every seeded
+ * row carries one of the two declared codes and no assertion over seeded data would notice a new
+ * constraint. So {@link KeyedAccess#storesOneIdentityAndRemovesItAgain()} writes a purpose-built row
+ * whose code is neither declared value and proves it persists and loads intact, while
+ * {@link SeedContract#splitsTheTenIdentitiesFiveAndFiveByRoleCode()} proves the delivered data
+ * nonetheless contains only the two. The column <em>accepts</em> a third code; the seed <em>contains</em>
+ * none.
+ *
+ * <h2>Nothing about this table is logged</h2>
+ *
+ * <p>No identifier, no name, no role code and no digest is written to a log by this test, by the
+ * repository or by the entity, whose rendering carries the identifier alone. The package
+ * {@code com.carddemo.repository} is deliberately absent from the loggers pinned in
+ * {@code logback-spring.xml}, so nothing raises this package's level by configuration either.
+ *
+ * <h2>What this test does not assert, because it belongs to another layer</h2>
+ *
+ * <p>The sign-on flow publishes seven externally observable message texts - two entry prompts, a
+ * wrong-credential message, an unknown-identifier message, an unable-to-verify message and two common
+ * messages for the exit key and an unmapped key - and every one of them is produced by the service
+ * tier. This repository's whole contribution to that contract is the <em>empty result</em> for an
+ * identifier no row carries, which {@link KeyedAccess#answersEmptyForAnAbsentIdentifier()} asserts. No
+ * message text is asserted here. Hashing, verification and role resolution are likewise elsewhere: the
+ * enumerated role type is a service-tier concern and is deliberately not referenced from this package.
  *
  * <h2>Provenance</h2>
  *
  * <p>The table is the relational form of the 80-byte {@code SEC-USER-DATA} record in copybook
- * {@code CSUSR01Y}; the ten seeded identities - five administrative, five standard - are the ones
- * {@code app/jcl/DUSRSECJ.jcl} supplies in stream at L35-L44. Legacy estate at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source text is reproduced here.
+ * {@code CSUSR01Y}, whose five mapped fields end at offset 57 where a named 23-byte filler begins;
+ * that filler is reconstructed from the declared record width on output and is neither an attribute nor
+ * a column. The record layout has the fifth-highest fan-out in the estate - twelve programs include
+ * the copybook - and the data set behind it is one of the file resources registered to the online
+ * transaction manager. Its Java consumers are the authentication service backing the sign-on
+ * transaction, the user-management service backing the four administrative user transactions, and the
+ * security configuration that derives the administrative gate from the role code.
+ *
+ * <p>The ten seeded identities - five administrative, five standard - are the ones
+ * {@code app/jcl/DUSRSECJ.jcl} supplies in stream at L35-L44 as <strong>ASCII card images</strong>,
+ * written to a physical sequential data set at a fixed record length of 80 with no indexed cluster of
+ * its own on that step. Because the content originates in stream in ASCII rather than in the mainframe
+ * encoding, no EBCDIC decode is needed to reproduce it - which is why the mainframe user-security data
+ * set having no ASCII twin costs nothing, its 800 bytes being exactly ten records of 80.
+ *
+ * <p>Legacy estate at checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19; the stamp is a provenance string for the
+ * traceability matrix header and is not asserted against any individual member. No legacy source text
+ * is reproduced here: member names, field names, byte offsets, widths, record lengths, line references
+ * and row counts are metadata describing where a mapping came from.
  */
 @DisplayName("Credential repository: closed surface, projected reads and keyset paging")
 final class UserSecurityRepositoryIT extends AbstractPostgresIT {
 
-    /** The number of identities the sign-on seed inserts. */
-    private static final int SEEDED_IDENTITIES = 10;
+    /**
+     * The number of identities the sign-on seed inserts.
+     *
+     * <p>Read from {@link TestDataFactory#SEEDED_USER_COUNT} rather than restated, so this test and the
+     * shared fixture contract cannot disagree about how many rows the seed owns.
+     */
+    private static final int SEEDED_IDENTITIES = TestDataFactory.SEEDED_USER_COUNT;
+
+    /** How many of the ten seeded identities carry the administrative role code. */
+    private static final int SEEDED_ADMINISTRATORS = 5;
+
+    /** How many of the ten seeded identities carry the standard role code. */
+    private static final int SEEDED_STANDARD_USERS = 5;
+
+    /** The administrative role code, the one value the legacy sign-on path tests for. */
+    private static final String ADMINISTRATIVE_ROLE_CODE = "A";
+
+    /** The standard role code, reached through the legacy unconditional alternative. */
+    private static final String STANDARD_ROLE_CODE = "U";
 
     /** The page size the legacy administrative browse presents, from a screen table occurring 10 times. */
     private static final int ADMIN_PAGE_SIZE = 10;
@@ -109,6 +224,21 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
 
     /** An identifier no seeded row carries, used for the absence and write assertions. */
     private static final String UNSEEDED_ID = "ZZTEST01";
+
+    /**
+     * A second reserved identifier, so a string-fidelity fixture can coexist with the write fixture.
+     *
+     * <p>Eight characters, because the entity refuses any other width immediately before the write, and
+     * inside the same upper-case-and-digit domain as {@link #UNSEEDED_ID} for the collation reason
+     * recorded on {@link #ABOVE_EVERY_IDENTIFIER}.
+     */
+    private static final String UNSEEDED_ID_SECOND = "ZZTEST02";
+
+    /** Width of both name columns, from the record layout: 20 characters each. */
+    private static final int NAME_COLUMN_WIDTH = 20;
+
+    /** The table this repository maps, named once for the catalogue queries. */
+    private static final String TABLE_NAME = "user_security";
 
     /**
      * A key above every identifier the estate uses, so a strictly-less count over it is the total.
@@ -129,9 +259,18 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
      */
     private static final String ABOVE_EVERY_IDENTIFIER = "ZZZZZZZZ";
 
-    /** A BCrypt digest of the expected form, so the entity accepts it. */
-    private static final String DIGEST =
-            "$2a$10$SYNTHETICDIGESTFORREPOSITORYITONLYNOTACREDENTIAL00001";
+    /**
+     * A value shaped like a stored digest, so the entity accepts it, that hashes nothing whatever.
+     *
+     * <p>Taken from {@link TestDataFactory#SYNTHETIC_BCRYPT_DIGEST} rather than written out here, for
+     * three reasons. The shared fixture owns credential handling for the whole test estate, so a value
+     * standing in for a credential belongs there and not in a test file. Its body spells out what it is,
+     * it is derived from no value at all, and a match against it always fails - so it can be read in a
+     * diff without anyone having to establish whether it is a real credential. And it carries the
+     * module's own cost factor, which is what lets {@link TestDataFactory#hasStoredDigestShape(String)}
+     * be applied to a row this test writes as well as to a row the seed wrote.
+     */
+    private static final String DIGEST = TestDataFactory.SYNTHETIC_BCRYPT_DIGEST;
 
     /** The bean-property accessor a credential column would bind to, which must exist nowhere. */
     private static final String FORBIDDEN_ACCESSOR = "getSecUsrPwd";
@@ -264,9 +403,9 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
     /**
      * Verifies the held keyed read the two maintenance transactions use.
      *
-     * <p>{@code app/cbl/COUSR02C.cbl} L322-L331 and {@code app/cbl/COUSR03C.cbl} L269-L278 both issue
-     * {@code EXEC CICS READ ... UPDATE}, which holds the record until the rewrite at L360 or the delete
-     * at L307 - and that delete names no record identifier at all, so the held record is the only one it
+     * <p>{@code app/cbl/COUSR02C.cbl} L322-L331 and {@code app/cbl/COUSR03C.cbl} L269-L278 both take a
+     * keyed read <em>for update</em>, which holds the record until the rewrite at L360 or the delete at
+     * L307 - and that delete names no record identifier at all, so the held record is the only one it
      * can mean. These tests prove the relational form really takes the hold and really keeps it for the
      * length of the unit of work, because a lock annotation that silently did nothing would leave the
      * lost update it exists to prevent, and no unit test can tell the difference.
@@ -434,6 +573,44 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("the same opening page requested descending comes back descending, because the "
+                + "sort is the caller's and this method imposes none of its own")
+        void opensTheBrowseDescendingWhenTheCallerAsksForIt() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+                final List<String> everyIdentifierAscending = identifiersOf(
+                        openingPage(repository, (int) totalIdentities(repository)));
+
+                final List<String> ascending = identifiersOf(repository.findAllProjectedBy(
+                                PageRequest.of(0, ADMIN_PAGE_SIZE, Sort.by(SORT_ATTRIBUTE)))
+                        .getContent());
+                final List<String> descending = identifiersOf(repository.findAllProjectedBy(
+                                PageRequest.of(0, ADMIN_PAGE_SIZE,
+                                        Sort.by(SORT_ATTRIBUTE).descending()))
+                        .getContent());
+
+                assertThat(ascending)
+                        .as("an ORDERED list and never a set: the sequence IS the property under test, "
+                                + "and a set comparison would discard exactly the thing being checked")
+                        .hasSize(ADMIN_PAGE_SIZE)
+                        .isSorted()
+                        .containsExactlyElementsOf(
+                                everyIdentifierAscending.subList(0, ADMIN_PAGE_SIZE));
+                assertThat(descending)
+                        .as("the descending page is the OTHER END of the same table, still an ordered "
+                                + "list, which is what proves the repository imposes no order of its "
+                                + "own - the legacy browse fills backwards as well as forwards, and an "
+                                + "imposed order would break one of the two directions")
+                        .hasSize(ADMIN_PAGE_SIZE)
+                        .isSortedAccordingTo(Comparator.reverseOrder())
+                        .containsExactlyElementsOf(everyIdentifierAscending
+                                .subList(everyIdentifierAscending.size() - ADMIN_PAGE_SIZE,
+                                        everyIdentifierAscending.size())
+                                .reversed());
+            });
+        }
+
+        @Test
         @DisplayName("the forward keyset read is strictly greater, ascending, and honours its limit")
         void readsForwardStrictlyAfterTheCursor() {
             runner().run(context -> {
@@ -554,6 +731,382 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
         }
     }
 
+    /**
+     * Verifies, through the repository, exactly what the sign-on seed put in this table.
+     *
+     * <p>This is the one table of the eleven whose rows arrive from {@code V4__seed_user_security.sql}
+     * rather than from {@code V3__seed_reference_data.sql}: V3 leaves it <strong>empty</strong> and
+     * raises if it is not, and V4 then loads the ten identities. Both sit above the production version
+     * ceiling, so a production deployment receives neither.
+     *
+     * <p>V4 already checks its own content in SQL, and these assertions are not that check repeated.
+     * They read the same rows <em>through the mapping every caller uses</em>, which is the only surface
+     * on which a correct row can still become a wrong object - a column bound to the wrong attribute, a
+     * width silently truncating, a projection widened to select the credential. The identity data is
+     * taken from {@link TestDataFactory#SEEDED_IDENTITIES} so that this file and the shared fixture
+     * contract are one statement of the ten identities rather than two that can drift.
+     */
+    @Nested
+    @DisplayName("the sign-on seed delivers ten identities, five administrative and five standard")
+    final class SeedContract {
+
+        /** Creates the nest. */
+        SeedContract() {
+        }
+
+        @Test
+        @DisplayName("holds exactly ten rows once all four migrations have been applied, which is the "
+                + "count V4 owns and V3 deliberately leaves at zero")
+        void holdsExactlyTenIdentities() {
+            runner().run(context -> assertThat(
+                    totalIdentities(context.getBean(UserSecurityRepository.class)))
+                    .as("V3 leaves this table empty and raises if it is not; V4 is the migration that "
+                            + "owns these ten rows, and the closed interface publishes no count() of "
+                            + "its own, so the total is one bounded range aggregate over a sentinel key")
+                    .isEqualTo(SEEDED_IDENTITIES));
+        }
+
+        @Test
+        @DisplayName("splits those ten exactly five and five between the administrative role code and "
+                + "the standard one, because the role code is the sole authority for the split")
+        void splitsTheTenIdentitiesFiveAndFiveByRoleCode() {
+            runner().run(context -> {
+                final List<String> roleCodes = everyIdentity(
+                        context.getBean(UserSecurityRepository.class))
+                        .stream()
+                        .map(UserSecurityRepository.AdminEntry::getSecUsrType)
+                        .toList();
+
+                assertThat(roleCodes).hasSize(SEEDED_IDENTITIES);
+                assertThat(roleCodes.stream().filter(ADMINISTRATIVE_ROLE_CODE::equals).count())
+                        .as("a count that stayed at ten while a role code flipped would move an "
+                                + "operator to the other side of the authorization gate unnoticed")
+                        .isEqualTo(SEEDED_ADMINISTRATORS);
+                assertThat(roleCodes.stream().filter(STANDARD_ROLE_CODE::equals).count())
+                        .isEqualTo(SEEDED_STANDARD_USERS);
+                assertThat(roleCodes)
+                        .as("and no seeded row carries a third code, even though the column would "
+                                + "accept one - see the unexpected-code assertion for why it must")
+                        .containsOnly(ADMINISTRATIVE_ROLE_CODE, STANDARD_ROLE_CODE);
+            });
+        }
+
+        @Test
+        @DisplayName("carries each of the ten identities under its own identifier, given name, family "
+                + "name and role code - identity only, never a credential")
+        void carriesEachSeededIdentityByNameAndRoleCode() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+
+                for (final SeededIdentity expected : TestDataFactory.SEEDED_IDENTITIES) {
+                    final Optional<UserSecurityRepository.AdminEntry> row =
+                            repository.findProjectedBySecUsrId(expected.userId());
+
+                    assertThat(row)
+                            .as("every seeded identifier resolves, and the projected read is the one "
+                                    + "the administrative list uses, so it reaches no digest at all")
+                            .isPresent();
+                    final UserSecurityRepository.AdminEntry entry = row.orElseThrow();
+                    assertThat(entry.getSecUsrId()).isEqualTo(expected.userId());
+                    assertThat(entry.getSecUsrFname()).isEqualTo(expected.firstName());
+                    assertThat(entry.getSecUsrLname()).isEqualTo(expected.lastName());
+                    assertThat(entry.getSecUsrType()).isEqualTo(expected.userTypeCode());
+                }
+
+                assertThat(identifiersOf(everyIdentity(repository)))
+                        .as("and the table holds those ten and no eleventh, in identifier order")
+                        .containsExactlyElementsOf(TestDataFactory.SEEDED_IDENTITIES.stream()
+                                .map(SeededIdentity::userId)
+                                .sorted()
+                                .toList());
+            });
+        }
+
+        @Test
+        @DisplayName("stores every one of the ten credentials as a full-length digest carrying a "
+                + "recognised version marker, and stores ten DISTINCT digests")
+        void storesTenDistinctFullLengthDigests() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+                final List<String> digests = seededDigests(repository);
+
+                assertThat(digests).hasSize(SEEDED_IDENTITIES);
+                for (final String digest : digests) {
+                    assertThat(digest.length())
+                            .as("the column is 60 wide for a digest and a stored value shorter than "
+                                    + "that is the shape a cleartext credential would have")
+                            .isEqualTo(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+                    assertThat(TestDataFactory.BCRYPT_VERSION_MARKERS)
+                            .as("a stored value must open with a recognised version marker")
+                            .anySatisfy(marker -> assertThat(digest).startsWith(marker));
+                    assertThat(TestDataFactory.hasStoredDigestShape(digest))
+                            .as("length, marker and the module's own cost factor together, checked by "
+                                    + "the shared fixture that owns credential handling")
+                            .isTrue();
+                }
+                assertThat(digests)
+                        .as("TEN DISTINCT VALUES from one shared input is the observable consequence of "
+                                + "ten independent salts; a repeated digest would mean an unsalted or "
+                                + "copied value, and replacing any one of them would stop being "
+                                + "detectable")
+                        .doesNotHaveDuplicates()
+                        .hasSize(TestDataFactory.SEEDED_DIGEST_COUNT);
+            });
+        }
+
+        @Test
+        @DisplayName("stores NO cleartext credential: no row's stored value is any of that row's own "
+                + "four visible fields, and none of them is short enough to be one")
+        void storesNoCleartextCredential() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+
+                for (final SeededIdentity identity : TestDataFactory.SEEDED_IDENTITIES) {
+                    final UserSecurity row = repository.findById(identity.userId()).orElseThrow();
+                    final String stored = row.credentialDigest();
+
+                    assertThat(stored)
+                            .as("a stored value equal to a field of its own row would be a value in "
+                                    + "clear, whatever else it was")
+                            .isNotEqualTo(row.getSecUsrId())
+                            .isNotEqualTo(row.getSecUsrFname())
+                            .isNotEqualTo(row.getSecUsrLname())
+                            .isNotEqualTo(row.getSecUsrType());
+                    assertThat(stored.length())
+                            .as("and it is 60 characters, which the legacy field's 8 bytes cannot be")
+                            .isEqualTo(TestDataFactory.BCRYPT_DIGEST_LENGTH)
+                            .isNotEqualTo(UserSecurity.SEC_USR_ID_WIDTH);
+                }
+            });
+        }
+
+        @Test
+        @DisplayName("round-trips all sixty characters of a genuinely produced digest, so the ONE "
+                + "deliberate width divergence in the schema is honoured end to end")
+        void roundTripsAllSixtyCharactersOfADigest() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+                final String freshDigest = TestDataFactory.digestOfFixtureCredentialWindow();
+                try {
+                    repository.save(new UserSecurity(UNSEEDED_ID, "TESTFIRST", "TESTLAST",
+                            freshDigest, STANDARD_ROLE_CODE));
+
+                    final String reloaded =
+                            repository.findById(UNSEEDED_ID).orElseThrow().credentialDigest();
+
+                    assertThat(reloaded.length())
+                            .as("a column left at the legacy width of 8 would truncate or refuse this "
+                                    + "value; 60 is the deliberate divergence, and this is what proves "
+                                    + "the storage honours it end to end rather than only declaring it")
+                            .isEqualTo(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+                    assertThat(reloaded)
+                            .as("byte for byte, because a digest truncated by even one character "
+                                    + "verifies nothing and fails silently rather than loudly")
+                            .isEqualTo(freshDigest);
+                    assertThat(TestDataFactory.hasStoredDigestShape(reloaded)).isTrue();
+                } finally {
+                    repository.deleteById(UNSEEDED_ID);
+                }
+                assertThat(repository.findById(UNSEEDED_ID)).isEmpty();
+                assertThat(totalIdentities(repository)).isEqualTo(SEEDED_IDENTITIES);
+            });
+        }
+    }
+
+    /**
+     * Verifies that a stored string comes back exactly as it went in.
+     *
+     * <p>Two properties, and they are not the same one. The seeded names are stored <em>unpadded</em> -
+     * the migration writes them at their natural length - so the mapping must return them at that
+     * length and must not pad them out to the column width. And a value that genuinely carries trailing
+     * blanks must keep them, because both name columns are bounded {@code VARCHAR} rather than
+     * {@code CHAR}: the server neither pads a short value nor strips a padded one, and nothing in the
+     * mapping trims either. Both directions matter to a caller reproducing a fixed-width record image,
+     * where the padding is part of the layout rather than noise.
+     *
+     * <p>No assertion in this class trims or strips the value it is asserting on. Doing so would make
+     * the two properties above indistinguishable and would let a mapping that quietly normalised
+     * whitespace pass.
+     */
+    @Nested
+    @DisplayName("a stored name comes back exactly as stored, neither padded nor trimmed")
+    final class StoredStringFidelity {
+
+        /** Creates the nest. */
+        StoredStringFidelity() {
+        }
+
+        @Test
+        @DisplayName("returns each seeded name at its own stored length, because the migration seeds it "
+                + "unpadded and a bounded VARCHAR pads nothing")
+        void returnsEachSeededNameAtItsStoredLength() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+
+                for (final SeededIdentity identity : TestDataFactory.SEEDED_IDENTITIES) {
+                    final UserSecurity row = repository.findById(identity.userId()).orElseThrow();
+
+                    assertThat(row.getSecUsrFname())
+                            .as("exactly what the seed wrote - not widened to the column width, and "
+                                    + "not narrowed by a normalisation the mapping must not perform")
+                            .isEqualTo(identity.firstName())
+                            .hasSize(identity.firstName().length());
+                    assertThat(row.getSecUsrLname())
+                            .isEqualTo(identity.lastName())
+                            .hasSize(identity.lastName().length());
+                    assertThat(row.getSecUsrId())
+                            .as("and the key stays at the layout's own width")
+                            .hasSize(UserSecurity.SEC_USR_ID_WIDTH);
+                }
+            });
+        }
+
+        @Test
+        @DisplayName("keeps every trailing blank of a name written at the full column width, which is "
+                + "what a caller reproducing a fixed-width record image depends on")
+        void keepsTheTrailingBlanksOfAFullWidthName() {
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+                final String paddedFirstName =
+                        TestDataFactory.padded("PADDEDFIRST", NAME_COLUMN_WIDTH, ' ', "secUsrFname");
+                final String paddedLastName =
+                        TestDataFactory.padded("PADDEDLAST", NAME_COLUMN_WIDTH, ' ', "secUsrLname");
+                try {
+                    repository.save(new UserSecurity(UNSEEDED_ID_SECOND, paddedFirstName,
+                            paddedLastName, DIGEST, STANDARD_ROLE_CODE));
+
+                    final UserSecurity reloaded =
+                            repository.findById(UNSEEDED_ID_SECOND).orElseThrow();
+
+                    assertThat(reloaded.getSecUsrFname())
+                            .as("a CHAR column would have padded a short value and a trimming mapping "
+                                    + "would have stripped this one; the layout needs neither")
+                            .isEqualTo(paddedFirstName)
+                            .hasSize(NAME_COLUMN_WIDTH);
+                    assertThat(reloaded.getSecUsrLname())
+                            .isEqualTo(paddedLastName)
+                            .hasSize(NAME_COLUMN_WIDTH);
+                } finally {
+                    repository.deleteById(UNSEEDED_ID_SECOND);
+                }
+                assertThat(repository.findById(UNSEEDED_ID_SECOND)).isEmpty();
+                assertThat(totalIdentities(repository)).isEqualTo(SEEDED_IDENTITIES);
+            });
+        }
+    }
+
+    /**
+     * Verifies the shape of the migrated table this repository reads, straight from the catalogue.
+     *
+     * <p>Three absences are asserted, and each is load-bearing rather than cosmetic. The table carries
+     * <strong>no foreign key</strong> in either direction, which is why the entity declares no
+     * association and why the repository publishes no join; the six foreign keys the index migration
+     * creates all lie between other tables. It carries <strong>no secondary index</strong>: the three
+     * B-tree indexes that migration creates stand in for alternate indexes on the card and transaction
+     * tables, and the only index here is the one the primary key implies. And it carries <strong>no
+     * sequence and no generated column</strong>, because the key is the eight-character business
+     * identifier taken from the leading bytes of the record image, and a surrogate key would break the
+     * record-image-to-row correspondence the byte-equivalence gate depends on.
+     *
+     * <p>Every query below is a complete literal with its one value bound as a parameter, so nothing is
+     * assembled from a string.
+     */
+    @Nested
+    @DisplayName("the migrated table carries no foreign key, no secondary index and no sequence")
+    final class SchemaShape {
+
+        /** Creates the nest. */
+        SchemaShape() {
+        }
+
+        @Test
+        @DisplayName("carries no foreign key in either direction, which is why no association is mapped")
+        void carriesNoForeignKeyInEitherDirection() {
+            runner().run(context -> {
+                final JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
+
+                assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM information_schema.table_constraints
+                         WHERE table_schema = 'public'
+                           AND constraint_type = 'FOREIGN KEY'
+                           AND table_name = ?
+                        """, Integer.class, TABLE_NAME))
+                        .as("an outgoing foreign key would make this table depend on another, and the "
+                                + "sign-on read would then be a join")
+                        .isZero();
+                assertThat(jdbc.queryForObject("""
+                        SELECT count(*)
+                          FROM information_schema.referential_constraints rc
+                          JOIN information_schema.constraint_column_usage ccu
+                            ON ccu.constraint_name = rc.unique_constraint_name
+                           AND ccu.constraint_schema = rc.unique_constraint_schema
+                         WHERE ccu.table_schema = 'public'
+                           AND ccu.table_name = ?
+                        """, Integer.class, TABLE_NAME))
+                        .as("and an incoming one would stop a delete of an identity from being the "
+                                + "single-row removal the administrative transaction issues")
+                        .isZero();
+            });
+        }
+
+        @Test
+        @DisplayName("carries no secondary index - the primary key's own unique index is the only one, "
+                + "because the three the index migration adds are on other tables")
+        void carriesNoSecondaryIndex() {
+            runner().run(context -> {
+                final JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
+
+                final List<String> indexNames = jdbc.queryForList("""
+                        SELECT indexname FROM pg_indexes
+                         WHERE schemaname = 'public'
+                           AND tablename = ?
+                         ORDER BY indexname
+                        """, String.class, TABLE_NAME);
+
+                assertThat(indexNames)
+                        .as("exactly one index, and it is the one the primary key constraint implies - "
+                                + "the legacy data set behind this table had no alternate index either")
+                        .containsExactly("pk_" + TABLE_NAME);
+                assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM information_schema.table_constraints
+                         WHERE table_schema = 'public'
+                           AND constraint_type = 'PRIMARY KEY'
+                           AND table_name = ?
+                        """, Integer.class, TABLE_NAME))
+                        .as("and that one index really is a primary key rather than a bare unique index")
+                        .isEqualTo(1);
+            });
+        }
+
+        @Test
+        @DisplayName("carries no sequence and no generated column, because the key is the business "
+                + "identifier and never a surrogate")
+        void carriesNoSequenceAndNoGeneratedColumn() {
+            runner().run(context -> {
+                final JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
+
+                assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM information_schema.columns
+                         WHERE table_schema = 'public'
+                           AND table_name = ?
+                           AND (is_identity = 'YES'
+                                OR is_generated <> 'NEVER'
+                                OR column_default IS NOT NULL)
+                        """, Integer.class, TABLE_NAME))
+                        .as("a generated, identity or defaulted key column would replace the business "
+                                + "identifier the record image carries in its leading eight bytes")
+                        .isZero();
+                assertThat(jdbc.queryForObject("""
+                        SELECT count(*) FROM information_schema.sequences
+                         WHERE sequence_schema = 'public'
+                           AND sequence_name LIKE ?
+                        """, Integer.class, TABLE_NAME + "%"))
+                        .as("and no sequence exists for this table under any name")
+                        .isZero();
+            });
+        }
+    }
+
     /** Locks down the closed surface of the frozen repository interface. */
     @Nested
     @DisplayName("the interface publishes nine operations and one credential-free projection")
@@ -664,6 +1217,40 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
      */
     private static String firstSeededIdentifier(final UserSecurityRepository repository) {
         return openingPage(repository, 1).get(0).getSecUsrId();
+    }
+
+    /**
+     * Reads every identity the table holds, ascending, as the credential-free projection.
+     *
+     * <p>Sized from {@link #totalIdentities(UserSecurityRepository)} rather than from a fixed number, so
+     * a table holding more rows than expected produces a failing count assertion rather than a silently
+     * truncated window that satisfies one.
+     *
+     * @param repository the repository to read through
+     * @return every projected row, in ascending identifier order
+     */
+    private static List<UserSecurityRepository.AdminEntry> everyIdentity(
+            final UserSecurityRepository repository) {
+        return openingPage(repository, (int) totalIdentities(repository));
+    }
+
+    /**
+     * Reads the stored digest of each seeded identity, in identifier order.
+     *
+     * <p>The keyed entity read is the one operation that brings a digest into memory at all, so the
+     * values are collected here, compared for length, marker and distinctness by the caller, and never
+     * logged, printed or rendered into an assertion message.
+     *
+     * @param repository the repository to read through
+     * @return the ten stored digests
+     */
+    private static List<String> seededDigests(final UserSecurityRepository repository) {
+        return TestDataFactory.SEEDED_IDENTITIES.stream()
+                .map(SeededIdentity::userId)
+                .sorted()
+                .map(userId -> repository.findById(userId).orElseThrow())
+                .map(UserSecurity::credentialDigest)
+                .toList();
     }
 
     /**

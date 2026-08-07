@@ -259,12 +259,14 @@ public class Customer {
      * National identifier - 9 bytes at offset 279 of the record image, mapped to a 255-character
      * nullable column.
      *
-     * <p><strong>This is one of exactly two nullable columns in the schema, the other being the
-     * government-issued identifier below.</strong> Those two are nullable for the same reason - both
-     * hold application-produced ciphertext, and no static artifact can produce ciphertext without
-     * committing key material - and no other column in any of the eleven application tables permits a
-     * null. A {@code null} must round-trip as {@code null} and must never be rewritten to an empty
-     * string or to the literal text {@code "null"}.
+     * <p><strong>This is the only nullable column in the whole schema.</strong> It is nullable because it
+     * holds application-produced ciphertext and no static artifact can produce ciphertext without
+     * committing key material, so absence is the only honest thing the reference seed can store here - and
+     * no other column in any of the eleven application tables permits a null. The government-issued
+     * identifier below is protected in exactly the same way and is nonetheless {@code NOT NULL}, because
+     * the seed carries a sealed envelope for it on every row; that one difference between the two is
+     * recorded on the attribute itself. A {@code null} must round-trip as {@code null} and must never be
+     * rewritten to an empty string or to the literal text {@code "null"}.
      *
      * <p><strong>This entity performs no encryption or decryption, and it will not accept
      * cleartext.</strong> The column is far wider than the legacy field because it stores ciphertext
@@ -668,11 +670,12 @@ public class Customer {
      * exception message is easily logged or returned; only the attribute name and the failing condition are
      * named.
      *
-     * <p>{@code null} is returned unchanged. Both attributes guarded by this method are nullable, for
-     * the same reason and by the same decision, so absence is a legitimate stored state for either and
-     * there is no third caller for which it would not be. A {@code null} therefore needs no flag to
-     * permit it: it is passed through as a genuine null and is never converted to an empty string or to
-     * the literal text {@code "null"}.
+     * <p>{@code null} is returned unchanged, and it is admitted for both guarded attributes rather than
+     * for one. Absence has to be representable in memory for either, because a record image read at a
+     * boundary may not carry a protected value yet; which of the two may then be <em>stored</em> absent is
+     * decided by the column rather than here, and only the national identifier's is nullable. A
+     * {@code null} therefore needs no flag to permit it at this boundary: it is passed through as a genuine
+     * null and is never converted to an empty string or to the literal text {@code "null"}.
      *
      * @param value         the candidate value, which may be {@code null}
      * @param attributeName the attribute being written, named in the failure message
