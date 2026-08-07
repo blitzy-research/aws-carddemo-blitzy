@@ -34,6 +34,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import org.junit.jupiter.api.AfterAll;
@@ -70,18 +71,20 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * range of lengths so the bound is pinned as inclusive at eight rather than merely "around"
  * eight.</p>
  *
- * <p><strong>Why the bound is the only constraint.</strong> {@code COSGN00C} tests the two submitted
- * values for emptiness inside a single ordered cascade at lines 118 through 129: the user id is
+ * <p><strong>Why there is no presence or business-format constraint.</strong> {@code COSGN00C}
+ * tests the two submitted values for emptiness inside a single ordered cascade at lines 118
+ * through 129: the user id is
  * examined first, the password second, and because the construct stops at the first matching clause a
  * submission with <em>both</em> values empty reports the user-id prompt alone - never the password
  * prompt, and never both messages together. Bean Validation evaluates constraints in an unspecified
  * order and reports every violation it finds, so a pair of presence constraints on this type would
  * emit two messages where the legacy screen emits exactly one. That is an observable difference on an
  * external interface, so the presence test stays in the service layer where the ordering can be
- * honoured. This class therefore proves the absence of every other constraint by behaviour: two
+ * honoured. This class therefore proves the absence of every business constraint by behaviour: two
  * nulls yield no violation, two empty strings yield no violation, and two all-space values yield no
- * violation, and no character-class, format, digit or strength rule fires either, because the legacy
- * screen applies none and any of them would reject input the legacy system accepts.</p>
+ * violation, and no printable character-class, format, digit or strength rule fires either. One
+ * transport rule excludes control and format characters from the identifier because the terminal
+ * cannot transmit them as operator text while HTTP can use them to forge a log record.</p>
  *
  * <p><strong>The credential is carried, never printed.</strong> The password field is defined on the
  * mapset with the non-display attribute, so the legacy terminal never echoed it, and
@@ -233,6 +236,10 @@ class SignOnRequestTest {
      * lower bound is zero and whose upper bound is eight, not from the type under test.</p>
      */
     private static final String WIDTH_VIOLATION_MESSAGE = "size must be between 0 and 8";
+
+    /** Stable message of the identifier control-character exclusion. */
+    private static final String CONTROL_CHARACTER_VIOLATION_MESSAGE =
+            "must not contain control or format characters";
 
     /** JSON property name of the user id. */
     private static final String USER_ID_PROPERTY = "userId";
@@ -582,7 +589,7 @@ class SignOnRequestTest {
     }
 
     /**
-     * The width bound is the only constraint the type declares.
+     * No presence or business-format constraint is declared.
      *
      * <p>The reason is behavioural rather than stylistic. {@code COSGN00C} tests the two
      * submitted values for emptiness inside one ordered cascade at lines 118 through 129 and
@@ -595,7 +602,7 @@ class SignOnRequestTest {
      * an empty and an all-space value without objecting to any of them.</p>
      */
     @Nested
-    @DisplayName("no constraint other than the width bound")
+    @DisplayName("no presence or business-format constraint")
     class NoOtherConstraint {
 
         @Test
@@ -662,8 +669,8 @@ class SignOnRequestTest {
         }
 
         @Test
-        @DisplayName("every violation that ever fires is a size violation, never any other kind")
-        void everyViolationThatFiresIsASizeViolation() {
+        @DisplayName("every over-width violation is a size violation")
+        void everyOverWidthViolationIsASizeViolation() {
             SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -677,12 +684,35 @@ class SignOnRequestTest {
         @ParameterizedTest(name = "value {0} is accepted")
         @ValueSource(strings = {"admin001", "ADMIN001", "AdMiN001", "00000001", "a", "1",
             "AB CD", " AB", "AB ", "A.B-C_D", "@#$%^&*(", "12345678"})
-        @DisplayName("no character-class, case or format rule fires on any value the screen accepts")
-        void noCharacterClassRuleFiresOnAnyValueTheScreenAccepts(String value) {
+        @DisplayName("no printable character-class, case or format rule rejects screen text")
+        void noPrintableCharacterClassRuleRejectsScreenText(String value) {
             SignOnRequest request = new SignOnRequest(value, value, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
+        }
+
+        @Test
+        @DisplayName("control and format characters are refused only in the identifier")
+        void controlAndFormatCharactersAreRefusedOnlyInTheIdentifier() {
+            final List<String> unsafeCharacters = List.of(
+                    "\n", "\r", "\t", String.valueOf('\0'), "\u0085", "\u200E");
+
+            for (final String unsafe : unsafeCharacters) {
+                final Set<ConstraintViolation<SignOnRequest>> identifierViolations =
+                        violationsOf(new SignOnRequest("A" + unsafe, null, null));
+                assertThat(identifierViolations).singleElement().satisfies(violation -> {
+                    assertThat(violation.getPropertyPath()).hasToString(USER_ID_PROPERTY);
+                    assertThat(violation.getMessage())
+                            .isEqualTo(CONTROL_CHARACTER_VIOLATION_MESSAGE);
+                    assertThat(violation.getConstraintDescriptor().getAnnotation())
+                            .isInstanceOf(Pattern.class);
+                });
+
+                assertThat(violationsOf(new SignOnRequest(null, "A" + unsafe, null)))
+                        .as("the credential is write-only and never enters an application log")
+                        .isEmpty();
+            }
         }
 
         @Test

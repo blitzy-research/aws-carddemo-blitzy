@@ -36,6 +36,7 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import org.junit.jupiter.api.AfterAll;
@@ -79,7 +80,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * of lengths so the bound is pinned as inclusive at eight rather than merely "around"
  * eight.</p>
  *
- * <h2>Why the bound is the only constraint, and why that is behaviour rather than taste</h2>
+ * <h2>Why there is no presence or business-format constraint</h2>
  *
  * <p>{@code COSGN00C} tests the two submitted values for emptiness inside a single ordered
  * cascade at lines 118 through 129: the user id is examined first, the password second, and
@@ -91,11 +92,14 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * difference on an external interface, so the presence test has to stay in the service layer
  * where the ordering can be honoured.</p>
  *
- * <p>This class therefore proves the absence of every other constraint by behaviour: an
+ * <p>This class therefore proves the absence of every business constraint by behaviour: an
  * instance carrying two nulls yields no violation, an instance carrying two empty strings
  * yields no violation, and an instance carrying two all-space values yields no violation. No
- * character-class, format, digit or strength rule fires either, because the legacy screen
- * applies none and any of them would reject input the legacy system accepts.</p>
+ * printable character-class, format, digit or strength rule fires either, because the legacy
+ * screen applies none and any of them would reject input the legacy system accepts. One
+ * transport rule additionally excludes control and format characters from the identifier:
+ * the terminal cannot transmit them as operator text, while HTTP can use them to forge a log
+ * record.</p>
  *
  * <h2>The credential is carried, never printed</h2>
  *
@@ -240,6 +244,10 @@ class SignOnRequestBoundaryTest {
      * lower bound is zero and whose upper bound is eight, not from the type under test.</p>
      */
     private static final String WIDTH_VIOLATION_MESSAGE = "size must be between 0 and 8";
+
+    /** Stable message of the identifier control-character exclusion. */
+    private static final String CONTROL_CHARACTER_VIOLATION_MESSAGE =
+            "must not contain control or format characters";
 
     /** JSON property name of the user id. */
     private static final String USER_ID_PROPERTY = "userId";
@@ -585,7 +593,7 @@ class SignOnRequestBoundaryTest {
     }
 
     /**
-     * The width bound is the only constraint the type declares.
+     * No presence or business-format constraint is declared.
      *
      * <p>The reason is behavioural rather than stylistic. {@code COSGN00C} tests the two
      * submitted values for emptiness inside one ordered cascade at lines 118 through 129 and
@@ -598,7 +606,7 @@ class SignOnRequestBoundaryTest {
      * an empty and an all-space value without objecting to any of them.</p>
      */
     @Nested
-    @DisplayName("no constraint other than the width bound")
+    @DisplayName("no presence or business-format constraint")
     class NoOtherConstraint {
 
         @Test
@@ -665,8 +673,8 @@ class SignOnRequestBoundaryTest {
         }
 
         @Test
-        @DisplayName("every violation that ever fires is a size violation, never any other kind")
-        void everyViolationThatFiresIsASizeViolation() {
+        @DisplayName("every over-width violation is a size violation")
+        void everyOverWidthViolationIsASizeViolation() {
             SignOnRequest request = new SignOnRequest(USER_ID_OVER_WIDTH, CREDENTIAL_OVER_WIDTH, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -680,8 +688,8 @@ class SignOnRequestBoundaryTest {
         @ParameterizedTest(name = "value {0} is accepted")
         @ValueSource(strings = {"admin001", "ADMIN001", "AdMiN001", "00000001", "a", "1",
             "AB CD", " AB", "AB ", "A.B-C_D", "@#$%^&*(", "12345678"})
-        @DisplayName("no character-class, case or format rule fires on any value the screen accepts")
-        void noCharacterClassRuleFiresOnAnyValueTheScreenAccepts(String value) {
+        @DisplayName("no printable character-class, case or format rule rejects screen text")
+        void noPrintableCharacterClassRuleRejectsScreenText(String value) {
             SignOnRequest request = new SignOnRequest(value, value, null);
 
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
@@ -696,6 +704,29 @@ class SignOnRequestBoundaryTest {
 
             assertThat(withEmbeddedSpace).hasSize(USER_ID_WIDTH);
             assertThat(violationsOf(request)).isEmpty();
+        }
+
+        @Test
+        @DisplayName("control and format characters are refused only in the identifier")
+        void controlAndFormatCharactersAreRefusedOnlyInTheIdentifier() {
+            final List<String> unsafeCharacters = List.of(
+                    "\n", "\r", "\t", String.valueOf('\0'), "\u0085", "\u200E");
+
+            for (final String unsafe : unsafeCharacters) {
+                final Set<ConstraintViolation<SignOnRequest>> identifierViolations =
+                        violationsOf(new SignOnRequest("A" + unsafe, null, null));
+                assertThat(identifierViolations).singleElement().satisfies(violation -> {
+                    assertThat(violation.getPropertyPath()).hasToString(USER_ID_PROPERTY);
+                    assertThat(violation.getMessage())
+                            .isEqualTo(CONTROL_CHARACTER_VIOLATION_MESSAGE);
+                    assertThat(violation.getConstraintDescriptor().getAnnotation())
+                            .isInstanceOf(Pattern.class);
+                });
+
+                assertThat(violationsOf(new SignOnRequest(null, "A" + unsafe, null)))
+                        .as("the credential is write-only and never enters an application log")
+                        .isEmpty();
+            }
         }
 
         @Test

@@ -1599,6 +1599,25 @@ class AccountUpdateRequestTest {
             assertThat(request.creditLimit()).isSameAs(amount);
         }
 
+        @Test
+        @DisplayName("reconciling navigation replaces that component and preserves all forty-five others")
+        void reconcilingNavigationReplacesOnlyThatComponent() {
+            Draft originalDraft = Draft.realistic();
+            AccountUpdateRequest original = originalDraft.build();
+            NavigationContext reconciled = new NavigationContext(
+                    "CM00", "COMEN01C", "CAUP", "COACTUPC", "USER0001", "U",
+                    NavigationContext.ProgramContext.REENTER, "000000011", "MARY ANN", "Q",
+                    "SMITH", "00000000011", "Y", "4111111111111111", "CACTUPA", "CACTUP");
+            Draft expectedDraft = Draft.realistic();
+            expectedDraft.navigationContext = reconciled;
+
+            AccountUpdateRequest copied = original.withNavigationContext(reconciled);
+
+            assertThat(copied).isEqualTo(expectedDraft.build()).isNotSameAs(original);
+            assertThat(copied.navigationContext()).isSameAs(reconciled);
+            assertThat(original.navigationContext()).isNull();
+        }
+
         /**
          * The textual form is a redaction, asserted negatively on purpose. Every one of the
          * forty-three components is either regulated personal data, a regulated financial value, or a

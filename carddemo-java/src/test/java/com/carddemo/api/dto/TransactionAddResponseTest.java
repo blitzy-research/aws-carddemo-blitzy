@@ -182,7 +182,8 @@ class TransactionAddResponseTest {
 
     private static TransactionAddResponse fullyPopulated() {
         return new TransactionAddResponse(TRANSACTION_ID, ACCOUNT_ID, CARD_NUMBER, TYPE_CODE,
-                CATEGORY_CODE, SOURCE_POS_TERMINAL, DESCRIPTION_AT_FULL_WIDTH, AMOUNT_NEGATIVE,
+                CATEGORY_CODE, SOURCE_POS_TERMINAL, DESCRIPTION_AT_FULL_WIDTH,
+                AMOUNT_NEGATIVE.toPlainString(), AMOUNT_NEGATIVE,
                 ORIGINATION_DATE, PROCESSING_DATE, MERCHANT_ID, MERCHANT_NAME_AT_FULL_WIDTH,
                 MERCHANT_CITY_AT_FULL_WIDTH, MERCHANT_ZIP, CONFIRMATION_LOWER_CASE,
                 TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
@@ -191,26 +192,27 @@ class TransactionAddResponseTest {
     }
 
     private static TransactionAddResponse withMessage(String message, boolean generalError) {
-        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
+        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, message,
                 generalError, List.of(), null, null, null);
     }
 
     private static TransactionAddResponse withAmount(BigDecimal amount) {
-        return new TransactionAddResponse(null, null, null, null, null, null, null, amount, null,
+        return new TransactionAddResponse(null, null, null, null, null, null, null, null, amount,
+                null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 List.of(), null, null, null);
     }
 
     private static TransactionAddResponse withFieldErrors(List<ErrorResponse.FieldError>
             fieldErrors) {
-        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
+        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 fieldErrors, null, null, null);
     }
 
     private static TransactionAddResponse withNavigation(NavigationContext navigationContext) {
-        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
+        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, false,
                 List.of(), null, null, navigationContext);
     }
@@ -369,7 +371,7 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, TransactionAddResponse.MESSAGE_TYPE_CODE_EMPTY, true, threeErrors,
+                null, null, null, TransactionAddResponse.MESSAGE_TYPE_CODE_EMPTY, true, threeErrors,
                 "TTYPCD", null, reEntryNavigation());
 
         String onlySummary = response.message();
@@ -531,7 +533,7 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse response = new TransactionAddResponse(paddedField, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, composed, false, List.of(), null, null, null);
+                null, null, null, null, composed, false, List.of(), null, null, null);
 
         assertThat(paddedField)
                 .as("the field itself stays sixteen characters wide")
@@ -584,7 +586,7 @@ class TransactionAddResponseTest {
                 + TransactionAddResponse.MESSAGE_SUCCESS_TERMINATOR;
 
         TransactionAddResponse response = new TransactionAddResponse(FIRST_EVER_TRANSACTION_ID,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
                 CURRENT_TIME, composed, false, List.of(), FOCUS_FIELD_ID, NEXT_ROUTE,
                 firstEntryNavigation());
@@ -659,7 +661,7 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse errorsWithoutFailure = new TransactionAddResponse(null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, false, oneError, null, null, null);
+                null, null, null, null, null, null, false, oneError, null, null, null);
         TransactionAddResponse failureWithoutErrors = withMessage(
                 TransactionAddResponse.MESSAGE_ADD_FAILED, true);
 
@@ -746,7 +748,7 @@ class TransactionAddResponseTest {
     void aFirstSubmissionCarriesNoFieldError() {
         TransactionAddResponse response = new TransactionAddResponse(null, ACCOUNT_ID, CARD_NUMBER,
                 null, null, null, null, null, null, null, null, null, null, null, null,
-                TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
+                null, TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
                 CURRENT_TIME, TransactionAddResponse.MESSAGE_TYPE_CODE_EMPTY, true, List.of(), null,
                 null, firstEntryNavigation());
 
@@ -766,7 +768,7 @@ class TransactionAddResponseTest {
     void aReSubmissionMayCarryFieldErrors() {
         TransactionAddResponse response = new TransactionAddResponse(null, ACCOUNT_ID, CARD_NUMBER,
                 null, CATEGORY_CODE, null, null, null, null, null, null, null, null, null, null,
-                TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
+                null, TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE, PROGRAM_NAME, TITLE_LINE_TWO,
                 CURRENT_TIME, TransactionAddResponse.MESSAGE_TYPE_CODE_EMPTY, true,
                 List.of(new ErrorResponse.FieldError("typeCode", "TTYPCD",
                         ErrorResponse.FieldState.MISSING)),
@@ -785,7 +787,7 @@ class TransactionAddResponseTest {
     void theFocusHintTravelsIndependentlyOfTheFailingField() {
         TransactionAddResponse response = new TransactionAddResponse(TRANSACTION_ID, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, TransactionAddResponse.MESSAGE_DUPLICATE_TRANSACTION_ID,
+                null, null, null, null, null, TransactionAddResponse.MESSAGE_DUPLICATE_TRANSACTION_ID,
                 true, List.of(), FOCUS_FIELD_ID, null, null);
 
         assertThat(response.message())
@@ -1061,10 +1063,10 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse padded = new TransactionAddResponse(null, null, null, null, null,
                 null, trailingSpaces, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, null, false, List.of(), null, null, null);
         TransactionAddResponse unpadded = new TransactionAddResponse(null, null, null, null, null,
                 null, shortDescription, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, null, false, List.of(), null, null, null);
 
         assertThat(unpadded.description())
                 .as("six characters stay six; nothing pads a value up to its bound")
@@ -1095,7 +1097,7 @@ class TransactionAddResponseTest {
         String neitherValue = "Q";
 
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, neitherValue, null, null,
+                null, null, null, null, null, null, null, null, null, null, neitherValue, null, null,
                 null, null, null, null, TransactionAddResponse.MESSAGE_CONFIRM_INVALID, true,
                 List.of(), "CONFIRM", null, null);
 
@@ -1110,7 +1112,7 @@ class TransactionAddResponseTest {
     @DisplayName("every coded value keeps its leading zeros and never becomes a bare digit")
     void everyCodedValueKeepsItsLeadingZeros() {
         TransactionAddResponse response = new TransactionAddResponse(FIRST_EVER_TRANSACTION_ID,
-                ACCOUNT_ID, null, null, CATEGORY_CODE, null, null, null, null, null, MERCHANT_ID,
+                ACCOUNT_ID, null, null, CATEGORY_CODE, null, null, null, null, null, null, MERCHANT_ID,
                 null, null, null, null, null, null, null, null, null, null, null, false, List.of(),
                 null, null, null);
 
@@ -1128,7 +1130,7 @@ class TransactionAddResponseTest {
     @DisplayName("coded values survive the wire as text, quoted and with their zeros intact")
     void codedValuesSurviveTheWireAsText() throws JsonProcessingException {
         TransactionAddResponse response = new TransactionAddResponse(FIRST_EVER_TRANSACTION_ID,
-                ACCOUNT_ID, null, null, CATEGORY_CODE, null, null, null, null, null, MERCHANT_ID,
+                ACCOUNT_ID, null, null, CATEGORY_CODE, null, null, null, null, null, null, MERCHANT_ID,
                 null, null, null, null, null, null, null, null, null, null, null, false, List.of(),
                 null, null, null);
 
@@ -1157,10 +1159,10 @@ class TransactionAddResponseTest {
     void theIdentifierIsCarriedAsDataOnly() {
         TransactionAddResponse first = new TransactionAddResponse(FIRST_EVER_TRANSACTION_ID, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, null, null, false, List.of(), null, null, null);
         TransactionAddResponse second = new TransactionAddResponse(FIRST_EVER_TRANSACTION_ID, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, null, null, false, List.of(), null, null, null);
 
         assertThat(first.newTransactionId())
                 .as("constructing twice issues nothing: the key is supplied, never derived")
@@ -1190,7 +1192,7 @@ class TransactionAddResponseTest {
     @DisplayName("an all-space date round trips unchanged, never null, never empty, never trimmed")
     void anAllSpaceDateRoundTripsUnchanged() throws JsonProcessingException {
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
-                null, null, null, ALL_SPACE_DATE, ALL_SPACE_DATE, null, null, null, null, null,
+                null, null, null, null, ALL_SPACE_DATE, ALL_SPACE_DATE, null, null, null, null, null,
                 null, null, null, null, null, null, null, false, List.of(), null, null, null);
 
         assertThat(response.originationDate())
@@ -1212,8 +1214,9 @@ class TransactionAddResponseTest {
         String impossible = "2022-02-31";
 
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
-                null, null, null, impossible, impossible, null, null, null, null, null, null, null,
-                null, null, null, null, TransactionAddResponse.MESSAGE_ORIGINATION_DATE_INVALID,
+                null, null, null, null, impossible, impossible, null, null, null, null, null, null,
+                null, null, null, null, null,
+                TransactionAddResponse.MESSAGE_ORIGINATION_DATE_INVALID,
                 true, List.of(), "TORIGDT", null, null);
 
         assertThat(response.originationDate())
@@ -1234,7 +1237,7 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
                 padded, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, false, List.of(), null, null, null);
 
         String carried = response.source();
 
@@ -1339,8 +1342,8 @@ class TransactionAddResponseTest {
     @DisplayName("an empty text produces no violation, so no non-blank or non-empty rule exists")
     void anEmptyTextProducesNoViolation() {
         TransactionAddResponse allEmpty = new TransactionAddResponse("", "", "", "", "", "", "",
-                null, "", "", "", "", "", "", "", "", "", "", "", "", "", "", false, List.of(), "",
-                "", null);
+                "", null, "", "", "", "", "", "", "", "", "", "", "", "", "", "", false,
+                List.of(), "", "", null);
 
         assertThat(violationsOf(allEmpty)).isEmpty();
         assertThat(allEmpty.message()).isEmpty();
@@ -1351,7 +1354,7 @@ class TransactionAddResponseTest {
     @DisplayName("a blank-filled value produces no violation and keeps every space it carries")
     void aBlankFilledValueProducesNoViolation() {
         TransactionAddResponse blankFilled = new TransactionAddResponse(null, null, null, null,
-                null, null, null, null, ALL_SPACE_DATE, ALL_SPACE_DATE, null, null, null,
+                null, null, null, null, null, ALL_SPACE_DATE, ALL_SPACE_DATE, null, null, null,
                 ALL_SPACE_DATE, " ", null, null, null, null, null, null, null, false, List.of(),
                 null, null, null);
 
@@ -1366,7 +1369,7 @@ class TransactionAddResponseTest {
     @DisplayName("a non-numeric coded value produces no violation, so no pattern rule exists")
     void aNonNumericCodedValueProducesNoViolation() {
         TransactionAddResponse nonNumeric = new TransactionAddResponse("NOT-A-KEY-16CHRS",
-                "ABCDEFGHIJK", "NOTACARDNUMBER!!", "AB", "WXYZ", null, null, null, "NOT-A-DATE",
+                "ABCDEFGHIJK", "NOTACARDNUMBER!!", "AB", "WXYZ", null, null, null, null, "NOT-A-DATE",
                 "??????????", "ABCDEFGHI", null, null, "ZZZZZZZZZZ", "?", null, null, null, null,
                 null, null, null, false, List.of(), null, null, null);
 
@@ -1392,7 +1395,7 @@ class TransactionAddResponseTest {
     void onlyAValueBeyondItsMeasuredWidthIsRejected() {
         TransactionAddResponse tooWide = new TransactionAddResponse(null, "x".repeat(12), null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, false, List.of(), null, null, null);
+                null, null, null, null, null, false, List.of(), null, null, null);
 
         Set<ConstraintViolation<TransactionAddResponse>> violations = violationsOf(tooWide);
 
@@ -1413,7 +1416,7 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse response = new TransactionAddResponse(null, null, null, null, null,
                 null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                null, null, null, false, List.of(), null, longRoute, null);
+                null, null, null, null, false, List.of(), null, longRoute, null);
 
         assertThat(response.nextRoute()).isEqualTo(longRoute);
         assertThat(violationsOf(response))
@@ -1440,9 +1443,11 @@ class TransactionAddResponseTest {
     }
 
     private static TransactionAddResponse response(String nextRoute) {
-        return new TransactionAddResponse(null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, false,
-                List.of(), null, nextRoute, null);
+        return new TransactionAddResponse(
+                null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null,
+                false, List.of(), null, nextRoute, null);
     }
 
     @Test
@@ -1563,7 +1568,8 @@ class TransactionAddResponseTest {
 
         TransactionAddResponse response = new TransactionAddResponse(TRANSACTION_ID, ACCOUNT_ID,
                 CARD_NUMBER, TYPE_CODE, CATEGORY_CODE, SOURCE_POS_TERMINAL,
-                DESCRIPTION_AT_FULL_WIDTH, AMOUNT_NEGATIVE, ORIGINATION_DATE, PROCESSING_DATE,
+                DESCRIPTION_AT_FULL_WIDTH, AMOUNT_NEGATIVE.toPlainString(), AMOUNT_NEGATIVE,
+                ORIGINATION_DATE, PROCESSING_DATE,
                 MERCHANT_ID, MERCHANT_NAME_AT_FULL_WIDTH, MERCHANT_CITY_AT_FULL_WIDTH, MERCHANT_ZIP,
                 CONFIRMATION_LOWER_CASE, TRANSACTION_NAME, TITLE_LINE_ONE, CURRENT_DATE,
                 PROGRAM_NAME, TITLE_LINE_TWO, CURRENT_TIME,

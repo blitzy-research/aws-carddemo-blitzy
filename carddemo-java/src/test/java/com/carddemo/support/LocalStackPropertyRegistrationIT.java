@@ -30,6 +30,9 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -103,7 +106,17 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
             "spring.cloud.aws.sns.endpoint",
             "carddemo.aws.endpoint-override");
 
-    /** Everything the registration publishes, in the order it publishes it. */
+    /**
+     * Everything the registration publishes, in the order it publishes it.
+     *
+     * <p>The first seven pin the integration's own clients; the last six are every key
+     * {@code com.carddemo.config.AwsProperties} binds. The four resource names are among them because
+     * the base class has <em>provisioned</em> those resources in the emulator it started, so publishing
+     * them is what makes "the resource your settings name exists and is reachable" true by construction
+     * rather than by coincidence. Each name is published at the value the profile documents already
+     * declare, so the lift confirms the floor rather than substituting for it - which is why the
+     * floor-and-lift parity test below still holds over the whole list.</p>
+     */
     private static final List<String> EXPECTED_REGISTRATIONS = List.of(
             "spring.cloud.aws.region.static",
             "spring.cloud.aws.credentials.access-key",
@@ -112,7 +125,12 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
             "spring.cloud.aws.s3.endpoint",
             "spring.cloud.aws.sqs.endpoint",
             "spring.cloud.aws.sns.endpoint",
-            "carddemo.aws.endpoint-override");
+            "carddemo.aws.region",
+            "carddemo.aws.endpoint-override",
+            "carddemo.aws.s3.batch-staging-bucket",
+            "carddemo.aws.sqs.job-queue",
+            "carddemo.aws.sqs.message-group-id",
+            "carddemo.aws.sns.job-notification-topic");
 
     /** The fixed port the emulator publishes inside the development stack. */
     private static final String EMULATOR_PORT = "4566";
@@ -154,16 +172,69 @@ class LocalStackPropertyRegistrationIT extends AbstractLocalStackIT {
     class TheLift {
 
         @Test
-        @DisplayName("exactly the region, the credentials and all five endpoint settings")
+        @DisplayName("exactly the region, the credentials, all five endpoint settings and all four "
+                + "provisioned resource names")
         void publishesExactlyTheAwsKeys() {
             final RecordingPropertyRegistry registry = record();
 
             assertThat(registry.names())
                     .as("the region and credentials pin the client away from the default chain; the"
                             + " five endpoint settings pin both the framework's clients and this"
-                            + " module's own settings type away from the real service")
+                            + " module's own settings type away from the real service; and the four"
+                            + " resource names are the ones the base class provisioned in that emulator")
                     .containsExactlyElementsOf(EXPECTED_REGISTRATIONS);
             assertThat(registry.size()).isEqualTo(EXPECTED_REGISTRATIONS.size());
+        }
+
+        @Test
+        @DisplayName("every provisioned resource name is published at the value the profile declares")
+        void publishesTheProvisionedResourceNames() {
+            final RecordingPropertyRegistry registry = record();
+
+            assertThat(registry.valueOf("carddemo.aws.region"))
+                    .as("the module's own region key must agree with the running emulator")
+                    .isEqualTo(emulatorRegion())
+                    .isEqualTo(REGION);
+            assertThat(registry.valueOf("carddemo.aws.s3.batch-staging-bucket"))
+                    .isEqualTo(stagingBucket())
+                    .isEqualTo(BATCH_STAGING_BUCKET);
+            assertThat(registry.valueOf("carddemo.aws.sqs.job-queue"))
+                    .as("the queue name is bound byte-identically in every profile document, in the"
+                            + " compose definition and in the development stack's provisioning hook, and"
+                            + " a queue write defined errors-ignored gives a disagreement no failure"
+                            + " signal at all")
+                    .isEqualTo(JOB_SUBMISSION_QUEUE)
+                    .endsWith(FIFO_SUFFIX);
+            assertThat(registry.valueOf("carddemo.aws.sqs.message-group-id"))
+                    .isEqualTo(MESSAGE_GROUP_ID);
+            assertThat(registry.valueOf("carddemo.aws.sns.job-notification-topic"))
+                    .isEqualTo(JOB_NOTIFICATION_TOPIC);
+        }
+
+        @Test
+        @DisplayName("and each of those resources actually exists in the emulator that was started")
+        void theNamedResourcesExist() {
+            // The point of publishing a name the base class provisioned is that the name is reachable.
+            // Asserting the registration alone would leave the guarantee untested: a context would still
+            // be told about a queue, a bucket and a topic that might not be there, and for a queue
+            // defined errors-ignored that is a silent short delivery rather than an error.
+            assertThat(isFifoQueue(jobSubmissionQueueUrl()))
+                    .as("the submission queue must be a first-in-first-out queue, because the legacy"
+                            + " append disposition is what the ordering guarantee reproduces")
+                    .isTrue();
+            assertThat(queueAttributes(jobSubmissionQueueUrl())
+                    .get(QueueAttributeName.CONTENT_BASED_DEDUPLICATION))
+                    .as("content-based deduplication must be off, or two cards carrying identical bytes"
+                            + " collapse into one message inside the deduplication window")
+                    .isEqualTo("false");
+            assertThat(bucketVersioningStatus(stagingBucket()))
+                    .as("object versioning is what carries the retained-generation semantics of the"
+                            + " legacy output data sets")
+                    .isEqualTo(BucketVersioningStatus.ENABLED);
+            assertThat(jobNotificationTopicArn())
+                    .as("the notification topic must have been provisioned and must be named as the"
+                            + " profile declares")
+                    .endsWith(":" + JOB_NOTIFICATION_TOPIC);
         }
 
         @Test

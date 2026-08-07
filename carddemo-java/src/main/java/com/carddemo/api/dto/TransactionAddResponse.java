@@ -97,9 +97,11 @@ import java.util.List;
  *
  * <h2>Money is exact, and surplus digits are dropped rather than rounded</h2>
  *
- * <p>The amount is a {@link BigDecimal} whose contractual scale is two, matching the two-decimal
- * zoned quantity declared in {@code app/cpy/CVTRA05Y.cpy} and the two-decimal numeric column it
- * is persisted into. No floating-point type may ever stand in for it. Just as importantly, the
+ * <p>The persisted amount is a {@link BigDecimal} whose contractual scale is two, matching the
+ * two-decimal zoned quantity declared in {@code app/cpy/CVTRA05Y.cpy} and the two-decimal numeric
+ * column it is persisted into. The separately carried {@link #amountEntered()} is the twelve-character
+ * screen image and survives confirmation and validation turns before a record exists. No floating-point
+ * type may ever stand in for the persisted value. Just as importantly, the
  * legacy estate contains <strong>no rounding clause at all</strong> &mdash; not one arithmetic
  * statement anywhere in the twenty-eight programs asks for rounding &mdash; and a store into a
  * two-decimal field without one discards the surplus digits toward zero. The module therefore
@@ -108,7 +110,7 @@ import java.util.List;
  * performs no scaling and no arithmetic of any kind: it carries whatever exact value it is handed,
  * so that the single place where digits are discarded stays single. The edited display form the
  * screen shows, cited by the shape message at line 345 and matching the map's twelve-character
- * width, is a rendering device and is never carried in place of the value.
+ * width, is carried independently and is never substituted for the persisted value.
  *
  * <h2>Widths diverge between screens on purpose</h2>
  *
@@ -182,10 +184,13 @@ import java.util.List;
  *     at line 90. Sixty is this map's width and is deliberately neither the transaction-list
  *     map's narrower width nor the persisted record's wider one. Blank or {@code null} on the
  *     success path.
+ * @param amountEntered the twelve-character amount image the operator entered, from map item
+ *     {@code TRNAMT} at line 96. Carried independently of {@code amount} so validation and
+ *     confirmation turns redisplay the exact screen text even though no record has yet been written.
  * @param amount the transaction amount, an exact decimal whose contractual scale is two, from map
- *     item {@code TRNAMT} at line 96 and persisted into the two-decimal zoned field of
+ *     the successful persisted projection and the two-decimal zoned field of
  *     {@code app/cpy/CVTRA05Y.cpy}. Neither scaled nor rounded nor formatted by this type, and
- *     legitimately negative. {@code null} on the success path.
+ *     legitimately negative. {@code null} until a write succeeds.
  * @param originationDate the origination date the operator supplied, ten characters, from map item
  *     {@code TORIGDT} at line 102. Opaque text in the shape the format message at
  *     {@code app/cbl/COTRN02C.cbl} line 360 names; never a date type. Blank or {@code null} on the
@@ -294,14 +299,18 @@ public record TransactionAddResponse(
            persisted record's 100. */
         @Size(max = 60) String description,
 
-        /* TRNAMT, width 12 on the map - COTRN02.CPY:96. Carried as an exact decimal of
-           contractual scale 2, never as the edited display form the screen shows. The scale is
-           stated in the published schema and enforced by the compact constructor, because a scale
-           that is documented and unchecked is a scale a producer can silently break. */
+        /* TRNAMT, width 12 on the map - COTRN02.CPY:96. The exact text redisplayed on every turn,
+           independent of whether a record has been written. */
+        @Size(max = TransactionAddResponse.AMOUNT_ENTERED_LENGTH) String amountEntered,
+
+        /* Persisted TRAN-AMT. Carried as an exact decimal of contractual scale 2 only after a
+           successful write. The scale is stated in the published schema and enforced by the compact
+           constructor, because a scale that is documented and unchecked is a scale a producer can
+           silently break. */
         @Schema(description = "Transaction amount. Record field TRAN-AMT of CVTRA05Y.cpy line 10: a "
                 + "signed zoned decimal with nine integer digits and two decimal places, so total "
-                + "precision 11 and scale exactly 2. The map's twelve-character edited display form "
-                + "is deliberately not reproduced; this is the numeric value alone.")
+                + "precision 11 and scale exactly 2. Present only after a successful write; "
+                + "amountEntered independently carries the screen's twelve-character image.")
         BigDecimal amount,
 
         /* TORIGDT, width 10 - COTRN02.CPY:102. Opaque text; no date type anywhere in this file. */
@@ -745,6 +754,9 @@ public record TransactionAddResponse(
      */
     public static final int AMOUNT_SCALE = 2;
 
+    /** Width of the transaction-add screen's edited amount item {@code TRNAMT}. */
+    public static final int AMOUNT_ENTERED_LENGTH = 12;
+
     /**
      * The number of integer digits the amount may carry, from the nine integer digits of the same
      * record field. With {@link #AMOUNT_SCALE} this gives the total precision of eleven that the
@@ -845,6 +857,7 @@ public record TransactionAddResponse(
                 + ", categoryCode=" + categoryCode
                 + ", source=" + source
                 + ", description=" + REDACTION_PLACEHOLDER
+                + ", amountEntered=" + REDACTION_PLACEHOLDER
                 + ", amount=" + REDACTION_PLACEHOLDER
                 + ", originationDate=" + originationDate
                 + ", processingDate=" + processingDate

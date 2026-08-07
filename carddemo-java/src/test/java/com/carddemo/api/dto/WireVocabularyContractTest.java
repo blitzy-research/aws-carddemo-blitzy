@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Every screen in the legacy estate carries the same common header, the same focus hint and the same
  * onward-navigation marker, so every contract derived from a screen carries those same concepts. Nothing
- * forces the twenty-eight types to agree on what to call them, and nothing in a per-type test would notice
+ * forces the thirty-two types to agree on what to call them, and nothing in a per-type test would notice
  * disagreement: each type reads correctly on its own while a consumer integrating two of them meets
  * {@code screenTitleLine1} in one and {@code title01} in the next. The cost of that drift falls entirely on
  * the consumer, which is why it is asserted here, across the package, rather than in any one type's test.</p>
@@ -58,14 +58,17 @@ final class WireVocabularyContractTest {
     /**
      * Every top-level request and response type of the contract package.
      *
-     * <p>Twenty-eight entries, one per file. Written out rather than discovered, so a type added to the
+     * <p>Thirty-two entries, one per file. Written out rather than discovered, so a type added to the
      * package and forgotten here is visible as a gap in this list rather than silently exempt from every rule
      * below. No import is needed because this test lives in the package it governs.</p>
      */
     private static final List<Class<?>> CONTRACT_TYPES = List.of(
             AccountUpdateRequest.class, AccountUpdateResponse.class, AccountViewResponse.class,
-            BillPaymentRequest.class, BillPaymentResponse.class, CardDetailResponse.class,
-            CardListRequest.class, CardListResponse.class, CardUpdateRequest.class,
+            BatchJobExecutionResponse.class, BatchJobLaunchRequest.class,
+            BatchJobLaunchResponse.class,
+            BillPaymentRequest.class, BillPaymentResponse.class, CardDetailRequest.class,
+            CardDetailResponse.class, CardListRequest.class, CardListResponse.class,
+            CardUpdateRequest.class,
             CardUpdateResponse.class, ErrorResponse.class, FieldErrorDecorator.class,
             MenuResponse.class, NavigationContext.class, PageMetadata.class, ReportRequest.class,
             ReportResponse.class, ScreenWorkArea.class, SignOnRequest.class, SignOnResponse.class,
@@ -93,6 +96,9 @@ final class WireVocabularyContractTest {
 
     /** The canonical spelling of the page indicator the screen displays. */
     private static final String CANONICAL_PAGE_INDICATOR = "displayedPageNumber";
+
+    /** The CCLI-specific spelling of the page number retained for the following turn. */
+    private static final String RETAINED_PAGE_NUMBER = "retainedPageNumber";
 
     /**
      * Width the focus hint is bounded to wherever it is bounded at all.
@@ -223,8 +229,8 @@ final class WireVocabularyContractTest {
         @DisplayName("the roster carries one entry per contract file, so no type escapes the rules below")
         void theRosterCarriesOneEntryPerContractFile() {
             assertThat(CONTRACT_TYPES)
-                    .as("the contract package declares twenty-eight top-level types")
-                    .hasSize(28)
+                    .as("the contract package declares thirty-two top-level types")
+                    .hasSize(32)
                     .doesNotHaveDuplicates();
         }
 
@@ -280,7 +286,7 @@ final class WireVocabularyContractTest {
      * Verifies that the common header every screen carries is spelled one way.
      *
      * <p>The header is the same two title lines on every map in the estate, so a contract derived from any
-     * screen carries the same two components. Thirteen of the twenty-eight contracts do.</p>
+     * screen carries the same two components. Thirteen of the thirty-two contracts do.</p>
      */
     @Nested
     @DisplayName("the screen header")
@@ -406,8 +412,8 @@ final class WireVocabularyContractTest {
      * Verifies that the paging vocabulary is spelled one way.
      *
      * <p>Paging is where drift was widest, because the three paginated screens declare three different page
-     * sizes and were translated separately. The carried shape and the displayed indicator are distinct
-     * concepts and each has exactly one name.</p>
+     * sizes and were translated separately. The carried shape, the displayed indicator and CCLI's
+     * retained page number are distinct concepts and each has exactly one name.</p>
      */
     @Nested
     @DisplayName("paging")
@@ -428,13 +434,13 @@ final class WireVocabularyContractTest {
         }
 
         @Test
-        @DisplayName("every component that speaks of a page number is the canonical displayed indicator, "
-                + "because the indicator is displayed and never accepted")
+        @DisplayName("every page-number component is either the displayed indicator or CCLI's retained "
+                + "turn state")
         void everyPageNumberComponentIsCanonical() {
             assertThat(componentsSpeakingOf("pagenumber"))
                     .allSatisfy(component -> assertThat(component.name())
                             .as("%s names a page number", component)
-                            .isEqualTo(CANONICAL_PAGE_INDICATOR));
+                            .isIn(CANONICAL_PAGE_INDICATOR, RETAINED_PAGE_NUMBER));
         }
 
         @Test
@@ -442,6 +448,29 @@ final class WireVocabularyContractTest {
         void bothPagingNamesAreShared() {
             assertThat(ownersOf(CANONICAL_PAGING_SHAPE)).hasSizeGreaterThanOrEqualTo(4);
             assertThat(ownersOf(CANONICAL_PAGE_INDICATOR)).hasSizeGreaterThanOrEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("the retained page number is a derived reading of the carried cursor rather than a "
+                + "component any contract puts on the wire")
+        void theRetainedPageNumberIsDerivedFromTheCarriedCursor() throws NoSuchMethodException {
+            // The legacy field is the page number a paginated program keeps in its communication area
+            // between turns. All three paginated screens keep it, so publishing it as a component of one
+            // of them would be a second spelling of the page number that only one contract could use.
+            // It is instead read off the one component that already carries it - displayedPageNumber, held
+            // as text so the fixed-width field's leading zeros survive - by an accessor on the shared
+            // cursor. That keeps one wire spelling for the concept and one place that interprets it.
+            assertThat(ownersOf(RETAINED_PAGE_NUMBER))
+                    .as("no contract shape may declare the retained page number as a wire component")
+                    .isEmpty();
+            assertThat(PageMetadata.PageCursorRequest.class.getMethod(RETAINED_PAGE_NUMBER)
+                    .getReturnType())
+                    .as("the shared inbound cursor derives it instead")
+                    .isEqualTo(int.class);
+            assertThat(ownersOf(CANONICAL_PAGE_INDICATOR))
+                    .as("and the component it is derived from is the canonical page indicator, which the "
+                            + "shared inbound cursor carries")
+                    .contains(PageMetadata.PageCursorRequest.class);
         }
     }
 }

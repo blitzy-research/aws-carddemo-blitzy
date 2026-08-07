@@ -327,6 +327,68 @@ public record AccountUpdateRequest(
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
     /**
+     * Copies the submitted screen while replacing only its echoed navigation state.
+     *
+     * <p>The REST boundary uses this after reconciling the client-echoed identity with the established
+     * authentication. Keeping the mechanical copy on the record prevents the controller from restating
+     * forty-six constructor positions and makes it impossible for reconciliation to alter a screen
+     * field, attention key or concurrency token accidentally.</p>
+     *
+     * @param reconciledNavigationContext navigation state whose identity came from authentication
+     * @return a request equal in every other component
+     */
+    public AccountUpdateRequest withNavigationContext(
+            final NavigationContext reconciledNavigationContext) {
+        return new AccountUpdateRequest(
+                accountId,
+                accountStatus,
+                openYear,
+                openMonth,
+                openDay,
+                creditLimit,
+                expiryYear,
+                expiryMonth,
+                expiryDay,
+                cashCreditLimit,
+                reissueYear,
+                reissueMonth,
+                reissueDay,
+                currentBalance,
+                currentCycleCredit,
+                accountGroupId,
+                currentCycleDebit,
+                customerId,
+                ssnPart1,
+                ssnPart2,
+                ssnPart3,
+                dateOfBirthYear,
+                dateOfBirthMonth,
+                dateOfBirthDay,
+                ficoScore,
+                firstName,
+                middleName,
+                lastName,
+                addressLine1,
+                stateCode,
+                addressLine2,
+                zipCode,
+                city,
+                countryCode,
+                phone1AreaCode,
+                phone1Prefix,
+                phone1LineNumber,
+                governmentIssuedId,
+                phone2AreaCode,
+                phone2Prefix,
+                phone2LineNumber,
+                eftAccountId,
+                primaryCardHolderIndicator,
+                keyAction,
+                reconciledNavigationContext,
+                concurrencyToken);
+    }
+
+    /**
      * Returns a diagnostic representation that names the type and discloses none of its values.
      *
      * <p>A record's generated {@code toString()} prints every component, and every one of the

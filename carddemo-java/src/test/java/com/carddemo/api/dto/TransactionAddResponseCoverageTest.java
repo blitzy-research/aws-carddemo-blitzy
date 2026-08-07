@@ -59,8 +59,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>What is under test</h2>
  *
- * <p>The declared shape of the transaction-add response: its twenty-seven components and their
- * order, the twenty-two widths it measures and the five components it deliberately leaves
+ * <p>The declared shape of the transaction-add response: its twenty-eight components and their
+ * order, the twenty-three widths it measures and the five components it deliberately leaves
  * unmeasured, the thirty-five published message texts, the single normalisation its compact
  * constructor performs, and the eight components its diagnostic rendering withholds.
  *
@@ -117,7 +117,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("TransactionAddResponse :: response contract of legacy transaction CT02")
 class TransactionAddResponseCoverageTest {
 
-    /** The twenty-seven components, in the order the record declares them. */
+    /** The twenty-eight components, in the order the record declares them. */
     private static final List<String> EXPECTED_COMPONENTS = List.of(
             "newTransactionId",
             "accountId",
@@ -126,6 +126,7 @@ class TransactionAddResponseCoverageTest {
             "categoryCode",
             "source",
             "description",
+            "amountEntered",
             "amount",
             "originationDate",
             "processingDate",
@@ -147,7 +148,7 @@ class TransactionAddResponseCoverageTest {
             "nextRoute",
             "navigationContext");
 
-    /** The twenty-two components that carry a declared maximum length. */
+    /** The twenty-three components that carry a declared maximum length. */
     private static final List<String> BOUNDED_COMPONENTS = List.of(
             "newTransactionId",
             "accountId",
@@ -156,6 +157,7 @@ class TransactionAddResponseCoverageTest {
             "categoryCode",
             "source",
             "description",
+            "amountEntered",
             "originationDate",
             "processingDate",
             "merchantId",
@@ -184,7 +186,7 @@ class TransactionAddResponseCoverageTest {
             "categoryCode",
             "source",
             "description",
-            "amount",
+            "amountEntered",
             "originationDate",
             "processingDate",
             "merchantId",
@@ -193,11 +195,12 @@ class TransactionAddResponseCoverageTest {
             "merchantZip",
             "confirmationFlag");
 
-    /** The eight components the diagnostic rendering withholds. */
+    /** The nine components the diagnostic rendering withholds. */
     private static final List<String> WITHHELD_COMPONENTS = List.of(
             "accountId",
             "cardNumber",
             "description",
+            "amountEntered",
             "amount",
             "merchantId",
             "merchantName",
@@ -543,6 +546,7 @@ class TransactionAddResponseCoverageTest {
                 text.get("categoryCode"),
                 text.get("source"),
                 text.get("description"),
+                text.get("amountEntered"),
                 amount,
                 text.get("originationDate"),
                 text.get("processingDate"),
@@ -612,6 +616,7 @@ class TransactionAddResponseCoverageTest {
         text.put("categoryCode", CATEGORY_CODE);
         text.put("source", SOURCE);
         text.put("description", DESCRIPTION);
+        text.put("amountEntered", AMOUNT.toPlainString());
         text.put("originationDate", ORIGINATION_DATE);
         text.put("processingDate", PROCESSING_DATE);
         text.put("merchantId", MERCHANT_ID);
@@ -668,9 +673,9 @@ class TransactionAddResponseCoverageTest {
             return size.max();
         }
 
-        /** The twenty-seven components appear in the documented order. */
+        /** The twenty-eight components appear in the documented order. */
         @Test
-        @DisplayName("declares twenty-seven components in the documented order")
+        @DisplayName("declares twenty-eight components in the documented order")
         void theComponentsAreDeclaredInTheDocumentedOrder() {
             List<String> declared =
                     Arrays.stream(TransactionAddResponse.class.getRecordComponents())
@@ -681,7 +686,7 @@ class TransactionAddResponseCoverageTest {
         }
 
         /**
-         * The generated key leads, the fourteen echoed items follow in map order, and the four
+         * The generated key leads, the screen amount stays beside the persisted amount, and the
          * protocol components with no map item of their own come last.
          */
         @Test
@@ -693,8 +698,13 @@ class TransactionAddResponseCoverageTest {
                             .toList();
 
             assertThat(declared.get(0)).isEqualTo("newTransactionId");
-            assertThat(declared.subList(1, 15)).containsExactlyElementsOf(ECHOED_COMPONENTS);
-            assertThat(declared.subList(15, 22))
+            assertThat(declared.subList(1, 7))
+                    .containsExactlyElementsOf(ECHOED_COMPONENTS.subList(0, 6));
+            assertThat(declared.get(7)).isEqualTo("amountEntered");
+            assertThat(declared.get(8)).isEqualTo("amount");
+            assertThat(declared.subList(9, 16))
+                    .containsExactlyElementsOf(ECHOED_COMPONENTS.subList(7, 14));
+            assertThat(declared.subList(16, 23))
                     .containsExactly(
                             "transactionName",
                             "title01",
@@ -703,7 +713,7 @@ class TransactionAddResponseCoverageTest {
                             "title02",
                             "currentTime",
                             "message");
-            assertThat(declared.subList(22, 27))
+            assertThat(declared.subList(23, 28))
                     .containsExactly(
                             "generalError",
                             "fieldErrors",
@@ -722,6 +732,7 @@ class TransactionAddResponseCoverageTest {
             "categoryCode,4",
             "source,10",
             "description,60",
+            "amountEntered,12",
             "originationDate,10",
             "processingDate,10",
             "merchantId,9",
@@ -771,7 +782,7 @@ class TransactionAddResponseCoverageTest {
             partition.addAll(UNBOUNDED_COMPONENTS);
 
             assertThat(partition).containsExactlyInAnyOrderElementsOf(EXPECTED_COMPONENTS);
-            assertThat(BOUNDED_COMPONENTS).hasSize(22);
+            assertThat(BOUNDED_COMPONENTS).hasSize(23);
             assertThat(UNBOUNDED_COMPONENTS).hasSize(5);
         }
 
@@ -946,7 +957,7 @@ class TransactionAddResponseCoverageTest {
          * static, because it is an implementation detail of the rendering.</p>
          */
         @Test
-        @DisplayName("publishes thirty-five message texts and two record-shape figures, and withholds "
+        @DisplayName("publishes thirty-five message texts and three shape figures, and withholds "
                 + "one stand-in")
         void theStaticSurfaceIsThirtyFivePublishedTextsAndOnePrivateStandIn() {
             List<Field> statics =
@@ -964,7 +975,7 @@ class TransactionAddResponseCoverageTest {
                             .filter(field -> !Modifier.isPublic(field.getModifiers()))
                             .toList();
 
-            assertThat(published).hasSize(37);
+            assertThat(published).hasSize(38);
             assertThat(
                             published.stream()
                                     .filter(field -> field.getType() == String.class)
@@ -976,7 +987,8 @@ class TransactionAddResponseCoverageTest {
                                     .filter(field -> field.getType() == int.class)
                                     .map(Field::getName)
                                     .toList())
-                    .containsExactlyInAnyOrder("AMOUNT_SCALE", "AMOUNT_INTEGER_DIGITS");
+                    .containsExactlyInAnyOrder(
+                            "AMOUNT_SCALE", "AMOUNT_ENTERED_LENGTH", "AMOUNT_INTEGER_DIGITS");
             assertThat(internal).hasSize(1);
             assertThat(internal.get(0).getName()).isEqualTo("REDACTION_PLACEHOLDER");
         }
@@ -992,6 +1004,7 @@ class TransactionAddResponseCoverageTest {
         @DisplayName("publishes the record shape of the amount")
         void theRecordShapeOfTheAmountIsPublished() {
             assertThat(TransactionAddResponse.AMOUNT_SCALE).isEqualTo(2);
+            assertThat(TransactionAddResponse.AMOUNT_ENTERED_LENGTH).isEqualTo(12);
             assertThat(TransactionAddResponse.AMOUNT_INTEGER_DIGITS).isEqualTo(9);
             assertThat(
                             TransactionAddResponse.AMOUNT_INTEGER_DIGITS
@@ -1844,6 +1857,7 @@ class TransactionAddResponseCoverageTest {
                             SOURCE,
                             PLACEHOLDER,
                             PLACEHOLDER,
+                            PLACEHOLDER,
                             ORIGINATION_DATE,
                             PROCESSING_DATE,
                             PLACEHOLDER,
@@ -1885,6 +1899,7 @@ class TransactionAddResponseCoverageTest {
                     "accountId",
                     "cardNumber",
                     "description",
+                    "amountEntered",
                     "amount",
                     "merchantId",
                     "merchantName",
@@ -1896,18 +1911,18 @@ class TransactionAddResponseCoverageTest {
             assertThat(populated(null).toString()).contains(component + "=" + PLACEHOLDER);
         }
 
-        /** Exactly eight components are withheld, not one and not all. */
+        /** Exactly nine components are withheld, not one and not all. */
         @Test
-        @DisplayName("withholds exactly eight components")
-        void exactlyEightComponentsAreWithheld() {
+        @DisplayName("withholds exactly nine components")
+        void exactlyNineComponentsAreWithheld() {
             String rendered = populated(null).toString();
             long withheld =
                     EXPECTED_COMPONENTS.stream()
                             .filter(component -> rendered.contains(component + "=" + PLACEHOLDER))
                             .count();
 
-            assertThat(withheld).isEqualTo(8);
-            assertThat(WITHHELD_COMPONENTS).hasSize(8);
+            assertThat(withheld).isEqualTo(9);
+            assertThat(WITHHELD_COMPONENTS).hasSize(9);
         }
 
         /** Every retained component is rendered with its real value. */

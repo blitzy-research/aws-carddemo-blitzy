@@ -145,7 +145,8 @@ class TransactionAddResponseRuleComplianceTest {
             final NavigationContext navigationContext) {
         return new TransactionAddResponse(
                 newTransactionId, ACCOUNT_ID, CARD_NUMBER, "01", "0005",
-                "POS TERM", "POS PURCHASE - GROCERY", amount, "2022-07-19", "2022-07-19",
+                "POS TERM", "POS PURCHASE - GROCERY", "00001234.56", amount,
+                "2022-07-19", "2022-07-19",
                 "123456789", "MERCHANT NAME", "SEATTLE", "98101", "Y",
                 "CT02", "CardDemo", "07/19/22", "COTRN02C", "Add Transaction",
                 "10:30:00", message, generalError, fieldErrors, "TRNAMT",
@@ -166,7 +167,7 @@ class TransactionAddResponseRuleComplianceTest {
             final List<ErrorResponse.FieldError> fieldErrors) {
         return new TransactionAddResponse(
                 newTransactionId, null, null, null, null,
-                null, null, amount, null, null,
+                null, null, null, amount, null, null,
                 null, null, null, null, null,
                 null, null, null, null, null,
                 null, message, false, fieldErrors, null,
@@ -627,14 +628,14 @@ class TransactionAddResponseRuleComplianceTest {
         }
 
         @Test
-        @DisplayName("exactly eight placeholders are present, counted with an absent conversation "
+        @DisplayName("exactly nine placeholders are present, counted with an absent conversation "
                 + "state so the figure measures this record's redactions rather than two records' "
                 + "summed")
-        void exactlyEightPlaceholdersArePresent() {
+        void exactlyNinePlaceholdersArePresent() {
             final String rendered = aResponse(TRANSACTION_ID, new BigDecimal("10.00"), null, false,
                     List.of(), null).toString();
 
-            assertThat(placeholderCount(rendered)).isEqualTo(8);
+            assertThat(placeholderCount(rendered)).isEqualTo(9);
         }
 
         @Test
@@ -643,10 +644,11 @@ class TransactionAddResponseRuleComplianceTest {
         void anAbsentSensitiveValueIsStillAPlaceholder() {
             final String rendered = aSparseResponse(null, null, null, null).toString();
 
-            assertThat(placeholderCount(rendered)).isEqualTo(8);
+            assertThat(placeholderCount(rendered)).isEqualTo(9);
             assertThat(rendered).contains("accountId=" + REDACTION_PLACEHOLDER,
                     "cardNumber=" + REDACTION_PLACEHOLDER,
                     "description=" + REDACTION_PLACEHOLDER,
+                    "amountEntered=" + REDACTION_PLACEHOLDER,
                     "amount=" + REDACTION_PLACEHOLDER,
                     "merchantId=" + REDACTION_PLACEHOLDER,
                     "merchantName=" + REDACTION_PLACEHOLDER,
@@ -662,7 +664,7 @@ class TransactionAddResponseRuleComplianceTest {
                     List.of(), NavigationContext.empty()).toString();
 
             assertThat(withContext).contains("NavigationContext[");
-            assertThat(placeholderCount(withContext)).isGreaterThan(8);
+            assertThat(placeholderCount(withContext)).isGreaterThan(9);
         }
 
         @Test
@@ -697,34 +699,34 @@ class TransactionAddResponseRuleComplianceTest {
     class TheDeclaredShapeAndValidationBounds {
 
         @Test
-        @DisplayName("the response declares twenty-seven components in screen order, the assigned "
+        @DisplayName("the response declares twenty-eight components in screen order, the assigned "
                 + "identifier, the transaction body, the merchant block, the furniture, the error "
                 + "block and the routing block")
-        void theResponseDeclaresTwentySevenComponentsInScreenOrder() {
+        void theResponseDeclaresTwentyEightComponentsInScreenOrder() {
             final List<String> declared = Arrays.stream(
                     TransactionAddResponse.class.getRecordComponents())
                     .map(RecordComponent::getName).toList();
 
             assertThat(declared).containsExactly("newTransactionId", "accountId", "cardNumber",
-                    "typeCode", "categoryCode", "source", "description", "amount",
+                    "typeCode", "categoryCode", "source", "description", "amountEntered", "amount",
                     "originationDate", "processingDate", "merchantId", "merchantName",
                     "merchantCity", "merchantZip", "confirmationFlag", "transactionName", "title01",
                     "currentDate", "programName", "title02", "currentTime", "message",
                     "generalError", "fieldErrors", "focusScreenFieldId", "nextRoute",
                     "navigationContext");
-            assertThat(declared).hasSize(27);
+            assertThat(declared).hasSize(28);
         }
 
         @Test
-        @DisplayName("exactly twenty-two components carry a declared upper bound, and the five that do "
+        @DisplayName("exactly twenty-three components carry a declared upper bound, and the five that do "
                 + "not are the amount, the flag, the error list, the route and the conversation state")
-        void exactlyTwentyTwoComponentsCarryAnUpperBound() {
+        void exactlyTwentyThreeComponentsCarryAnUpperBound() {
             final List<String> bounded = Arrays.stream(
                     TransactionAddResponse.class.getRecordComponents())
                     .map(RecordComponent::getName)
                     .filter(TransactionAddResponseRuleComplianceTest::declaresAnUpperBound).toList();
 
-            assertThat(bounded).hasSize(22);
+            assertThat(bounded).hasSize(23);
             assertThat(bounded).doesNotContain("amount", "generalError", "fieldErrors", "nextRoute",
                     "navigationContext");
         }
@@ -811,7 +813,7 @@ class TransactionAddResponseRuleComplianceTest {
         @CsvSource({
             "newTransactionId,16", "accountId,11", "cardNumber,16",
             "typeCode,2", "categoryCode,4", "source,10",
-            "description,60", "originationDate,10", "processingDate,10",
+            "description,60", "amountEntered,12", "originationDate,10", "processingDate,10",
             "merchantId,9", "merchantName,30", "merchantCity,25",
             "merchantZip,10", "confirmationFlag,1", "transactionName,4",
             "title01,40", "currentDate,8", "programName,8",
@@ -854,6 +856,7 @@ class TransactionAddResponseRuleComplianceTest {
                     valueFor("categoryCode", componentName, value),
                     valueFor("source", componentName, value),
                     valueFor("description", componentName, value),
+                    valueFor("amountEntered", componentName, value),
                     null,
                     valueFor("originationDate", componentName, value),
                     valueFor("processingDate", componentName, value),

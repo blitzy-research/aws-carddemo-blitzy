@@ -96,11 +96,15 @@ import com.carddemo.util.PfKeyTranslator;
  * not-found.
  *
  * <p>The cross-reference alternate key is non-unique, so a single row must be selected from a possibly
- * multi-row access path. The repository declares {@code findByXrefAcctId}, which returns every matching
- * row, and this service selects the one with the lowest card number - the record a keyed read of that
- * path would have returned, the card number being the cluster's base key. An absent result stands in for
- * the legacy not-found response. The semantic is exactly the one the action plan describes: first row
- * wins, and nothing found is a screen message rather than an exception.
+ * multi-row access path. The selection is not made here: the repository declares
+ * {@code findFirstByXrefAcctIdOrderByXrefCardNumAsc}, which pushes "the first row in ascending base-key
+ * order" into the query, the card number being this cluster's base key and therefore the order a legacy
+ * keyed read of the path resolves in. This service asks for that one row and reads its absence as the
+ * legacy not-found response. Selecting in the service instead - materialising every row of the account
+ * and keeping the minimum - is the regression {@code DL-164} in {@code docs/decision-log.md} records and
+ * undoes, because it made the result depend on plan shape rather than on a declared order and repeated
+ * one rule across five services. The semantic is the one the action plan describes: first row wins, and
+ * nothing found is a screen message rather than an exception.
  *
  * <p><strong>The card file is declared and never read.</strong> Lines 186 to 191 declare a card file name
  * and a card-by-account path name, and lines 151 to 183 declare the card list, card detail and card update

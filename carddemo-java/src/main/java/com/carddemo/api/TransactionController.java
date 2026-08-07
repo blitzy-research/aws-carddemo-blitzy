@@ -937,7 +937,11 @@ public final class TransactionController {
      * <p>Two values exist only on the path that wrote a record - the identifier the turn derived and the
      * amount it stored - and both are published only from that record. The submitted amount text is not
      * converted here to fill the gap on a rejected turn: converting it is the service's step, and doing
-     * it twice would make this class a second authority for a monetary value.
+     * it twice would make this class a second authority for a monetary value. The text itself still
+     * reaches the client, because the response carries it as its own component alongside the stored
+     * value: the screen's twelve-character amount item crosses unchanged like the other echoed items, so
+     * a rejected or unconfirmed turn redisplays exactly what the operator typed while the stored amount
+     * stays absent until a write succeeds.
      *
      * <p>The header and the echoed screen are always present in a turn outcome, because the service
      * composes both on every path, so they are read directly.
@@ -961,6 +965,7 @@ public final class TransactionController {
                 screen.categoryCd(),
                 screen.source(),
                 screen.description(),
+                screen.amount(),
                 (written == null) ? null : written.tranAmt(),
                 screen.origDate(),
                 screen.procDate(),
