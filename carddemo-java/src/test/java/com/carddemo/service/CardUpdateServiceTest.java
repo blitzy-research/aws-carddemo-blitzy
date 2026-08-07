@@ -20,9 +20,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -40,14 +43,16 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.RecoverableDataAccessException;
 
 import com.carddemo.domain.Card;
+import com.carddemo.domain.enums.CardStatus;
+import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.AbendException;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
-import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.support.RecordWriterDoubles;
-import com.carddemo.util.CobolStringUtils;
+import com.carddemo.support.TestDataFactory;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -75,7 +80,59 @@ import ch.qos.logback.core.read.ListAppender;
  * position than the legacy's, and one that cannot be exercised through the public surface without
  * reflection. The abend contract of this screen is instead asserted where it <em>is</em> reachable: the
  * exit arm resolves its destination through the module's dispatch graph, which raises when the nominated
- * program cannot be resolved, and that raise is asserted to propagate.
+ * program cannot be resolved, and that raise is asserted to propagate - and, because the graph emits its
+ * diagnostic before it raises, the emit-then-raise ordering the legacy's send-before-abend sequence
+ * mandates is asserted there by reading the captured log at the moment the raise surfaces.
+ *
+ * <h2>Independent oracle</h2>
+ *
+ * <p>No expected value in this class is produced by a production artefact. Every folded string, every
+ * operator message and every fixed-width padding is a literal or a {@code " ".repeat(n)} constant declared
+ * here, so a defect in the artefact under test cannot make its own assertion agree with it. That rule is
+ * strictest for the fold: the expected folded text is a declared constant, never the output of the module's
+ * fold primitive and never the output of the locale-aware library method, which appears nowhere in this
+ * file in either of its two forms.
+ *
+ * <h2>Paragraph traceability</h2>
+ *
+ * <p>{@code app/cbl/COCRDUPC.cbl} carries <b>48</b> Area-A paragraph units, of which three -
+ * {@code PROGRAM-ID} at line 23, {@code DATE-WRITTEN} at line 25 and {@code DATE-COMPILED} at line 27 -
+ * belong to the identification division. The remaining <b>45</b> are the procedure division's, which is why
+ * a census counting procedure paragraphs alone reports 45 and one counting every Area-A unit reports 48.
+ * Both figures are correct under their own definition and neither supersedes the other; the count recorded
+ * against this member for the traceability matrix is 48. The units, and the nested class that covers each,
+ * are:
+ *
+ * <ul>
+ *   <li>Identification, lines 23 to 27 - {@code PROGRAM-ID}, {@code DATE-WRITTEN}, {@code DATE-COMPILED}:
+ *       carried as the member and transaction names the screen header publishes, asserted in
+ *       {@code DispatchAndAbend}</li>
+ *   <li>{@code 0000-MAIN} line 367, {@code COMMON-RETURN} line 546, {@code 0000-MAIN-EXIT} line 560: the
+ *       five-arm dispatch, the terminal return and the re-armed transaction, asserted in
+ *       {@code DispatchAndAbend} and {@code ReachableAbend}</li>
+ *   <li>{@code 1000-PROCESS-INPUTS} line 564 with its exit line 575, {@code 1100-RECEIVE-MAP} line 578 with
+ *       its exit line 638: the marker normalisation and the received-field bounding, asserted in
+ *       {@code BlankFieldCascade} and {@code NullAndBoundaryInput}</li>
+ *   <li>{@code 1200-EDIT-MAP-INPUTS} line 641 with its exit line 717 and the six field edits -
+ *       {@code 1210-EDIT-ACCOUNT} line 721, {@code 1220-EDIT-CARD} line 762, {@code 1230-EDIT-NAME}
+ *       line 806, {@code 1240-EDIT-CARDSTATUS} line 845, {@code 1250-EDIT-EXPIRY-MON} line 877,
+ *       {@code 1260-EDIT-EXPIRY-YEAR} line 913, each with its own exit: asserted in
+ *       {@code AlphabeticCheck}, {@code FilterFetchAndFileError} and {@code BlankFieldCascade}</li>
+ *   <li>{@code 2000-DECIDE-ACTION} line 948 with its exit line 1029: the seven-clause action decision,
+ *       asserted in {@code WritePath}, {@code Folding} and {@code ReachableAbend}</li>
+ *   <li>{@code 3000-SEND-MAP} line 1035, {@code 3100-SCREEN-INIT} line 1052,
+ *       {@code 3200-SETUP-SCREEN-VARS} line 1082, {@code 3250-SETUP-INFOMSG} line 1138,
+ *       {@code 3300-SETUP-SCREEN-ATTRS} line 1168, {@code 3400-SEND-SCREEN} line 1324, each with its own
+ *       exit: asserted in {@code DispatchAndAbend}, {@code TwoStateDecoration} and
+ *       {@code BlankFieldCascade}</li>
+ *   <li>{@code 9000-READ-DATA} line 1343 with its exit line 1372 and
+ *       {@code 9100-GETCARD-BYACCTCARD} line 1376 with its exit line 1415: the first fold site and the two
+ *       read routes, asserted in {@code Folding} and {@code FilterFetchAndFileError}</li>
+ *   <li>{@code 9200-WRITE-PROCESSING} line 1420 with its exit line <b>1494</b> and
+ *       {@code 9300-CHECK-CHANGE-IN-REC} line 1498 with its exit line 1521: the second fold site, the
+ *       six-field comparison and the backward jump at line <b>1518</b>, asserted in {@code WritePath}</li>
+ *   <li>{@code ABEND-ROUTINE} line 1531 with its exit line 1554: asserted in {@code ReachableAbend}</li>
+ * </ul>
  */
 @DisplayName("CardUpdateService - card-update transaction CCUP, app/cbl/COCRDUPC.cbl")
 class CardUpdateServiceTest {
@@ -103,6 +160,116 @@ class CardUpdateServiceTest {
     /** The same name as an operator would type it: different in letter case only. */
     private static final String STORED_NAME_LOWER = "aniya von";
 
+    // ==============================================================================================
+    // Independent oracle: every expected value below is declared here, never derived from production
+    // ==============================================================================================
+
+    /**
+     * The charset the module declares, which is the one a non-ASCII fold probe must be measured in.
+     *
+     * <p>A probe that is representable in seven bits is measured in {@link StandardCharsets#US_ASCII}
+     * instead, so that a width assertion is made on <em>encoded bytes</em> rather than on a character count.
+     * The two differ for exactly the values this suite probes with, which is why the distinction is drawn.
+     */
+    private static final Charset MODULE_CHARSET = StandardCharsets.UTF_8;
+
+    /**
+     * The fold probe: a name carrying a lower-case Latin letter with a diacritic and a lower-case letter
+     * whose locale-aware upper-casing is two characters rather than one.
+     *
+     * <p>Neither probe character appears in the legacy's twenty-six-character source table, so the table
+     * leaves both untouched. The locale-aware library method transforms both, and for the second it also
+     * <em>changes the string's length</em>, which would additionally break the fifty-character field.
+     */
+    private static final String FOLD_PROBE = "Ren\u00e9e Wei\u00df";
+
+    /**
+     * The declared expectation for {@link #FOLD_PROBE}: the twenty-four positions holding {@code a} to
+     * {@code z} are folded and the two probe characters are carried through unchanged.
+     *
+     * <p>A literal, deliberately. Producing it by calling the module's fold primitive, or the library
+     * method, would make this assertion agree with whatever the implementation happens to do.
+     */
+    private static final String FOLD_PROBE_EXPECTED = "REN\u00e9E WEI\u00df";
+
+    /** An all-ASCII probe, so the discriminating half of the fold assertion is measured in seven bits. */
+    private static final String ASCII_FOLD_PROBE = "mary ann";
+
+    /** The declared expectation for {@link #ASCII_FOLD_PROBE}: every position folded. */
+    private static final String ASCII_FOLD_PROBE_EXPECTED = "MARY ANN";
+
+    /** The declared width of the two common messages the shared catalog publishes. */
+    private static final int COMMON_MESSAGE_BYTE_WIDTH = 50;
+
+    /**
+     * The declared width of the summary-message field the file-error text is moved into.
+     *
+     * <p>The assembled structure is eighty characters wide and the destination field is seventy-five, so the
+     * trailing five-character filler never survives the move. Declared here rather than read back from the
+     * artefact under test, and asserted on encoded bytes.
+     */
+    private static final int RETURN_MESSAGE_BYTE_WIDTH = 75;
+
+    /** The visible portion of the common invalid-key message, before its padding. */
+    private static final String INVALID_KEY_VISIBLE_TEXT = "Invalid key pressed. Please see below...";
+
+    /** The padding the invalid-key message carries: ten positions, and it is never trimmed. */
+    private static final String INVALID_KEY_PADDING = " ".repeat(10);
+
+    /** The common invalid-key message at its contractual width, declared rather than read back. */
+    private static final String EXPECTED_INVALID_KEY_MESSAGE =
+            INVALID_KEY_VISIBLE_TEXT + INVALID_KEY_PADDING;
+
+    /**
+     * The concurrent-change text, verbatim. <b>"some one" is two words</b> in the legacy and stays two
+     * words here.
+     */
+    private static final String EXPECTED_MSG_RECORD_CHANGED =
+            "Record changed by some one else. Please review";
+
+    /** The write-failure text, verbatim. */
+    private static final String EXPECTED_MSG_UPDATE_FAILED = "Update of record failed";
+
+    /** The account lock-failure text, verbatim: the arm's default for every entity but the customer. */
+    private static final String EXPECTED_MSG_COULD_NOT_LOCK_ACCOUNT =
+            "Could not lock account record for update";
+
+    /** The customer lock-failure text, verbatim: the one text of the four that varies by entity. */
+    private static final String EXPECTED_MSG_COULD_NOT_LOCK_CUSTOMER =
+            "Could not lock customer record for update";
+
+    /** This member's own lock-failure text, which is one word shorter than the account program's. */
+    private static final String EXPECTED_MSG_COULD_NOT_LOCK_RECORD = "Could not lock record for update";
+
+    /** The terminal online abend code, declared rather than read back from the exception type. */
+    private static final String EXPECTED_ONLINE_ABEND_CODE = "9999";
+
+    /** The eight-character program name an unresolvable nomination reports as the abend culprit. */
+    private static final String UNRESOLVABLE_PROGRAM = "NOSUCHPG";
+
+    /**
+     * The four verified widths of the abend context, and the offsets they place each field at.
+     *
+     * <p>Code four, culprit eight, reason fifty and operator message seventy-two, so the assembled image is
+     * a hundred and thirty-four bytes with its fields at {@code [0,4)}, {@code [4,12)}, {@code [12,62)} and
+     * {@code [62,134)}. Declared here so the offsets are asserted against the contract rather than against
+     * whatever the artefact happens to publish.
+     */
+    private static final int ABEND_CODE_BYTE_WIDTH = 4;
+
+    /** The abend culprit field width: the eight characters a program name occupies. */
+    private static final int ABEND_CULPRIT_BYTE_WIDTH = 8;
+
+    /** The abend reason field width. */
+    private static final int ABEND_REASON_BYTE_WIDTH = 50;
+
+    /** The abend operator-message field width. */
+    private static final int ABEND_MESSAGE_BYTE_WIDTH = 72;
+
+    /** The assembled abend context width: the four fields end to end. */
+    private static final int ABEND_CONTEXT_BYTE_WIDTH = ABEND_CODE_BYTE_WIDTH
+            + ABEND_CULPRIT_BYTE_WIDTH + ABEND_REASON_BYTE_WIDTH + ABEND_MESSAGE_BYTE_WIDTH;
+
     private CardRepository cardRepository;
 
     private AbendService abendService;
@@ -119,6 +286,17 @@ class CardUpdateServiceTest {
     private CardUpdateService service;
 
     private Logger serviceLogger;
+
+    /**
+     * The dispatch graph's logger, captured alongside the service's own.
+     *
+     * <p>The one abend reachable through this screen's public surface is raised by the graph, and the
+     * emit-then-raise ordering the legacy mandates is only observable if the record the graph emits before
+     * raising is captured. Attaching the same appender to both loggers is also what lets the
+     * verification-code assertion cover every record the turn produced rather than only the ones this class
+     * emitted.
+     */
+    private Logger navigationLogger;
 
     private ListAppender<ILoggingEvent> capturedLog;
 
@@ -137,11 +315,15 @@ class CardUpdateServiceTest {
         this.serviceLogger = (Logger) LoggerFactory.getLogger(CardUpdateService.class);
         this.serviceLogger.addAppender(this.capturedLog);
         this.serviceLogger.setLevel(Level.TRACE);
+        this.navigationLogger = (Logger) LoggerFactory.getLogger(NavigationService.class);
+        this.navigationLogger.addAppender(this.capturedLog);
+        this.navigationLogger.setLevel(Level.TRACE);
     }
 
     @AfterEach
     void tearDown() {
         this.serviceLogger.detachAppender(this.capturedLog);
+        this.navigationLogger.detachAppender(this.capturedLog);
         this.capturedLog.stop();
     }
 
@@ -150,13 +332,40 @@ class CardUpdateServiceTest {
     // ==============================================================================================
 
     /**
-     * A stored card row.
+     * A stored card row, built through the shared fixture factory so the hundred-and-fifty-byte layout is
+     * described in one place.
+     *
+     * <p>The name is supplied through the verbatim setter rather than the folding one: a fixture that folded
+     * its own input would be deriving an expected value from a fold implementation, which is exactly what
+     * the fold assertions exist to test independently.
      *
      * @param embossedName the embossed name the row holds
      * @return a fresh row, never {@code null}
      */
     private static Card storedCard(final String embossedName) {
-        return new Card(CARD_NUMBER, ACCOUNT_ID, VERIFICATION_CODE, embossedName, EXPIRATION_DATE, "Y");
+        return TestDataFactory.card()
+                .cardNumber(CARD_NUMBER)
+                .accountId(ACCOUNT_ID)
+                .verificationCode(VERIFICATION_CODE)
+                .embossedName(embossedName)
+                .expirationDate(EXPIRATION_DATE)
+                .activeStatus("Y")
+                .build();
+    }
+
+    /**
+     * The width of a value in encoded bytes, which is the only measure a fixed-width field contract can be
+     * asserted on.
+     *
+     * <p>A character count is not that measure: the two disagree for every value carrying a character
+     * outside the seven-bit range, and disagreeing there is the whole point of the fold probes.
+     *
+     * @param value the value to measure; must not be {@code null}
+     * @param charset the encoding to measure in
+     * @return the encoded length in bytes
+     */
+    private static int encodedByteWidth(final String value, final Charset charset) {
+        return value.getBytes(charset).length;
     }
 
     /**
@@ -279,6 +488,23 @@ class CardUpdateServiceTest {
             assertThat(result.infoMessage()).isEqualTo("Changes committed to database");
         }
 
+        /**
+         * The presented and carried value is folded; the written value is the submitted text verbatim.
+         *
+         * <p><strong>Which of the two is folded is read off the source, not assumed.</strong> The two
+         * {@code CONVERTING} operations at lines 1356 to 1358 and 1499 to 1501 both act on the card record
+         * area the read filled - the working-storage copy - and the capture at line 1360 and the comparison
+         * at lines 1503 to 1508 both read that folded copy. The rewrite at line 1466 moves a
+         * <em>different</em> field: the new-value group the receive paragraph filled from the transmitted
+         * screen at lines 607 to 612, which no {@code CONVERTING} operation ever touches. So the store is
+         * verbatim and the presentation is folded, and asserting the store folded would assert a byte the
+         * legacy never writes.
+         *
+         * <p>That is coherent rather than accidental, and the coherence is the contract: because the
+         * comparison folds both of its operands, a difference that is only one of letter case is never
+         * detected as a change and so is never written at all. A lower-case name therefore only ever reaches
+         * the file when some other field changed with it.
+         */
         @Test
         @DisplayName("(b) the fetched value is presented and carried FOLDED, and the write stores the "
                 + "submitted text verbatim per line 1466")
@@ -295,10 +521,11 @@ class CardUpdateServiceTest {
                     .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
                             null, null, null, null, "DFHENTER", fromCardList, null, null));
 
-            // The capture at line 1360 reads the field the fold at line 1357 has already rewritten.
-            assertThat(fetched.carriedImage().embossedName()).isEqualTo("ANIYA VON");
+            // The capture at line 1360 reads the field the fold at line 1357 has already rewritten, so both
+            // the carried image and the projection carry the DECLARED folded literal.
+            assertThat(fetched.carriedImage().embossedName()).isEqualTo(STORED_NAME_FOLDED);
             assertThat(fetched.card()).isNotNull();
-            assertThat(fetched.card().embossedName()).isEqualTo("ANIYA VON");
+            assertThat(fetched.card().embossedName()).isEqualTo(STORED_NAME_FOLDED);
             assertThat(fetched.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
 
@@ -306,7 +533,8 @@ class CardUpdateServiceTest {
             // by READ ... INTO, and the rewrite writes a separately built image.
             assertThat(stored.getCardEmbossedName()).isEqualTo(STORED_NAME_LOWER);
 
-            // And the write path stores the submitted text verbatim, per line 1466.
+            // And the write path stores the submitted text verbatim, per line 1466. Captured rather than
+            // inferred, and compared against a declared literal.
             final Card storedForWrite = storedCard(STORED_NAME_FOLDED);
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(storedForWrite));
@@ -314,24 +542,29 @@ class CardUpdateServiceTest {
                     .thenAnswer(invocation -> invocation.getArgument(0));
 
             CardUpdateServiceTest.this.service.processCardUpdate(
-                    confirmingTurn("DFHPF5", "mary ann", "N", carriedImage(STORED_NAME_FOLDED)));
+                    confirmingTurn("DFHPF5", ASCII_FOLD_PROBE, "N", carriedImage(STORED_NAME_FOLDED)));
 
             final ArgumentCaptor<Card> written = ArgumentCaptor.forClass(Card.class);
-            Mockito.verify(CardUpdateServiceTest.this.cardRepository).saveAndFlush(written.capture());
-            assertThat(written.getValue().getCardEmbossedName()).isEqualTo("mary ann");
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .saveAndFlush(written.capture());
+            assertThat(written.getValue().getCardEmbossedName())
+                    .as("line 1466 moves the new-value field, which no CONVERTING operation touches")
+                    .isEqualTo(ASCII_FOLD_PROBE)
+                    .isNotEqualTo(ASCII_FOLD_PROBE_EXPECTED);
+            // The written row keeps the stored verification code and the stored key untouched.
+            assertThat(written.getValue().getCardCvvCd()).isEqualTo(VERIFICATION_CODE);
+            assertThat(written.getValue().getCardNum()).isEqualTo(CARD_NUMBER);
         }
 
         @Test
-        @DisplayName("(c) the fold is a 26-character ASCII table: a value the locale-aware library "
-                + "method would transform is left UNCHANGED")
+        @DisplayName("(c) the fold is a 26-character ASCII table: a diacritic-bearing letter and a "
+                + "length-changing letter are both left UNCHANGED, byte for byte")
         void foldIsAnAsciiTableAndNotALocaleOperation() {
-            // Both of these are transformed by Java's Unicode-aware upper-casing and are absent from the
-            // 26-character legacy table. The sharp s also CHANGES LENGTH under that method, which would
-            // corrupt a value written back into a fixed fifty-byte field.
-            final String nonAsciiName = "Ren\u00e9e Wei\u00df";
-            assertThat(CobolStringUtils.asciiUpperFold(nonAsciiName)).isEqualTo("REN\u00e9E WEI\u00df");
-
-            final Card stored = storedCard(nonAsciiName);
+            // Both probe characters are transformed by Java's Unicode-aware upper-casing and both are
+            // absent from the 26-character legacy source table, so the table carries them through
+            // untouched. The second probe also CHANGES LENGTH under that method, which would corrupt a
+            // value written back into a fixed fifty-byte field on top of changing its content.
+            final Card stored = storedCard(FOLD_PROBE);
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(stored));
 
@@ -342,10 +575,56 @@ class CardUpdateServiceTest {
                     .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
                             null, null, null, null, "DFHENTER", fromCardList, null, null));
 
-            // Every character absent from the FROM table survives, and the length is unchanged - which is
-            // the assertion that catches a substitution of the locale-aware method.
-            assertThat(fetched.carriedImage().embossedName()).isEqualTo("REN\u00e9E WEI\u00df");
-            assertThat(fetched.carriedImage().embossedName()).hasSameSizeAs(nonAsciiName);
+            final String presented = fetched.carriedImage().embossedName();
+
+            // Content: equal to the declared expectation, in which the two probe characters survive and
+            // every position holding a plain lower-case letter does not.
+            assertThat(presented)
+                    .as("a character absent from the twenty-six-character source table is carried through")
+                    .isEqualTo(FOLD_PROBE_EXPECTED);
+            assertThat(presented)
+                    .as("the diacritic-bearing letter survives at its own code point")
+                    .contains("\u00e9")
+                    .as("the length-changing letter survives at its own code point")
+                    .contains("\u00df");
+
+            // Width: measured on ENCODED BYTES in the charset the module declares, never on a character
+            // count. This is the half of the assertion that catches the fixed-width defect specifically.
+            assertThat(encodedByteWidth(presented, MODULE_CHARSET))
+                    .as("the fold is width preserving in encoded bytes")
+                    .isEqualTo(encodedByteWidth(FOLD_PROBE, MODULE_CHARSET));
+
+            // The row itself is untouched: the source folds the working-storage copy the read filled.
+            assertThat(stored.getCardEmbossedName()).isEqualTo(FOLD_PROBE);
+        }
+
+        @Test
+        @DisplayName("(c, companion) the same fold DOES transform every plain lower-case letter, so the "
+                + "unchanged-probe assertion is discriminating rather than vacuous")
+        void foldStillTransformsPlainLowerCaseLetters() {
+            final Card stored = storedCard(ASCII_FOLD_PROBE);
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(stored));
+
+            final ScreenNavigationState fromCardList = new ScreenNavigationState("CCLI", "COCRDLIC", null, null,
+                    "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001", "MARY", null,
+                    "ANN", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDSLA", "COCRDLI");
+            final CardUpdateService.CardUpdateResult fetched = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
+                            null, null, null, null, "DFHENTER", fromCardList, null, null));
+
+            final String presented = fetched.carriedImage().embossedName();
+
+            // Every one of the twenty-six table positions is exercised by the two words, and the embedded
+            // space - which is not in the table either - is carried through in place.
+            assertThat(presented)
+                    .as("a value of plain lower-case letters is folded, so the probe test cannot pass "
+                            + "merely because the fold does nothing")
+                    .isEqualTo(ASCII_FOLD_PROBE_EXPECTED)
+                    .isNotEqualTo(ASCII_FOLD_PROBE);
+            assertThat(encodedByteWidth(presented, StandardCharsets.US_ASCII))
+                    .isEqualTo(encodedByteWidth(ASCII_FOLD_PROBE, StandardCharsets.US_ASCII));
+            assertThat(stored.getCardEmbossedName()).isEqualTo(ASCII_FOLD_PROBE);
         }
     }
 
@@ -477,12 +756,63 @@ class CardUpdateServiceTest {
                             + "which is what composes the notice")
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED);
             assertThat(result.message())
-                    .isEqualTo(OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED);
+                    .as("the verbatim write-failure text, declared here rather than read back")
+                    .isEqualTo(EXPECTED_MSG_UPDATE_FAILED);
             assertThat(result.updateCommitted()).isFalse();
 
+            // The outcome maps onto the shared conflict arm for this path, and that arm's own text is the
+            // one the screen is carrying - which is what makes the conflict contract observable even though
+            // the recoverable screen, not an exception, is what the operator is answered with.
+            assertThat(result.writeOutcome().conflictKind())
+                    .isEqualTo(OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK);
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> {
+                        throw new OptimisticLockConflictException(
+                                result.writeOutcome().conflictKind(), "Card", CARD_NUMBER);
+                    })
+                    .withMessage(EXPECTED_MSG_UPDATE_FAILED)
+                    .satisfies(conflict -> {
+                        assertThat(conflict.conflictKind()).isEqualTo(
+                                OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK);
+                        assertThat(conflict.entityName()).isEqualTo("Card");
+                    });
+
+            // The rewrite was attempted exactly once. A retry would show as a second interaction, and the
+            // count - not elapsed time - is what proves there was none.
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .saveAndFlush(Mockito.any());
             // The transaction cannot continue, so it is marked for rollback rather than committed.
             Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
+            // A version conflict is recoverable. It NEVER abends.
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
+        }
+
+        @Test
+        @DisplayName("(e, contract) the shared conflict exception publishes exactly the four verbatim "
+                + "legacy texts and refuses any wording an operator has never seen")
+        void theFourConflictTextsAreVerbatimAndClosed() {
+            // Byte-for-byte against literals declared in this class. "some one" is TWO WORDS.
+            assertThat(OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE
+                    .defaultMessage()).isEqualTo(EXPECTED_MSG_RECORD_CHANGED);
+            assertThat(EXPECTED_MSG_RECORD_CHANGED).contains("some one else");
+            assertThat(OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK
+                    .defaultMessage()).isEqualTo(EXPECTED_MSG_UPDATE_FAILED);
+            assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
+                    .defaultMessage()).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_ACCOUNT);
+            // The one text of the four that varies by entity.
+            assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
+                    .defaultMessage("Customer")).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_CUSTOMER);
+            assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
+                    .defaultMessage("Card")).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_ACCOUNT);
+
+            // Three arms, and the three write outcomes of this member map onto them one for one.
+            assertThat(OptimisticLockConflictException.ConflictKind.values()).hasSize(3);
+
+            // Wording cannot be composed at a call site, so a screen cannot drift from the estate's text.
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .isThrownBy(() -> new OptimisticLockConflictException(
+                            OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK,
+                            "Card", CARD_NUMBER, "Update of the record failed", null));
         }
 
         @Test
@@ -502,20 +832,27 @@ class CardUpdateServiceTest {
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.RECORD_CHANGED_BEFORE_UPDATE);
             assertThat(result.changeDetected()).isTrue();
-            // The verbatim text, with "some one" as TWO WORDS.
-            assertThat(result.message()).isEqualTo("Record changed by some one else. Please review");
+            // The verbatim text, with "some one" as TWO WORDS, against a literal declared in this class.
+            assertThat(result.message()).isEqualTo(EXPECTED_MSG_RECORD_CHANGED);
+            assertThat(result.writeOutcome().conflictKind())
+                    .isEqualTo(
+                            OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE);
             // Lines 997 to 998 return the screen to the display state, so the conflict is recoverable.
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
-            // Lines 1512 to 1517 refresh the carried image with what the record now holds.
+            // Lines 1512 to 1517 refresh the carried image with what the record now holds. That refresh is
+            // the loop's own progress condition: a further pass would compare against the refreshed image
+            // and find it agrees, so the source bounds its own backward jump.
             assertThat(result.carriedImage().activeStatus()).isEqualTo("N");
 
-            // The loop is bounded: exactly one read, and nothing written. Counting reads rather than
-            // measuring time is the assertion that catches an unbounded or delayed retry.
+            // The loop is bounded and it TERMINATED: exactly one read, and nothing written. Counting
+            // interactions rather than measuring time is the assertion that catches an unbounded or a
+            // delayed retry - and there is no delay to measure, because the translation introduces none.
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
                     .findById(CARD_NUMBER);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .saveAndFlush(Mockito.any());
+            Mockito.verifyNoMoreInteractions(CardUpdateServiceTest.this.cardRepository);
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
@@ -530,14 +867,23 @@ class CardUpdateServiceTest {
                     .processCardUpdate(confirmingTurn("DFHPF5", "MARY ANN", "N",
                             carriedImage(STORED_NAME_FOLDED)));
 
-            assertThat(result.message()).isEqualTo("Could not lock record for update");
+            assertThat(result.message()).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_RECORD);
             assertThat(result.message())
-                    .isNotEqualTo(OptimisticLockConflictException.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE);
+                    .as("this member's own text names no entity; the account program's names one")
+                    .isNotEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_ACCOUNT)
+                    .isNotEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_CUSTOMER);
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.LOCK_NOT_ACQUIRED);
+            assertThat(result.writeOutcome().conflictKind())
+                    .isEqualTo(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED);
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_LOCK_ERROR);
             assertThat(result.infoMessage()).isEqualTo("Changes unsuccessful. Please try again");
+            // No row was locked, so no rewrite was attempted and the loop made exactly one pass.
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .findById(CARD_NUMBER);
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any());
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
@@ -554,11 +900,42 @@ class CardUpdateServiceTest {
                     .processCardUpdate(confirmingTurn("DFHPF5", "MARY ANN", "N",
                             carriedImage(STORED_NAME_FOLDED)));
 
-            assertThat(result.message()).isEqualTo("Update of record failed");
+            assertThat(result.message()).isEqualTo(EXPECTED_MSG_UPDATE_FAILED);
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.UPDATE_FAILED_AFTER_LOCK);
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED);
+            // Attempted once and not retried: a write failure is answered with a screen, not another write.
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .saveAndFlush(Mockito.any());
+            Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
+        }
+
+        @Test
+        @DisplayName("a completed rewrite is attempted exactly once, commits, and marks nothing for "
+                + "rollback")
+        void aCompletedRewriteIsAttemptedExactlyOnce() {
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.saveAndFlush(Mockito.any()))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(confirmingTurn("DFHPF5", "MARY ANN", "N",
+                            carriedImage(STORED_NAME_FOLDED)));
+
+            assertThat(result.updateCommitted()).isTrue();
+            assertThat(result.writeOutcome()).isEqualTo(CardUpdateService.WriteOutcome.COMMITTED);
+            // One read for update and one rewrite. The bound is the source's own, and it is proven by
+            // interaction counts rather than by any elapsed-time or timeout construct.
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .findById(CARD_NUMBER);
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
+                    .saveAndFlush(Mockito.any());
+            Mockito.verifyNoMoreInteractions(CardUpdateServiceTest.this.cardRepository);
+            Mockito.verify(CardUpdateServiceTest.this.recordWriter, Mockito.never())
+                    .markRollbackOnly();
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
     }
@@ -583,19 +960,26 @@ class CardUpdateServiceTest {
 
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
                     .processCardUpdate(confirmingTurn("DFHPF5", "MARY ANN", "N",
-                            carriedImage(VERIFICATION_CODE.equals("007") ? STORED_NAME_FOLDED
-                                    : STORED_NAME_FOLDED)));
+                            carriedImage(STORED_NAME_FOLDED)));
 
             // The write path sources the code from a field the member never writes, so the stored value
-            // is preserved rather than blanked. It is still three characters and is not normalised.
+            // is preserved rather than blanked. It is still the three-character STRING and is not
+            // normalised: a translation that had parsed it into a number would round-trip it as "7".
             final ArgumentCaptor<Card> written = ArgumentCaptor.forClass(Card.class);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository).saveAndFlush(written.capture());
             assertThat(written.getValue().getCardCvvCd()).isEqualTo("007");
-            assertThat(written.getValue().getCardCvvCd()).hasSize(3);
+            assertThat(encodedByteWidth(written.getValue().getCardCvvCd(), StandardCharsets.US_ASCII))
+                    .isEqualTo(3);
 
             // The carried image still carries it, because the comparison at line 1503 needs it.
             assertThat(result.carriedImage().verificationCode()).isEqualTo("007");
-            // And nothing about it reaches a log, on this path or any other.
+            // And nothing about it reaches a log, on this path or any other. The appender is attached to
+            // both this member's logger and the dispatch graph's, so this covers every record the turn
+            // produced rather than only the ones this class emitted.
+            assertThat(CardUpdateServiceTest.this.capturedLog.list)
+                    .as("no captured event mentions the verification code")
+                    .isNotEmpty()
+                    .noneMatch(event -> event.getFormattedMessage().contains("007"));
             assertThat(CardUpdateServiceTest.this.renderedLog()).doesNotContain("007");
             assertThat(result.carriedImage().toString()).doesNotContain("007");
             assertThat(result.card()).isNotNull();
@@ -654,8 +1038,15 @@ class CardUpdateServiceTest {
             assertThat(viaSeventeenth.changeAction()).isEqualTo(viaFifth.changeAction());
             assertThat(viaSeventeenth.message()).isEqualTo(viaFifth.message());
             assertThat(viaSeventeenth.workArea().keyAction())
-                    .isEqualTo(viaFifth.workArea().keyAction());
+                    .as("the upper key resolves to the SAME action constant as the lower one, so the "
+                            + "seventeenth key is not a distinct action from the fifth")
+                    .isEqualTo(viaFifth.workArea().keyAction())
+                    .isEqualTo(KeyAction.PFK05);
             assertThat(viaSeventeenth.updateCommitted()).isTrue();
+            assertThat(viaFifth.updateCommitted()).isTrue();
+            // The fold collapses the twenty-eight legacy identifiers onto sixteen outcomes, so the action
+            // enum declares sixteen constants and no unknown member.
+            assertThat(KeyAction.values()).hasSize(16);
         }
 
         @Test
@@ -673,14 +1064,23 @@ class CardUpdateServiceTest {
 
             assertThat(result.attentionKeyUnmapped()).isTrue();
             assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).hasSize(MessageCatalogService.COMMON_MESSAGE_WIDTH);
-            assertThat(result.message()).isEqualTo(MessageCatalogService.CCDA_MSG_INVALID_KEY);
-            assertThat(result.message()).startsWith("Invalid key pressed.");
+            // Content: the declared fifty-character value, taken from the catalog UNTRIMMED. The trailing
+            // padding is part of the contract because the legacy field it is moved into is fixed width.
+            assertThat(result.message()).isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
+            assertThat(result.message()).startsWith(INVALID_KEY_VISIBLE_TEXT);
+            assertThat(result.message())
+                    .as("the padding survives; nothing trims a fixed-width field")
+                    .endsWith(INVALID_KEY_PADDING);
+            // Width: measured on ENCODED BYTES, never on a character count.
+            assertThat(encodedByteWidth(result.message(), StandardCharsets.US_ASCII))
+                    .isEqualTo(COMMON_MESSAGE_BYTE_WIDTH);
+            // No route change: an unmapped identifier leaves the operator on this screen.
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_UPDATE);
+            assertThat(result.reArmedTransactionId()).isEqualTo("CCUP");
             // Lines 422 to 424 coerce every key that is not permitted at this point to the enter key,
             // and an identifier that did not decode leaves no key at all, so it is not permitted. The
             // decode failure is therefore reported on its own flag, never by the decoded key.
-            assertThat(result.workArea().keyAction()).isEqualTo(
-                    com.carddemo.domain.enums.KeyAction.ENTER);
+            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.NOT_ATTEMPTED);
         }
@@ -717,8 +1117,7 @@ class CardUpdateServiceTest {
             final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
                     .processCardUpdate(reviewingTurnWithKey("DFHPF5", STORED_NAME_FOLDED, "N"));
 
-            assertThat(result.workArea().keyAction()).isEqualTo(
-                    com.carddemo.domain.enums.KeyAction.ENTER);
+            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
             assertThat(result.message()).isEmpty();
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.NOT_ATTEMPTED);
@@ -757,7 +1156,8 @@ class CardUpdateServiceTest {
         @DisplayName("(i) the exit arm propagates the dispatch graph's abend when the nominated program "
                 + "cannot be resolved, and nothing is written")
         void exitArmPropagatesAbend() {
-            final ScreenNavigationState unresolvable = new ScreenNavigationState("XXXX", "NOSUCHPG", null, null,
+            final ScreenNavigationState unresolvable = new ScreenNavigationState("XXXX",
+                    UNRESOLVABLE_PROGRAM, null, null,
                     "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER, "000000001", "ANIYA",
                     null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
 
@@ -1114,11 +1514,6 @@ class CardUpdateServiceTest {
             assertThat(result.decoration().isEmpty()).isTrue();
         }
 
-        @Test
-        @DisplayName("the not-found status the read reports is the one the shared exception publishes")
-        void notFoundStatusIsTheSharedOne() {
-            assertThat(RecordNotFoundException.STATUS_RECORD_NOT_FOUND).isEqualTo("23");
-        }
     }
 
     // ==============================================================================================
@@ -1294,7 +1689,8 @@ class CardUpdateServiceTest {
             // Line 1411 moves the assembled text unconditionally. The structure at lines 133 to 152
             // declares eighty characters but the destination at line 173 is seventy-five, so the trailing
             // five-character filler never survives the move.
-            assertThat(result.message()).hasSize(CardUpdateService.RETURN_MESSAGE_WIDTH);
+            assertThat(encodedByteWidth(result.message(), StandardCharsets.US_ASCII))
+                    .isEqualTo(RETURN_MESSAGE_BYTE_WIDTH);
             assertThat(result.message()).startsWith("File Error: READ");
             assertThat(result.message()).contains(" on CARDDAT");
             assertThat(result.message()).contains("returned RESP");
@@ -1376,7 +1772,8 @@ class CardUpdateServiceTest {
                             CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED,
                             CardUpdateService.CarriedCardImage.empty()));
 
-            assertThat(result.message()).hasSize(CardUpdateService.RETURN_MESSAGE_WIDTH);
+            assertThat(encodedByteWidth(result.message(), StandardCharsets.US_ASCII))
+                    .isEqualTo(RETURN_MESSAGE_BYTE_WIDTH);
             assertThat(result.message()).contains(" on CARDAIX");
             assertThat(renderedLog()).contains("resource=CARDAIX");
         }
@@ -1547,6 +1944,372 @@ class CardUpdateServiceTest {
     }
 
     // ==============================================================================================
+    // The two-state field-error contract of app/cpy/CSSETATY.cpy, and its re-entry gate
+    // ==============================================================================================
+
+    /**
+     * The three observable states the macro copybook's two nested conditions produce.
+     *
+     * <p>{@code app/cpy/CSSETATY.cpy} colours a field when its flag is not-OK <em>or</em> blank <b>and</b>
+     * the program is on re-entry, and it <em>additionally</em> writes a marker when the flag is
+     * specifically blank. Two nested conditions over three flag states therefore yield three outcomes and
+     * not two, and the outer re-entry gate is what makes the first of them exist at all:
+     *
+     * <ul>
+     *   <li>first submission, whatever the flag - <b>undecorated</b>, and so no field error either</li>
+     *   <li>re-entry with a supplied value that failed its edit - <b>decorated without a marker</b>, which
+     *       the response publishes as INVALID</li>
+     *   <li>re-entry with no value supplied - <b>decorated with a marker</b>, which the response publishes
+     *       as MISSING</li>
+     * </ul>
+     *
+     * <p>Collapsing the two error states into a boolean would erase the distinction the legacy screen draws
+     * between a field an operator left empty and one they filled in wrongly, which is exactly the
+     * distinction the marker exists to draw.
+     */
+    @Nested
+    @DisplayName("the two-state field-error contract, and the re-entry gate that precedes it")
+    class TwoStateDecoration {
+
+        /**
+         * A submitted turn whose echoed state reports a FIRST entry rather than a re-submission.
+         *
+         * <p>Nothing has been fetched, so this is the state the operator's very first arrival at the screen
+         * carries, and the filter values are supplied for the assertion's benefit rather than because a
+         * first turn would carry any.
+         *
+         * @param accountId the submitted account filter
+         * @param cardNumber the submitted card filter
+         * @return the transmitted screen, never {@code null}
+         */
+        private CardUpdateService.CardUpdateScreenInput firstSubmission(final String accountId,
+                final String cardNumber) {
+            final ScreenNavigationState firstEntry = new ScreenNavigationState("CCUP", "COCRDUPC", null,
+                    null, "USER0001", "U", ScreenNavigationState.ProgramContext.ENTER, "000000001",
+                    "ANIYA", null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
+            return new CardUpdateService.CardUpdateScreenInput(accountId, cardNumber, null, null, null,
+                    null, null, "DFHENTER", firstEntry,
+                    CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED,
+                    CardUpdateService.CarriedCardImage.empty());
+        }
+
+        /**
+         * A re-submission of the same two filter values, so the pair of assertions differs in exactly one
+         * variable: the state of the re-entry gate.
+         *
+         * @param accountId the submitted account filter
+         * @param cardNumber the submitted card filter
+         * @return the transmitted screen, never {@code null}
+         */
+        private CardUpdateService.CardUpdateScreenInput reSubmission(final String accountId,
+                final String cardNumber) {
+            return new CardUpdateService.CardUpdateScreenInput(accountId, cardNumber, null, null, null,
+                    null, null, "DFHENTER", reEntryContext(),
+                    CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED,
+                    CardUpdateService.CarriedCardImage.empty());
+        }
+
+        @Test
+        @DisplayName("first submission: nothing is decorated, no marker is written and no field error is "
+                + "published, however the fields were filled")
+        void firstSubmissionLeavesAFailingFieldUndecorated() {
+            // Blank filters on a first arrival, and then malformed ones: neither is decorated, because the
+            // outer gate is closed for the whole of the decoration block.
+            final CardUpdateService.CardUpdateResult blankOnFirstEntry =
+                    CardUpdateServiceTest.this.service.processCardUpdate(firstSubmission(null, null));
+            final CardUpdateService.CardUpdateResult malformedOnFirstEntry =
+                    CardUpdateServiceTest.this.service.processCardUpdate(firstSubmission("123", "456"));
+
+            for (final CardUpdateService.CardUpdateResult result :
+                    List.of(blankOnFirstEntry, malformedOnFirstEntry)) {
+                assertThat(result.decoration()).isNotNull();
+                assertThat(result.decoration().isEmpty()).isTrue();
+                assertThat(result.decoration().markedFields()).isEmpty();
+                assertThat(result.fieldErrors()).isNotNull().isEmpty();
+                assertThat(result.screen().accountId())
+                        .as("no marker is written into an undecorated field")
+                        .isNotEqualTo(CardUpdateService.BLANK_FIELD_MARKER);
+                assertThat(result.screen().cardNumber())
+                        .isNotEqualTo(CardUpdateService.BLANK_FIELD_MARKER);
+                assertThat(result.infoMessage())
+                        .isEqualTo(CardUpdateService.INFO_PROMPT_FOR_SEARCH_KEYS);
+                assertThat(result.changeAction())
+                        .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
+            }
+
+            // Nothing was read either: a first arrival asks for the keys, it does not act on them.
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.cardRepository);
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
+
+            // And the assertion is discriminating: the SAME two values on a re-submission ARE decorated,
+            // so the undecorated outcome above is the gate's doing rather than the fields being acceptable.
+            final CardUpdateService.CardUpdateResult blankOnReEntry =
+                    CardUpdateServiceTest.this.service.processCardUpdate(reSubmission(null, null));
+            final CardUpdateService.CardUpdateResult malformedOnReEntry =
+                    CardUpdateServiceTest.this.service.processCardUpdate(reSubmission("123", "456"));
+            assertThat(blankOnReEntry.fieldErrors()).isNotEmpty();
+            assertThat(malformedOnReEntry.fieldErrors()).isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("re-entry, value supplied and rejected: decorated WITHOUT a marker, published as "
+                + "INVALID")
+        void reEntryWithARejectedValueIsInvalidAndCarriesNoMarker() {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput("123", CARD_NUMBER,
+                            null, null, null, null, null, "DFHENTER", reEntryContext(),
+                            CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            assertThat(result.reEntry()).isTrue();
+            assertThat(result.decoration().markedFields())
+                    .as("a supplied value that failed its edit is coloured")
+                    .isNotEmpty()
+                    .extracting(FieldErrorMarks.MarkedField::flagState)
+                    .containsOnly(FieldErrorMarks.FlagState.NOT_OK);
+            assertThat(result.fieldErrors())
+                    .isNotEmpty()
+                    .allSatisfy(error -> assertThat(error.state())
+                            .isEqualTo(ValidationException.FieldState.INVALID));
+            // No marker: the inner condition tests the BLANK state specifically, and this one is not blank.
+            assertThat(result.screen().accountId())
+                    .as("the marker is written only for the blank state")
+                    .isNotEqualTo(CardUpdateService.BLANK_FIELD_MARKER);
+        }
+
+        @Test
+        @DisplayName("re-entry, no value supplied: decorated WITH a marker, published as MISSING")
+        void reEntryWithNoValueSuppliedIsMissingAndCarriesTheMarker() {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
+                            null, null, null, null, "DFHENTER", reEntryContext(),
+                            CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            assertThat(result.reEntry()).isTrue();
+            assertThat(result.decoration().markedFields())
+                    .isNotEmpty()
+                    .extracting(FieldErrorMarks.MarkedField::flagState)
+                    .containsOnly(FieldErrorMarks.FlagState.BLANK);
+            assertThat(result.fieldErrors())
+                    .isNotEmpty()
+                    .allSatisfy(error -> assertThat(error.state())
+                            .isEqualTo(ValidationException.FieldState.MISSING));
+            // The marker replaces the field's value, which is what the legacy move does.
+            assertThat(result.screen().accountId()).isEqualTo(CardUpdateService.BLANK_FIELD_MARKER);
+            assertThat(result.screen().cardNumber()).isEqualTo(CardUpdateService.BLANK_FIELD_MARKER);
+        }
+
+        @Test
+        @DisplayName("the field state has EXACTLY TWO constants, so the marker distinction cannot be "
+                + "collapsed into a boolean")
+        void theFieldStateHasExactlyTwoConstants() {
+            assertThat(ValidationException.FieldState.values())
+                    .as("MISSING for a field not supplied, INVALID for one supplied wrongly, and nothing "
+                            + "else: a field that passed its edits produces no entry at all")
+                    .hasSize(2)
+                    .containsExactly(ValidationException.FieldState.MISSING,
+                            ValidationException.FieldState.INVALID);
+            // The two decoration flag states map onto them one for one, with no third outcome.
+            assertThat(FieldErrorMarks.FlagState.values()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("the field-error list is never null and is UNMODIFIABLE: a mutation attempt throws")
+        void theFieldErrorListIsNonNullAndUnmodifiable() {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
+                            null, null, null, null, "DFHENTER", reEntryContext(),
+                            CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            final List<ValidationException.FieldError> published = result.fieldErrors();
+            assertThat(published).isNotNull().isNotEmpty();
+
+            final ValidationException.FieldError intruder = new ValidationException.FieldError(
+                    CardUpdateService.FIELD_EMBOSSED_NAME, CardUpdateService.BMS_EMBOSSED_NAME,
+                    ValidationException.FieldState.INVALID, "injected");
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .as("a caller cannot append to the published detail")
+                    .isThrownBy(() -> published.add(intruder));
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .as("nor remove from it")
+                    .isThrownBy(() -> published.remove(0));
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .as("nor clear it")
+                    .isThrownBy(published::clear);
+
+            // The same guarantee on the shared exception the mapper publishes, including for a mutable
+            // list handed to its constructor.
+            final List<ValidationException.FieldError> mutable = new ArrayList<>(published);
+            final ValidationException raised =
+                    new ValidationException(CardUpdateService.MSG_NO_INPUT_RECEIVED, mutable);
+            assertThat(raised.hasFieldErrors()).isTrue();
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> raised.fieldErrors().add(intruder));
+            assertThat(new ValidationException(CardUpdateService.MSG_NO_INPUT_RECEIVED).fieldErrors())
+                    .as("an exception carrying no detail reports an empty list rather than null")
+                    .isNotNull()
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("the active-status edit accepts exactly the two declared card-status codes and "
+                + "publishes the source's verbatim text for anything else")
+        void theStatusEditAcceptsExactlyTheTwoDeclaredCodes() {
+            assertThat(CardStatus.values())
+                    .as("the layout declares two states and no third")
+                    .hasSize(2);
+            assertThat(CardStatus.values())
+                    .extracting(CardStatus::getCode)
+                    .containsExactly('Y', 'N');
+            assertThat(CardStatus.Y.isActive()).isTrue();
+            assertThat(CardStatus.N.isActive()).isFalse();
+            assertThat(CardStatus.fromCode('Q')).isEmpty();
+
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+
+            final CardUpdateService.CardUpdateResult rejected = CardUpdateServiceTest.this.service
+                    .processCardUpdate(reviewingTurn(STORED_NAME_FOLDED, "Q",
+                            carriedImage(STORED_NAME_FOLDED)));
+
+            assertThat(rejected.message()).isEqualTo(CardUpdateService.MSG_STATUS_MUST_BE_YES_NO);
+            assertThat(rejected.fieldErrors()).singleElement()
+                    .satisfies(error -> {
+                        assertThat(error.field()).isEqualTo(CardUpdateService.FIELD_ACTIVE_STATUS);
+                        assertThat(error.bmsFieldId()).isEqualTo(CardUpdateService.BMS_ACTIVE_STATUS);
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.INVALID);
+                    });
+        }
+    }
+
+    // ==============================================================================================
+    // Null, blank and wrong-length input
+    // ==============================================================================================
+
+    /**
+     * The boundary inputs, none of which may escape as an unhandled runtime failure.
+     *
+     * <p>A 3270 field the terminal did not transmit arrives as low values rather than as spaces, and an
+     * omitted request component is the same state, so {@code null} is an ordinary value on this surface
+     * rather than a programming error. The one input that is <em>not</em> optional is the request itself.
+     */
+    @Nested
+    @DisplayName("null, blank and wrong-length input")
+    class NullAndBoundaryInput {
+
+        @Test
+        @DisplayName("a null card number is not supplied rather than a failure, and attempts no read")
+        void aNullCardNumberIsNotSupplied() {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(ACCOUNT_ID, null,
+                            null, null, null, null, null, "DFHENTER", reEntryContext(),
+                            CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            assertThat(result).isNotNull();
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.message()).isEqualTo(CardUpdateService.MSG_CARD_NOT_PROVIDED);
+            assertThat(result.fieldErrors()).extracting(ValidationException.FieldError::field)
+                    .containsExactly(CardUpdateService.FIELD_CARD_NUMBER);
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.cardRepository);
+        }
+
+        @ParameterizedTest
+        @CsvSource({"'                ', spaces fill the whole field",
+                    "'411111111111111', one position short",
+                    "'4111-1111-1111-1', punctuated rather than numeric",
+                    "'0000000000000000', zeros fill the whole field"})
+        @DisplayName("a card filter that is not sixteen digits across the whole field is refused with the "
+                + "source's verbatim text, and no read is attempted")
+        void aWrongLengthCardFilterIsRefused(final String submitted, final String why) {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(ACCOUNT_ID, submitted,
+                            null, null, null, null, null, "DFHENTER", reEntryContext(),
+                            CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            assertThat(result.errorFlag()).as(why).isTrue();
+            assertThat(result.message()).as(why)
+                    .isIn(CardUpdateService.MSG_CARD_FILTER_SIXTEEN_DIGITS,
+                            CardUpdateService.MSG_CARD_NOT_PROVIDED,
+                            CardUpdateService.MSG_NO_INPUT_RECEIVED);
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
+                    .findById(Mockito.anyString());
+        }
+
+        @Test
+        @DisplayName("a card filter LONGER than its declared width passes the class test, because that "
+                + "test examines the sixteen declared positions and no more")
+        void anOverLongCardFilterIsClassTestedAcrossItsDeclaredWidthOnly() {
+            // The legacy field is sixteen bytes and a longer value cannot reach it, so the class test at
+            // line 784 inspects exactly the declared positions. Sixteen digits followed by a seventeenth
+            // therefore satisfies it, the fetch is attempted, and an absent row is the not-found outcome
+            // rather than an escaping failure. Recorded here because a translation that class-tested the
+            // whole string instead would refuse a value the fixed-field test accepts.
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(ACCOUNT_ID,
+                            CARD_NUMBER + "1", null, null, null, null, null, "DFHENTER",
+                            reEntryContext(), CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED, null));
+
+            assertThat(result).isNotNull();
+            assertThat(result.message()).isEqualTo(CardUpdateService.MSG_NO_CARD_FOR_SEARCH);
+            assertThat(result.errorFlag()).isTrue();
+            assertThat(result.card()).isNull();
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any());
+        }
+
+        @Test
+        @DisplayName("a null embossed name on a submitted screen is MISSING rather than a failure")
+        void aNullEmbossedNameIsMissing() {
+            Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
+
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(reviewingTurn(null, "Y", carriedImage(STORED_NAME_FOLDED)));
+
+            assertThat(result).isNotNull();
+            assertThat(result.message()).isEqualTo(CardUpdateService.MSG_NAME_NOT_PROVIDED);
+            assertThat(result.fieldErrors()).isNotEmpty()
+                    .first()
+                    .satisfies(error -> {
+                        assertThat(error.field()).isEqualTo(CardUpdateService.FIELD_EMBOSSED_NAME);
+                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
+                    });
+            Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
+                    .saveAndFlush(Mockito.any());
+        }
+
+        @Test
+        @DisplayName("a null navigation state resets the conversation and presents the empty screen")
+        void aNullNavigationStateResetsTheConversation() {
+            final CardUpdateService.CardUpdateResult result = CardUpdateServiceTest.this.service
+                    .processCardUpdate(new CardUpdateService.CardUpdateScreenInput(null, null, null,
+                            null, null, null, null, null, null, null, null));
+
+            assertThat(result).isNotNull();
+            assertThat(result.navigationContext()).isNotNull();
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_UPDATE);
+            assertThat(result.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
+            assertThat(result.carriedImage()).isNotNull();
+            assertThat(result.carriedImage().absent()).isTrue();
+            assertThat(result.fieldErrors()).isNotNull().isEmpty();
+            // A null attention identifier is the unmapped-key case, not a failure.
+            assertThat(result.attentionKeyUnmapped()).isTrue();
+            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.cardRepository);
+            Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
+        }
+
+        @Test
+        @DisplayName("the not-found status the read reports is the shared one, and its exception declares "
+                + "a no-argument constructor")
+        void theNotFoundContractIsTheSharedOne() {
+            assertThat(RecordNotFoundException.STATUS_RECORD_NOT_FOUND).isEqualTo("23");
+            assertThat(new RecordNotFoundException()).isNotNull();
+        }
+    }
+
+
+    // ==============================================================================================
     // The one reachable abend, and the states the dispatch resets
     // ==============================================================================================
 
@@ -1582,20 +2345,30 @@ class CardUpdateServiceTest {
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
+        /**
+         * The abend contract of this screen: <b>emit first, then raise</b>, carrying the program-name
+         * culprit and the terminal online code.
+         *
+         * <p>The reachable abend here is the transfer the exit arm attempts: the dispatch graph raises for
+         * a nominated program it cannot resolve, exactly as the legacy transfer at lines 469 to 475 would
+         * have abended on a program name the region cannot resolve. The graph emits its diagnostic on the
+         * statement before the raise, with no branch between the two, so the record is <em>already
+         * captured</em> at the moment the exception surfaces - which is what makes the ordering assertable
+         * rather than merely documented. That ordering is the whole point of the legacy's send-before-abend
+         * sequence at lines 1539 to 1552: a diagnostic emitted after the abend would arrive after the thing
+         * it describes had already terminated.
+         *
+         * <p>This member's OWN abend paragraph at line 1531 performs the same ordering and cannot be
+         * reached through the public surface, because the only arm that performs it is the catch-all for a
+         * corrupt state byte and the state is a typed enum here - which is what the lock-error test above
+         * pins down. Reaching it would require reflection, and the reflection budget is zero.
+         */
         @Test
-        @DisplayName("(i) an abend raised on this screen's behalf propagates unswallowed, carries the "
-                + "terminal online code, and leaks nothing sensitive")
-        void anAbendPropagatesCarryingTheTerminalCode() {
-            // The reachable abend on this screen is the transfer the exit arm attempts: the dispatch graph
-            // raises for a nominated program it cannot resolve, exactly as the legacy transfer at lines 469
-            // to 475 would have abended on a program name the region cannot resolve.
-            //
-            // The emit-then-raise ordering of this member's OWN abend paragraph cannot be observed through
-            // the public surface, because the only arm that performs it is unreachable once the state byte
-            // becomes a typed enum - which is what the lock-error test above pins down. The ordering is
-            // still guaranteed structurally: the diagnostic is the statement before the delegation, with no
-            // branch between them, and the delegate logs before it throws.
-            final ScreenNavigationState unresolvableCaller = new ScreenNavigationState("XXXX", "NOSUCHPG", null,
+        @DisplayName("(i) an abend LOGS ITS DIAGNOSTIC BEFORE IT RAISES, propagates unswallowed, carries "
+                + "the program-name culprit and the terminal online code, and leaks nothing sensitive")
+        void anAbendLogsBeforeItRaisesAndCarriesTheTerminalCode() {
+            final ScreenNavigationState unresolvableCaller = new ScreenNavigationState("XXXX",
+                    UNRESOLVABLE_PROGRAM, null,
                     null, "USER0001", "U", ScreenNavigationState.ProgramContext.REENTER, "000000001",
                     "ANIYA", null, "VON", ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
 
@@ -1606,13 +2379,44 @@ class CardUpdateServiceTest {
                                     unresolvableCaller, CardUpdateService.ChangeAction.SHOW_DETAILS,
                                     carriedImage(STORED_NAME_FOLDED))))
                     .satisfies(raised -> {
-                        assertThat(raised.code()).isEqualTo(AbendException.ONLINE_ABEND_CODE);
-                        assertThat(raised.culprit()).isEqualTo("NOSUCHPG");
+                        // The terminal online code, as a declared literal rather than read back.
+                        assertThat(raised.code()).isEqualTo(EXPECTED_ONLINE_ABEND_CODE);
+                        // The culprit is the PROGRAM NAME, bounded to the legacy field width.
+                        assertThat(raised.culprit()).isEqualTo(UNRESOLVABLE_PROGRAM);
+                        assertThat(encodedByteWidth(raised.culprit(), StandardCharsets.US_ASCII))
+                                .isEqualTo(ABEND_CULPRIT_BYTE_WIDTH);
                         assertThat(raised.reason()).isNotBlank();
+                        // The fixed-width context is assembled at the four verified offsets: a hundred and
+                        // thirty-four bytes carrying the code, the culprit, the reason and the message.
+                        final String context = raised.toFixedWidthContext();
+                        assertThat(encodedByteWidth(context, StandardCharsets.US_ASCII))
+                                .isEqualTo(ABEND_CONTEXT_BYTE_WIDTH);
+                        assertThat(context.substring(0, ABEND_CODE_BYTE_WIDTH))
+                                .isEqualTo(EXPECTED_ONLINE_ABEND_CODE);
+                        assertThat(context.substring(ABEND_CODE_BYTE_WIDTH,
+                                ABEND_CODE_BYTE_WIDTH + ABEND_CULPRIT_BYTE_WIDTH))
+                                .isEqualTo(UNRESOLVABLE_PROGRAM);
+                        assertThat(encodedByteWidth(context.substring(ABEND_CODE_BYTE_WIDTH
+                                + ABEND_CULPRIT_BYTE_WIDTH, ABEND_CODE_BYTE_WIDTH
+                                + ABEND_CULPRIT_BYTE_WIDTH + ABEND_REASON_BYTE_WIDTH),
+                                StandardCharsets.US_ASCII)).isEqualTo(ABEND_REASON_BYTE_WIDTH);
+                        assertThat(encodedByteWidth(context.substring(ABEND_CODE_BYTE_WIDTH
+                                + ABEND_CULPRIT_BYTE_WIDTH + ABEND_REASON_BYTE_WIDTH),
+                                StandardCharsets.US_ASCII)).isEqualTo(ABEND_MESSAGE_BYTE_WIDTH);
                     });
 
+            // EMIT-THEN-RAISE. The diagnostic is already in the appender now that the raise has surfaced,
+            // which is only possible if it was written before control left the raising statement.
+            assertThat(CardUpdateServiceTest.this.capturedLog.list)
+                    .as("the diagnostic was emitted before the abend was raised")
+                    .isNotEmpty()
+                    .anyMatch(event -> event.getLevel() == Level.ERROR
+                            && event.getFormattedMessage().contains("abending"));
+
             // The screen was never presented, so nothing was written and nothing sensitive was logged.
-            assertThat(renderedLog()).doesNotContain(VERIFICATION_CODE);
+            assertThat(renderedLog())
+                    .doesNotContain(VERIFICATION_CODE)
+                    .doesNotContain(CARD_NUMBER);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .saveAndFlush(Mockito.any());
         }
@@ -1661,8 +2465,7 @@ class CardUpdateServiceTest {
                             carriedImage(STORED_NAME_FOLDED)));
 
             assertThat(result.changeDetected()).isTrue();
-            assertThat(result.message())
-                    .isEqualTo(OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE);
+            assertThat(result.message()).isEqualTo(EXPECTED_MSG_RECORD_CHANGED);
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.RECORD_CHANGED_BEFORE_UPDATE);
         }
@@ -1685,7 +2488,7 @@ class CardUpdateServiceTest {
             assertThat(result.navigationContext().toTransactionId())
                     .isEqualTo(CardUpdateService.LEGACY_MENU_TRANSACTION_ID);
             assertThat(result.workArea().keyAction())
-                    .isEqualTo(com.carddemo.domain.enums.KeyAction.PFK03);
+                    .isEqualTo(KeyAction.PFK03);
         }
     }
 }

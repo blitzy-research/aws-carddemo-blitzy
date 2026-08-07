@@ -1761,8 +1761,18 @@ public final class CardUpdateService {
      * @param input the transmitted screen, carrying the raw attention identifier
      */
     private void storePfKey(final TurnState state, final CardUpdateScreenInput input) {
-        final Optional<KeyAction> decoded =
-                PfKeyTranslator.translate(input.attentionKeyIdentifier());
+        // An absent identifier is the unmapped-key case, exactly as this record's own component
+        // documentation declares, and it is resolved here rather than in the translator. The translator
+        // draws a deliberate distinction between an identifier that matches no clause - which is the
+        // legacy no-match outcome and yields an empty result - and an absent reference, which is a caller
+        // defect it refuses. A request component the terminal did not transmit is neither: it is the
+        // analogue of low values in a 3270 field, and low values match no clause. So the caller resolves
+        // it to the same empty result the no-match arm produces, which is what the four sibling members
+        // of this family do at their own call sites.
+        final String rawIdentifier = input.attentionKeyIdentifier();
+        final Optional<KeyAction> decoded = (rawIdentifier == null)
+                ? Optional.<KeyAction>empty()
+                : PfKeyTranslator.translate(rawIdentifier);
         if (decoded.isEmpty()) {
             // The decode failure is reported on its own flag and NOT by setting INPUT-ERROR. The edit
             // driver's SET INPUT-OK TO TRUE at line 643 is unconditional, so a report parked on the

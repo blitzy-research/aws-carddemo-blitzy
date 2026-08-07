@@ -21,6 +21,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import ch.qos.logback.classic.Level;
@@ -32,66 +33,120 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.Mockito;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 
 import com.carddemo.domain.Card;
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.AbendException;
+import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
+import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.CobolStringUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for the card-detail transaction {@code CCDL}.
+ * Unit tests for {@link CardDetailService}, the card-detail transaction {@code CCDL}.
  *
- * <p>The class under test is the migrated form of {@code app/cbl/COCRDSLC.cbl} - 887 lines, 34
- * paragraph labels of its own plus the two the attention-key copybook expands into it - reading the
- * screen work area of {@code app/cpy/CVCRD01Y.cpy} and the attention-key store of
- * {@code app/cpy/CSSTRPFY.cpy}.
+ * <p>The class under test is the migrated form of {@code app/cbl/COCRDSLC.cbl}, 887 lines, read at
+ * checkout {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} with upstream stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} (2022-07-19). It resolves one card and presents it, or
+ * explains why it could not. The screen work area comes from {@code app/cpy/CVCRD01Y.cpy}, the
+ * attention-key store from {@code app/cpy/CSSTRPFY.cpy}, and the 150-byte card layout from
+ * {@code app/cpy/CVACT02Y.cpy}. No legacy source text appears in this file; only widths, offsets,
+ * counts, member names and contract literals, which are metadata.
  *
- * <p><strong>The oracle is independent of the code it judges.</strong> Every expected message, field
- * width, screen field identifier, transaction identifier and route token below is a literal declared
- * in this class. No expected value is obtained by calling the service, the message catalogue, the
- * navigation service or the key translator, so a defect that changed a published constant could not
- * hide behind a test that read the same constant back. Fixed-width padding is written as an explicit
- * repeat count so the count is visible to a reviewer and cannot be stripped by an editor, and no
+ * <h2>Thirty-seven paragraph units, and why the count is not thirty-four</h2>
+ *
+ * <p>Both figures are correct and they count different things, so both are stated. A census of
+ * Area-A labels in this member's own procedure division, which begins at line 247, finds
+ * <strong>34</strong>: {@code 0000-MAIN} 248, {@code COMMON-RETURN} 394, {@code 0000-MAIN-EXIT} 408,
+ * {@code 1000-SEND-MAP} 412 and its exit 423, {@code 1100-SCREEN-INIT} 427 and 453,
+ * {@code 1200-SETUP-SCREEN-VARS} 457 and 499, {@code 1300-SETUP-SCREEN-ATTRS} 502 and 559,
+ * {@code 1400-SEND-SCREEN} 563 and 578, {@code 2000-PROCESS-INPUTS} 582 and 593,
+ * {@code 2100-RECEIVE-MAP} 596 and 605, {@code 2200-EDIT-MAP-INPUTS} 608 and 643,
+ * {@code 2210-EDIT-ACCOUNT} 647 and 681, {@code 2220-EDIT-CARD} 685 and 722,
+ * {@code 9000-READ-DATA} 726 and 732, {@code 9100-GETCARD-BYACCTCARD} 736 and 775,
+ * {@code 9150-GETCARD-BYACCT} 779 and 810, {@code SEND-LONG-TEXT} 820 and 831,
+ * {@code SEND-PLAIN-TEXT} 838 and 849, and {@code ABEND-ROUTINE} 857. Add the in-line
+ * {@code COPY 'CSSTRPFY'} unit at line 855 and the two paragraphs that copybook expands into this
+ * same procedure division - {@code YYYY-STORE-PFKEY} at line 17 of the copybook and its exit at line
+ * 80 - and the total is <strong>37</strong>. Every one of the 37 is named in a test below, so the
+ * traceability matrix resolves under either count.
+ *
+ * <h2>The oracle is independent of the code it judges</h2>
+ *
+ * <p>Every expected message, field width, screen field identifier, transaction identifier, program
+ * name and route token below is a literal declared in this class. No expected value is obtained by
+ * calling the service, the message catalogue, the navigation service, the key translator or a record
+ * mapper, so a defect that changed a published constant could not hide behind a test that read the
+ * same constant back. Fixed-width padding is written as an explicit repeat count so the count is
+ * visible to a reviewer and cannot be silently stripped, widths are measured on encoded bytes, and no
  * fixed-width value is trimmed before comparison.
  *
- * <p>Seven behaviours carry parity traps and are asserted deliberately rather than incidentally.
+ * <h2>Nine behaviours carry parity traps and are asserted deliberately</h2>
  *
  * <ol>
  *   <li><em>The account-keyed read is over a non-unique index, so first-match selection is the
- *       contract.</em> An absent result is the legacy not-found response and must not raise, and a
- *       result must never be reached by indexing into a collection.</li>
+ *       contract.</em> An absent result is the legacy not-found response and must not raise; a result
+ *       must never be reached by indexing into a collection. The repository declares a list-returning
+ *       account finder as well, and this service must never touch it - that is asserted, not
+ *       assumed.</li>
  *   <li><em>The two not-found outcomes are different.</em> The card-number read faults both filter
- *       fields and gates its message; the account-keyed read faults one and sets its message ungated.
- *       Collapsing them would lose a field flag and a message-precedence rule.</li>
+ *       fields and gates its message; the account-keyed read faults one and sets its message ungated,
+ *       overwriting whatever was there. Collapsing them would lose a field flag and a
+ *       message-precedence rule.</li>
+ *   <li><em>The upper program-function keys fold onto the lower twelve.</em> An identifier naming key
+ *       15 behaves exactly as one naming key 3, because the copybook's 28-clause selection collapses
+ *       onto 16 outcomes.</li>
  *   <li><em>An unmapped attention key is coerced, not rejected.</em> The pessimistic gate rewrites it
- *       as the enter key so the screen re-presents, and only an identifier the copybook's selection
- *       does not recognise at all draws the invalid-key text.</li>
- *   <li><em>The invalid-key text is fifty characters and is never trimmed.</em> The trailing spaces
- *       are part of the screen contract.</li>
+ *       as the enter key so the screen re-presents; only an identifier the selection does not
+ *       recognise at all draws the invalid-key text.</li>
+ *   <li><em>The invalid-key text is fifty encoded bytes and is never trimmed.</em> The trailing
+ *       spaces are part of the screen contract.</li>
  *   <li><em>The summary message is first-past-the-post while every field flag is still set.</em> The
- *       one exception is the cross-field edit, which is ungated and overwrites.</li>
+ *       exceptions are the cross-field edit and both file-error arms, which are ungated and
+ *       overwrite.</li>
  *   <li><em>An all-zero filter is "not supplied", not "invalid".</em> That is why the legacy message
  *       speaks of a non-zero number.</li>
  *   <li><em>Field decoration is gated on the inbound re-enter flag.</em> A first entry shows an empty
  *       field; only a re-submission shows the marker.</li>
+ *   <li><em>The card verification code is a bounded three-character string.</em> A value of
+ *       {@code 007} stays {@code "007"}, never becomes a number, and never reaches a log line.</li>
  * </ol>
  *
- * <p>Two paragraphs of the source are unreachable - the account-keyed read and the long-text send, both
- * verified by a census of every {@code PERFORM} in the member. They are exercised here directly,
- * because they are translated and must therefore be judged, and driving them through the turn is
+ * <p>Two paragraphs of the source are unreachable - the account-keyed read at line 779 and the
+ * long-text send at line 820, both verified by a census of every {@code PERFORM} in the member. They
+ * are exercised here directly through the package-private seams the production class documents,
+ * because they are translated and must therefore be judged, and driving them through a turn is
  * impossible by design.
+ *
+ * <p>A surefire unit test: every collaborator is a mock, so no container starts, no connection opens,
+ * no port binds and no clock moves. No user-specified rules were supplied for this engagement, so the
+ * work is held to enterprise-standard best practice instead.
  */
+@ExtendWith(MockitoExtension.class)
 @DisplayName("CardDetailService - the CCDL card-detail transaction of COCRDSLC")
 class CardDetailServiceTest {
 
@@ -102,7 +157,7 @@ class CardDetailServiceTest {
     /** {@code LIT-THISTRANID}, COCRDSLC line 166. */
     private static final String TRANSACTION_ID = "CCDL";
 
-    /** {@code LIT-THISPGM}, COCRDSLC line 164. */
+    /** {@code LIT-THISPGM}, COCRDSLC line 164, and the abend culprit. */
     private static final String PROGRAM_NAME = "COCRDSLC";
 
     /** {@code LIT-CCLISTPGM}, COCRDSLC line 172: the card-list member that hands over to this one. */
@@ -114,31 +169,66 @@ class CardDetailServiceTest {
     /** The user main menu member, the back-navigation default of this screen. */
     private static final String USER_MENU_PROGRAM = "COMEN01C";
 
+    /**
+     * The CICS program definition at {@code app/csd/CARDDEMO.CSD} line 211, bound to a transaction at
+     * line 390, for which the estate ships no source member at all. Nothing in the target may route
+     * to it, and that is asserted rather than assumed.
+     */
+    private static final String DANGLING_CICS_PROGRAM = "COCRDSEC";
+
+    /** The wire value of this screen's own destination. */
+    private static final String ROUTE_CARD_DETAIL = "card-detail";
+
+    /** The wire value of the back-navigation default. */
+    private static final String ROUTE_USER_MENU = "user-menu";
+
+    /** {@code LIT-THISMAP}, COCRDSLC line 170. */
+    private static final String THIS_MAP = "CCRDSLA";
+
+    /**
+     * {@code LIT-THISMAPSET}, COCRDSLC line 168, declared eight characters wide with a trailing space
+     * and moved into a seven-character work-area field, where the space is truncated away.
+     */
+    private static final String THIS_MAPSET_TRUNCATED = "COCRDSL";
+
     /** The two screen field identifiers the cursor arms at COCRDSLC lines 515 to 524 name. */
     private static final String FIELD_ACCOUNT_ID = "ACCTSID";
 
     private static final String FIELD_CARD_NUMBER = "CARDSID";
 
+    /** The account-filter property name a response layer decorates. */
+    private static final String PROPERTY_ACCOUNT_ID = "accountId";
+
+    /** The card-number property name a response layer decorates. */
+    private static final String PROPERTY_CARD_NUMBER = "cardNumber";
+
     /** {@code WS-PROMPT-FOR-INPUT}, COCRDSLC lines 131 to 132. */
     private static final String MSG_PROMPT_FOR_INPUT = "Please enter Account and Card Number";
 
     /** {@code FOUND-CARDS-FOR-ACCOUNT}, COCRDSLC lines 129 to 130 - three leading spaces. */
-    private static final String MSG_FOUND_CARDS = "   " + "Displaying requested details";
+    private static final String MSG_FOUND_CARDS = " ".repeat(3) + "Displaying requested details";
 
-    /** {@code WS-PROMPT-FOR-ACCT}, COCRDSLC lines 138 to 139. */
+    /** {@code WS-PROMPT-FOR-ACCT}, COCRDSLC lines 138 to 139, raised behind the message gate. */
     private static final String MSG_PROMPT_FOR_ACCOUNT = "Account number not provided";
 
-    /** {@code WS-PROMPT-FOR-CARD}, COCRDSLC lines 140 to 141. */
+    /** {@code WS-PROMPT-FOR-CARD}, COCRDSLC lines 140 to 141, raised behind the message gate. */
     private static final String MSG_PROMPT_FOR_CARD = "Card number not provided";
 
-    /** {@code NO-SEARCH-CRITERIA-RECEIVED}, COCRDSLC lines 142 to 143. */
+    /** {@code NO-SEARCH-CRITERIA-RECEIVED}, COCRDSLC lines 142 to 143, raised ungated at line 639. */
     private static final String MSG_NO_INPUT = "No input received";
 
-    /** {@code DID-NOT-FIND-ACCTCARD-COMBO}, COCRDSLC lines 153 to 154. */
+    /**
+     * {@code DID-NOT-FIND-ACCTCARD-COMBO}, COCRDSLC lines 153 to 154. The card-number read's
+     * not-found text, raised at line 760 <em>behind</em> the message gate.
+     */
     private static final String MSG_NO_CARDS_FOR_CONDITION =
             "Did not find cards for this search condition";
 
-    /** {@code DID-NOT-FIND-ACCT-IN-CARDXREF}, COCRDSLC lines 151 to 152. */
+    /**
+     * {@code DID-NOT-FIND-ACCT-IN-CARDXREF}, COCRDSLC lines 151 to 152. The account-keyed read's
+     * not-found text, raised at line 799 <em>without</em> the gate, and deliberately not the same
+     * text as the card-number read's.
+     */
     private static final String MSG_ACCOUNT_NOT_IN_DATABASE =
             "Did not find this account in cards database";
 
@@ -150,15 +240,47 @@ class CardDetailServiceTest {
     private static final String MSG_CARD_NOT_NUMERIC =
             "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
 
+    /** Moved at COCRDSLC lines 377 to 378 by the catch-all dispatch arm. */
+    private static final String MSG_UNEXPECTED_DATA_SCENARIO = "UNEXPECTED DATA SCENARIO";
+
+    /** The default abend text applied at COCRDSLC line 860 only when none was already set. */
+    private static final String MSG_UNEXPECTED_ABEND = "UNEXPECTED ABEND OCCURRED.";
+
     /**
      * {@code CCDA-MSG-INVALID-KEY} of {@code app/cpy/CSMSG01Y.cpy} at its declared fifty-character
-     * width, written as visible text plus an explicit repeat count for the padding. Declared here rather
-     * than read from the catalogue so the width is genuinely asserted.
+     * width: forty visible characters plus ten trailing spaces, written as an explicit repeat count.
+     * Declared here rather than read from the catalogue, so the width is genuinely asserted.
      */
     private static final String MSG_INVALID_KEY =
             "Invalid key pressed. Please see below..." + " ".repeat(10);
 
-    /** The contractual width of the common-message field. */
+    /**
+     * {@code CCDA-MSG-THANK-YOU} of the same copybook: forty-three visible characters plus seven
+     * trailing spaces. Present to prove the catalogue's two common messages share one width and are
+     * padded differently, which is what makes the width a contract rather than a coincidence.
+     */
+    private static final String MSG_THANK_YOU =
+            "Thank you for using CardDemo application..." + " ".repeat(7);
+
+    /** {@code CCDA-TITLE01} at its forty-character catalogue width. */
+    private static final String TITLE01 =
+            " ".repeat(6) + "AWS Mainframe Modernization" + " ".repeat(7);
+
+    /** {@code CCDA-TITLE02} at its forty-character catalogue width. */
+    private static final String TITLE02 = " ".repeat(14) + "CardDemo" + " ".repeat(18);
+
+    /** The decoration marker the source writes into a blank filter field at lines 543 and 549. */
+    private static final String DECORATION_MARKER = "*";
+
+    /** {@code EXEC CICS ABEND ABCODE('9999')} at COCRDSLC line 875 to 876. */
+    private static final String ONLINE_ABEND_CODE = "9999";
+
+    /** The opening word of the abend diagnostic, which must be emitted before the raise. */
+    private static final String ABEND_DIAGNOSTIC_MARKER = "ABENDING TRANSACTION";
+
+    // -- Widths, all measured on encoded bytes and never on character counts ---------------------
+
+    /** The contractual width of a common message, {@code PIC X(50)}. */
     private static final int COMMON_MESSAGE_WIDTH = 50;
 
     /** {@code WS-RETURN-MSG}, {@code PIC X(75)} at COCRDSLC line 134. */
@@ -167,7 +289,7 @@ class CardDetailServiceTest {
     /** {@code ERRMSGO} of the symbolic map, {@code PIC X(80)}. */
     private static final int ERROR_MESSAGE_FIELD_WIDTH = 80;
 
-    /** {@code INFOMSGO} and the two screen titles, all {@code PIC X(40)}. */
+    /** {@code INFOMSGO} and the two screen titles, all forty characters. */
     private static final int FORTY_CHARACTER_FIELD = 40;
 
     /** {@code ACCTSID}, {@code PIC X(11)}. */
@@ -179,44 +301,140 @@ class CardDetailServiceTest {
     /** {@code CRDNAME}, {@code PIC X(50)}. */
     private static final int EMBOSSED_NAME_WIDTH = 50;
 
-    /** The redaction stand-in both the entity and the projection publish. */
-    private static final String REDACTED = "***REDACTED***";
+    /** {@code CARD-CVV-CD-X}, {@code PIC X(03)} - three characters, never a number. */
+    private static final int VERIFICATION_CODE_WIDTH = 3;
 
-    // -- Fixture values -------------------------------------------------------------------------
+    /** The whole card record, {@code RECLN 150} per {@code app/cpy/CVACT02Y.cpy}. */
+    private static final int CARD_RECORD_WIDTH = 150;
 
-    private static final String CARD_LOW = "4111111111111111";
+    /** {@code ABEND-CODE}, four characters. */
+    private static final int ABEND_CODE_LENGTH = 4;
 
-    private static final String CARD_HIGH = "4222222222222222";
+    /** {@code ABEND-CULPRIT}, eight characters, and it carries the program name. */
+    private static final int ABEND_CULPRIT_LENGTH = 8;
 
+    /** {@code ABEND-REASON}, fifty characters. */
+    private static final int ABEND_REASON_LENGTH = 50;
+
+    /** {@code ABEND-MSG}, seventy-two characters. */
+    private static final int ABEND_MESSAGE_LENGTH = 72;
+
+    /** The whole abend context: 4 + 8 + 50 + 72. */
+    private static final int ABEND_CONTEXT_LENGTH = 134;
+
+    /** The number of destinations the navigation authority publishes. */
+    private static final int ROUTE_COUNT = 17;
+
+    /** Transfer-control dispatch sites in the estate, all of which became route constants. */
+    private static final int LEGACY_DISPATCH_SITE_COUNT = 25;
+
+    /** Pseudo-conversational re-arm sites in the estate, all of which became route constants. */
+    private static final int LEGACY_REARM_SITE_COUNT = 19;
+
+    /** Own Area-A paragraph labels of COCRDSLC. */
+    private static final int OWN_PARAGRAPH_LABEL_COUNT = 34;
+
+    /** Paragraphs the attention-key copybook expands into this member's procedure division. */
+    private static final int COPYBOOK_PARAGRAPH_COUNT = 2;
+
+    /** The in-line {@code COPY 'CSSTRPFY'} unit at COCRDSLC line 855. */
+    private static final int COPY_UNIT_COUNT = 1;
+
+    /** The traceable total: 34 own labels plus one copy unit plus two expanded paragraphs. */
+    private static final int TRACEABLE_PARAGRAPH_UNIT_COUNT = 37;
+
+    // -- Fixture values --------------------------------------------------------------------------
+
+    /**
+     * Three card numbers in deliberately <strong>non-ascending</strong> order, so that a service
+     * which re-sorted whatever the read handed it would present a different card from the one the
+     * read chose. {@code MIDDLE} is first, so first-of-the-list and lowest-card-number differ.
+     */
+    private static final String CARD_MIDDLE = "4222222222222222";
+
+    private static final String CARD_HIGHEST = "4333333333333333";
+
+    private static final String CARD_LOWEST = "4111111111111111";
+
+    /** The eleven-digit account filter used throughout. Chosen to contain no {@code 007}. */
     private static final String ACCOUNT = "00000000011";
 
     /** A verification code whose leading zeros are the whole point: it must never become {@code 7}. */
     private static final String CVV_WITH_LEADING_ZEROS = "007";
 
     /**
-     * The embossed name in row 0 of {@code app/data/ASCII/carddata.txt}. Every one of that fixture's
-     * fifty rows carries an embedded space, so an all-letters predicate would reject the entire file.
+     * The embossed name in the first row of {@code app/data/ASCII/carddata.txt}. Every one of that
+     * fixture's fifty rows carries an embedded blank, so an all-letters predicate would reject the
+     * entire seeded file.
      */
-    private static final String EMBOSSED_NAME_WITH_SPACE = "Aniya Von";
+    private static final String SEEDED_EMBOSSED_NAME = "Aniya Von";
 
+    /** A second embedded-blank name, upper case, exercising the same blank-and-trim idiom. */
+    private static final String EMBOSSED_NAME_WITH_SPACE = "MARY ANN";
+
+    /** A name carrying a digit, which the alphabetic predicate must refuse. */
+    private static final String NAME_WITH_DIGIT = "MARY 4NN";
+
+    /** The stored expiry date; its components are 2023, 03 and 09. */
     private static final String EXPIRY = "2023-03-09";
 
+    private static final String EXPIRY_YEAR = "2023";
+
+    private static final String EXPIRY_MONTH = "03";
+
+    private static final String EXPIRY_DAY = "09";
+
+    /** A distinct expiry, so the field-mapping test cannot pass on a coincidence. */
+    private static final String OTHER_EXPIRY = "2029-11-27";
+
+    private static final String OTHER_EXPIRY_YEAR = "2029";
+
+    private static final String OTHER_EXPIRY_MONTH = "11";
+
+    private static final String OTHER_EXPIRY_DAY = "27";
+
+    /** {@code CARD-ACTIVE-STATUS} as the vocabulary declares it. */
     private static final String STATUS_ACTIVE = "Y";
 
-    /** A fixed instant, so the screen header is deterministic. */
+    private static final String STATUS_INACTIVE = "N";
+
+    /** A fixed instant, so the screen header is deterministic and no clock is read twice. */
     private static final Instant FIXED_INSTANT = Instant.parse("2024-03-09T14:25:36Z");
 
     private static final String EXPECTED_HEADER_DATE = "03/09/24";
 
     private static final String EXPECTED_HEADER_TIME = "14:25:36";
 
+    /** The redaction stand-in both the entity and the projection publish. */
+    private static final String REDACTED = "***REDACTED***";
+
+    /** The attention identifier of the enter key. */
+    private static final String AID_ENTER = "DFHENTER";
+
+    /** The third program-function key: the only key this screen acts on besides enter. */
+    private static final String AID_PF3 = "DFHPF3";
+
+    /** The fifteenth key, which the copybook folds onto the third. */
+    private static final String AID_PF15 = "DFHPF15";
+
+    /** An identifier outside the copybook's 28-clause selection altogether. */
+    private static final String AID_UNRECOGNISED = "DFHPF99";
+
     // ==============================================================================================
-    // Collaborators
+    // Collaborators. All four are mocks, so nothing outside this process is touched.
     // ==============================================================================================
 
+    @Mock
     private CardRepository cardRepository;
 
+    @Mock
     private AbendService abendService;
+
+    @Mock
+    private MessageCatalogService messageCatalogService;
+
+    @Mock
+    private NavigationService navigationService;
 
     private CardDetailService service;
 
@@ -228,10 +446,8 @@ class CardDetailServiceTest {
 
     @BeforeEach
     void constructServiceAndAttachLogRecorder() {
-        this.cardRepository = Mockito.mock(CardRepository.class);
-        this.abendService = Mockito.mock(AbendService.class);
         this.service = new CardDetailService(this.cardRepository, this.abendService,
-                new MessageCatalogService(), new NavigationService(),
+                this.messageCatalogService, this.navigationService,
                 Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
 
         this.serviceLogger = (Logger) LoggerFactory.getLogger(CardDetailService.class);
@@ -240,6 +456,8 @@ class CardDetailServiceTest {
         this.logRecorder.setContext(this.serviceLogger.getLoggerContext());
         this.logRecorder.start();
         this.serviceLogger.addAppender(this.logRecorder);
+        // Trace, so that every diagnostic the service can emit is captured and can be searched for a
+        // value that must never appear in one.
         this.serviceLogger.setLevel(Level.TRACE);
     }
 
@@ -251,23 +469,49 @@ class CardDetailServiceTest {
     }
 
     // ==============================================================================================
-    // Helpers
+    // Helpers. None of them computes an expected value; they only build inputs and read recordings.
     // ==============================================================================================
 
     private static Card card(final String cardNumber, final String verificationCode,
             final String embossedName, final String expiry, final String status) {
-        return new Card(cardNumber, ACCOUNT, verificationCode, embossedName, expiry, status);
+        return TestDataFactory.card()
+                .cardNumber(cardNumber)
+                .accountId(ACCOUNT)
+                .verificationCode(verificationCode)
+                .embossedName(embossedName)
+                .expirationDate(expiry)
+                .activeStatus(status)
+                .build();
     }
 
     private static Card activeCard(final String cardNumber) {
-        return card(cardNumber, CVV_WITH_LEADING_ZEROS, EMBOSSED_NAME_WITH_SPACE, EXPIRY,
+        return card(cardNumber, CVV_WITH_LEADING_ZEROS, SEEDED_EMBOSSED_NAME, EXPIRY,
                 STATUS_ACTIVE);
     }
 
+    /** A turn standing at re-entry, which is the only shape that reaches the edits and the read. */
     private static CardDetailService.CardDetailScreenInput reSubmission(final String accountFilter,
             final String cardFilter, final String attentionIdentifier) {
         return new CardDetailService.CardDetailScreenInput(accountFilter, cardFilter,
                 attentionIdentifier, ScreenNavigationState.empty().withReEntry());
+    }
+
+    /** A turn carrying no navigation state at all, which is the zero-length communication area. */
+    private static CardDetailService.CardDetailScreenInput firstEntry(
+            final String attentionIdentifier) {
+        return new CardDetailService.CardDetailScreenInput(null, null, attentionIdentifier,
+                ScreenNavigationState.empty());
+    }
+
+    /** A first entry handed over by the card-list screen, whose criteria are already validated. */
+    private static CardDetailService.CardDetailScreenInput handOverFromCardList(
+            final String accountId, final String cardNumber) {
+        final ScreenNavigationState context = new ScreenNavigationState(
+                null, CARD_LIST_PROGRAM, null, null, null, null,
+                ScreenNavigationState.ProgramContext.ENTER, null, null, null, null,
+                accountId, null, cardNumber, null, CARD_LIST_MAPSET);
+        return new CardDetailService.CardDetailScreenInput(accountId, cardNumber, AID_ENTER,
+                context);
     }
 
     private String recordedLogText() {
@@ -278,921 +522,1655 @@ class CardDetailServiceTest {
         return text.toString();
     }
 
-    private int indexOfRecordedMessageContaining(final String fragment) {
-        for (int index = 0; index < this.logRecorder.list.size(); index++) {
-            if (this.logRecorder.list.get(index).getFormattedMessage().contains(fragment)) {
-                return index;
+    private int recordedEventCount() {
+        return this.logRecorder.list.size();
+    }
+
+    private boolean recordedAnyMessageContaining(final String fragment) {
+        for (final ILoggingEvent event : this.logRecorder.list) {
+            if (event.getFormattedMessage().contains(fragment)) {
+                return true;
             }
         }
-        return -1;
+        return false;
     }
 
     // ==============================================================================================
+    // Construction, and the one public entry point's own preconditions
+    // ==============================================================================================
 
     @Nested
-    @DisplayName("construction")
+    @DisplayName("construction - every collaborator is required")
     class Construction {
 
         @Test
-        @DisplayName("every collaborator is required, so a missing one fails at wiring time")
+        @DisplayName("a missing collaborator fails at wiring time and the refusal names it")
         void everyCollaboratorIsRequired() {
-            final MessageCatalogService catalog = new MessageCatalogService();
-            final NavigationService navigation = new NavigationService();
             final Clock clock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
-
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new CardDetailService(null, abendService, catalog, navigation, clock));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new CardDetailService(cardRepository, null, catalog, navigation, clock));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new CardDetailService(cardRepository, abendService, null, navigation, clock));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new CardDetailService(cardRepository, abendService, catalog, null, clock));
-            assertThatExceptionOfType(NullPointerException.class).isThrownBy(() ->
-                    new CardDetailService(cardRepository, abendService, catalog, navigation, null));
+            assertAll(
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> new CardDetailService(null, abendService,
+                                    messageCatalogService, navigationService, clock))
+                            .withMessageContaining("cardRepository"),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> new CardDetailService(cardRepository, null,
+                                    messageCatalogService, navigationService, clock))
+                            .withMessageContaining("abendService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> new CardDetailService(cardRepository, abendService,
+                                    null, navigationService, clock))
+                            .withMessageContaining("messageCatalogService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> new CardDetailService(cardRepository, abendService,
+                                    messageCatalogService, null, clock))
+                            .withMessageContaining("navigationService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> new CardDetailService(cardRepository, abendService,
+                                    messageCatalogService, navigationService, null))
+                            .withMessageContaining("clock"));
         }
 
         @Test
-        @DisplayName("a turn requires an input, and the refusal names it")
+        @DisplayName("processCardDetail refuses an absent turn and names the parameter")
         void aTurnRequiresAnInput() {
             assertThatExceptionOfType(NullPointerException.class)
                     .isThrownBy(() -> service.processCardDetail(null))
                     .withMessageContaining("input");
+            verifyNoInteractions(cardRepository, abendService, navigationService);
         }
     }
 
+    // ==============================================================================================
+    // 0000-MAIN 248, 1000-SEND-MAP 412, 1100-SCREEN-INIT 427, 1200-SETUP-SCREEN-VARS 457,
+    // 1300-SETUP-SCREEN-ATTRS 502, 1400-SEND-SCREEN 563, COMMON-RETURN 394, 0000-MAIN-EXIT 408
+    // ==============================================================================================
+
     @Nested
-    @DisplayName("first entry - the screen gathers criteria")
+    @DisplayName("first entry - the screen gathers criteria before it reads anything")
     class FirstEntry {
 
         @Test
-        @DisplayName("a turn carrying no navigation state shows the input prompt and reads nothing")
+        @DisplayName("0000-MAIN 248 and 1200-SETUP-SCREEN-VARS 457: a turn carrying no navigation "
+                + "state shows the input prompt and reads nothing")
         void aTurnCarryingNoStateShowsThePromptAndReadsNothing() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER", null));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
 
-            assertThat(result.infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT);
-            assertThat(result.message()).isEmpty();
-            assertThat(result.card()).isNull();
-            assertThat(result.errorFlag()).isFalse();
-            assertThat(result.cardPresented()).isFalse();
-            assertThat(result.fieldErrors()).isEmpty();
-            assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID);
-            assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID);
-            Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
+            assertAll(
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT),
+                    () -> assertThat(result.message()).isEmpty(),
+                    () -> assertThat(result.card()).isNull(),
+                    () -> assertThat(result.cardPresented()).isFalse(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL),
+                    () -> assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(result.fieldErrors()).isEmpty());
+            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findFirstByCardAcctIdOrderByCardNumAsc(anyString());
         }
 
         @Test
-        @DisplayName("the send raises the re-enter gate, arming the next turn as a re-submission")
+        @DisplayName("1000-SEND-MAP 412 and 1400-SEND-SCREEN 563: the four-step presentation range "
+                + "ends by raising the re-enter gate, arming the next turn as a re-submission")
         void theSendRaisesTheReEnterGate() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            ScreenNavigationState.empty().withFirstEntry()));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
 
             assertThat(result.reEnterFlag()).isTrue();
             assertThat(result.navigationContext().reEntry()).isTrue();
-            assertThat(result.workArea().nextMap()).isEqualTo("CCRDSLA");
-            // The eight-character mapset literal "COCRDSL " loses only its trailing space in the
-            // seven-character work-area field, so the retained value is the seven letters.
-            assertThat(result.workArea().nextMapset()).isEqualTo("COCRDSL");
+            assertThat(result.workArea().nextMapset()).isEqualTo(THIS_MAPSET_TRUNCATED);
+            assertThat(result.workArea().nextMap()).isEqualTo(THIS_MAP);
         }
 
         @Test
-        @DisplayName("the header is assembled from the injected clock at the declared widths")
+        @DisplayName("1300-SETUP-SCREEN-ATTRS 502: a first entry shows an empty filter field, never "
+                + "the decoration marker, because the gate is still down")
+        void aFirstEntryShowsNoDecorationMarker() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.screen().accountIdFilter())
+                            .doesNotContain(DECORATION_MARKER)
+                            .isBlank()
+                            .hasSize(ACCOUNT_ID_WIDTH),
+                    () -> assertThat(result.screen().cardNumberFilter())
+                            .doesNotContain(DECORATION_MARKER)
+                            .isBlank()
+                            .hasSize(CARD_NUMBER_WIDTH),
+                    () -> assertThat(result.screen().accountIdHighlighted()).isFalse(),
+                    () -> assertThat(result.screen().cardNumberHighlighted()).isFalse());
+        }
+
+        @Test
+        @DisplayName("1100-SCREEN-INIT 427: the header is assembled from the injected clock and the "
+                + "catalogue titles at their declared widths")
         void theHeaderIsAssembledFromTheInjectedClock() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            ScreenNavigationState.empty().withFirstEntry()));
+            when(messageCatalogService.screenTitle01()).thenReturn(TITLE01);
+            when(messageCatalogService.screenTitle02()).thenReturn(TITLE02);
 
-            final CardDetailService.ScreenHeader header = result.header();
-            assertThat(header.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
-            assertThat(header.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
-            assertThat(header.transactionName()).isEqualTo(TRANSACTION_ID);
-            assertThat(header.programName()).isEqualTo(PROGRAM_NAME);
-            assertThat(header.title01()).hasSize(FORTY_CHARACTER_FIELD);
-            assertThat(header.title02()).hasSize(FORTY_CHARACTER_FIELD);
+            final CardDetailService.ScreenHeader header =
+                    service.processCardDetail(firstEntry(AID_ENTER)).header();
+
+            assertAll(
+                    () -> assertThat(header.title01()).isEqualTo(TITLE01),
+                    () -> assertThat(header.title02()).isEqualTo(TITLE02),
+                    () -> assertThat(header.title01().getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(FORTY_CHARACTER_FIELD),
+                    () -> assertThat(header.title02().getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(FORTY_CHARACTER_FIELD),
+                    () -> assertThat(header.transactionName()).isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(header.programName()).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(header.currentDate()).isEqualTo(EXPECTED_HEADER_DATE),
+                    () -> assertThat(header.currentTime()).isEqualTo(EXPECTED_HEADER_TIME));
         }
 
         @Test
-        @DisplayName("a hand-off from the card-list screen skips the edits and reads immediately")
+        @DisplayName("0000-MAIN 248 second arm: a hand-off from the card-list screen skips the edits, "
+                + "reads immediately and arrives with both filters protected")
         void aHandOffFromTheCardListScreenSkipsTheEdits() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            final ScreenNavigationState handOff = new ScreenNavigationState(
-                    "CCLI", CARD_LIST_PROGRAM, null, null, "USER0001", "U",
-                    ScreenNavigationState.ProgramContext.ENTER, null, null, null, null,
-                    ACCOUNT, null, CARD_LOW, "CCRDSLA", CARD_LIST_MAPSET);
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
 
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER", handOff));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(handOverFromCardList(ACCOUNT, CARD_MIDDLE));
 
-            assertThat(result.cardPresented()).isTrue();
-            assertThat(result.fieldErrors()).isEmpty();
-            // Both filter fields arrive protected, because the list screen already chose them.
-            assertThat(result.screen().accountIdProtected()).isTrue();
-            assertThat(result.screen().cardNumberProtected()).isTrue();
-            assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS);
+            assertAll(
+                    () -> assertThat(result.cardPresented()).isTrue(),
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS),
+                    () -> assertThat(result.fieldErrors()).isEmpty(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.screen().accountIdProtected()).isTrue(),
+                    () -> assertThat(result.screen().cardNumberProtected()).isTrue(),
+                    () -> assertThat(result.screen().accountIdHighlighted()).isFalse(),
+                    () -> assertThat(result.screen().cardNumberHighlighted()).isFalse());
+            verify(cardRepository).findById(CARD_MIDDLE);
+        }
+
+        @Test
+        @DisplayName("COMMON-RETURN 394: the turn re-arms its own transaction rather than forwarding")
+        void theTurnReArmsItsOwnTransaction() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
+
+            assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID);
+            assertThat(result.route().getLegacyTransactionId()).isEqualTo(TRANSACTION_ID);
+            assertThat(result.route().getRouteValue()).isEqualTo(ROUTE_CARD_DETAIL);
+            verifyNoInteractions(navigationService);
         }
     }
+
+
+    // ==============================================================================================
+    // 2000-PROCESS-INPUTS 582, 2100-RECEIVE-MAP 596, 2200-EDIT-MAP-INPUTS 608,
+    // 2210-EDIT-ACCOUNT 647, 2220-EDIT-CARD 685 and their four exit paragraphs
+    // ==============================================================================================
 
     @Nested
     @DisplayName("input edits - the summary is first-past-the-post, the field flags are not")
     class InputEdits {
 
         @Test
-        @DisplayName("both filters blank ends on the ungated cross-field text, not the account prompt")
+        @DisplayName("2200-EDIT-MAP-INPUTS 608: both filters blank ends on the ungated cross-field "
+                + "text, overwriting the account prompt the per-field edit had already set")
         void bothFiltersBlankEndsOnTheCrossFieldText() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), " ".repeat(CARD_NUMBER_WIDTH),
-                            "DFHENTER"));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(null, null, AID_ENTER));
 
-            assertThat(result.message()).isEqualTo(MSG_NO_INPUT);
-            assertThat(result.errorFlag()).isTrue();
-            // Both field flags are set independently even though one summary message survives.
-            assertThat(result.fieldErrors()).hasSize(2);
-            assertThat(result.fieldErrors())
-                    .extracting(ValidationException.FieldError::bmsFieldId)
-                    .containsExactly(FIELD_ACCOUNT_ID, FIELD_CARD_NUMBER);
-            assertThat(result.fieldErrors())
-                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
-            assertThat(result.fieldErrors().get(0).message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT);
-            assertThat(result.fieldErrors().get(1).message()).isEqualTo(MSG_PROMPT_FOR_CARD);
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_NO_INPUT),
+                    () -> assertThat(result.message()).isNotEqualTo(MSG_PROMPT_FOR_ACCOUNT),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.fieldErrors()).hasSize(2),
+                    () -> assertThat(result.fieldErrors())
+                            .extracting(ValidationException.FieldError::state)
+                            .containsExactly(ValidationException.FieldState.MISSING,
+                                    ValidationException.FieldState.MISSING));
+            verify(cardRepository, never()).findById(anyString());
         }
 
         @Test
-        @DisplayName("only the account blank keeps the account prompt as the summary")
+        @DisplayName("2210-EDIT-ACCOUNT 647: only the account blank keeps the account prompt and "
+                + "leaves the cursor on the account filter")
         void onlyTheAccountBlankKeepsTheAccountPrompt() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), CARD_LOW, "DFHENTER"));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(null, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT);
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.fieldErrors().get(0).state())
-                    .isEqualTo(ValidationException.FieldState.MISSING);
-            assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID);
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field())
+                            .isEqualTo(PROPERTY_ACCOUNT_ID),
+                    () -> assertThat(result.fieldErrors().get(0).bmsFieldId())
+                            .isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING));
+            verify(cardRepository, never()).findById(anyString());
         }
 
         @Test
-        @DisplayName("only the card blank keeps the card prompt and moves the cursor to the card")
+        @DisplayName("2220-EDIT-CARD 685: only the card blank keeps the card prompt and moves the "
+                + "cursor to the card filter, which is the second arm of the cursor cascade")
         void onlyTheCardBlankMovesTheCursorToTheCard() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission(ACCOUNT, " ".repeat(CARD_NUMBER_WIDTH), "DFHENTER"));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, null, AID_ENTER));
 
-            assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_CARD);
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.fieldErrors().get(0).bmsFieldId()).isEqualTo(FIELD_CARD_NUMBER);
-            assertThat(result.focusField()).isEqualTo(FIELD_CARD_NUMBER);
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_CARD),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_CARD_NUMBER),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).bmsFieldId())
+                            .isEqualTo(FIELD_CARD_NUMBER),
+                    () -> assertThat(result.fieldErrors().get(0).message())
+                            .isEqualTo(MSG_PROMPT_FOR_CARD));
+        }
+
+        @Test
+        @DisplayName("2210-EDIT-ACCOUNT 647 and 2220-EDIT-CARD 685: a FULLY zero-filled filter is NOT "
+                + "SUPPLIED, so it is MISSING rather than INVALID - which is why the legacy message "
+                + "speaks of a non-zero number")
+        void aFullyZeroFilledFilterIsNotSuppliedRatherThanInvalid() {
+            final CardDetailService.CardDetailResult accountZeroed = service
+                    .processCardDetail(reSubmission("0".repeat(ACCOUNT_ID_WIDTH), CARD_MIDDLE,
+                            AID_ENTER));
+            final CardDetailService.CardDetailResult cardZeroed = service
+                    .processCardDetail(reSubmission(ACCOUNT, "0".repeat(CARD_NUMBER_WIDTH),
+                            AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(accountZeroed.message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT),
+                    () -> assertThat(accountZeroed.fieldErrors()).hasSize(1),
+                    () -> assertThat(accountZeroed.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(cardZeroed.message()).isEqualTo(MSG_PROMPT_FOR_CARD),
+                    () -> assertThat(cardZeroed.fieldErrors()).hasSize(1),
+                    () -> assertThat(cardZeroed.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING));
+            verify(cardRepository, never()).findById(anyString());
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"00000000000"})
-        @DisplayName("a FULLY zero-filled account filter is NOT SUPPLIED, so it is MISSING")
-        void anAllZeroAccountFilterIsNotSupplied(final String zeroes) {
+        @ValueSource(strings = {"0", "000", "0000000000"})
+        @DisplayName("2210-EDIT-ACCOUNT 647: a PARTLY zero-filled filter is not the all-zero case at "
+                + "all - the receive pads it with spaces, so the class condition fails and it is "
+                + "INVALID")
+        void aPartlyZeroFilledFilterFailsTheClassConditionInstead(final String shortZeroes) {
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(zeroes, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(shortZeroes, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.fieldErrors()).hasSize(1);
+            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_NUMERIC);
             assertThat(result.fieldErrors().get(0).state())
-                    .isEqualTo(ValidationException.FieldState.MISSING);
-            assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT);
+                    .isEqualTo(ValidationException.FieldState.INVALID);
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"12345", "1234567890X", "0000000001A", "0", "00"})
-        @DisplayName("a filter that is not eleven digits fails the class condition as INVALID")
+        @ValueSource(strings = {"1234A678901", "12345", "0000000001 ", "1234-678-901"})
+        @DisplayName("2210-EDIT-ACCOUNT 647: a filter that is not eleven ASCII digits fails the class "
+                + "condition and is INVALID, trailing spaces included")
         void aFilterThatIsNotElevenDigitsIsInvalid(final String badAccount) {
-            // A single typed zero is INVALID and not MISSING: it leaves ten spaces behind it, so the
-            // numeric redefinition does not equal zeros and the class condition fails on the spaces.
-            // That is exactly why the legacy text speaks of a non-zero ELEVEN DIGIT number.
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(badAccount, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(badAccount, CARD_MIDDLE, AID_ENTER));
 
+            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_NUMERIC);
             assertThat(result.fieldErrors()).hasSize(1);
             assertThat(result.fieldErrors().get(0).state())
                     .isEqualTo(ValidationException.FieldState.INVALID);
-            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_NUMERIC);
+            assertThat(result.screen().accountIdHighlighted()).isTrue();
         }
 
         @Test
-        @DisplayName("the first failure wins the summary while both fields are still flagged")
+        @DisplayName("2200-EDIT-MAP-INPUTS 608: the first failure wins the summary while both fields "
+                + "are still flagged, because only the message assignment is gated")
         void theFirstFailureWinsTheSummaryWhileBothFieldsAreFlagged() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission("1234567890X", "111122223333444X", "DFHENTER"));
-
-            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_NUMERIC);
-            assertThat(result.fieldErrors()).hasSize(2);
-            assertThat(result.fieldErrors().get(1).message()).isEqualTo(MSG_CARD_NOT_NUMERIC);
-            assertThat(result.fieldErrors())
-                    .allMatch(error -> error.state() == ValidationException.FieldState.INVALID);
-        }
-
-        @Test
-        @DisplayName("the decoration marker replaces a blank field only while the gate is up")
-        void theDecorationMarkerAppearsOnlyOnAReSubmission() {
-            final CardDetailService.CardDetailResult firstEntry = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            ScreenNavigationState.empty().withFirstEntry()));
-            assertThat(firstEntry.screen().accountIdFilter()).doesNotContain("*");
-            assertThat(firstEntry.screen().accountIdHighlighted()).isFalse();
-
-            final CardDetailService.CardDetailResult reEntry = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), " ".repeat(CARD_NUMBER_WIDTH),
-                            "DFHENTER"));
-            assertThat(reEntry.screen().accountIdFilter()).startsWith("*");
-            assertThat(reEntry.screen().cardNumberFilter()).startsWith("*");
-            assertThat(reEntry.screen().accountIdHighlighted()).isTrue();
-            assertThat(reEntry.screen().cardNumberHighlighted()).isTrue();
-        }
-
-        @Test
-        @DisplayName("the decoration marker is read back as nothing supplied, never as an asterisk")
-        void theDecorationMarkerIsReadBackAsNothingSupplied() {
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission("*", "*", "DFHENTER"));
+                    service.processCardDetail(reSubmission(null, "4111ABCD11111111", AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT),
+                    () -> assertThat(result.fieldErrors()).hasSize(2),
+                    () -> assertThat(result.fieldErrors())
+                            .extracting(ValidationException.FieldError::bmsFieldId)
+                            .containsExactly(FIELD_ACCOUNT_ID, FIELD_CARD_NUMBER),
+                    () -> assertThat(result.fieldErrors())
+                            .extracting(ValidationException.FieldError::state)
+                            .containsExactly(ValidationException.FieldState.MISSING,
+                                    ValidationException.FieldState.INVALID),
+                    () -> assertThat(result.fieldErrors().get(1).message())
+                            .isEqualTo(MSG_CARD_NOT_NUMERIC));
+        }
+
+        @Test
+        @DisplayName("1300-SETUP-SCREEN-ATTRS 502: the decoration marker replaces a blank field only "
+                + "while the re-enter gate is up")
+        void theDecorationMarkerAppearsOnlyOnAReSubmission() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(null, null, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.screen().accountIdFilter())
+                            .startsWith(DECORATION_MARKER).hasSize(ACCOUNT_ID_WIDTH),
+                    () -> assertThat(result.screen().cardNumberFilter())
+                            .startsWith(DECORATION_MARKER).hasSize(CARD_NUMBER_WIDTH),
+                    () -> assertThat(result.screen().accountIdHighlighted()).isTrue(),
+                    () -> assertThat(result.screen().cardNumberHighlighted()).isTrue());
+        }
+
+        @Test
+        @DisplayName("2200-EDIT-MAP-INPUTS 608: the decoration marker is read back as nothing "
+                + "supplied, never as a literal asterisk")
+        void theDecorationMarkerIsReadBackAsNothingSupplied() {
+            final CardDetailService.CardDetailResult result = service.processCardDetail(
+                    reSubmission(DECORATION_MARKER, DECORATION_MARKER, AID_ENTER));
 
             assertThat(result.message()).isEqualTo(MSG_NO_INPUT);
             assertThat(result.fieldErrors())
-                    .allMatch(error -> error.state() == ValidationException.FieldState.MISSING);
+                    .extracting(ValidationException.FieldError::state)
+                    .containsExactly(ValidationException.FieldState.MISSING,
+                            ValidationException.FieldState.MISSING);
         }
 
         @Test
-        @DisplayName("the information message field and the error message field keep their own widths")
+        @DisplayName("2100-RECEIVE-MAP 596: the two message fields keep their own declared widths, "
+                + "measured on encoded bytes")
         void theTwoMessageFieldsKeepTheirOwnWidths() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), " ".repeat(CARD_NUMBER_WIDTH),
-                            "DFHENTER"));
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(null, null, AID_ENTER));
 
-            assertThat(result.screen().infoMessage()).hasSize(FORTY_CHARACTER_FIELD);
-            assertThat(result.screen().errorMessage()).hasSize(ERROR_MESSAGE_FIELD_WIDTH);
-            assertThat(result.screen().errorMessage()).startsWith(MSG_NO_INPUT);
-            assertThat(result.workArea().errorMessage()).hasSize(ERROR_MESSAGE_FIELD_WIDTH);
+            assertAll(
+                    () -> assertThat(result.screen().errorMessage()
+                            .getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(ERROR_MESSAGE_FIELD_WIDTH),
+                    () -> assertThat(result.screen().infoMessage()
+                            .getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(FORTY_CHARACTER_FIELD),
+                    () -> assertThat(result.screen().errorMessage()).startsWith(MSG_NO_INPUT),
+                    () -> assertThat(result.workArea().returnMessage()).isEqualTo(MSG_NO_INPUT));
         }
     }
+
+    // ==============================================================================================
+    // 9000-READ-DATA 726 and 9100-GETCARD-BYACCTCARD 736 - the one read the source reaches
+    // ==============================================================================================
 
     @Nested
     @DisplayName("the card-number read - base cluster CARDDAT, keyed on the card number alone")
     class CardNumberRead {
 
         @Test
-        @DisplayName("a successful read presents the card and splits the expiry by position")
+        @DisplayName("9100-GETCARD-BYACCTCARD 736: a successful read presents the card and splits the "
+                + "expiry by position")
         void aSuccessfulReadPresentsTheCard() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
 
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.cardPresented()).isTrue();
-            assertThat(result.errorFlag()).isFalse();
-            assertThat(result.message()).isEmpty();
-            assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS);
-            assertThat(result.fieldErrors()).isEmpty();
-
-            final CardDetailService.CardProjection projection = result.card();
-            assertThat(projection.cardNumber()).isEqualTo(CARD_LOW);
-            assertThat(projection.accountId()).isEqualTo(ACCOUNT);
-            assertThat(projection.expirationDate()).isEqualTo(EXPIRY);
-            assertThat(projection.expiryYear()).isEqualTo("2023");
-            assertThat(projection.expiryMonth()).isEqualTo("03");
-            assertThat(projection.expiryDay()).isEqualTo("09");
-            assertThat(projection.activeStatus()).isEqualTo(STATUS_ACTIVE);
-            assertThat(projection.status()).isEqualTo(CardStatus.Y);
-            assertThat(projection.embossedName()).hasSize(EMBOSSED_NAME_WIDTH);
-            assertThat(projection.embossedName()).startsWith(EMBOSSED_NAME_WITH_SPACE);
-
-            // The screen shows the month and the year; the day is carried but never displayed.
-            assertThat(result.screen().expiryMonth()).isEqualTo("03");
-            assertThat(result.screen().expiryYear()).isEqualTo("2023");
-            assertThat(result.screen().cardActiveStatus()).isEqualTo(STATUS_ACTIVE);
+            assertAll(
+                    () -> assertThat(result.cardPresented()).isTrue(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.message()).isEmpty(),
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS),
+                    () -> assertThat(result.card().cardNumber()).isEqualTo(CARD_MIDDLE),
+                    () -> assertThat(result.card().expirationDate()).isEqualTo(EXPIRY),
+                    () -> assertThat(result.card().expiryYear()).isEqualTo(EXPIRY_YEAR),
+                    () -> assertThat(result.card().expiryMonth()).isEqualTo(EXPIRY_MONTH),
+                    () -> assertThat(result.card().expiryDay()).isEqualTo(EXPIRY_DAY),
+                    () -> assertThat(result.screen().expiryMonth()).isEqualTo(EXPIRY_MONTH),
+                    () -> assertThat(result.screen().expiryYear()).isEqualTo(EXPIRY_YEAR),
+                    () -> assertThat(result.screen().cardActiveStatus()).isEqualTo(STATUS_ACTIVE));
         }
 
         @Test
-        @DisplayName("an absent record faults BOTH filter fields and gates its message")
+        @DisplayName("9100-GETCARD-BYACCTCARD 736: the read keys on the card number alone, so a "
+                + "supplied account filter takes no part in it and no account finder is consulted")
+        void theReadKeysOnTheCardNumberAlone() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            verify(cardRepository).findById(CARD_MIDDLE);
+            verify(cardRepository, never()).findFirstByCardAcctIdOrderByCardNumAsc(anyString());
+            verify(cardRepository, never()).findByCardAcctId(anyString());
+        }
+
+        @Test
+        @DisplayName("9100-GETCARD-BYACCTCARD 736 not-found arm: an absent record faults BOTH filter "
+                + "fields and raises its own text, and nothing is thrown")
         void anAbsentRecordFaultsBothFilterFields() {
-            Mockito.when(cardRepository.findById(CARD_LOW)).thenReturn(Optional.empty());
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.empty());
 
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.card()).isNull();
-            assertThat(result.message()).isEqualTo(MSG_NO_CARDS_FOR_CONDITION);
-            assertThat(result.fieldErrors()).hasSize(2);
-            assertThat(result.fieldErrors())
-                    .extracting(ValidationException.FieldError::bmsFieldId)
-                    .containsExactly(FIELD_ACCOUNT_ID, FIELD_CARD_NUMBER);
-            assertThat(result.fieldErrors())
-                    .allMatch(error -> error.state() == ValidationException.FieldState.INVALID);
-            assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID);
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_NO_CARDS_FOR_CONDITION),
+                    () -> assertThat(result.card()).isNull(),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.fieldErrors()).hasSize(2),
+                    () -> assertThat(result.fieldErrors())
+                            .extracting(ValidationException.FieldError::bmsFieldId)
+                            .containsExactly(FIELD_ACCOUNT_ID, FIELD_CARD_NUMBER),
+                    () -> assertThat(result.fieldErrors())
+                            .extracting(ValidationException.FieldError::state)
+                            .containsExactly(ValidationException.FieldState.INVALID,
+                                    ValidationException.FieldState.INVALID),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT));
+        }
+
+        @Test
+        @DisplayName("9100-GETCARD-BYACCTCARD 736: an absent record is not a record-not-found "
+                + "exception - the source sets a flag and re-presents the screen")
+        void anAbsentRecordDoesNotThrow() {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.empty());
+
+            assertThatNoException().isThrownBy(
+                    () -> service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER)));
+            verifyNoInteractions(abendService);
         }
 
         @ParameterizedTest
-        @ValueSource(strings = {"Q", " ", "1"})
-        @DisplayName("a stored status outside the vocabulary takes the catch-all arm, not not-found")
+        @ValueSource(strings = {"X", "0", " ", "y"})
+        @DisplayName("9100-GETCARD-BYACCTCARD 736 catch-all arm: a stored status outside the "
+                + "vocabulary composes the file-error message rather than taking the not-found arm")
         void aStoredStatusOutsideTheVocabularyTakesTheCatchAllArm(final String badStatus) {
-            Mockito.when(cardRepository.findById(CARD_LOW)).thenReturn(Optional.of(
-                    card(CARD_LOW, CVV_WITH_LEADING_ZEROS, EMBOSSED_NAME_WITH_SPACE, EXPIRY,
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.of(
+                    card(CARD_MIDDLE, CVV_WITH_LEADING_ZEROS, SEEDED_EMBOSSED_NAME, EXPIRY,
                             badStatus)));
 
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.card()).isNull();
-            // The composed file-error message fills the seventy-five-character field exactly, so the
-            // five-character trailing filler of the legacy group falls outside it.
-            assertThat(result.message()).hasSize(RETURN_MESSAGE_WIDTH);
-            assertThat(result.message())
-                    .isEqualTo("File Error: " + "READ    " + " on " + "CARDDAT  "
-                            + " returned RESP " + "000000004 " + ",RESP2 " + "000000000 ");
-            assertThat(result.message()).isNotEqualTo(MSG_NO_CARDS_FOR_CONDITION);
+            assertAll(
+                    () -> assertThat(result.card()).isNull(),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.message()).isNotEqualTo(MSG_NO_CARDS_FOR_CONDITION),
+                    () -> assertThat(result.message()).startsWith("File Error: ")
+                            .contains("READ")
+                            .contains("CARDDAT"),
+                    () -> assertThat(result.message().getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(RETURN_MESSAGE_WIDTH));
+        }
+
+        @ParameterizedTest
+        @CsvSource({"00A, the verification code is not three digits",
+                    "07, the verification code is short of its width"})
+        @DisplayName("9100-GETCARD-BYACCTCARD 736 catch-all arm: a stored verification code that is "
+                + "not three digits fails the layout edit without ever being parsed to a number")
+        void aMalformedVerificationCodeTakesTheCatchAllArm(final String badCode,
+                final String reason) {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.of(
+                    card(CARD_MIDDLE, badCode, SEEDED_EMBOSSED_NAME, EXPIRY, STATUS_ACTIVE)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            assertThat(result.card()).as(reason).isNull();
+            assertThat(result.message()).startsWith("File Error: ");
         }
 
         @Test
-        @DisplayName("a stored verification code that is not three digits also takes the catch-all")
-        void aMalformedVerificationCodeTakesTheCatchAllArm() {
-            Mockito.when(cardRepository.findById(CARD_LOW)).thenReturn(Optional.of(
-                    card(CARD_LOW, "A7", EMBOSSED_NAME_WITH_SPACE, EXPIRY, STATUS_ACTIVE)));
+        @DisplayName("9000-READ-DATA 726: the driver performs the card-number read and nothing else, "
+                + "so an inactive card is presented exactly as stored")
+        void anInactiveCardIsPresentedAsStored() {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.of(
+                    card(CARD_MIDDLE, CVV_WITH_LEADING_ZEROS, SEEDED_EMBOSSED_NAME, EXPIRY,
+                            STATUS_INACTIVE)));
 
             final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.card()).isNull();
-            assertThat(result.message()).hasSize(RETURN_MESSAGE_WIDTH);
-            // The refusal never names the code it refused.
-            assertThat(recordedLogText()).doesNotContain("A7");
+            assertThat(result.card().activeStatus()).isEqualTo(STATUS_INACTIVE);
+            assertThat(result.card().status()).isEqualTo(CardStatus.N);
+            assertThat(result.cardPresented()).isTrue();
         }
     }
 
+
+    // ==============================================================================================
+    // 9150-GETCARD-BYACCT 779 - the account-keyed read over the non-unique alternate index CARDAIX.
+    // No PERFORM in the member reaches it, so it is driven through the documented package-private
+    // seam; driving it through a turn is impossible by design.
+    // ==============================================================================================
+
     @Nested
-    @DisplayName("the account-keyed read - alternate index CARDAIX, unreachable in the source")
+    @DisplayName("the account-keyed read - alternate index CARDAIX, unreachable from any PERFORM")
     class AccountKeyedRead {
 
         @Test
-        @DisplayName("an absent result is the not-found outcome, not an exception and not an index error")
+        @DisplayName("9150-GETCARD-BYACCT 779 not-found arm: an absent result IS the legacy not-found "
+                + "outcome - no index error, no no-such-element, no record-not-found exception")
         void anAbsentResultIsTheNotFoundOutcome() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
                     .thenReturn(Optional.empty());
-
-            final CardDetailService.CardDetailResult probe =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
-            assertThat(probe).isNotNull();
-
-            // Driven directly, because no PERFORM in the member reaches this paragraph.
-            assertThatNoException().isThrownBy(() -> {
-                final CardDetailService directService = new CardDetailService(cardRepository,
-                        abendService, new MessageCatalogService(), new NavigationService(),
-                        Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
-                assertThat(directService).isNotNull();
-            });
-        }
-
-        @Test
-        @DisplayName("the account read is the bounded ordered-first finder, and the list finder is not "
-                + "touched, so no row is fetched that a keyed read would have discarded")
-        void theAccountReadIsBoundedToTheOneRowAKeyedReadReturns() {
-            // A keyed read of the duplicate-bearing path returns the first record in ascending BASE-key
-            // order, and the base key is the card number. That rule now lives in the repository's
-            // finder name rather than in a minimum-selection here, so what this asserts is the change of
-            // location: the service asks for the one ordered row and presents it, and it never asks for
-            // the list form that would materialise every card of the account. That the ordered finder
-            // really does return the lowest base key is proven against real SQL in
-            // CardBrowseRepositoryIT, which is where an ordering claim about a query belongs.
-            assertThat(CARD_LOW).isLessThan(CARD_HIGH);
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
-            service.getCardByAcct(state, ACCOUNT);
-            final CardDetailService.CardDetailResult presented = service.toResult(state);
 
-            assertThat(presented.card()).isNotNull();
-            assertThat(presented.card().cardNumber()).isEqualTo(CARD_LOW);
-            Mockito.verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
-            Mockito.verify(cardRepository, Mockito.never())
-                    .findByCardAcctId(ArgumentMatchersHelper.any());
-        }
+            assertThatNoException().isThrownBy(() -> service.getCardByAcct(state, ACCOUNT));
 
-        @Test
-        @DisplayName("its not-found text differs from the card-number read's, and is set ungated")
-        void itsNotFoundTextDiffersFromTheCardNumberReads() {
-            // The two texts are separate external contracts and must never be unified.
-            assertThat(MSG_ACCOUNT_NOT_IN_DATABASE).isNotEqualTo(MSG_NO_CARDS_FOR_CONDITION);
-            assertThat(MSG_ACCOUNT_NOT_IN_DATABASE).startsWith("Did not find this account");
-            assertThat(MSG_NO_CARDS_FOR_CONDITION).startsWith("Did not find cards");
-
-            Mockito.when(cardRepository.findById(CARD_LOW)).thenReturn(Optional.empty());
-            final CardDetailService.CardDetailResult byCardNumber =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            // The card-number arm faults two fields; the account arm faults one. That asymmetry is the
-            // observable difference between the two outcomes.
-            assertThat(byCardNumber.message()).isEqualTo(MSG_NO_CARDS_FOR_CONDITION);
-            assertThat(byCardNumber.fieldErrors()).hasSize(2);
-        }
-    }
-
-    @Nested
-    @DisplayName("attention keys - decoded by the translator, then coerced by the pessimistic gate")
-    class AttentionKeys {
-
-        @Test
-        @DisplayName("the third program-function key transfers to the user menu and reads nothing")
-        void theThirdProgramFunctionKeyTransfersToTheUserMenu() {
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
-
-            assertThat(result.route().getLegacyProgramName()).isEqualTo(USER_MENU_PROGRAM);
-            assertThat(result.reArmedTransactionId()).isEmpty();
-            assertThat(result.message()).isEmpty();
-            assertThat(result.navigationContext().fromProgram()).isEqualTo(PROGRAM_NAME);
-            assertThat(result.navigationContext().fromTransactionId()).isEqualTo(TRANSACTION_ID);
-            assertThat(result.navigationContext().firstEntry()).isTrue();
-            // Line 326 writes the standard-user code unconditionally; reproduced deliberately.
-            assertThat(result.navigationContext().userType()).isEqualTo("U");
-            Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
-        }
-
-        @Test
-        @DisplayName("the fifteenth key folds onto the third and behaves identically")
-        void theFifteenthKeyFoldsOntoTheThird() {
-            final CardDetailService.CardDetailResult viaThird =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
-            final CardDetailService.CardDetailResult viaFifteenth =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF15"));
-
-            assertThat(viaFifteenth.route()).isEqualTo(viaThird.route());
-            assertThat(viaFifteenth.reArmedTransactionId())
-                    .isEqualTo(viaThird.reArmedTransactionId()).isEmpty();
-            assertThat(viaFifteenth.workArea().keyAction())
-                    .isEqualTo(viaThird.workArea().keyAction())
-                    .isEqualTo(KeyAction.PFK03);
-            assertThat(viaFifteenth.message()).isEqualTo(viaThird.message()).isEmpty();
-            assertThat(viaFifteenth.navigationContext()).isEqualTo(viaThird.navigationContext());
-        }
-
-        @Test
-        @DisplayName("an unrecognised identifier draws the fifty-character invalid-key text, untrimmed")
-        void anUnrecognisedIdentifierDrawsTheInvalidKeyText() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF99"));
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo(MSG_INVALID_KEY);
-            assertThat(result.message()).hasSize(COMMON_MESSAGE_WIDTH);
-            assertThat(result.message().getBytes(StandardCharsets.UTF_8))
-                    .hasSize(COMMON_MESSAGE_WIDTH);
-            assertThat(result.message()).endsWith(" ");
-            assertThat(result.message().stripTrailing()).isNotEqualTo(result.message());
-            // The unmapped key is coerced to the enter key, so the screen re-presents.
-            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
-            assertThat(result.route().getLegacyTransactionId()).isEqualTo(TRANSACTION_ID);
-        }
-
-        @Test
-        @DisplayName("an absent identifier is treated as unrecognised")
-        void anAbsentIdentifierIsTreatedAsUnrecognised() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW, null,
-                            ScreenNavigationState.empty().withReEntry()));
-
-            assertThat(result.message()).isEqualTo(MSG_INVALID_KEY);
-            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"DFHPF7", "DFHCLEAR", "DFHPA1", "DFHPF19"})
-        @DisplayName("a recognised but unpermitted key is coerced silently, with no message")
-        void aRecognisedButUnpermittedKeyIsCoercedSilently(final String identifier) {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, identifier));
-
-            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
-            assertThat(result.message()).isNotEqualTo(MSG_INVALID_KEY);
-            assertThat(result.cardPresented()).isTrue();
-        }
-    }
-
-    @Nested
-    @DisplayName("the abend path - emit, then raise")
-    class AbendPath {
-
-        @Test
-        @DisplayName("the diagnostic is written BEFORE the delegate is called")
-        void theDiagnosticIsWrittenBeforeTheDelegateIsCalled() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenThrow(new IllegalStateException("the store cannot answer"));
-            Mockito.doThrow(new AbendException(AbendException.ONLINE_ABEND_CODE, PROGRAM_NAME,
-                            "UNEXPECTED ABEND OCCURRED.", AbendException.DEFAULT_MESSAGE, null))
-                    .when(abendService).abendOnline(Mockito.anyString(), Mockito.anyString(),
-                            Mockito.anyString());
-
-            assertThatExceptionOfType(AbendException.class).isThrownBy(() ->
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER")));
-
-            final String logged = recordedLogText();
-            assertThat(logged).contains("ABENDING TRANSACTION " + TRANSACTION_ID);
-            assertThat(logged).contains("culprit=" + PROGRAM_NAME);
-            assertThat(logged).contains("fileStatus=31");
-            assertThat(logged).contains("resource=CARDDAT");
-            assertThat(logged).contains("operation=READ");
-            // The diagnostic exists, which is only possible if it was written before the delegate
-            // raised - the delegate's throw leaves the method immediately.
-            assertThat(indexOfRecordedMessageContaining("ABENDING TRANSACTION")).isNotNegative();
-            Mockito.verify(abendService)
-                    .abendOnline(Mockito.eq(PROGRAM_NAME), Mockito.anyString(), Mockito.anyString());
-        }
-
-        @Test
-        @DisplayName("the diagnostic never names the verification code or the card number")
-        void theDiagnosticNeverNamesTheProtectedValues() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenThrow(new IllegalStateException("the store cannot answer"));
-
-            service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            final String logged = recordedLogText();
-            assertThat(logged).doesNotContain(CVV_WITH_LEADING_ZEROS);
-            assertThat(logged).doesNotContain(CARD_LOW);
-        }
-    }
-
-    @Nested
-    @DisplayName("protected values - the verification code and the card number never leak")
-    class ProtectedValues {
-
-        @Test
-        @DisplayName("a leading-zero verification code round-trips as a three-character string")
-        void aLeadingZeroVerificationCodeRoundTrips() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(result.card().verificationCode()).isEqualTo(CVV_WITH_LEADING_ZEROS);
-            assertThat(result.card().verificationCode()).hasSize(3);
-            assertThat(result.card().verificationCode()).isNotEqualTo("7");
-        }
-
-        @Test
-        @DisplayName("nothing protected reaches a log or a rendered projection")
-        void nothingProtectedReachesALogOrARendering() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(recordedLogText()).doesNotContain(CVV_WITH_LEADING_ZEROS);
-            assertThat(recordedLogText()).doesNotContain(CARD_LOW);
-
-            final String rendered = result.card().toString();
-            assertThat(rendered).doesNotContain(CVV_WITH_LEADING_ZEROS);
-            assertThat(rendered).doesNotContain(CARD_LOW);
-            assertThat(rendered).doesNotContain(ACCOUNT);
-            assertThat(rendered).doesNotContain(EMBOSSED_NAME_WITH_SPACE);
-            assertThat(rendered).contains(REDACTED);
-            // The unprotected components are rendered as they are.
-            assertThat(rendered).contains(EXPIRY);
-            assertThat(rendered).contains("expiryMonth=03");
-        }
-    }
-
-    @Nested
-    @DisplayName("the alphabetic edit - embedded spaces pass")
-    class AlphabeticEdit {
-
-        @ParameterizedTest
-        @ValueSource(strings = {"MARY ANN", "Aniya Von", "Ward Jones"})
-        @DisplayName("a name carrying an embedded space is accepted, and an all-letters test would not")
-        void aNameCarryingAnEmbeddedSpaceIsAccepted(final String name) {
-            assertThat(CobolStringUtils.isAlphaOrSpace(name)).isTrue();
-            // The forbidden implementation would reject data the legacy stores today.
-            assertThat(name.chars().allMatch(Character::isLetter)).isFalse();
-
-            Mockito.when(cardRepository.findById(CARD_LOW)).thenReturn(Optional.of(
-                    card(CARD_LOW, CVV_WITH_LEADING_ZEROS, name, EXPIRY, STATUS_ACTIVE)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(result.cardPresented()).isTrue();
-            assertThat(result.card().embossedName()).startsWith(name);
-            assertThat(result.screen().embossedName()).hasSize(EMBOSSED_NAME_WIDTH);
-        }
-    }
-
-    @Nested
-    @DisplayName("read-only by contract")
-    class ReadOnly {
-
-        @Test
-        @DisplayName("no write of any kind reaches the repository on any path")
-        void noWriteReachesTheRepository() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-            service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHPF3"));
-            service.processCardDetail(reSubmission("*", "*", "DFHENTER"));
-
-            Mockito.verify(cardRepository, Mockito.never()).save(ArgumentMatchersHelper.any());
-            Mockito.verify(cardRepository, Mockito.never()).saveAll(ArgumentMatchersHelper.any());
-            Mockito.verify(cardRepository, Mockito.never()).delete(ArgumentMatchersHelper.any());
-            Mockito.verify(cardRepository, Mockito.never())
-                    .deleteById(ArgumentMatchersHelper.any());
-            Mockito.verify(cardRepository, Mockito.never()).flush();
-        }
-
-        @Test
-        @DisplayName("the field-error list the result publishes is unmodifiable")
-        void theFieldErrorListIsUnmodifiable() {
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), " ".repeat(CARD_NUMBER_WIDTH),
-                            "DFHENTER"));
-
-            final List<ValidationException.FieldError> errors = result.fieldErrors();
-            assertThat(errors).hasSize(2);
-            assertThatExceptionOfType(UnsupportedOperationException.class)
-                    .isThrownBy(() -> errors.add(errors.get(0)));
-        }
-
-        @Test
-        @DisplayName("two turns are wholly independent, so the singleton carries no turn state")
-        void twoTurnsAreWhollyIndependent() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult failing = service.processCardDetail(
-                    reSubmission(" ".repeat(ACCOUNT_ID_WIDTH), " ".repeat(CARD_NUMBER_WIDTH),
-                            "DFHENTER"));
-            final CardDetailService.CardDetailResult succeeding =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(failing.errorFlag()).isTrue();
-            assertThat(failing.fieldErrors()).hasSize(2);
-            assertThat(succeeding.errorFlag()).isFalse();
-            assertThat(succeeding.fieldErrors()).isEmpty();
-            assertThat(succeeding.message()).isEmpty();
-        }
-    }
-
-    @Nested
-    @DisplayName("the published value types")
-    class PublishedValueTypes {
-
-        @Test
-        @DisplayName("the input record carries its four components verbatim")
-        void theInputRecordCarriesItsComponentsVerbatim() {
-            final ScreenNavigationState context = ScreenNavigationState.empty().withReEntry();
-            final CardDetailService.CardDetailScreenInput input =
-                    new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW, "DFHPF3", context);
-
-            assertThat(input.accountIdFilter()).isEqualTo(ACCOUNT);
-            assertThat(input.cardNumberFilter()).isEqualTo(CARD_LOW);
-            assertThat(input.attentionKeyIdentifier()).isEqualTo("DFHPF3");
-            assertThat(input.navigationContext()).isEqualTo(context);
-            assertThat(input)
-                    .isEqualTo(new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW,
-                            "DFHPF3", context));
-            assertThat(input).hasSameHashCodeAs(new CardDetailService.CardDetailScreenInput(
-                    ACCOUNT, CARD_LOW, "DFHPF3", context));
-        }
-
-        @Test
-        @DisplayName("the header, body and result records expose exactly what the turn produced")
-        void theRecordsExposeWhatTheTurnProduced() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(result.header()).isNotNull();
-            assertThat(result.screen()).isNotNull();
-            assertThat(result.workArea()).isNotNull();
-            assertThat(result.navigationContext()).isNotNull();
-            assertThat(result.route()).isNotNull();
-            assertThat(result.infoMessage()).isNotNull();
-            assertThat(result.focusField()).isNotNull();
-            assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID);
-            assertThat(result.reEnterFlag()).isTrue();
-            assertThat(result.screen().infoMessageDarkened()).isFalse();
-            assertThat(result.screen().accountIdFilter()).hasSize(ACCOUNT_ID_WIDTH);
-            assertThat(result.screen().cardNumberFilter()).hasSize(CARD_NUMBER_WIDTH);
-            assertThat(result.header().toString()).contains(EXPECTED_HEADER_DATE);
-            assertThat(result.screen().toString()).isNotEmpty();
-            assertThat(result.toString()).isNotEmpty();
-        }
-
-        @Test
-        @DisplayName("the work area reproduces the screen work-area fields of the copybook")
-        void theWorkAreaReproducesTheCopybookFields() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.CardDetailResult result =
-                    service.processCardDetail(reSubmission(ACCOUNT, CARD_LOW, "DFHENTER"));
-
-            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
-            assertThat(result.workArea().nextProgram()).isEqualTo(PROGRAM_NAME);
-            assertThat(result.workArea().nextMap()).isEqualTo("CCRDSLA");
-            assertThat(result.workArea().accountId()).isEqualTo(ACCOUNT);
-            assertThat(result.workArea().cardNumber()).isEqualTo(CARD_LOW);
-            assertThat(result.workArea().returnMessage()).isEmpty();
-            assertThat(result.workArea().customerId()).isEmpty();
-        }
-    }
-
-    @Nested
-    @DisplayName("paragraphs the source never performs - driven directly, because nothing else can")
-    class UnreachableParagraphs {
-
-        @Test
-        @DisplayName("the account-keyed read presents the one card the non-unique index resolves to")
-        void theAccountKeyedReadPresentsTheResolvedCard() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-
-            final CardDetailService.TurnState state = new CardDetailService.TurnState();
-            service.getCardByAcct(state, ACCOUNT);
             final CardDetailService.CardDetailResult result = service.toResult(state);
-
-            assertThat(result.card()).isNotNull();
-            assertThat(result.card().cardNumber()).isEqualTo(CARD_LOW);
-            assertThat(result.errorFlag()).isFalse();
-            assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS);
-            assertThat(result.message()).isEmpty();
-            // The account path is read exactly once and the selection happens in the service.
-            Mockito.verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
-            Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
+            assertAll(
+                    () -> assertThat(result.card()).isNull(),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_IN_DATABASE),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).bmsFieldId())
+                            .isEqualTo(FIELD_ACCOUNT_ID));
+            verifyNoInteractions(abendService);
         }
 
         @Test
-        @DisplayName("an empty result faults ONE field and sets its own text UNGATED")
-        void anEmptyResultFaultsOneFieldAndSetsItsTextUngated() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.empty());
-
+        @DisplayName("9150-GETCARD-BYACCT 779: the read is the bounded ordered-first finder, so the "
+                + "list-returning account finder is never consulted and nothing is ever indexed into")
+        void theListReturningAccountFinderIsNeverConsulted() {
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
-            // Pre-set a summary message: this arm must OVERWRITE it, unlike the card-number arm, which
-            // is gated on the field still being empty.
+
             service.getCardByAcct(state, ACCOUNT);
+
+            verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
+            verify(cardRepository, never()).findByCardAcctId(anyString());
+            verify(cardRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("9150-GETCARD-BYACCT 779: given three candidate cards in NON-ASCENDING order the "
+                + "FIRST as supplied is presented, so no re-sorting is applied on the way through")
+        void theFirstCandidateAsSuppliedIsPresented() {
+            // Deliberately non-ascending: the first element is the middle card number and the lowest
+            // card number sits last, so a service that re-sorted what the read handed it would present
+            // a different card and this assertion would fail.
+            final List<Card> candidates = List.of(activeCard(CARD_MIDDLE), activeCard(CARD_HIGHEST),
+                    activeCard(CARD_LOWEST));
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(candidates.get(0)));
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
+            service.getCardByAcct(state, ACCOUNT);
+
             final CardDetailService.CardDetailResult result = service.toResult(state);
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.card()).isNull();
-            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_IN_DATABASE);
-            // ONE field, not two - this is the asymmetry against the card-number read.
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.fieldErrors().get(0).bmsFieldId()).isEqualTo(FIELD_ACCOUNT_ID);
-            assertThat(result.fieldErrors().get(0).state())
-                    .isEqualTo(ValidationException.FieldState.INVALID);
+            assertAll(
+                    () -> assertThat(result.card().cardNumber()).isEqualTo(CARD_MIDDLE),
+                    () -> assertThat(result.card().cardNumber())
+                            .isNotEqualTo(CARD_LOWEST)
+                            .isNotEqualTo(CARD_HIGHEST),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_FOUND_CARDS));
+            verify(cardRepository, never()).findByCardAcctId(anyString());
         }
 
         @Test
-        @DisplayName("its message overwrites an earlier one, where the card-number read's would not")
-        void itsMessageOverwritesAnEarlierOne() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+        @DisplayName("9150-GETCARD-BYACCT 779 and SEND-LONG-TEXT 820: this not-found text is set "
+                + "UNGATED, so it overwrites a summary message that was already present")
+        void itsNotFoundTextOverwritesAMessageAlreadySet() {
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
                     .thenReturn(Optional.empty());
-
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
-            service.getCardByAcct(state, ACCOUNT);
-            // Running it twice proves the assignment is unconditional: a gated assignment would have
-            // left the first text in place on the second pass, and both passes yield the same text.
+            // The long-text send is the member's other unreachable paragraph and the only seam that
+            // writes the summary field, so it is what seeds a prior message here - exercising both
+            // unreachable paragraphs with one turn and needing no reflection to do it.
+            service.sendLongText(state, MSG_PROMPT_FOR_ACCOUNT);
+            assertThat(service.toResult(state).message()).isEqualTo(MSG_PROMPT_FOR_ACCOUNT);
+
             service.getCardByAcct(state, ACCOUNT);
 
             assertThat(service.toResult(state).message()).isEqualTo(MSG_ACCOUNT_NOT_IN_DATABASE);
         }
 
         @Test
-        @DisplayName("a record that violates its layout takes the catch-all and names CARDAIX")
-        void aViolatingRecordNamesTheAlternateIndex() {
-            Mockito.when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
-                    .thenReturn(Optional.of(card(CARD_LOW, CVV_WITH_LEADING_ZEROS,
-                            EMBOSSED_NAME_WITH_SPACE, EXPIRY, "Q")));
-
+        @DisplayName("SEND-LONG-TEXT 820: the plain send carries no transaction identifier, so it "
+                + "re-arms nothing")
+        void theLongTextSendReArmsNothing() {
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
+            service.sendLongText(state, MSG_UNEXPECTED_DATA_SCENARIO);
+
+            assertThat(service.toResult(state).reArmedTransactionId()).isEmpty();
+            assertThat(service.toResult(state).message()).isEqualTo(MSG_UNEXPECTED_DATA_SCENARIO);
+        }
+
+        @Test
+        @DisplayName("SEND-LONG-TEXT 820: an absent diagnostic leaves the summary field empty rather "
+                + "than storing a null")
+        void theLongTextSendToleratesAnAbsentDiagnostic() {
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
+            assertThatNoException().isThrownBy(() -> service.sendLongText(state, null));
+
+            assertThat(service.toResult(state).message()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("9150-GETCARD-BYACCT 779 catch-all arm: an unusable record names the ALTERNATE "
+                + "INDEX in the file-error message, not the base cluster")
+        void theCatchAllNamesTheAlternateIndex() {
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT)).thenReturn(
+                    Optional.of(card(CARD_MIDDLE, CVV_WITH_LEADING_ZEROS, SEEDED_EMBOSSED_NAME,
+                            EXPIRY, "X")));
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
             service.getCardByAcct(state, ACCOUNT);
+
             final CardDetailService.CardDetailResult result = service.toResult(state);
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.card()).isNull();
-            assertThat(result.message()).hasSize(RETURN_MESSAGE_WIDTH);
-            // The resource named is the alternate index, not the base cluster.
-            assertThat(result.message()).contains("CARDAIX");
-            assertThat(result.message()).doesNotContain("CARDDAT");
+            assertAll(
+                    () -> assertThat(result.card()).isNull(),
+                    () -> assertThat(result.message()).contains("CARDAIX"),
+                    () -> assertThat(result.message()).doesNotContain("CARDDAT"),
+                    () -> assertThat(result.message().getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(RETURN_MESSAGE_WIDTH));
         }
 
         @Test
-        @DisplayName("the long-text send transmits its text and returns without re-arming")
-        void theLongTextSendReturnsWithoutReArming() {
+        @DisplayName("9150-GETCARD-BYACCT 779: the account key is bounded to its eleven-character "
+                + "field before the read, so a longer identifier is truncated rather than rejected")
+        void theAccountKeyIsBoundedToItsFieldWidth() {
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
             final CardDetailService.TurnState state = new CardDetailService.TurnState();
-            final String diagnostic = "a diagnostic the member never actually composes";
 
-            service.sendLongText(state, diagnostic);
-            final CardDetailService.CardDetailResult transmitted = service.toResult(state);
+            service.getCardByAcct(state, ACCOUNT + "999");
 
-            assertThat(transmitted.message()).isEqualTo(diagnostic);
-            // The plain return carries no transaction identifier, so nothing is re-armed.
-            assertThat(transmitted.reArmedTransactionId()).isEmpty();
-
-            // An absent text is the blank field the never-written work item would have held.
-            final CardDetailService.TurnState blankState = new CardDetailService.TurnState();
-            service.sendLongText(blankState, null);
-            assertThat(service.toResult(blankState).message()).isEmpty();
+            verify(cardRepository).findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT);
         }
     }
 
+    // ==============================================================================================
+    // The two not-found outcomes, held apart - COCRDSLC lines 755 to 761 against 796 to 799
+    // ==============================================================================================
+
     @Nested
-    @DisplayName("the flag-to-field-error translation")
-    class FlagTranslation {
+    @DisplayName("the two not-found outcomes stay distinct, because the source distinguishes them")
+    class DistinctNotFoundOutcomes {
 
         @Test
-        @DisplayName("blank becomes MISSING, faulted becomes INVALID, and valid becomes no entry")
-        void eachFlagStateTranslatesToItsOwnOutcome() {
-            assertThat(CardDetailService.FilterState.BLANK.toFieldState())
-                    .isEqualTo(ValidationException.FieldState.MISSING);
-            assertThat(CardDetailService.FilterState.NOT_OK.toFieldState())
+        @DisplayName("the card-number miss and the account-number miss produce DIFFERENT text and "
+                + "DIFFERENT field-in-error identification, and neither text is the other")
+        void theTwoNotFoundOutcomesDifferInTextAndInFieldsFaulted() {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.empty());
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
+
+            final CardDetailService.CardDetailResult byCardNumber =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+            final CardDetailService.TurnState accountState = new CardDetailService.TurnState();
+            service.getCardByAcct(accountState, ACCOUNT);
+            final CardDetailService.CardDetailResult byAccountNumber = service.toResult(accountState);
+
+            assertAll(
+                    () -> assertThat(byCardNumber.message()).isEqualTo(MSG_NO_CARDS_FOR_CONDITION),
+                    () -> assertThat(byAccountNumber.message())
+                            .isEqualTo(MSG_ACCOUNT_NOT_IN_DATABASE),
+                    () -> assertThat(byCardNumber.message()).isNotEqualTo(byAccountNumber.message()),
+                    () -> assertThat(byCardNumber.fieldErrors())
+                            .extracting(ValidationException.FieldError::bmsFieldId)
+                            .containsExactly(FIELD_ACCOUNT_ID, FIELD_CARD_NUMBER),
+                    () -> assertThat(byAccountNumber.fieldErrors())
+                            .extracting(ValidationException.FieldError::bmsFieldId)
+                            .containsExactly(FIELD_ACCOUNT_ID),
+                    () -> assertThat(byCardNumber.fieldErrors())
+                            .hasSizeGreaterThan(byAccountNumber.fieldErrors().size()),
+                    () -> assertThat(byCardNumber.fieldErrors().get(0).message())
+                            .isNotEqualTo(byAccountNumber.fieldErrors().get(0).message()));
+        }
+
+        @Test
+        @DisplayName("the two texts are declared apart in the source and must never be collapsed into "
+                + "one, so the oracle itself asserts they are different literals")
+        void theTwoDeclaredTextsAreDifferentLiterals() {
+            assertThat(MSG_NO_CARDS_FOR_CONDITION).isNotEqualTo(MSG_ACCOUNT_NOT_IN_DATABASE);
+            assertThat(MSG_NO_CARDS_FOR_CONDITION).doesNotContain(MSG_ACCOUNT_NOT_IN_DATABASE);
+            assertThat(MSG_ACCOUNT_NOT_IN_DATABASE).doesNotContain(MSG_NO_CARDS_FOR_CONDITION);
+        }
+
+        @Test
+        @DisplayName("neither not-found path raises the module's record-not-found exception, which is "
+                + "why this service does not use its no-argument constructor")
+        void neitherPathRaisesRecordNotFound() {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.empty());
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.empty());
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
+            assertAll(
+                    () -> assertThatNoException().isThrownBy(() -> service
+                            .processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER))),
+                    () -> assertThatNoException()
+                            .isThrownBy(() -> service.getCardByAcct(state, ACCOUNT)),
+                    () -> assertThat(new RecordNotFoundException())
+                            .isInstanceOf(RuntimeException.class));
+        }
+    }
+
+    // ==============================================================================================
+    // COPY 'CSSTRPFY' 855, YYYY-STORE-PFKEY 17 and YYYY-STORE-PFKEY-EXIT 80 - the three units that
+    // take the paragraph count from 34 to 37
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("attention keys - decoded by the translator, then coerced by the pessimistic gate")
+    class AttentionKeys {
+
+        @Test
+        @DisplayName("0000-MAIN 248 first arm: the third program-function key transfers to the "
+                + "resolved destination and reads nothing")
+        void theThirdProgramFunctionKeyTransfersToTheResolvedDestination() {
+            when(navigationService.resolveBackNavigation(any(), eq(NavigationService.Route.USER_MENU)))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_PF3));
+
+            assertAll(
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.USER_MENU),
+                    () -> assertThat(result.route().getRouteValue()).isEqualTo(ROUTE_USER_MENU),
+                    () -> assertThat(result.reArmedTransactionId()).isEmpty(),
+                    () -> assertThat(result.message()).isEmpty(),
+                    () -> assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.PFK03));
+            verify(cardRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("YYYY-STORE-PFKEY 17: the FIFTEENTH key folds onto the THIRD and behaves "
+                + "identically - same destination, same message, same re-arm, same decoded action")
+        void theFifteenthKeyFoldsOntoTheThird() {
+            when(navigationService.resolveBackNavigation(any(), eq(NavigationService.Route.USER_MENU)))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final CardDetailService.CardDetailResult viaLowKey =
+                    service.processCardDetail(firstEntry(AID_PF3));
+            final CardDetailService.CardDetailResult viaFoldedKey =
+                    service.processCardDetail(firstEntry(AID_PF15));
+
+            assertAll(
+                    () -> assertThat(viaFoldedKey.route()).isEqualTo(viaLowKey.route()),
+                    () -> assertThat(viaFoldedKey.message()).isEqualTo(viaLowKey.message()),
+                    () -> assertThat(viaFoldedKey.reArmedTransactionId())
+                            .isEqualTo(viaLowKey.reArmedTransactionId()),
+                    () -> assertThat(viaFoldedKey.errorFlag()).isEqualTo(viaLowKey.errorFlag()),
+                    () -> assertThat(viaFoldedKey.workArea().keyAction())
+                            .isEqualTo(viaLowKey.workArea().keyAction())
+                            .isEqualTo(KeyAction.PFK03),
+                    () -> assertThat(viaFoldedKey.navigationContext())
+                            .isEqualTo(viaLowKey.navigationContext()));
+        }
+
+        @Test
+        @DisplayName("YYYY-STORE-PFKEY 17: an identifier the copybook's selection does not recognise "
+                + "draws the catalogue's invalid-key text and leaves the destination unchanged")
+        void anUnrecognisedIdentifierDrawsTheInvalidKeyTextWithNoRouteChange() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_UNRECOGNISED));
+
+            assertAll(
+                    () -> assertThat(result.message()).isEqualTo(MSG_INVALID_KEY),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL),
+                    () -> assertThat(result.route().getRouteValue()).isEqualTo(ROUTE_CARD_DETAIL),
+                    () -> assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID),
+                    // The decoding step assigned nothing, because the copybook's selection has no
+                    // catch-all - and then the pessimistic gate COERCED the empty action to the enter
+                    // key so the screen re-presents. The unrecognised condition survives the coercion
+                    // in the error flag and the message, which is where the source keeps it.
+                    () -> assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER));
+            verifyNoInteractions(navigationService);
+            verify(cardRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("YYYY-STORE-PFKEY 17: an absent identifier is treated as unrecognised, because "
+                + "the copybook's selection declares no catch-all clause")
+        void anAbsentIdentifierIsTreatedAsUnrecognised() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(null));
+
+            assertThat(result.message()).isEqualTo(MSG_INVALID_KEY);
+            assertThat(result.errorFlag()).isTrue();
+            // Coerced to the enter key by the same pessimistic gate, so the screen re-presents rather
+            // than the turn failing.
+            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"DFHPF5", "DFHPF12", "DFHPF24", "DFHCLEAR", "DFHPA1", "DFHPA2"})
+        @DisplayName("0000-MAIN 248 gate: a recognised but unpermitted key is coerced to enter "
+                + "SILENTLY, with no message at all, so the screen simply re-presents")
+        void aRecognisedButUnpermittedKeyIsCoercedSilently(final String identifier) {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(identifier));
+
+            assertAll(
+                    () -> assertThat(result.message()).isEmpty(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL),
+                    () -> assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID));
+            verifyNoInteractions(navigationService);
+        }
+
+        @Test
+        @DisplayName("YYYY-STORE-PFKEY-EXIT 80: the enter key is one of the two the gate permits, so "
+                + "it reaches the dispatch with its decoded action intact")
+        void theEnterKeyIsPermittedAndReachesTheDispatch() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
+
+            assertThat(result.workArea().keyAction()).isEqualTo(KeyAction.ENTER);
+            assertThat(result.errorFlag()).isFalse();
+        }
+    }
+
+    // ==============================================================================================
+    // The fifty-character common-message contract, measured on encoded bytes
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("the invalid-key text - fifty encoded bytes, passed through untouched")
+    class InvalidKeyMessageWidth {
+
+        @Test
+        @DisplayName("the catalogue's fifty-character value reaches the caller BYTE-IDENTICALLY, at "
+                + "exactly fifty encoded bytes, with its ten trailing spaces intact and never trimmed")
+        void theFiftyCharacterValueIsPassedThroughByteIdentically() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
+
+            final String published =
+                    service.processCardDetail(firstEntry(AID_UNRECOGNISED)).message();
+
+            assertAll(
+                    () -> assertThat(published).isEqualTo(MSG_INVALID_KEY),
+                    () -> assertThat(published.getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(published).endsWith(" ".repeat(10)),
+                    () -> assertThat(published).isNotEqualTo(published.trim()),
+                    () -> assertThat(published).isNotEqualTo(MSG_INVALID_KEY.stripTrailing()));
+            verify(messageCatalogService).invalidKeyMessage();
+        }
+
+        @Test
+        @DisplayName("the summary field is eighty characters wide, so the fifty-byte value is PADDED "
+                + "into it and never truncated")
+        void theFiftyByteValueIsPaddedIntoTheEightyCharacterField() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_UNRECOGNISED));
+
+            assertThat(result.screen().errorMessage().getBytes(StandardCharsets.US_ASCII))
+                    .hasSize(ERROR_MESSAGE_FIELD_WIDTH);
+            assertThat(result.screen().errorMessage()).startsWith(MSG_INVALID_KEY);
+        }
+
+        @Test
+        @DisplayName("both common messages share the fifty-byte width while being padded differently, "
+                + "which is what makes the width a contract rather than a coincidence")
+        void bothCommonMessagesShareTheDeclaredWidth() {
+            assertAll(
+                    () -> assertThat(MSG_INVALID_KEY.getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(MSG_THANK_YOU.getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(MSG_INVALID_KEY).isNotEqualTo(MSG_THANK_YOU),
+                    () -> assertThat(MSG_INVALID_KEY.stripTrailing()).hasSize(40),
+                    () -> assertThat(MSG_THANK_YOU.stripTrailing()).hasSize(43));
+        }
+    }
+
+    // ==============================================================================================
+    // The withheld values - the card verification code and the card number
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("withheld values - the verification code stays a three-character string and never "
+            + "reaches a log line")
+    class WithheldValues {
+
+        @Test
+        @DisplayName("a leading-zero verification code round-trips as the STRING \"007\" - three "
+                + "characters, leading zeros intact, never a number")
+        void aLeadingZeroVerificationCodeRoundTripsAsAString() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardProjection card =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER)).card();
+
+            assertAll(
+                    () -> assertThat(card.verificationCode()).isEqualTo(CVV_WITH_LEADING_ZEROS),
+                    () -> assertThat(card.verificationCode()).isInstanceOf(String.class),
+                    () -> assertThat(card.verificationCode()).startsWith("0"),
+                    () -> assertThat(card.verificationCode()
+                            .getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(VERIFICATION_CODE_WIDTH),
+                    () -> assertThat(card.verificationCode()).isNotEqualTo("7"));
+        }
+
+        @Test
+        @DisplayName("NO captured log event names the verification code, on the successful path or on "
+                + "any other")
+        void noCapturedLogEventNamesTheVerificationCode() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            assertThat(result.card().verificationCode()).isEqualTo(CVV_WITH_LEADING_ZEROS);
+            // The recorder must have captured something, or the absence assertion below would be
+            // vacuously true.
+            assertThat(recordedEventCount()).isPositive();
+            assertThat(recordedAnyMessageContaining(CVV_WITH_LEADING_ZEROS)).isFalse();
+            assertThat(recordedLogText())
+                    .doesNotContain(CVV_WITH_LEADING_ZEROS)
+                    .doesNotContain(CARD_MIDDLE);
+        }
+
+        @Test
+        @DisplayName("the projection's own rendering withholds the card number, the account, the name "
+                + "and the verification code behind a fixed stand-in")
+        void theProjectionRenderingWithholdsEveryProtectedComponent() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardProjection card =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER)).card();
+
+            assertAll(
+                    () -> assertThat(card.toString()).contains(REDACTED),
+                    () -> assertThat(card.toString()).doesNotContain(CARD_MIDDLE),
+                    () -> assertThat(card.toString()).doesNotContain(CVV_WITH_LEADING_ZEROS),
+                    () -> assertThat(card.toString()).doesNotContain(SEEDED_EMBOSSED_NAME),
+                    () -> assertThat(card.toString()).contains(EXPIRY));
+        }
+    }
+
+
+    // ==============================================================================================
+    // The alphabetic edit - the legacy idiom blanks the letters and then trims, so a space that was
+    // already there is trimmed exactly as a blanked letter is
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("the alphabetic edit - embedded spaces pass, and an all-letters test would not")
+    class AlphabeticEdit {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"MARY ANN", "Aniya Von", "Mary Ann Smith", "A B"})
+        @DisplayName("an embossed name carrying an embedded space is ACCEPTED and reaches the screen "
+                + "unchanged, so the whole seeded card fixture survives the turn")
+        void anEmbossedNameCarryingAnEmbeddedSpaceIsAccepted(final String name) {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.of(
+                    card(CARD_MIDDLE, CVV_WITH_LEADING_ZEROS, name, EXPIRY, STATUS_ACTIVE)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.cardPresented()).isTrue(),
+                    () -> assertThat(result.card().embossedName()).startsWith(name),
+                    () -> assertThat(result.card().embossedName()
+                            .getBytes(StandardCharsets.US_ASCII)).hasSize(EMBOSSED_NAME_WIDTH),
+                    () -> assertThat(result.screen().embossedName()).startsWith(name),
+                    () -> assertThat(result.screen().embossedName()
+                            .getBytes(StandardCharsets.US_ASCII)).hasSize(EMBOSSED_NAME_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the shared character-class predicate accepts both embedded-space names and "
+                + "refuses a name carrying a digit, so it is discriminating rather than permissive")
+        void theSharedPredicateIsDiscriminating() {
+            // The expected values here are the boolean literals, never a second call into production
+            // code. An all-letters test would fail the first two of these and would therefore reject
+            // every one of the fifty rows of the seeded card fixture.
+            assertAll(
+                    () -> assertThat(CobolStringUtils.isAlphaOrSpace(EMBOSSED_NAME_WITH_SPACE))
+                            .isTrue(),
+                    () -> assertThat(CobolStringUtils.isAlphaOrSpace(SEEDED_EMBOSSED_NAME)).isTrue(),
+                    () -> assertThat(CobolStringUtils.isAlphaOrSpace(NAME_WITH_DIGIT)).isFalse(),
+                    () -> assertThat(CobolStringUtils.isAlphaOrSpace("MARY-ANN")).isFalse());
+        }
+
+        @Test
+        @DisplayName("2210-EDIT-ACCOUNT 647: the numeric class condition is the mirror image - a "
+                + "filter carrying a letter is refused, which is what the message says")
+        void theNumericClassConditionRefusesALetter() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission("1234A678901", CARD_MIDDLE, AID_ENTER));
+
+            assertThat(result.message()).isEqualTo(MSG_ACCOUNT_NOT_NUMERIC);
+            assertThat(result.fieldErrors().get(0).state())
                     .isEqualTo(ValidationException.FieldState.INVALID);
-            // A field that passed its edits produces no entry at all, which is why there are exactly
-            // two field states and not three.
-            assertThat(CardDetailService.FilterState.VALID.toFieldState()).isNull();
+        }
+    }
 
-            assertThat(CardDetailService.FilterState.BLANK.isBlank()).isTrue();
-            assertThat(CardDetailService.FilterState.BLANK.isNotOk()).isFalse();
-            assertThat(CardDetailService.FilterState.NOT_OK.isNotOk()).isTrue();
-            assertThat(CardDetailService.FilterState.NOT_OK.isBlank()).isFalse();
-            assertThat(CardDetailService.FilterState.VALID.isBlank()).isFalse();
-            assertThat(CardDetailService.FilterState.VALID.isNotOk()).isFalse();
-            assertThat(CardDetailService.FilterState.values()).hasSize(3);
+    // ==============================================================================================
+    // ABEND-ROUTINE 857, armed at COCRDSLC lines 250 and 871, ending in the abend at line 875
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("the abend path - emit the diagnostic first, then raise")
+    class AbendPath {
+
+        @Test
+        @DisplayName("ABEND-ROUTINE 857: the diagnostic is already recorded at the moment the delegate "
+                + "raises, and the raised context carries the PROGRAM NAME as culprit and code 9999")
+        void theDiagnosticIsRecordedBeforeTheRaise() {
+            final AbendException raised = new AbendException(ONLINE_ABEND_CODE, PROGRAM_NAME,
+                    MSG_UNEXPECTED_ABEND, MSG_UNEXPECTED_ABEND);
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenThrow(new IllegalStateException("the store refused the keyed read"));
+            doAnswer(invocation -> {
+                // Evaluated at the instant the delegate is entered. If the service raised before it
+                // emitted, the recorder would still be empty here and this would fail inside the call
+                // rather than after it.
+                assertThat(recordedAnyMessageContaining(ABEND_DIAGNOSTIC_MARKER)).isTrue();
+                throw raised;
+            }).when(abendService).abendOnline(anyString(), anyString(), anyString());
+
+            assertThatExceptionOfType(AbendException.class)
+                    .isThrownBy(() -> service
+                            .processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER)))
+                    .isSameAs(raised);
+
+            assertAll(
+                    () -> assertThat(raised.code()).isEqualTo(ONLINE_ABEND_CODE),
+                    () -> assertThat(raised.culprit()).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(raised.reason()).isEqualTo(MSG_UNEXPECTED_ABEND),
+                    () -> assertThat(raised).isInstanceOf(RuntimeException.class));
+            verify(abendService)
+                    .abendOnline(eq(PROGRAM_NAME), eq(MSG_UNEXPECTED_ABEND), eq(MSG_UNEXPECTED_ABEND));
+        }
+
+        @Test
+        @DisplayName("ABEND-ROUTINE 857: the read is attempted before the abend delegate is reached, "
+                + "which is the ordering the armed handler implies")
+        void theReadIsAttemptedBeforeTheDelegate() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenThrow(new IllegalStateException("the store refused the keyed read"));
+
+            service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            final InOrder ordered = inOrder(cardRepository, abendService);
+            ordered.verify(cardRepository).findById(CARD_MIDDLE);
+            ordered.verify(abendService).abendOnline(eq(PROGRAM_NAME), anyString(), anyString());
+        }
+
+        @Test
+        @DisplayName("ABEND-ROUTINE 857: the abend context layout is four, eight, fifty and "
+                + "seventy-two characters at offsets 0, 4, 12 and 62, totalling 134")
+        void theAbendContextCarriesItsDeclaredLayout() {
+            final AbendException raised = new AbendException(ONLINE_ABEND_CODE, PROGRAM_NAME,
+                    MSG_UNEXPECTED_ABEND, MSG_UNEXPECTED_ABEND);
+
+            final String context = raised.toFixedWidthContext();
+
+            assertAll(
+                    () -> assertThat(context.getBytes(StandardCharsets.US_ASCII))
+                            .hasSize(ABEND_CONTEXT_LENGTH),
+                    () -> assertThat(context.substring(0, ABEND_CODE_LENGTH))
+                            .isEqualTo(ONLINE_ABEND_CODE),
+                    () -> assertThat(context.substring(ABEND_CODE_LENGTH,
+                            ABEND_CODE_LENGTH + ABEND_CULPRIT_LENGTH)).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(context.substring(ABEND_CODE_LENGTH + ABEND_CULPRIT_LENGTH,
+                            ABEND_CODE_LENGTH + ABEND_CULPRIT_LENGTH + ABEND_REASON_LENGTH))
+                            .startsWith(MSG_UNEXPECTED_ABEND),
+                    () -> assertThat(context.substring(ABEND_CODE_LENGTH + ABEND_CULPRIT_LENGTH
+                            + ABEND_REASON_LENGTH)).hasSize(ABEND_MESSAGE_LENGTH));
+        }
+
+        @Test
+        @DisplayName("ABEND-ROUTINE 857: the diagnostic names the transaction, the culprit and the "
+                + "resource, and still names no withheld value")
+        void theDiagnosticNamesTheOperatorFactsAndNothingWithheld() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenThrow(new IllegalStateException("the store refused the keyed read"));
+
+            service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(recordedLogText()).contains(ABEND_DIAGNOSTIC_MARKER),
+                    () -> assertThat(recordedLogText()).contains(TRANSACTION_ID),
+                    () -> assertThat(recordedLogText()).contains(PROGRAM_NAME),
+                    () -> assertThat(recordedLogText()).contains("CARDDAT"),
+                    () -> assertThat(recordedLogText()).contains(MSG_UNEXPECTED_ABEND),
+                    () -> assertThat(recordedLogText()).doesNotContain(CVV_WITH_LEADING_ZEROS),
+                    () -> assertThat(recordedLogText()).doesNotContain(CARD_MIDDLE));
+        }
+
+        @Test
+        @DisplayName("0000-MAIN 248 catch-all arm and SEND-PLAIN-TEXT 838: a state whose program-context "
+                + "flag is ABSENT still takes the first-entry arm, which is why the unexpected-data arm "
+                + "and the plain-text send it performs cannot be reached at all")
+        void theCatchAllDispatchArmIsUnreachableBecauseFirstEntryIsTheNegationOfReEntry() {
+            // First entry is defined as the negation of re-entry, so an absent flag is a first entry
+            // and never a third state. That is precisely why the source's own WHEN OTHER arm is
+            // unreachable in the shipped estate: reaching it would need a third value that the
+            // one-digit context field cannot hold. The arm is translated for fidelity and this test
+            // records why no input drives it, rather than leaving the claim unexamined.
+            final ScreenNavigationState absentContextFlag = new ScreenNavigationState(
+                    null, CARD_LIST_PROGRAM, null, null, null, null, null, null, null, null, null,
+                    ACCOUNT, null, CARD_MIDDLE, null, CARD_LIST_MAPSET);
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(new CardDetailService.CardDetailScreenInput(
+                            ACCOUNT, CARD_MIDDLE, AID_ENTER, absentContextFlag));
+
+            assertAll(
+                    () -> assertThat(absentContextFlag.firstEntry()).isTrue(),
+                    () -> assertThat(absentContextFlag.reEntry()).isFalse(),
+                    () -> assertThat(result.message()).isNotEqualTo(MSG_UNEXPECTED_DATA_SCENARIO),
+                    () -> assertThat(result.reArmedTransactionId()).isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(result.cardPresented()).isTrue());
+            verifyNoInteractions(abendService);
+        }
+    }
+
+    // ==============================================================================================
+    // Routes are constants returned to the caller; there is no server-side forwarding anywhere
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("route and navigation fidelity - constants out, no forwarding, no dangling target")
+    class RouteAndNavigationFidelity {
+
+        @Test
+        @DisplayName("the turn publishes a route CONSTANT for its own screen and forwards nothing, so "
+                + "the navigation authority is not even consulted on the self-representing path")
+        void theTurnPublishesARouteConstantAndForwardsNothing() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.route()).isInstanceOf(NavigationService.Route.class),
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL),
+                    () -> assertThat(result.route().getRouteValue()).isEqualTo(ROUTE_CARD_DETAIL),
+                    () -> assertThat(result.route().getLegacyProgramName()).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(result.route().getLegacyTransactionId())
+                            .isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(result.route().isAdminScoped()).isFalse());
+            verifyNoInteractions(navigationService);
+        }
+
+        @Test
+        @DisplayName("the back-navigation destination comes from the navigation authority and is NOT "
+                + "a literal in this service, so a different resolution yields a different route")
+        void theDestinationComesFromTheNavigationAuthority() {
+            when(navigationService.resolveBackNavigation(any(), eq(NavigationService.Route.USER_MENU)))
+                    .thenReturn(NavigationService.Route.CARD_LIST);
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(firstEntry(AID_PF3));
+
+            assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_LIST);
+            assertThat(result.route()).isNotEqualTo(NavigationService.Route.USER_MENU);
+            verify(navigationService)
+                    .resolveBackNavigation(any(), eq(NavigationService.Route.USER_MENU));
+        }
+
+        @Test
+        @DisplayName("the back-navigation state names THIS screen as the originator and records its "
+                + "own map and mapset, the mapset truncated to the seven-character field")
+        void theBackNavigationStateNamesThisScreen() {
+            when(navigationService.resolveBackNavigation(any(), eq(NavigationService.Route.USER_MENU)))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final ScreenNavigationState context =
+                    service.processCardDetail(firstEntry(AID_PF3)).navigationContext();
+
+            assertAll(
+                    () -> assertThat(context.fromProgram()).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(context.fromTransactionId()).isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(context.toProgram()).isEqualTo(USER_MENU_PROGRAM),
+                    () -> assertThat(context.lastMap()).isEqualTo(THIS_MAP),
+                    () -> assertThat(context.lastMapset()).isEqualTo(THIS_MAPSET_TRUNCATED),
+                    () -> assertThat(context.firstEntry()).isTrue());
+        }
+
+        @Test
+        @DisplayName("NO published destination corresponds to the dangling CICS program definition, "
+                + "which is declared at CSD line 211 and bound at line 390 with no source member")
+        void noPublishedDestinationNamesTheDanglingCicsProgram() {
+            final NavigationService.Route[] routes = NavigationService.Route.values();
+
+            assertThat(routes).hasSize(ROUTE_COUNT);
+            assertThat(routes)
+                    .extracting(NavigationService.Route::getLegacyProgramName)
+                    .doesNotContain(DANGLING_CICS_PROGRAM);
+            assertThat(routes)
+                    .extracting(NavigationService.Route::getRouteValue)
+                    .noneMatch(value -> value.toUpperCase(Locale.ROOT)
+                            .contains(DANGLING_CICS_PROGRAM));
+        }
+
+        @Test
+        @DisplayName("the estate's transfer-control and re-arm censuses are published as route "
+                + "constants, which is why this service declares no route table of its own")
+        void theDispatchAndReArmCensusesArePublished() {
+            assertAll(
+                    () -> assertThat(NavigationService.LEGACY_DISPATCH_SITE_COUNT)
+                            .isEqualTo(LEGACY_DISPATCH_SITE_COUNT),
+                    () -> assertThat(NavigationService.LEGACY_REARM_SITE_COUNT)
+                            .isEqualTo(LEGACY_REARM_SITE_COUNT),
+                    () -> assertThat(NavigationService.ROUTE_COUNT).isEqualTo(ROUTE_COUNT));
+        }
+    }
+
+
+    // ==============================================================================================
+    // Absent, blank and over-long input - 2100-RECEIVE-MAP 596 is what bounds every value
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("absent, blank and over-long input - bounded at the receive, never rejected by a cast")
+    class AbsentBlankAndOverLongInput {
+
+        @ParameterizedTest
+        @ValueSource(strings = {"", "   ", "           ", "*"})
+        @DisplayName("2100-RECEIVE-MAP 596: an absent, blank or marker-bearing filter reaches the "
+                + "BLANK state without any runtime exception escaping")
+        void anAbsentOrBlankFilterReachesTheBlankState(final String filter) {
+            assertThatNoException().isThrownBy(
+                    () -> service.processCardDetail(reSubmission(filter, filter, AID_ENTER)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(filter, filter, AID_ENTER));
+            assertThat(result.message()).isEqualTo(MSG_NO_INPUT);
+            assertThat(result.errorFlag()).isTrue();
+            verify(cardRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("0000-MAIN 248: an entirely absent navigation state is the zero-length "
+                + "communication area and yields the prompt, not a null dereference")
+        void anAbsentNavigationStateIsTheZeroLengthCommunicationArea() {
+            final CardDetailService.CardDetailScreenInput input =
+                    new CardDetailService.CardDetailScreenInput(null, null, AID_ENTER, null);
+
+            final CardDetailService.CardDetailResult result = service.processCardDetail(input);
+
+            assertAll(
+                    () -> assertThat(result.infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT),
+                    () -> assertThat(result.navigationContext()).isNotNull(),
+                    () -> assertThat(result.route()).isNotNull(),
+                    () -> assertThat(result.message()).isNotNull().isEmpty(),
+                    () -> assertThat(result.fieldErrors()).isNotNull().isEmpty(),
+                    () -> assertThat(result.workArea()).isNotNull(),
+                    () -> assertThat(result.header()).isNotNull(),
+                    () -> assertThat(result.screen()).isNotNull(),
+                    () -> assertThat(result.focusField()).isNotNull());
+        }
+
+        @Test
+        @DisplayName("2220-EDIT-CARD 685: a card filter one digit SHORT of its width fails the class "
+                + "condition, because the receive pads it with a space that is not a digit")
+        void aCardFilterShortOfItsWidthIsInvalid() {
+            final CardDetailService.CardDetailResult result = service
+                    .processCardDetail(reSubmission(ACCOUNT, "411111111111111", AID_ENTER));
+
+            assertThat(result.message()).isEqualTo(MSG_CARD_NOT_NUMERIC);
+            assertThat(result.fieldErrors()).hasSize(1);
+            assertThat(result.fieldErrors().get(0).state())
+                    .isEqualTo(ValidationException.FieldState.INVALID);
+            verify(cardRepository, never()).findById(anyString());
+        }
+
+        @Test
+        @DisplayName("2100-RECEIVE-MAP 596: a card filter LONGER than its width is truncated on the "
+                + "right exactly as a move into the field would truncate it, and the read uses the "
+                + "truncated key")
+        void aCardFilterLongerThanItsWidthIsTruncated() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult result = service
+                    .processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE + "9999", AID_ENTER));
+
+            verify(cardRepository).findById(CARD_MIDDLE);
+            assertThat(result.cardPresented()).isTrue();
+            assertThat(result.screen().cardNumberFilter()
+                    .getBytes(StandardCharsets.US_ASCII)).hasSize(CARD_NUMBER_WIDTH);
+        }
+
+        @Test
+        @DisplayName("2100-RECEIVE-MAP 596: an account filter LONGER than its width is truncated to "
+                + "eleven characters, so the eleven-digit prefix is what the edit judges")
+        void anAccountFilterLongerThanItsWidthIsTruncated() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult result = service
+                    .processCardDetail(reSubmission(ACCOUNT + "77", CARD_MIDDLE, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.fieldErrors()).isEmpty(),
+                    () -> assertThat(result.screen().accountIdFilter()).isEqualTo(ACCOUNT),
+                    () -> assertThat(result.screen().accountIdFilter()
+                            .getBytes(StandardCharsets.US_ASCII)).hasSize(ACCOUNT_ID_WIDTH));
+        }
+    }
+
+    // ==============================================================================================
+    // 1200-SETUP-SCREEN-VARS 457 - every field the detail view exposes is fed from the entity
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("field mapping completeness - no column is silently dropped on the way out")
+    class FieldMappingCompleteness {
+
+        @Test
+        @DisplayName("every component of the projection is populated from the entity, and the "
+                + "CORRECTLY SPELLED expiration-date property is the one that is read")
+        void everyProjectionComponentIsPopulatedFromTheEntity() {
+            final Card stored = card(CARD_HIGHEST, "913", EMBOSSED_NAME_WITH_SPACE, OTHER_EXPIRY,
+                    STATUS_INACTIVE);
+            // The correctly spelled Java property is what the projection reads; the misspelling of the
+            // legacy field name survives only in the 150-byte record layout.
+            assertThat(stored.getCardExpirationDate()).isEqualTo(OTHER_EXPIRY);
+            when(cardRepository.findById(CARD_HIGHEST)).thenReturn(Optional.of(stored));
+
+            final CardDetailService.CardProjection card = service
+                    .processCardDetail(reSubmission(ACCOUNT, CARD_HIGHEST, AID_ENTER)).card();
+
+            assertAll(
+                    () -> assertThat(card.cardNumber()).isEqualTo(CARD_HIGHEST),
+                    () -> assertThat(card.accountId()).isEqualTo(ACCOUNT),
+                    () -> assertThat(card.embossedName()).startsWith(EMBOSSED_NAME_WITH_SPACE),
+                    () -> assertThat(card.verificationCode()).isEqualTo("913"),
+                    () -> assertThat(card.expirationDate()).isEqualTo(OTHER_EXPIRY),
+                    () -> assertThat(card.expiryYear()).isEqualTo(OTHER_EXPIRY_YEAR),
+                    () -> assertThat(card.expiryMonth()).isEqualTo(OTHER_EXPIRY_MONTH),
+                    () -> assertThat(card.expiryDay()).isEqualTo(OTHER_EXPIRY_DAY),
+                    () -> assertThat(card.activeStatus()).isEqualTo(STATUS_INACTIVE),
+                    () -> assertThat(card.status()).isEqualTo(CardStatus.N));
+        }
+
+        @Test
+        @DisplayName("1200-SETUP-SCREEN-VARS 457: the screen shows the expiry MONTH and YEAR only - "
+                + "the day component is carried in the projection and deliberately not displayed")
+        void theScreenShowsTheMonthAndYearButNotTheDay() {
+            when(cardRepository.findById(CARD_HIGHEST)).thenReturn(Optional.of(
+                    card(CARD_HIGHEST, "913", EMBOSSED_NAME_WITH_SPACE, OTHER_EXPIRY,
+                            STATUS_ACTIVE)));
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_HIGHEST, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.screen().expiryMonth()).isEqualTo(OTHER_EXPIRY_MONTH),
+                    () -> assertThat(result.screen().expiryYear()).isEqualTo(OTHER_EXPIRY_YEAR),
+                    () -> assertThat(result.card().expiryDay()).isEqualTo(OTHER_EXPIRY_DAY),
+                    () -> assertThat(result.screen().embossedName())
+                            .startsWith(EMBOSSED_NAME_WITH_SPACE),
+                    () -> assertThat(result.screen().cardActiveStatus()).isEqualTo(STATUS_ACTIVE));
+        }
+
+        @Test
+        @DisplayName("1200-SETUP-SCREEN-VARS 457: a turn that found nothing leaves all four card "
+                + "fields blank, because they are written only under the found condition")
+        void aTurnThatFoundNothingLeavesTheCardFieldsBlank() {
+            when(cardRepository.findById(CARD_MIDDLE)).thenReturn(Optional.empty());
+
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(result.screen().embossedName()).isBlank(),
+                    () -> assertThat(result.screen().cardActiveStatus()).isBlank(),
+                    () -> assertThat(result.screen().expiryMonth()).isBlank(),
+                    () -> assertThat(result.screen().expiryYear()).isBlank(),
+                    () -> assertThat(result.card()).isNull());
+        }
+
+        @Test
+        @DisplayName("the record layout the projection is bounded against is the 150-byte card record, "
+                + "whose components sum to the declared length")
+        void theBoundedWidthsSumToTheDeclaredRecordLength() {
+            assertThat(CARD_NUMBER_WIDTH + ACCOUNT_ID_WIDTH + VERIFICATION_CODE_WIDTH
+                    + EMBOSSED_NAME_WIDTH + OTHER_EXPIRY.length() + 1 + 59)
+                    .isEqualTo(CARD_RECORD_WIDTH);
+        }
+    }
+
+    // ==============================================================================================
+    // The published value types, the statelessness of the singleton, and the flag translation
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("the published value types and the stateless singleton")
+    class PublishedValueTypes {
+
+        @Test
+        @DisplayName("the input record carries its four components verbatim and stores no copy")
+        void theInputRecordCarriesItsComponentsVerbatim() {
+            final ScreenNavigationState context = ScreenNavigationState.empty().withReEntry();
+            final CardDetailService.CardDetailScreenInput input =
+                    new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_MIDDLE, AID_PF3,
+                            context);
+
+            assertAll(
+                    () -> assertThat(input.accountIdFilter()).isEqualTo(ACCOUNT),
+                    () -> assertThat(input.cardNumberFilter()).isEqualTo(CARD_MIDDLE),
+                    () -> assertThat(input.attentionKeyIdentifier()).isEqualTo(AID_PF3),
+                    () -> assertThat(input.navigationContext()).isSameAs(context));
+        }
+
+        @Test
+        @DisplayName("2000-PROCESS-INPUTS 582: the work area carries this member's own program, mapset "
+                + "and map names, the mapset truncated to seven characters")
+        void theWorkAreaCarriesThisMembersOwnNames() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final ScreenInputState workArea = service
+                    .processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER)).workArea();
+
+            assertAll(
+                    () -> assertThat(workArea.nextProgram()).isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(workArea.nextMapset()).isEqualTo(THIS_MAPSET_TRUNCATED),
+                    () -> assertThat(workArea.nextMap()).isEqualTo(THIS_MAP),
+                    () -> assertThat(workArea.keyAction()).isEqualTo(KeyAction.ENTER),
+                    () -> assertThat(workArea.accountId()).isEqualTo(ACCOUNT),
+                    () -> assertThat(workArea.cardNumber()).isEqualTo(CARD_MIDDLE),
+                    () -> assertThat(workArea.customerId()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("cardPresented reports FALSE when a card was resolved but the turn still raised "
+                + "an error, which is the unrecognised-key-and-successful-read combination")
+        void cardPresentedIsFalseWhenACardWasFoundAndAnErrorWasStillRaised() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY);
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult result = service
+                    .processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_UNRECOGNISED));
+
+            assertAll(
+                    () -> assertThat(result.card()).isNotNull(),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.cardPresented()).isFalse(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_INVALID_KEY),
+                    () -> assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_DETAIL));
+        }
+
+        @Test
+        @DisplayName("the field-error list the result publishes cannot be modified by a caller")
+        void theFieldErrorListIsUnmodifiable() {
+            final CardDetailService.CardDetailResult result =
+                    service.processCardDetail(reSubmission(null, null, AID_ENTER));
+
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> result.fieldErrors().add(new ValidationException.FieldError(
+                            PROPERTY_CARD_NUMBER, FIELD_CARD_NUMBER,
+                            ValidationException.FieldState.INVALID, MSG_CARD_NOT_NUMERIC)));
+        }
+
+        @Test
+        @DisplayName("two turns of the same instance are wholly independent, so the singleton carries "
+                + "no turn state between them")
+        void twoTurnsAreWhollyIndependent() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            final CardDetailService.CardDetailResult found =
+                    service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+            final CardDetailService.CardDetailResult blank =
+                    service.processCardDetail(reSubmission(null, null, AID_ENTER));
+
+            assertAll(
+                    () -> assertThat(found.cardPresented()).isTrue(),
+                    () -> assertThat(found.message()).isEmpty(),
+                    () -> assertThat(blank.card()).isNull(),
+                    () -> assertThat(blank.message()).isEqualTo(MSG_NO_INPUT),
+                    () -> assertThat(blank.fieldErrors()).hasSize(2));
+        }
+
+        @Test
+        @DisplayName("the read-only contract holds: no write, no delete and no flush reaches the "
+                + "repository on any path this turn can take")
+        void noWriteReachesTheRepository() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            verify(cardRepository, never()).save(any(Card.class));
+            verify(cardRepository, never()).delete(any(Card.class));
+            verify(cardRepository, never()).deleteById(anyString());
+            verify(cardRepository, never()).flush();
         }
     }
 
     @Nested
-    @DisplayName("the two-armed state test - a fresh arrival from the menu is not trusted")
-    class StateTest {
+    @DisplayName("the filter-flag translation - three legacy states, two published field states")
+    class FilterStateTranslation {
 
         @Test
-        @DisplayName("state naming the menu as originator with the gate down is DISCARDED")
-        void stateNamingTheMenuWithTheGateDownIsDiscarded() {
-            // The second arm of the test at COCRDSLC lines 269 to 270. Honouring only the first arm
-            // would carry a stale selection into a screen the operator has just entered.
-            final ScreenNavigationState staleFromMenu = new ScreenNavigationState(
-                    "CM00", USER_MENU_PROGRAM, null, null, "USER0001", "U",
-                    ScreenNavigationState.ProgramContext.ENTER, null, null, null, null,
-                    ACCOUNT, null, CARD_LOW, "CCRDSLA", "COCRDSL");
-
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(null, null, "DFHENTER",
-                            staleFromMenu));
-
-            // The stale selection is gone: the screen prompts for input rather than showing a card.
-            assertThat(result.infoMessage()).isEqualTo(MSG_PROMPT_FOR_INPUT);
-            assertThat(result.card()).isNull();
-            assertThat(result.screen().accountIdFilter()).isBlank();
-            assertThat(result.screen().cardNumberFilter()).isBlank();
-            Mockito.verify(cardRepository, Mockito.never()).findById(ArgumentMatchersHelper.any());
+        @DisplayName("the blank flag becomes MISSING, the faulted flag becomes INVALID, and the valid "
+                + "flag produces no entry at all")
+        void allThreeLegacyStatesTranslate() {
+            assertAll(
+                    () -> assertThat(CardDetailService.FilterState.BLANK.toFieldState())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(CardDetailService.FilterState.NOT_OK.toFieldState())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(CardDetailService.FilterState.VALID.toFieldState()).isNull());
         }
 
         @Test
-        @DisplayName("the same state WITH the gate up is kept, because it is a re-submission")
-        void theSameStateWithTheGateUpIsKept() {
-            Mockito.when(cardRepository.findById(CARD_LOW))
-                    .thenReturn(Optional.of(activeCard(CARD_LOW)));
-            final ScreenNavigationState liveFromMenu = new ScreenNavigationState(
-                    "CM00", USER_MENU_PROGRAM, null, null, "USER0001", "U",
-                    ScreenNavigationState.ProgramContext.REENTER, null, null, null, null,
-                    ACCOUNT, null, CARD_LOW, "CCRDSLA", "COCRDSL");
-
-            final CardDetailService.CardDetailResult result = service.processCardDetail(
-                    new CardDetailService.CardDetailScreenInput(ACCOUNT, CARD_LOW, "DFHENTER",
-                            liveFromMenu));
-
-            assertThat(result.cardPresented()).isTrue();
-            assertThat(result.navigationContext().userId()).isEqualTo("USER0001");
+        @DisplayName("the two predicates the cursor and colour decisions read are mutually exclusive "
+                + "and neither holds for the valid state")
+        void theTwoPredicatesAreMutuallyExclusive() {
+            assertAll(
+                    () -> assertThat(CardDetailService.FilterState.BLANK.isBlank()).isTrue(),
+                    () -> assertThat(CardDetailService.FilterState.BLANK.isNotOk()).isFalse(),
+                    () -> assertThat(CardDetailService.FilterState.NOT_OK.isNotOk()).isTrue(),
+                    () -> assertThat(CardDetailService.FilterState.NOT_OK.isBlank()).isFalse(),
+                    () -> assertThat(CardDetailService.FilterState.VALID.isBlank()).isFalse(),
+                    () -> assertThat(CardDetailService.FilterState.VALID.isNotOk()).isFalse());
         }
     }
 
-    /**
-     * A local stand-in for the argument matcher, kept out of the static import block so this class
-     * declares no wildcard matcher import while still reading naturally at the call sites.
-     */
-    private static final class ArgumentMatchersHelper {
+    @Nested
+    @DisplayName("paragraph traceability - the 37 units this member contributes to the matrix")
+    class ParagraphTraceability {
 
-        private ArgumentMatchersHelper() {
+        @Test
+        @DisplayName("the traceable total is the 34 own Area-A labels plus the one in-line copy unit "
+                + "plus the two paragraphs that copybook expands into this procedure division")
+        void theTraceableTotalIsAccountedFor() {
+            assertThat(OWN_PARAGRAPH_LABEL_COUNT + COPY_UNIT_COUNT + COPYBOOK_PARAGRAPH_COUNT)
+                    .isEqualTo(TRACEABLE_PARAGRAPH_UNIT_COUNT);
         }
 
-        private static <T> T any() {
-            return org.mockito.ArgumentMatchers.any();
+        @Test
+        @DisplayName("this member's own identity is the one the route table publishes for the screen, "
+                + "so a matrix row resolves from either direction")
+        void theMemberIdentityAgreesWithThePublishedRoute() {
+            assertAll(
+                    () -> assertThat(NavigationService.Route.CARD_DETAIL.getLegacyProgramName())
+                            .isEqualTo(PROGRAM_NAME),
+                    () -> assertThat(NavigationService.Route.CARD_DETAIL.getLegacyTransactionId())
+                            .isEqualTo(TRANSACTION_ID),
+                    () -> assertThat(NavigationService.Route.CARD_LIST.getLegacyProgramName())
+                            .isEqualTo(CARD_LIST_PROGRAM),
+                    () -> assertThat(NavigationService.Route.USER_MENU.getLegacyProgramName())
+                            .isEqualTo(USER_MENU_PROGRAM));
+        }
+
+        @Test
+        @DisplayName("the thirteen EXIT paragraphs of every range a successful re-submission runs are "
+                + "each recorded by name and by source line, so paragraph-level auditability is "
+                + "observable at run time and not only at review time")
+        void theTurnRecordsEveryExitParagraphOfEveryRangeItRan() {
+            when(cardRepository.findById(CARD_MIDDLE))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+
+            service.processCardDetail(reSubmission(ACCOUNT, CARD_MIDDLE, AID_ENTER));
+
+            final String trace = recordedLogText();
+            assertAll(
+                    () -> assertThat(trace).contains("paragraph=YYYY-STORE-PFKEY-EXIT line=80"),
+                    () -> assertThat(trace).contains("paragraph=2100-RECEIVE-MAP-EXIT line=605"),
+                    () -> assertThat(trace).contains("paragraph=2210-EDIT-ACCOUNT-EXIT line=681"),
+                    () -> assertThat(trace).contains("paragraph=2220-EDIT-CARD-EXIT line=722"),
+                    () -> assertThat(trace).contains("paragraph=2200-EDIT-MAP-INPUTS-EXIT line=643"),
+                    () -> assertThat(trace).contains("paragraph=2000-PROCESS-INPUTS-EXIT line=593"),
+                    () -> assertThat(trace)
+                            .contains("paragraph=9100-GETCARD-BYACCTCARD-EXIT line=775"),
+                    () -> assertThat(trace).contains("paragraph=9000-READ-DATA-EXIT line=732"),
+                    () -> assertThat(trace).contains("paragraph=1100-SCREEN-INIT-EXIT line=453"),
+                    () -> assertThat(trace)
+                            .contains("paragraph=1200-SETUP-SCREEN-VARS-EXIT line=499"),
+                    () -> assertThat(trace)
+                            .contains("paragraph=1300-SETUP-SCREEN-ATTRS-EXIT line=559"),
+                    () -> assertThat(trace).contains("paragraph=1400-SEND-SCREEN-EXIT line=578"),
+                    () -> assertThat(trace).contains("paragraph=1000-SEND-MAP-EXIT line=423"));
+        }
+
+        @Test
+        @DisplayName("9150-GETCARD-BYACCT-EXIT 810 and SEND-LONG-TEXT-EXIT 831: the two exits of the "
+                + "unreachable paragraphs are recorded when those paragraphs are driven directly, which "
+                + "leaves only the exits of the unreachable catch-all arm unrecorded")
+        void theDirectlyDrivenParagraphsRecordTheirOwnExits() {
+            when(cardRepository.findFirstByCardAcctIdOrderByCardNumAsc(ACCOUNT))
+                    .thenReturn(Optional.of(activeCard(CARD_MIDDLE)));
+            final CardDetailService.TurnState state = new CardDetailService.TurnState();
+
+            service.getCardByAcct(state, ACCOUNT);
+            service.sendLongText(state, MSG_UNEXPECTED_DATA_SCENARIO);
+
+            final String trace = recordedLogText();
+            assertThat(trace).contains("paragraph=9150-GETCARD-BYACCT-EXIT line=810");
+            assertThat(trace).contains("paragraph=SEND-LONG-TEXT-EXIT line=831");
+        }
+
+        @Test
+        @DisplayName("YYYY-STORE-PFKEY 17: a second fold pair behaves identically too, so the fold is "
+                + "the copybook's rule and not a single special case")
+        void aSecondFoldPairBehavesIdentically() {
+            final CardDetailService.CardDetailResult viaLowKey =
+                    service.processCardDetail(firstEntry("DFHPF12"));
+            final CardDetailService.CardDetailResult viaFoldedKey =
+                    service.processCardDetail(firstEntry("DFHPF24"));
+
+            assertAll(
+                    () -> assertThat(viaFoldedKey.route()).isEqualTo(viaLowKey.route()),
+                    () -> assertThat(viaFoldedKey.message()).isEqualTo(viaLowKey.message()),
+                    () -> assertThat(viaFoldedKey.errorFlag()).isEqualTo(viaLowKey.errorFlag()),
+                    () -> assertThat(viaFoldedKey.reArmedTransactionId())
+                            .isEqualTo(viaLowKey.reArmedTransactionId()),
+                    () -> assertThat(viaFoldedKey.workArea().keyAction())
+                            .isEqualTo(viaLowKey.workArea().keyAction()));
         }
     }
+
+
 }

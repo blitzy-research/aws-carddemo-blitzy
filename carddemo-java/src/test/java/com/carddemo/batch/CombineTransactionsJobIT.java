@@ -38,6 +38,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -82,8 +84,9 @@ import org.springframework.test.context.DynamicPropertySource;
  *   <li>the job is launched <strong>by name</strong> through the registry the framework populates, so
  *       registration under {@link CombineTransactionsJobConfig#JOB_NAME} is part of the contract;</li>
  *   <li><strong>nothing may fire when the context starts.</strong> A legacy batch job was submitted
- *       deliberately, and the absence of a start-up launch can only be observed by starting a context
- *       and finding that no instance exists.</li>
+ *       deliberately, so this context must contribute no execution before the explicit launch below.
+ *       The shared metadata store may already contain executions from an earlier specification, which
+ *       makes an absolute-empty assertion an ordering dependency rather than an inertness assertion.</li>
  * </ul>
  *
  * <p>The run is also the load step's own proof that it writes through the repository: three rows appear
@@ -123,13 +126,7 @@ import org.springframework.test.context.DynamicPropertySource;
         properties = {"spring.flyway.enabled=false", "spring.main.banner-mode=off",
                 "spring.jpa.hibernate.ddl-auto=none",
                 "management.endpoint.health.validate-group-membership=false",
-                "management.tracing.enabled=false",
-                // The staged-input allow-list resolves a relative name against this directory and
-                // accepts nothing else, so the directory the fixtures are written into has to BE the
-                // configured one. It is fixed rather than temporary because the property is bound when
-                // the context starts, which is before any temporary directory exists.
-                CombineTransactionsJobConfig.STAGING_DIRECTORY_PROPERTY
-                        + "=${java.io.tmpdir}/" + CombineTransactionsJobIT.STAGING_SUBDIRECTORY})
+                "management.tracing.enabled=false"})
 @ActiveProfiles("test")
 @DisplayName("CombineTransactionsJobIT - registered by name, inert at start-up, and loads on demand")
 class CombineTransactionsJobIT extends AbstractPostgresIT {
@@ -137,13 +134,26 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     /**
      * The directory the staged-input allow-list resolves a relative location against.
      *
-     * <p>Bound into the context above beneath the platform's temporary location and created by this test,
-     * so a fixture written here is nameable and nothing outside it is. It is namespaced to this
-     * specification so a parallel one cannot collide with it, and both fixtures are removed after the test
-     * whatever its outcome. A temporary directory could not serve: the property is bound when the context
-     * starts, which is before one exists, and an annotation value has to be a compile-time constant.
+     * <p>Created beneath the platform's temporary location by this test, so a fixture written here is
+     * nameable and nothing outside it is. Both fixtures are removed after the test whatever its outcome.
+     *
+     * <p><strong>The name must be unique per run, and a fixed name is not.</strong> The platform temporary
+     * directory is shared by every process on the host, so a fixed child of it is shared by every build on
+     * the host - including every concurrently executing run of this same class, whose own clean-up removes
+     * both fixtures by name. One such run removing them between this run's context build and its step
+     * execution leaves the reader with nothing to open, and the step then fails on a resource this
+     * specification did stage: the allow-list falls back to a class-path lookup for a bare name, so the
+     * observed refusal names a class-path resource that never existed. Naming the directory for the owning
+     * process removes the sharing rather than trying to time around it, which is the same approach the
+     * interest job's test takes.
+     *
+     * <p>Resolved once, in a static initialiser, so the registration below, the fixtures written through it
+     * and the clean-up cannot disagree about which directory is being used. A per-test temporary directory
+     * could not serve: the locations are bound while the context is built, which is before any test method
+     * runs.
      */
-    static final String STAGING_SUBDIRECTORY = "carddemo-combine-transactions-it";
+    private static final Path STAGING_DIRECTORY = Path.of(System.getProperty("java.io.tmpdir"),
+            "carddemo-combine-transactions-it-" + ProcessHandle.current().pid());
 
     /**
      * A card the reference seed already carries.
@@ -179,14 +189,6 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      * position its last-page assertion depends on.
      */
     private static final List<String> RESERVED_IDS = List.of(FIRST_ID, SECOND_ID, THIRD_ID);
-
-    /**
-     * This run's staging directory, created on first use while the context is being built.
-     *
-     * <p>Static because the two locations are bound as configuration before any instance of this class
-     * exists, which is the whole point of the arrangement being tested.
-     */
-    private static Path stagingDirectory;
 
     /** The registry the framework populates, and the surface a caller launches this job through. */
     @Autowired
@@ -269,9 +271,10 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      * below - would test a seam the production configuration does not have.
      *
      * <p>The datasets are written here rather than in a per-test temporary directory because these values
-     * are bound while the context is built, which happens before any test method runs. The directory is
-     * created under the platform's temporary storage and is left for the platform to reclaim; nothing in it
-     * outlives the run.
+     * are bound while the context is built, which happens before any test method runs. The directory they
+     * are written into is published on the same registry and for the same reason: its name is computed - it
+     * carries the owning process identifier, for the reason given on {@link #STAGING_DIRECTORY} - and an
+     * annotation attribute cannot compute one, because it has to be a compile-time constant.
      *
      * <p>This publishes keys the shared base class does not, so it competes with nothing: the data-source
      * contract stays that class's alone.
@@ -280,11 +283,13 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      */
     @DynamicPropertySource
     static void registerStagedInputs(final DynamicPropertyRegistry registry) {
+        registry.add(CombineTransactionsJobConfig.STAGING_DIRECTORY_PROPERTY,
+                STAGING_DIRECTORY::toString);
         registry.add(CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY,
-                () -> stagedDataset("transaction-backup.txt",
+                () -> stagedDataset(BACKUP_DATASET,
                         List.of(record(THIRD_ID), record(FIRST_ID))));
         registry.add(CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY,
-                () -> stagedDataset("synthesized-transactions.txt", List.of(record(SECOND_ID))));
+                () -> stagedDataset(SYNTHESIZED_DATASET, List.of(record(SECOND_ID))));
     }
 
     /**
@@ -300,28 +305,11 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
      */
     private static String stagedDataset(final String name, final List<Transaction> records) {
         try {
-            return dataset(stagingDirectory(), name, records);
+            return dataset(STAGING_DIRECTORY, name, records);
         } catch (final IOException cannotStage) {
             throw new IllegalStateException("the staged input " + name + " could not be written",
                     cannotStage);
         }
-    }
-
-    /**
-     * Answers this run's staging directory, creating it on first use.
-     *
-     * <p>Synchronised because the framework may resolve the two suppliers above from different threads, and
-     * two directories would leave the second input beside a first that is no longer read.
-     *
-     * @return the directory both staged datasets are written into
-     * @throws IOException if the directory cannot be created
-     */
-    private static synchronized Path stagingDirectory() throws IOException {
-        if (stagingDirectory == null) {
-            stagingDirectory = Path.of(System.getProperty("java.io.tmpdir"), STAGING_SUBDIRECTORY);
-            Files.createDirectories(stagingDirectory);
-        }
-        return stagingDirectory;
     }
 
     @Test
@@ -332,9 +320,10 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                 .as("the job is launched by name, so it must be registered under that name")
                 .contains(CombineTransactionsJobConfig.JOB_NAME);
 
-        assertThat(jobExplorer.getJobInstances(CombineTransactionsJobConfig.JOB_NAME, 0, 10))
-                .as("a legacy job was submitted deliberately; bringing an application up never "
-                        + "triggered one, so no instance may exist before this test launches one")
+        final long instancesBeforeLaunch =
+                jobExplorer.getJobInstanceCount(CombineTransactionsJobConfig.JOB_NAME);
+        assertThat(jobExplorer.findRunningJobExecutions(CombineTransactionsJobConfig.JOB_NAME))
+                .as("bringing this context up must not start a combine execution")
                 .isEmpty();
 
         assertThat(combineTransactionsJob)
@@ -353,6 +342,9 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                 new JobParametersBuilder().toJobParameters());
 
         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(jobExplorer.getJobInstanceCount(CombineTransactionsJobConfig.JOB_NAME))
+                .as("the explicit launch contributes exactly one instance")
+                .isEqualTo(instancesBeforeLaunch + 1L);
         assertThat(execution.getStepExecutions()).extracting(StepExecution::getStepName)
                 .as("both steps ran, in the legacy order")
                 .containsExactly(CombineTransactionsJobConfig.ORDER_STEP_NAME,
@@ -377,8 +369,7 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
         }
         // Published from the sealed local file and not from an array: the generation is a sequential
         // file, so its size is bounded by the volume it is written to rather than by the heap.
-        final Path publishedGeneration =
-                Path.of(System.getProperty("java.io.tmpdir"), STAGING_SUBDIRECTORY)
+        final Path publishedGeneration = STAGING_DIRECTORY
                 .resolve(CombineTransactionsJobConfig.JOB_NAME + ".combined." + execution.getId()
                         + ".dat");
         verify(stagingArea).publish(
@@ -405,16 +396,41 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     /**
      * Removes the two staged fixtures, so the configured staging directory is left as it was found.
      *
-     * <p>The directory itself is left in place: it is named after this specification and creating it is
-     * idempotent, while removing it would race a parallel run of the same class.
+     * <p>Removing an absent fixture is a no-operation, so a run that failed before either was written
+     * still leaves cleanly.
      *
      * @throws IOException if a fixture cannot be removed
      */
     @AfterEach
     void removeTheStagedFixtures() throws IOException {
-        final Path directory = stagingDirectory();
-        Files.deleteIfExists(directory.resolve(BACKUP_DATASET));
-        Files.deleteIfExists(directory.resolve(SYNTHESIZED_DATASET));
+        Files.deleteIfExists(STAGING_DIRECTORY.resolve(BACKUP_DATASET));
+        Files.deleteIfExists(STAGING_DIRECTORY.resolve(SYNTHESIZED_DATASET));
+    }
+
+    /**
+     * Removes this run's own staging directory, so the platform's temporary location is left as it was
+     * found.
+     *
+     * <p>Safe to attempt here and not in the per-test clean-up above: the directory carries this process's
+     * identifier, so it belongs to this run alone and removing it cannot disturb a concurrently executing
+     * run of the same class - which is precisely what a fixed name could not promise. Only the two entries
+     * this specification creates are named, one level deep and never recursively, and a directory still
+     * holding anything is left in place for the platform to reclaim rather than emptied blindly.
+     *
+     * @throws IOException if the directory's own entries cannot be read
+     */
+    @AfterAll
+    static void removeTheStagingDirectory() throws IOException {
+        if (!Files.isDirectory(STAGING_DIRECTORY)) {
+            return;
+        }
+        Files.deleteIfExists(STAGING_DIRECTORY.resolve(BACKUP_DATASET));
+        Files.deleteIfExists(STAGING_DIRECTORY.resolve(SYNTHESIZED_DATASET));
+        try (Stream<Path> remaining = Files.list(STAGING_DIRECTORY)) {
+            if (remaining.findAny().isEmpty()) {
+                Files.deleteIfExists(STAGING_DIRECTORY);
+            }
+        }
     }
 
     /**

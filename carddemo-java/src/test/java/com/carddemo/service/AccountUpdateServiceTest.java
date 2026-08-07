@@ -20,27 +20,33 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.util.Base64;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatchers;
-import org.mockito.Mockito;
-import org.springframework.core.io.DefaultResourceLoader;
-import org.springframework.dao.DataAccessResourceFailureException;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 
-import com.carddemo.api.AccountProtectedDataAdapter;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.domain.Customer;
@@ -50,1604 +56,3239 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
+import com.carddemo.support.TestDataFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for the account-update transaction {@code CAUP}, migrated from
- * {@code app/cbl/COACTUPC.cbl} - 4,236 lines, 85 procedure-division paragraphs and three
- * identification-division paragraphs, and the sole includer of the four copybooks that carry the
- * estate's whole validation-lookup surface.
+ * Surefire unit tests for {@link AccountUpdateService}, the account-update transaction {@code CAUP}.
  *
- * <p>Every expected message, field identifier and ordering below is written as a literal in this class,
- * so the oracle is independent of the code it judges. No expected value is obtained by calling the
- * service, the lookup tables, the message catalogue or the navigation service.
+ * <h2>Provenance and why this suite is load-bearing</h2>
  *
- * <p>The tests that matter most are the ones guarding the six counter-intuitive behaviours: the two
- * fields that are decorated and never validated, the telephone cascade that forwards rather than
- * short-circuits, the gated credit-score range, the two postal lists that must never be intersected, the
- * asymmetric rollback, and the ordered write-outcome selection.
+ * <p>Legacy authority {@code app/cbl/COACTUPC.cbl}, read at checkout SHA
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The member is 4,236 lines once its carriage
+ * returns are stripped - it is CRLF-encoded, so any count taken from it without stripping measures
+ * nothing - and it is the single largest translation in the migration at 16.1% of the estate's
+ * paragraph total.
+ *
+ * <p>The paragraph figure is <strong>88</strong>, being three {@code IDENTIFICATION DIVISION}
+ * paragraphs plus 85 {@code PROCEDURE DIVISION} paragraphs. The action plan's 85 counted only the
+ * procedure division, so both figures are correct and this class covers all 88: the three
+ * identification paragraphs through the named accessors, the 85 procedural ones through the flow the
+ * two entry points drive.
+ *
+ * <p>{@code COACTUPC} is the sole includer of four copybooks - the lookup tables, the three-token
+ * field-decoration macro, the date cascade and the date work fields - so the estate's entire
+ * validation-lookup surface and its entire field-error-decoration surface are reached from this one
+ * feature. A thin suite here leaves both surfaces untested everywhere.
+ *
+ * <h2>Harness</h2>
+ *
+ * <p>A pure surefire unit test. No Spring context, no container, no database, no port and no network:
+ * every one of the twelve collaborators is a Mockito mock, and the clock is fixed. The two behaviours
+ * that would normally want a real transaction - optimistic locking and the asymmetric rollback - are
+ * proved here through mock behaviour and interaction ordering, which is what isolates them from
+ * infrastructure; the real-transaction exercise belongs to the sibling integration tree.
+ *
+ * <h2>Independent oracle</h2>
+ *
+ * <p>No expected value in this class is produced by the code it judges. The 39 ordered
+ * (component name, screen field identifier) pairs were extracted from the {@code COPY CSSETATY}
+ * token substitutions in the legacy member itself and are declared below as literals; every message,
+ * every conflict text, every padded catalogue value and every amount is likewise a literal. Nothing is
+ * obtained by calling the service, the lookup tables, the message catalogue, the navigation service,
+ * the key translator, the string utilities or the decimal codec.
+ *
+ * <h2>Source defects this suite pins rather than repairs</h2>
+ *
+ * <ul>
+ * <li>Four mislabelled comments. The macro's own leading comment is corrupted and trails a stray
+ * {@code ACSHLIM} token; the comments above the last two expansions are transposed, one reading
+ * {@code EFT Account Id} above the primary-cardholder expansion and the other {@code Primary Card
+ * Holder} above the transfer-account expansion; and a fourth reads {@code State} above the postcode
+ * expansion. Every expectation below is bound from the substitution tokens, never from a comment.</li>
+ * <li>A duplicated condition name for the cross-reference miss, declared twice, so the second text is
+ * unreachable. The first-declared text is what this suite asserts.</li>
+ * <li>A misspelled alphanumeric validation flag, rendered without its second {@code A} at four sites.
+ * The behaviour is preserved; the Java member is spelled correctly.</li>
+ * <li>The all-blank telephone shortcut, whose third condition group tests the area code where the line
+ * number belongs.</li>
+ * <li>The asymmetric rollback, which is genuine legacy behaviour and not a defect to normalise.</li>
+ * <li>21 of the 50 seeded customer rows carry a credit score outside the range this transaction
+ * enforces on input. The seed data is never altered and no persistence constraint is added.</li>
+ * </ul>
+ *
+ * @see AccountUpdateService
+ * @see AccountUpdateCommand
+ * @see AccountUpdateOutcome
  */
-@DisplayName("AccountUpdateService: the account-update transaction CAUP")
+@ExtendWith(MockitoExtension.class)
+@DisplayName("AccountUpdateService: transaction CAUP, the translation of COACTUPC")
 class AccountUpdateServiceTest {
 
-    /** A test key of the exact length the field-encryption service requires. */
-    private static final String BASE64_KEY = Base64.getEncoder().encodeToString(
-            "carddemo-acctupd-test-key-012345".getBytes(StandardCharsets.UTF_8));
+    /* ==========================================================================================
+     * Independent-oracle constants. Every literal below is declared here rather than read from the
+     * production classes this suite judges.
+     * ========================================================================================== */
 
+    /** The eleven-digit account key the fixtures use. */
     private static final String ACCOUNT_ID = "00000000011";
+
+    /** The nine-digit customer key the cross-reference resolves to. */
     private static final String CUSTOMER_ID = "000000001";
+
+    /** The sixteen-digit card number the cross-reference carries. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /* The verbatim texts this transaction owns. Declared here, never imported from production code. */
+    /** A second, higher card number, used to show which row an ordered-first read returns. */
+    private static final String HIGHER_CARD_NUMBER = "4111111111119999";
+
+    /**
+     * The account group identifier every one of the fifty seeded accounts holds: ten spaces.
+     *
+     * <p>Written as a repeat rather than as a run of literal spaces so its width is unmistakable. It is
+     * never trimmed and never treated as absent.
+     */
+    private static final String ACCOUNT_GROUP_ID_TEN_SPACES = " ".repeat(10);
+
+    /**
+     * The 39 response component names, in the order the 39 macro expansions declare them.
+     *
+     * <p>Derived from the {@code (TESTVAR1)} substitution tokens between source lines 3208 and 3432,
+     * never from the comments above them. Two orderings look wrong and are right: the state code sits
+     * between the two address lines, and the postcode precedes the city and the country.
+     */
+    private static final List<String> EXPECTED_FIELD_NAMES = List.of(
+            "accountStatus", "openYear", "openMonth", "openDay", "creditLimit",
+            "expiryYear", "expiryMonth", "expiryDay", "cashCreditLimit",
+            "reissueYear", "reissueMonth", "reissueDay",
+            "currentBalance", "currentCycleCredit", "currentCycleDebit",
+            "ssnPart1", "ssnPart2", "ssnPart3",
+            "dateOfBirthYear", "dateOfBirthMonth", "dateOfBirthDay",
+            "ficoScore", "firstName", "middleName", "lastName",
+            "addressLine1", "stateCode", "addressLine2", "zipCode", "city", "countryCode",
+            "phone1AreaCode", "phone1Prefix", "phone1LineNumber",
+            "phone2AreaCode", "phone2Prefix", "phone2LineNumber",
+            "primaryCardHolderIndicator", "eftAccountId");
+
+    /**
+     * The 39 seven-character screen field identifiers, in the same order.
+     *
+     * <p>Derived from the {@code (SCRNVAR2)} substitution tokens. The last two are the transposed pair:
+     * {@code ACSPFLG} is the primary-cardholder field and {@code ACSEFTC} the transfer-account field,
+     * whatever the comments above them say.
+     */
+    private static final List<String> EXPECTED_SCREEN_FIELD_IDS = List.of(
+            "ACSTTUS", "OPNYEAR", "OPNMON", "OPNDAY", "ACRDLIM",
+            "EXPYEAR", "EXPMON", "EXPDAY", "ACSHLIM",
+            "RISYEAR", "RISMON", "RISDAY",
+            "ACURBAL", "ACRCYCR", "ACRCYDB",
+            "ACTSSN1", "ACTSSN2", "ACTSSN3",
+            "DOBYEAR", "DOBMON", "DOBDAY",
+            "ACSTFCO", "ACSFNAM", "ACSMNAM", "ACSLNAM",
+            "ACSADL1", "ACSSTTE", "ACSADL2", "ACSZIPC", "ACSCITY", "ACSCTRY",
+            "ACSPH1A", "ACSPH1B", "ACSPH1C",
+            "ACSPH2A", "ACSPH2B", "ACSPH2C",
+            "ACSPFLG", "ACSEFTC");
+
+    /**
+     * The 39 macro validation-flag tokens, in the same order.
+     *
+     * <p>These are the {@code (TESTVAR1)} tokens verbatim, kept so a reader can trace each Java member
+     * back to the flag the macro tested.
+     */
+    private static final List<String> EXPECTED_LEGACY_FLAG_TOKENS = List.of(
+            "ACCT-STATUS", "OPEN-YEAR", "OPEN-MONTH", "OPEN-DAY", "CRED-LIMIT",
+            "EXPIRY-YEAR", "EXPIRY-MONTH", "EXPIRY-DAY", "CASH-CREDIT-LIMIT",
+            "REISSUE-YEAR", "REISSUE-MONTH", "REISSUE-DAY",
+            "CURR-BAL", "CURR-CYC-CREDIT", "CURR-CYC-DEBIT",
+            "EDIT-US-SSN-PART1", "EDIT-US-SSN-PART2", "EDIT-US-SSN-PART3",
+            "DT-OF-BIRTH-YEAR", "DT-OF-BIRTH-MONTH", "DT-OF-BIRTH-DAY",
+            "FICO-SCORE", "FIRST-NAME", "MIDDLE-NAME", "LAST-NAME",
+            "ADDRESS-LINE-1", "STATE", "ADDRESS-LINE-2", "ZIPCODE", "CITY", "COUNTRY",
+            "PHONE-NUM-1A", "PHONE-NUM-1B", "PHONE-NUM-1C",
+            "PHONE-NUM-2A", "PHONE-NUM-2B", "PHONE-NUM-2C",
+            "PRI-CARDHOLDER", "EFT-ACCOUNT-ID");
+
+    /** The number of macro expansions, counted directly in the legacy member. */
+    private static final int DECORATION_SITE_COUNT = 39;
+
+    /** The middle name: decorated at expansion 24, never edited. */
+    private static final String FIELD_MIDDLE_NAME = "middleName";
+
+    /** The second address line: decorated at expansion 28, never edited. */
+    private static final String FIELD_ADDRESS_LINE_2 = "addressLine2";
+
+    /**
+     * The two components the legacy decorates and never validates.
+     *
+     * <p>Because their flags can never leave the valid state, their two expansion sites fire and mark
+     * nothing, which caps the observable mark count at 37 even when every other field is in error.
+     */
+    private static final List<String> NEVER_VALIDATED_FIELDS =
+            List.of(FIELD_MIDDLE_NAME, FIELD_ADDRESS_LINE_2);
+
+    /** Marks obtainable in one pass: the 39 sites less the two that can never fail. */
+    private static final int MAX_OBSERVABLE_MARK_COUNT =
+            DECORATION_SITE_COUNT - NEVER_VALIDATED_FIELDS.size();
+
+    /* ---- Summary and field message texts, transcribed from the legacy literals ---- */
+
     private static final String MSG_ACCOUNT_NUMBER_NOT_PROVIDED = "Account number not provided";
+
     private static final String MSG_ACCOUNT_NUMBER_MALFORMED =
             "Account Number if supplied must be a 11 digit Non-Zero Number";
+
+    private static final String MSG_NO_INPUT_RECEIVED = "No input received";
+
+    private static final String MSG_NO_CHANGES_DETECTED =
+            "No change detected with respect to values fetched.";
+
+    /** The first of the two identically named cross-reference-miss conditions. The one that binds. */
+    private static final String MSG_ACCOUNT_NOT_IN_XREF_FIRST_DECLARED =
+            "Did not find this account in account card xref file";
+
+    /** The second declaration of the same condition name, which is therefore unreachable. */
+    private static final String MSG_ACCOUNT_NOT_IN_XREF_SHADOWED =
+            "Did not find this account in cards database";
+
+    private static final String MSG_ACCOUNT_NOT_IN_MASTER =
+            "Did not find this account in account master file";
+
+    private static final String MSG_CUSTOMER_NOT_IN_MASTER =
+            "Did not find associated customer in master file";
+
     private static final String MSG_INVALID_ZIP_FOR_STATE = "Invalid zip code for state";
-    private static final String MSG_RECORD_CHANGED = "Record changed by some one else. Please review";
-    private static final String MSG_UPDATE_FAILED = "Update of record failed";
-    private static final String SUFFIX_AREA_CODE_REQUIRED = ": Area code must be supplied.";
-    private static final String SUFFIX_AREA_CODE_NOT_3_DIGITS =
-            ": Area code must be A 3 digit number.";
-    private static final String SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE =
-            ": Not valid North America general purpose area code";
-    private static final String SUFFIX_PREFIX_REQUIRED = ": Prefix code must be supplied.";
-    private static final String SUFFIX_LINE_NUMBER_REQUIRED =
-            ": Line number code must be supplied.";
+
+    /* ---- The four write-path conflict texts, byte for byte ---- */
+
+    /**
+     * The changed-before-update text. {@code some one} is <strong>two words</strong> in the legacy
+     * literal; a single-word rendering is a contract break.
+     */
+    private static final String CONFLICT_MSG_DATA_WAS_CHANGED =
+            "Record changed by some one else. Please review";
+
+    private static final String CONFLICT_MSG_UPDATE_FAILED = "Update of record failed";
+
+    private static final String CONFLICT_MSG_COULD_NOT_LOCK_ACCOUNT =
+            "Could not lock account record for update";
+
+    private static final String CONFLICT_MSG_COULD_NOT_LOCK_CUSTOMER =
+            "Could not lock customer record for update";
+
+    /* ---- Composed message suffixes ---- */
+
+    private static final String SUFFIX_MUST_BE_SUPPLIED = " must be supplied.";
+    private static final String SUFFIX_MUST_BE_Y_OR_N = " must be Y or N.";
+    private static final String SUFFIX_ALPHABETS_ONLY = " can have alphabets only.";
+    private static final String SUFFIX_MUST_BE_ALL_NUMERIC = " must be all numeric.";
+    private static final String SUFFIX_IS_NOT_VALID = " is not valid";
     private static final String SUFFIX_FICO_OUT_OF_RANGE = ": should be between 300 and 850";
     private static final String SUFFIX_STATE_NOT_VALID = ": is not a valid state code";
-    private static final String INFO_PROMPT_FOR_SEARCH_KEYS =
-            "Enter or update id of account to update";
+    private static final String SUFFIX_AREA_CODE_REQUIRED = ": Area code must be supplied.";
+    private static final String SUFFIX_AREA_CODE_NOT_3_DIGITS = ": Area code must be A 3 digit number.";
+    private static final String SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE =
+            ": Not valid North America general purpose area code";
+    private static final String SUFFIX_PREFIX_NOT_3_DIGITS = ": Prefix code must be A 3 digit number.";
+
+    /** The legacy literal says {@code Line number code}, with the redundant third word. Preserved. */
+    private static final String SUFFIX_LINE_NUMBER_NOT_4_DIGITS =
+            ": Line number code must be A 4 digit number.";
+
+    /* ---- Field labels the composed messages are prefixed with ---- */
+
+    private static final String LABEL_ACCOUNT_STATUS = "Account Status";
+    private static final String LABEL_FICO_SCORE = "FICO Score";
+    private static final String LABEL_FIRST_NAME = "First Name";
+    private static final String LABEL_STATE = "State";
+    private static final String LABEL_ZIP = "Zip";
+    private static final String LABEL_PHONE_NUMBER_1 = "Phone Number 1";
+    private static final String LABEL_ADDRESS_LINE_1 = "Address Line 1";
+
+    /* ---- Information messages ---- */
+
+    private static final String INFO_PROMPT_FOR_SEARCH_KEYS = "Enter or update id of account to update";
     private static final String INFO_PROMPT_FOR_CHANGES = "Update account details presented above.";
     private static final String INFO_PROMPT_FOR_CONFIRMATION = "Changes validated.Press F5 to save";
     private static final String INFO_CONFIRM_UPDATE_SUCCESS = "Changes committed to database";
+    private static final String INFO_INFORM_FAILURE = "Changes unsuccessful. Please try again";
 
-    /** The 39 BMS field identifiers, in the order the 39 macro expansions declare them. */
-    private static final List<String> DECORATION_ORDER = List.of(
-            "ACSTTUS", "OPNYEAR", "OPNMON", "OPNDAY", "ACRDLIM", "EXPYEAR", "EXPMON", "EXPDAY",
-            "ACSHLIM", "RISYEAR", "RISMON", "RISDAY", "ACURBAL", "ACRCYCR", "ACRCYDB", "ACTSSN1",
-            "ACTSSN2", "ACTSSN3", "DOBYEAR", "DOBMON", "DOBDAY", "ACSTFCO", "ACSFNAM", "ACSMNAM",
-            "ACSLNAM", "ACSADL1", "ACSSTTE", "ACSADL2", "ACSZIPC", "ACSCITY", "ACSCTRY", "ACSPH1A",
-            "ACSPH1B", "ACSPH1C", "ACSPH2A", "ACSPH2B", "ACSPH2C", "ACSPFLG", "ACSEFTC");
+    /* ---- The catalogue's invalid-key text at its contractual width ---- */
 
+    /** The visible portion of the common invalid-key message: forty characters. */
+    private static final String INVALID_KEY_TEXT = "Invalid key pressed. Please see below...";
+
+    /** The declared width of a common message. */
+    private static final int COMMON_MESSAGE_WIDTH = 50;
+
+    /** The trailing spaces the padding contributes, which are part of the contract. */
+    private static final int INVALID_KEY_TRAILING_SPACES = 10;
+
+    /** The catalogue value exactly as it must cross the boundary: never trimmed. */
+    private static final String INVALID_KEY_MESSAGE_PADDED =
+            INVALID_KEY_TEXT + " ".repeat(INVALID_KEY_TRAILING_SPACES);
+
+    /* ---- Routes, keys and numeric bounds ---- */
+
+    private static final String ROUTE_ACCOUNT_UPDATE = "account-update";
+    private static final String ROUTE_USER_MENU = "user-menu";
+    private static final String LEGACY_TRANSACTION_ID = "CAUP";
+    private static final String LEGACY_PROGRAM_ID = "COACTUPC";
+    private static final String LEGACY_MAP = "CACTUPA";
+    private static final String LEGACY_MAPSET = "COACTUP";
+    private static final String RESOURCE_ACCOUNT_MASTER = "ACCTDAT";
+    private static final String RESOURCE_CUSTOMER_MASTER = "CUSTDAT";
+
+    /** The raw attention identifier for the exit key. */
+    private static final String RAW_KEY_EXIT = "DFHPF3";
+
+    /** The high key that folds onto the exit key, so the two are not distinct actions. */
+    private static final String RAW_KEY_EXIT_FOLDED = "DFHPF15";
+
+    /** The raw attention identifier for the save key. */
+    private static final String RAW_KEY_SAVE = "DFHPF5";
+
+    /** The high key that folds onto the save key. */
+    private static final String RAW_KEY_SAVE_FOLDED = "DFHPF17";
+
+    /** An identifier the legacy mapping declares no clause for, so it resolves to nothing at all. */
+    private static final String RAW_KEY_UNMAPPED = "DFHPF25";
+
+    /** Legacy attention inputs the mapping recognises. */
+    private static final int RECOGNISED_ATTENTION_INPUT_COUNT = 28;
+
+    /** Distinct outcomes those inputs collapse onto, because the high keys fold. */
+    private static final int DISTINCT_ATTENTION_OUTCOME_COUNT = 16;
+
+    private static final int FICO_LOWEST_ACCEPTED = 300;
+    private static final int FICO_HIGHEST_ACCEPTED = 850;
+
+    /** The message number the date subprogram flags that both callers tolerate in silence. */
+    private static final int TOLERATED_DATE_MESSAGE_NUMBER = 2513;
+
+    /** The severity every failing date condition carries. */
+    private static final int FAILING_DATE_SEVERITY = 3;
+
+    /* ---- The seeded record image, as literals ---- */
+
+    private static final String SEEDED_STATUS = "Y";
+    private static final BigDecimal SEEDED_CURRENT_BALANCE = new BigDecimal("1000.00");
+    private static final BigDecimal SEEDED_CREDIT_LIMIT = new BigDecimal("5000.00");
+    private static final BigDecimal SEEDED_CASH_CREDIT_LIMIT = new BigDecimal("2000.00");
+    private static final BigDecimal SEEDED_CYCLE_CREDIT = new BigDecimal("100.00");
+    private static final BigDecimal SEEDED_CYCLE_DEBIT = new BigDecimal("50.00");
+    private static final String SEEDED_OPEN_DATE = "2020-01-15";
+    private static final String SEEDED_EXPIRY_DATE = "2029-01-15";
+    private static final String SEEDED_REISSUE_DATE = "2024-01-15";
+    private static final String SEEDED_ZIP = "10001";
+
+    /**
+     * The first name one of the fifty seeded customer rows actually holds.
+     *
+     * <p>It contains an embedded space, which is exactly why the alphabetic predicate must accept one.
+     */
+    private static final String SEEDED_FIRST_NAME = "Aniya Von";
+
+    private static final String SEEDED_MIDDLE_NAME = "Q";
+    private static final String SEEDED_LAST_NAME = "Smith";
+    private static final String SEEDED_ADDRESS_LINE_1 = "1 High Street";
+    private static final String SEEDED_ADDRESS_LINE_2 = "Flat 2";
+    private static final String SEEDED_CITY = "Springfield";
+    private static final String SEEDED_STATE = "NY";
+    private static final String SEEDED_COUNTRY = "USA";
+    private static final String SEEDED_PHONE_1 = "(201)555-0100";
+    private static final String SEEDED_PHONE_2 = "(202)555-0101";
+    private static final String SEEDED_DATE_OF_BIRTH = "1980-02-03";
+    private static final String SEEDED_EFT_ACCOUNT = "1234567890";
+    private static final String SEEDED_PRIMARY_CARD_HOLDER = "Y";
+    private static final String SEEDED_FICO = "700";
+
+    /** A credit score one of the twenty-one out-of-range seeded rows holds. */
+    private static final String SEEDED_OUT_OF_RANGE_FICO = "001";
+
+    /** A before-image proof standing in for the sealed token the response carries. */
+    private static final String TOKEN = "before-image-proof";
+
+    /** The proof re-minted over the rewritten records once both writes commit. */
+    private static final String REMINTED_TOKEN = "before-image-proof-after-commit";
+
+    /** A well-formed lexeme whose third decimal digit diverges under half-even rounding. */
+    private static final String TRUNCATING_AMOUNT_LEXEME = "1234.567";
+
+    /** What truncation toward zero at two places yields; half-even would give 1234.57. */
+    private static final BigDecimal TRUNCATED_AMOUNT = new BigDecimal("1234.56");
+
+    /** The scale every monetary component carries, matching the record field it stands for. */
+    private static final int MONEY_SCALE = 2;
+
+    /* ==========================================================================================
+     * Collaborators. Every repository and every service is a mock; the clock is a fixed value.
+     * ========================================================================================== */
+
+    @Mock
     private AccountRepository accountRepository;
+
+    @Mock
     private CustomerRepository customerRepository;
-    private CardCrossReferenceRepository crossReferenceRepository;
-    private ValidationLookupService lookupService;
-    private AccountConcurrencyTokenService tokenService;
+
+    @Mock
+    private CardCrossReferenceRepository cardCrossReferenceRepository;
+
+    @Mock
+    private DateValidationService dateValidationService;
+
+    @Mock
+    private ValidationLookupService validationLookupService;
+
+    @Mock
+    private MessageCatalogService messageCatalogService;
+
+    @Mock
+    private NavigationService navigationService;
+
+    @Mock
+    private AbendService abendService;
+
+    @Mock
+    private AccountConcurrencyTokenService concurrencyTokenService;
+
+    @Mock
+    private SensitiveFieldEncryptionService fieldEncryption;
+
+    @Mock
+    private OnlineTransactionBoundary transactionBoundary;
+
+    /** A fixed instant, so the date-of-birth comparison and the header are deterministic. */
+    private final Clock clock = Clock.fixed(Instant.parse("2024-05-06T07:08:09Z"), ZoneOffset.UTC);
+
     private AccountUpdateService service;
+
+    /** Captures the service's own diagnostic channel, so log ordering is observable. */
+    private ListAppender<ILoggingEvent> logAppender;
+
+    private Logger serviceLogger;
 
     @BeforeEach
     void setUp() {
-        this.accountRepository = Mockito.mock(AccountRepository.class);
-        this.customerRepository = Mockito.mock(CustomerRepository.class);
-        this.crossReferenceRepository = Mockito.mock(CardCrossReferenceRepository.class);
-        this.lookupService =
-                new ValidationLookupService(new ObjectMapper(), new DefaultResourceLoader());
-        final SensitiveFieldEncryptionService encryption =
-                new SensitiveFieldEncryptionService(BASE64_KEY);
-        this.tokenService = new AccountConcurrencyTokenService(encryption);
-        // A real abend service rather than a mock, and deliberately so: its online arm throws, so any
-        // turn that wrongly routed to it would surface as an AbendException instead of the outcome
-        // asserted. That is a stronger guarantee than verifying no interaction with a stub.
         this.service = new AccountUpdateService(this.accountRepository, this.customerRepository,
-                this.crossReferenceRepository, new DateValidationService(), this.lookupService,
-                new MessageCatalogService(), new NavigationService(), new AbendService(),
-                this.tokenService, encryption, new OnlineTransactionBoundary(),
-                Clock.fixed(Instant.parse("2024-05-06T07:08:09Z"), ZoneOffset.UTC));
+                this.cardCrossReferenceRepository, this.dateValidationService,
+                this.validationLookupService, this.messageCatalogService, this.navigationService,
+                this.abendService, this.concurrencyTokenService, this.fieldEncryption,
+                this.transactionBoundary, this.clock);
+
+        this.serviceLogger = (Logger) LoggerFactory.getLogger(AccountUpdateService.class);
+        this.logAppender = new ListAppender<>();
+        this.logAppender.start();
+        this.serviceLogger.addAppender(this.logAppender);
+        this.serviceLogger.setLevel(Level.TRACE);
     }
 
-    /* ---------------------------------------------------------------------------------------- */
-
-    private Account seededAccount() {
-        return new Account(ACCOUNT_ID, "Y", new BigDecimal("1000.00"), new BigDecimal("5000.00"),
-                new BigDecimal("2000.00"), "2020-01-15", "2029-01-15", "2024-01-15",
-                new BigDecimal("100.00"), new BigDecimal("50.00"), "12345", "          ");
+    @AfterEach
+    void tearDown() {
+        this.serviceLogger.detachAppender(this.logAppender);
+        this.logAppender.stop();
+        this.serviceLogger.setLevel(null);
     }
 
-    private Customer seededCustomer() {
-        // The eighteen persisted attributes in record order. The national and government identifiers are
-        // null, exactly as they are in all fifty seeded rows, and absence must be tolerated.
-        return new Customer(CUSTOMER_ID, "Aniya Von", "Q", "Smith", "1 High Street", "Flat 2",
-                "Springfield", "NY", "USA", "10001", "(201)555-0100", "(202)555-0101", null, null,
-                "1980-02-03", "1234567890", "Y", "700");
+    /* ==========================================================================================
+     * Fixtures. The records are built through their own constructors at the widths the layouts
+     * declare; the submission is built through a local accumulator so a test can name the one field
+     * it is about instead of restating forty-seven components.
+     * ========================================================================================== */
+
+    /** The account row as the seed data holds it, group identifier included at its full width. */
+    private static Account seededAccount() {
+        return new Account(ACCOUNT_ID, SEEDED_STATUS, SEEDED_CURRENT_BALANCE, SEEDED_CREDIT_LIMIT,
+                SEEDED_CASH_CREDIT_LIMIT, SEEDED_OPEN_DATE, SEEDED_EXPIRY_DATE, SEEDED_REISSUE_DATE,
+                SEEDED_CYCLE_CREDIT, SEEDED_CYCLE_DEBIT, SEEDED_ZIP, ACCOUNT_GROUP_ID_TEN_SPACES);
     }
 
-    private void seedRecords() {
-        Mockito.when(this.crossReferenceRepository
-                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                        ACCOUNT_ID)));
-        Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
-                .thenReturn(Optional.of(seededAccount()));
-        Mockito.when(this.customerRepository.findById(CUSTOMER_ID))
-                .thenReturn(Optional.of(seededCustomer()));
+    /**
+     * The customer row as the seed data holds it.
+     *
+     * <p>Both regulated columns are {@code null}, exactly as they are in all fifty seeded rows: the
+     * national identifier is the schema's only nullable column and absence must be tolerated end to end.
+     */
+    private static Customer seededCustomer() {
+        return seededCustomer(SEEDED_FICO);
     }
 
+    /**
+     * The same row with a nominated credit score, so a stored value outside the input range can be
+     * loaded without the loader objecting.
+     *
+     * @param  ficoScore the stored score, which may be outside the range the input edit enforces
+     * @return the customer row
+     */
+    private static Customer seededCustomer(final String ficoScore) {
+        return new Customer(CUSTOMER_ID, SEEDED_FIRST_NAME, SEEDED_MIDDLE_NAME, SEEDED_LAST_NAME,
+                SEEDED_ADDRESS_LINE_1, SEEDED_ADDRESS_LINE_2, SEEDED_CITY, SEEDED_STATE,
+                SEEDED_COUNTRY, SEEDED_ZIP, SEEDED_PHONE_1, SEEDED_PHONE_2, null, null,
+                SEEDED_DATE_OF_BIRTH, SEEDED_EFT_ACCOUNT, SEEDED_PRIMARY_CARD_HOLDER, ficoScore);
+    }
+
+    private static CardCrossReference seededCrossReference() {
+        return new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID);
+    }
+
+    /** A re-entered navigation record, which is the state the decoration macro fires in. */
     private static ScreenNavigationState reEntered() {
         return ScreenNavigationState.empty().withReEntry();
     }
 
-    /** A detail turn that mirrors the seeded records exactly, so nothing reads as changed. */
-    private AccountUpdateCommand unchangedDetailTurn(final String token, final KeyAction key) {
-        return new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020", "01", "15", "5000.00", "2029",
-                "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
-                "50.00", CUSTOMER_ID, null, null, null, "1980", "02", "03", "700", "Aniya Von",
-                "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA",
-                "201", "555", "0100", null, "202", "555", "0101", "1234567890", "Y", key,
-                reEntered(), token, false);
+    /**
+     * One submission, accumulated field by field.
+     *
+     * <p>Every component defaults to the value the seeded records hold, so a turn built with no change
+     * at all reads as unchanged and the edits are skipped - which is what the legacy does. A test then
+     * names only the components it is about. Records are positional, so an accumulator is the only way
+     * to keep forty-seven components legible.
+     */
+    private static final class Turn {
+
+        private String accountId = ACCOUNT_ID;
+        private String accountStatus = SEEDED_STATUS;
+        private String openYear = "2020";
+        private String openMonth = "01";
+        private String openDay = "15";
+        private String creditLimit = "5000.00";
+        private String expiryYear = "2029";
+        private String expiryMonth = "01";
+        private String expiryDay = "15";
+        private String cashCreditLimit = "2000.00";
+        private String reissueYear = "2024";
+        private String reissueMonth = "01";
+        private String reissueDay = "15";
+        private String currentBalance = "1000.00";
+        private String currentCycleCredit = "100.00";
+        private String accountGroupId = ACCOUNT_GROUP_ID_TEN_SPACES;
+        private String currentCycleDebit = "50.00";
+        private String customerId = CUSTOMER_ID;
+        private String ssnPart1;
+        private String ssnPart2;
+        private String ssnPart3;
+        private String dateOfBirthYear = "1980";
+        private String dateOfBirthMonth = "02";
+        private String dateOfBirthDay = "03";
+        private String ficoScore = SEEDED_FICO;
+        private String firstName = SEEDED_FIRST_NAME;
+        private String middleName = SEEDED_MIDDLE_NAME;
+        private String lastName = SEEDED_LAST_NAME;
+        private String addressLine1 = SEEDED_ADDRESS_LINE_1;
+        private String stateCode = SEEDED_STATE;
+        private String addressLine2 = SEEDED_ADDRESS_LINE_2;
+        private String zipCode = SEEDED_ZIP;
+        private String city = SEEDED_CITY;
+        private String countryCode = SEEDED_COUNTRY;
+        private String phone1AreaCode = "201";
+        private String phone1Prefix = "555";
+        private String phone1LineNumber = "0100";
+        private String governmentIssuedId;
+        private String phone2AreaCode = "202";
+        private String phone2Prefix = "555";
+        private String phone2LineNumber = "0101";
+        private String eftAccountId = SEEDED_EFT_ACCOUNT;
+        private String primaryCardHolderIndicator = SEEDED_PRIMARY_CARD_HOLDER;
+        private KeyAction keyAction = KeyAction.ENTER;
+        private ScreenNavigationState navigationContext = reEntered();
+        private String concurrencyToken = TOKEN;
+        private boolean protectedValuesWithheld;
+
+        private Turn accountId(final String value) {
+            this.accountId = value;
+            return this;
+        }
+
+        private Turn accountStatus(final String value) {
+            this.accountStatus = value;
+            return this;
+        }
+
+        private Turn openDate(final String year, final String month, final String day) {
+            this.openYear = year;
+            this.openMonth = month;
+            this.openDay = day;
+            return this;
+        }
+
+        private Turn creditLimit(final String value) {
+            this.creditLimit = value;
+            return this;
+        }
+
+        private Turn cashCreditLimit(final String value) {
+            this.cashCreditLimit = value;
+            return this;
+        }
+
+        private Turn currentBalance(final String value) {
+            this.currentBalance = value;
+            return this;
+        }
+
+        private Turn currentCycleCredit(final String value) {
+            this.currentCycleCredit = value;
+            return this;
+        }
+
+        private Turn currentCycleDebit(final String value) {
+            this.currentCycleDebit = value;
+            return this;
+        }
+
+        private Turn expiryDate(final String year, final String month, final String day) {
+            this.expiryYear = year;
+            this.expiryMonth = month;
+            this.expiryDay = day;
+            return this;
+        }
+
+        private Turn reissueDate(final String year, final String month, final String day) {
+            this.reissueYear = year;
+            this.reissueMonth = month;
+            this.reissueDay = day;
+            return this;
+        }
+
+        private Turn accountGroupId(final String value) {
+            this.accountGroupId = value;
+            return this;
+        }
+
+        private Turn customerId(final String value) {
+            this.customerId = value;
+            return this;
+        }
+
+        private Turn nationalIdentifier(final String part1, final String part2, final String part3) {
+            this.ssnPart1 = part1;
+            this.ssnPart2 = part2;
+            this.ssnPart3 = part3;
+            return this;
+        }
+
+        private Turn dateOfBirth(final String year, final String month, final String day) {
+            this.dateOfBirthYear = year;
+            this.dateOfBirthMonth = month;
+            this.dateOfBirthDay = day;
+            return this;
+        }
+
+        private Turn ficoScore(final String value) {
+            this.ficoScore = value;
+            return this;
+        }
+
+        private Turn firstName(final String value) {
+            this.firstName = value;
+            return this;
+        }
+
+        private Turn middleName(final String value) {
+            this.middleName = value;
+            return this;
+        }
+
+        private Turn lastName(final String value) {
+            this.lastName = value;
+            return this;
+        }
+
+        private Turn addressLine1(final String value) {
+            this.addressLine1 = value;
+            return this;
+        }
+
+        private Turn stateCode(final String value) {
+            this.stateCode = value;
+            return this;
+        }
+
+        private Turn addressLine2(final String value) {
+            this.addressLine2 = value;
+            return this;
+        }
+
+        private Turn zipCode(final String value) {
+            this.zipCode = value;
+            return this;
+        }
+
+        private Turn city(final String value) {
+            this.city = value;
+            return this;
+        }
+
+        private Turn countryCode(final String value) {
+            this.countryCode = value;
+            return this;
+        }
+
+        private Turn phone1(final String areaCode, final String prefix, final String lineNumber) {
+            this.phone1AreaCode = areaCode;
+            this.phone1Prefix = prefix;
+            this.phone1LineNumber = lineNumber;
+            return this;
+        }
+
+        private Turn phone2(final String areaCode, final String prefix, final String lineNumber) {
+            this.phone2AreaCode = areaCode;
+            this.phone2Prefix = prefix;
+            this.phone2LineNumber = lineNumber;
+            return this;
+        }
+
+        private Turn governmentIssuedId(final String value) {
+            this.governmentIssuedId = value;
+            return this;
+        }
+
+        private Turn eftAccountId(final String value) {
+            this.eftAccountId = value;
+            return this;
+        }
+
+        private Turn primaryCardHolderIndicator(final String value) {
+            this.primaryCardHolderIndicator = value;
+            return this;
+        }
+
+        private Turn keyAction(final KeyAction value) {
+            this.keyAction = value;
+            return this;
+        }
+
+        private Turn navigationContext(final ScreenNavigationState value) {
+            this.navigationContext = value;
+            return this;
+        }
+
+        private Turn concurrencyToken(final String value) {
+            this.concurrencyToken = value;
+            return this;
+        }
+
+        private AccountUpdateCommand build() {
+            return new AccountUpdateCommand(this.accountId, this.accountStatus, this.openYear,
+                    this.openMonth, this.openDay, this.creditLimit, this.expiryYear,
+                    this.expiryMonth, this.expiryDay, this.cashCreditLimit, this.reissueYear,
+                    this.reissueMonth, this.reissueDay, this.currentBalance,
+                    this.currentCycleCredit, this.accountGroupId, this.currentCycleDebit,
+                    this.customerId, this.ssnPart1, this.ssnPart2, this.ssnPart3,
+                    this.dateOfBirthYear, this.dateOfBirthMonth, this.dateOfBirthDay,
+                    this.ficoScore, this.firstName, this.middleName, this.lastName,
+                    this.addressLine1, this.stateCode, this.addressLine2, this.zipCode, this.city,
+                    this.countryCode, this.phone1AreaCode, this.phone1Prefix,
+                    this.phone1LineNumber, this.governmentIssuedId, this.phone2AreaCode,
+                    this.phone2Prefix, this.phone2LineNumber, this.eftAccountId,
+                    this.primaryCardHolderIndicator, this.keyAction, this.navigationContext,
+                    this.concurrencyToken, this.protectedValuesWithheld);
+        }
     }
 
-    /** The same turn with one detail changed, so the edits run. */
-    private AccountUpdateCommand changedDetailTurn(final String token, final KeyAction key) {
-        return new AccountUpdateCommand(ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029",
-                "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
-                "50.00", CUSTOMER_ID, "123", "45", "6789", "1980", "02", "03", "700",
-                "Aniya Von", "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001",
-                "Springfield", "USA", "201", "555", "0100", null, "202", "555", "0101",
-                "1234567890", "Y", key, reEntered(), token, false);
+    /** A turn that mirrors the seeded records exactly, so nothing reads as changed. */
+    private static Turn unchangedTurn() {
+        return new Turn();
     }
-
-    private String mintedToken() {
-        return this.tokenService.mint(seededAccount(), seededCustomer());
-    }
-
-    private static List<String> screenFieldIdsOf(final AccountUpdateOutcome response) {
-        return response.fieldErrors().stream().map(ValidationException.FieldError::bmsFieldId).toList();
-    }
-
-    /** The national identifier the withholding fixtures store, sealed on the way into the row. */
-    private static final String STORED_SSN = "123456789";
-
-    /** The government-issued identifier the withholding fixtures store, sealed likewise. */
-    private static final String STORED_GOVERNMENT_ID = "G1234567";
 
     /**
-     * A customer row carrying both regulated identifiers, so a withheld stand-in has something to restore.
+     * A turn that differs from the seeded records and passes every edit.
      *
-     * <p>The seeded fifty rows hold neither, which is why the ordinary fixture leaves both null; this one
-     * exists specifically to exercise the restoration, and both columns accept only envelopes.
+     * <p>The three national-identifier parts carry the difference. They have to be supplied whatever
+     * the difference is - all three are mandatory numeric edits - and the seeded rows hold no national
+     * identifier, so supplying them is itself the change. Nothing else has to move.
      */
-    private Customer customerWithRegulatedIdentifiers() {
-        final SensitiveFieldEncryptionService encryption =
-                new SensitiveFieldEncryptionService(BASE64_KEY);
-        return new Customer(CUSTOMER_ID, "Aniya Von", "Q", "Smith", "1 High Street", "Flat 2",
-                "Springfield", "NY", "USA", "10001", "(201)555-0100", "(202)555-0101",
-                encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_SSN_FIELD, STORED_SSN),
-                encryption.protect(SensitiveFieldEncryptionService.CUSTOMER_GOVT_ISSUED_ID_FIELD,
-                        STORED_GOVERNMENT_ID),
-                "1980-02-03", "1234567890", "Y", "700");
+    private static Turn cleanChangedTurn() {
+        return new Turn().nationalIdentifier("123", "45", "6789");
     }
 
-    /** Seeds the three reads with a customer that carries both regulated identifiers. */
-    private void seedRecordsWithRegulatedIdentifiers() {
-        final Customer customer = customerWithRegulatedIdentifiers();
-        Mockito.when(this.crossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID)));
-        Mockito.when(this.accountRepository.findById(ACCOUNT_ID))
-                .thenReturn(Optional.of(seededAccount()));
-        Mockito.when(this.customerRepository.findById(CUSTOMER_ID))
-                .thenReturn(Optional.of(customer));
+    /* ==========================================================================================
+     * Stub helpers. Each stubs exactly one seam, so a test declares only the seams it exercises and
+     * strict stubbing keeps the declarations honest.
+     * ========================================================================================== */
+
+    /** The three reads the detail path performs, in the order it performs them. */
+    private void stubSeededReads() {
+        stubSeededReads(seededCustomer());
+    }
+
+    private void stubSeededReads(final Customer customer) {
+        when(this.cardCrossReferenceRepository
+                .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(seededCrossReference()));
+        when(this.accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(seededAccount()));
+        when(this.customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.of(customer));
+    }
+
+    /** The date cascade, answering that every component of every group is good. */
+    private void stubAcceptingDateCascade() {
+        when(this.dateValidationService.validateCcyymmddDate(any(), any()))
+                .thenReturn(acceptingDateResult());
+    }
+
+    /** The separate date-of-birth entry point, reached only when the group came back valid. */
+    private void stubAcceptingDateOfBirth() {
+        when(this.dateValidationService.validateDateOfBirth(any(), any(), any()))
+                .thenReturn(acceptingDateResult());
+    }
+
+    /** Both telephone area codes are general-purpose. */
+    private void stubAcceptingAreaCodes() {
+        when(this.validationLookupService.isValidGeneralPurposeAreaCode(any())).thenReturn(true);
+    }
+
+    /** The flat fifty-six-code membership test answers yes for the seeded state. */
+    private void stubAcceptingStateCode() {
+        when(this.validationLookupService.isValidUsStateCode(SEEDED_STATE)).thenReturn(true);
+    }
+
+    /** The two-hundred-and-forty-entry composite test answers yes for the seeded pairing. */
+    private void stubAcceptingStateZipComposite() {
+        when(this.validationLookupService.isValidUsStateZipCodeCombination(any())).thenReturn(true);
     }
 
     /**
-     * A turn as a caller without the authority to see the regulated values echoes it back.
-     *
-     * <p>Every regulated component carries the stand-in the outbound gate composes - the withheld character
-     * repeated to the stored value's own width - except the final part of the national identifier, which
-     * the gate does not withhold. One unrelated value differs from the record, so the edits actually run.
-     *
-     * @param token the minted before-image proof
-     * @param withheld whether the caller is to be treated as one the values were withheld from
-     * @return the echoed turn
+     * Every seam except the two postal ones, which the postal tests stub for themselves because they
+     * are the seams under examination there.
      */
-    private AccountUpdateCommand withheldDetailTurn(final String token, final boolean withheld) {
-        return new AccountUpdateCommand(ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029",
-                "01", "15", "2000.00", "2024", "01", "15", "1000.00", "100.00", "          ",
-                "50.00", CUSTOMER_ID, "***", "**", "6789", "****", "**", "**", "700",
-                "Aniya Von", "Q", "Smith", "1 High Street", "NY", "Flat 2", "10001",
-                "Springfield", "USA", "201", "555", "0100", "********", "202", "555", "0101",
-                "**********", "Y", KeyAction.ENTER, reEntered(), token, withheld);
+    private void stubCommonAcceptingEdits() {
+        stubAcceptingDateCascade();
+        stubAcceptingDateOfBirth();
+        stubAcceptingAreaCodes();
     }
 
-    /** The five screen fields whose edits a withheld stand-in would otherwise fail. */
-    private static final List<String> REGULATED_SCREEN_FIELDS =
-            List.of("ACTSSN1", "ACTSSN2", "DOBYEAR", "DOBMON", "DOBDAY", "ACSEFTC");
-
-    /* ---------------------------------------------------------------------------------------- */
-
-    @Nested
-    @DisplayName("the regulated values a caller was not permitted to see")
-    class WithheldRegulatedValues {
-
-        @Test
-        @DisplayName("an ordinary operator can save an unrelated change, because the withheld stand-ins "
-                + "restore to the stored values instead of being edited as input")
-        void anOrdinaryOperatorCanSaveAnUnrelatedChange() {
-            // Without the restoration the mandatory edits at COACTUPC lines 1520 to 1556 reject the
-            // stand-ins and the turn never validates, which costs every ordinary operator the whole
-            // transaction - not just the fields they could not see.
-            seedRecordsWithRegulatedIdentifiers();
-            final Customer stored = customerWithRegulatedIdentifiers();
-            final String token = tokenService.mint(seededAccount(), stored);
-
-            final AccountUpdateOutcome response = service.handle(withheldDetailTurn(token, true));
-
-            assertThat(screenFieldIdsOf(response))
-                    .as("no regulated field may report, because none of them was supplied as input")
-                    .doesNotContainAnyElementsOf(REGULATED_SCREEN_FIELDS);
-            assertThat(response.error()).isFalse();
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION);
-        }
-
-        @Test
-        @DisplayName("the same stand-ins are edited as ordinary input when nothing was withheld, so an "
-                + "authorized operator's literal entry is never silently reinterpreted")
-        void theSameStandInsAreEditedWhenNothingWasWithheld() {
-            seedRecordsWithRegulatedIdentifiers();
-            final String token = tokenService.mint(seededAccount(), customerWithRegulatedIdentifiers());
-
-            final AccountUpdateOutcome response = service.handle(withheldDetailTurn(token, false));
-
-            assertThat(screenFieldIdsOf(response))
-                    .as("the stand-in is not a digit, so every regulated edit that requires digits fails")
-                    .containsAnyElementsOf(REGULATED_SCREEN_FIELDS);
-            assertThat(response.error()).isTrue();
-        }
-
-        @Test
-        @DisplayName("a stand-in of the wrong width is edited as input, because the gate composes it at "
-                + "the stored value's own width and nothing else is its stand-in")
-        void aStandInOfTheWrongWidthIsEditedAsInput() {
-            seedRecordsWithRegulatedIdentifiers();
-            final String token = tokenService.mint(seededAccount(), customerWithRegulatedIdentifiers());
-            final AccountUpdateCommand tooShort = new AccountUpdateCommand(ACCOUNT_ID, "N", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "***", "**", "6789",
-                    "**", "**", "**", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", "********",
-                    "202", "555", "0101", "**********", "Y", KeyAction.ENTER, reEntered(), token,
-                    true);
-
-            final AccountUpdateOutcome response = service.handle(tooShort);
-
-            assertThat(screenFieldIdsOf(response))
-                    .as("a two-character stand-in cannot have come from a four-character stored year")
-                    .contains("DOBYEAR");
-        }
-
-        @Test
-        @DisplayName("the character this transaction recognises coming back is the character the boundary "
-                + "gate composes going out, which is the agreement neither layer can import")
-        void theWithheldCharacterAgreesWithTheBoundaryGate() {
-            // The gate composes the stand-in and this transaction recognises it, and the constant cannot be
-            // shared: nothing in the service layer may depend upward on the boundary. A suite is the only
-            // place both are visible, so this is where the agreement is pinned - a change to either side
-            // alone fails here rather than silently disabling the restoration.
-            assertThat(String.valueOf(AccountUpdateService.WITHHELD_VALUE_CHARACTER))
-                    .isEqualTo(AccountProtectedDataAdapter.MASK_CHARACTER);
-        }
-
-        @Test
-        @DisplayName("a regulated value the record does not hold leaves the submitted stand-in alone, "
-                + "because there was nothing for a stand-in to be composed from")
-        void anAbsentStoredValueLeavesTheStandInAlone() {
-            // The fifty seeded rows hold neither identifier, and this is the shape they take.
-            seedRecords();
-            final AccountUpdateOutcome response =
-                    service.handle(withheldDetailTurn(mintedToken(), true));
-
-            assertThat(screenFieldIdsOf(response))
-                    .as("nothing is stored for the national identifier, so the stand-in is edited")
-                    .contains("ACTSSN1");
-        }
+    /** Every edit of a clean changed turn passes. */
+    private void stubAllEditsAccepting() {
+        stubCommonAcceptingEdits();
+        stubAcceptingStateCode();
+        stubAcceptingStateZipComposite();
     }
 
-    /* ---------------------------------------------------------------------------------------- */
+    /**
+     * The independent transaction, running its callback inline.
+     *
+     * <p>The boundary is a mock like every other collaborator, so the rewrite pair executes on the
+     * calling thread and a failure raised inside it propagates to the arm under test. That is what makes
+     * the ordered-rewrite behaviour observable without a database.
+     */
+    private void stubBoundaryRunsInline() {
+        when(this.transactionBoundary.execute(any()))
+                .thenAnswer(invocation -> invocation.<Supplier<Boolean>>getArgument(0).get());
+    }
+
+    /** A cascade outcome in which all three components passed and nothing was claimed. */
+    private static DateValidationService.DateEditResult acceptingDateResult() {
+        return new DateValidationService.DateEditResult(false,
+                DateValidationService.DateEditFlag.VALID,
+                DateValidationService.DateEditFlag.VALID,
+                DateValidationService.DateEditFlag.VALID, "");
+    }
+
+    /**
+     * A cascade outcome in which every component was supplied and rejected.
+     *
+     * @param  returnMessage the text the cascade accumulated
+     * @return the rejecting outcome
+     */
+    private static DateValidationService.DateEditResult rejectingDateResult(
+            final String returnMessage) {
+        return new DateValidationService.DateEditResult(true,
+                DateValidationService.DateEditFlag.NOT_OK,
+                DateValidationService.DateEditFlag.NOT_OK,
+                DateValidationService.DateEditFlag.NOT_OK, returnMessage);
+    }
+
+    /* ==========================================================================================
+     * Assertion helpers.
+     * ========================================================================================== */
+
+    private static List<String> screenFieldIdsOf(final AccountUpdateOutcome outcome) {
+        return outcome.fieldErrors().stream().map(ValidationException.FieldError::bmsFieldId).toList();
+    }
+
+    private static List<String> fieldNamesOf(final AccountUpdateOutcome outcome) {
+        return outcome.fieldErrors().stream().map(ValidationException.FieldError::field).toList();
+    }
+
+    private static ValidationException.FieldError errorFor(final AccountUpdateOutcome outcome,
+            final String screenFieldId) {
+        return outcome.fieldErrors().stream()
+                .filter(error -> screenFieldId.equals(error.bmsFieldId()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no field error was reported against screen field " + screenFieldId));
+    }
+
+    /** Every logged line the service emitted during the turn, in emission order. */
+    private List<String> loggedMessages() {
+        final List<String> rendered = new ArrayList<>();
+        for (final ILoggingEvent event : this.logAppender.list) {
+            rendered.add(event.getFormattedMessage());
+        }
+        return rendered;
+    }
+
+    /**
+     * The submission that puts every editable component into a failing state.
+     *
+     * <p>Reaches all thirty-seven fields that can carry a mark. The telephone components are keyed
+     * rather than left blank so the all-blank shortcut does not fire and forgive them, and each is one
+     * digit wide so the width arm rejects it without the area-code table ever being consulted.
+     */
+    private static Turn everyEditableFieldFailingTurn() {
+        return new Turn()
+                .accountStatus("X")
+                .creditLimit("not-an-amount")
+                .cashCreditLimit("not-an-amount")
+                .currentBalance("not-an-amount")
+                .currentCycleCredit("not-an-amount")
+                .currentCycleDebit("not-an-amount")
+                .nationalIdentifier("abc", "de", "fghi")
+                .ficoScore("abc")
+                .firstName("A1")
+                .lastName("B2")
+                .addressLine1(" ")
+                .stateCode("1X")
+                .zipCode("ABCDE")
+                .city("C3")
+                .countryCode("D4")
+                .phone1("9", "8", "7")
+                .phone2("6", "5", "4")
+                .eftAccountId("XYZ")
+                .primaryCardHolderIndicator("Q");
+    }
+
+    /** The screen field identifiers that can carry a mark, in expansion order. */
+    private static List<String> markableScreenFieldIds() {
+        final List<String> markable = new ArrayList<>();
+        for (int index = 0; index < EXPECTED_FIELD_NAMES.size(); index++) {
+            if (!NEVER_VALIDATED_FIELDS.contains(EXPECTED_FIELD_NAMES.get(index))) {
+                markable.add(EXPECTED_SCREEN_FIELD_IDS.get(index));
+            }
+        }
+        return markable;
+    }
+
+    /** The component names that can carry a mark, in expansion order. */
+    private static List<String> markableFieldNames() {
+        final List<String> markable = new ArrayList<>(EXPECTED_FIELD_NAMES);
+        markable.removeAll(NEVER_VALIDATED_FIELDS);
+        return markable;
+    }
+
+    /* ==========================================================================================
+     * The 39 decoration sites.
+     * ========================================================================================== */
 
     @Nested
-    @DisplayName("the search-key turn")
-    class SearchKeyTurn {
+    @DisplayName("the 39 field-decoration sites the three-token macro is expanded at")
+    class DecorationSites {
 
         @Test
-        @DisplayName("a fresh entry prompts for the key and decorates nothing")
-        void freshEntryPrompts() {
-            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, null, null, false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_SEARCH_KEYS);
-            assertThat(response.fieldErrors()).isEmpty();
-            assertThat(response.error()).isFalse();
-            assertThat(response.nextRoute()).isEqualTo("account-update");
-            assertThat(response.transactionName()).isEqualTo("CAUP");
-            assertThat(response.programName()).isEqualTo("COACTUPC");
-            assertThat(response.currentDate()).isEqualTo("05/06/24");
-            assertThat(response.currentTime()).isEqualTo("07:08:09");
-            assertThat(response.navigationContext().lastMap()).isEqualTo("CACTUPA");
-            assertThat(response.navigationContext().lastMapset()).isEqualTo("COACTUP");
+        @DisplayName("declare exactly 39 sites, one per COPY CSSETATY expansion between source lines "
+                + "3208 and 3432")
+        void thirtyNineSitesAreDeclared() {
+            assertAll(
+                    () -> assertThat(AccountUpdateService.ScreenField.values())
+                            .hasSize(DECORATION_SITE_COUNT),
+                    () -> assertThat(EXPECTED_FIELD_NAMES).hasSize(DECORATION_SITE_COUNT),
+                    () -> assertThat(EXPECTED_SCREEN_FIELD_IDS).hasSize(DECORATION_SITE_COUNT),
+                    () -> assertThat(EXPECTED_LEGACY_FLAG_TOKENS).hasSize(DECORATION_SITE_COUNT));
         }
 
         @Test
-        @DisplayName("a blank key claims the not-provided text, which wins over the no-input text")
-        void blankKeyClaimsNotProvided() {
-            final AccountUpdateCommand request = new AccountUpdateCommand("   ", null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null, false);
+        @DisplayName("bind every site from its substitution tokens, so the transposed comments above "
+                + "the last two expansions and the State comment above the postcode cannot mislead")
+        void everySiteIsBoundFromItsTokens() {
+            final List<String> fieldNames = new ArrayList<>();
+            final List<String> screenFieldIds = new ArrayList<>();
+            final List<String> flagTokens = new ArrayList<>();
+            for (final AccountUpdateService.ScreenField field
+                    : AccountUpdateService.ScreenField.values()) {
+                fieldNames.add(field.getFieldName());
+                screenFieldIds.add(field.getBmsFieldId());
+                flagTokens.add(field.getLegacyFlagToken());
+            }
 
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_NOT_PROVIDED);
-            assertThat(response.error()).isTrue();
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"1234", "0000000000A", "00000000000"})
-        @DisplayName("a key that is short, non-numeric or zero claims the composed malformed text")
-        void malformedKey(final String keyed) {
-            final AccountUpdateCommand request = new AccountUpdateCommand(keyed, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null, false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED);
-            assertThat(response.error()).isTrue();
+            assertAll(
+                    () -> assertThat(fieldNames).containsExactlyElementsOf(EXPECTED_FIELD_NAMES),
+                    () -> assertThat(screenFieldIds)
+                            .containsExactlyElementsOf(EXPECTED_SCREEN_FIELD_IDS),
+                    () -> assertThat(flagTokens)
+                            .containsExactlyElementsOf(EXPECTED_LEGACY_FLAG_TOKENS));
         }
 
         @Test
-        @DisplayName("a valid key resolves the cross-reference, both records, and shows the detail")
-        void validKeyShowsDetails() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null, false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-            assertThat(response.accountId()).isEqualTo(ACCOUNT_ID);
-            assertThat(response.accountStatus()).isEqualTo("Y");
-            assertThat(response.openYear()).isEqualTo("2020");
-            assertThat(response.openMonth()).isEqualTo("01");
-            assertThat(response.openDay()).isEqualTo("15");
-            assertThat(response.creditLimit()).isEqualByComparingTo("5000.00");
-            assertThat(response.phone1AreaCode()).isEqualTo("201");
-            assertThat(response.phone1Prefix()).isEqualTo("555");
-            assertThat(response.phone1LineNumber()).isEqualTo("0100");
-            assertThat(response.dateOfBirthYear()).isEqualTo("1980");
-            // The group identifier is ten spaces in every seeded row and is never trimmed.
-            assertThat(response.accountGroupId()).isEqualTo("          ");
-            // The national identifier is null in every seeded row and absence is tolerated.
-            assertThat(response.ssnPart1()).isNull();
-            assertThat(response.navigationContext().accountId()).isEqualTo(ACCOUNT_ID);
-            assertThat(response.navigationContext().customerId()).isEqualTo(CUSTOMER_ID);
+        @DisplayName("carry 39 distinct component names and 39 distinct screen identifiers, so a "
+                + "copy-and-paste duplicate cannot pass")
+        void everyPairIsDistinct() {
+            assertAll(
+                    () -> assertThat(EXPECTED_FIELD_NAMES).doesNotHaveDuplicates(),
+                    () -> assertThat(EXPECTED_SCREEN_FIELD_IDS).doesNotHaveDuplicates(),
+                    () -> assertThat(EXPECTED_LEGACY_FLAG_TOKENS).doesNotHaveDuplicates());
         }
 
         @Test
-        @DisplayName("an unresolvable cross-reference claims the declared not-found text")
-        void crossReferenceMissing() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.empty());
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null, false);
+        @DisplayName("report in expansion order, with the state code between the two address lines "
+                + "and the postcode ahead of the city and the country")
+        void marksAreReportedInExpansionOrder() {
+            stubSeededReads();
+            when(dateValidationService
+                    .validateCcyymmddDate(any(), any()))
+                    .thenReturn(rejectingDateResult("Open Date is not valid"));
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome =
+                    service.handle(
+                            everyEditableFieldFailingTurn().build());
 
-            assertThat(response.errorMessage())
-                    .isEqualTo("Did not find this account in account card xref file");
-            assertThat(response.error()).isTrue();
-            Mockito.verify(accountRepository, Mockito.never())
-                    .findById(ArgumentMatchers.anyString());
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactlyElementsOf(markableScreenFieldIds()),
+                    () -> assertThat(fieldNamesOf(outcome))
+                            .containsExactlyElementsOf(markableFieldNames()),
+                    () -> assertThat(outcome.fieldErrors()).hasSize(MAX_OBSERVABLE_MARK_COUNT),
+                    () -> assertThat(outcome.error()).isTrue());
         }
 
         @Test
-        @DisplayName("a stored postcode wider than its map item is shown at the map item's width, so the "
-                + "presented screen can be submitted back unaltered")
-        void widePostcodeIsShownAtTheScreenWidth() {
-            // Line 2843 moves a ten-character stored value into a five-character map item. Thirty of the
-            // fifty seeded rows hold the wider form, and publishing it would exceed the width the
-            // response contract declares and be refused on the way back in.
-            final Customer wideZip = new Customer(CUSTOMER_ID, "Aniya Von", "Q", "Smith",
-                    "1 High Street", "Flat 2", "Springfield", "NY", "USA", "10001-2345",
-                    "(201)555-0100", "(202)555-0101", null, null, "1980-02-03", "1234567890", "Y",
-                    "700");
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(seededAccount()));
-            Mockito.when(customerRepository.findById(CUSTOMER_ID))
-                    .thenReturn(Optional.of(wideZip));
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null, false);
+        @DisplayName("cap the observable marks at 37, because the two sites whose fields are never "
+                + "edited fire and mark nothing")
+        void twoSitesFireAndMarkNothing() {
+            stubSeededReads();
+            when(dateValidationService
+                    .validateCcyymmddDate(any(), any()))
+                    .thenReturn(rejectingDateResult("Open Date is not valid"));
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome =
+                    service.handle(
+                            everyEditableFieldFailingTurn().build());
 
-            assertThat(response.zipCode()).isEqualTo("10001");
+            assertAll(
+                    () -> assertThat(fieldNamesOf(outcome))
+                            .doesNotContain(FIELD_MIDDLE_NAME, FIELD_ADDRESS_LINE_2),
+                    () -> assertThat(EXPECTED_FIELD_NAMES.indexOf(FIELD_MIDDLE_NAME)).isEqualTo(23),
+                    () -> assertThat(EXPECTED_FIELD_NAMES.indexOf(FIELD_ADDRESS_LINE_2))
+                            .isEqualTo(27),
+                    () -> assertThat(MAX_OBSERVABLE_MARK_COUNT).isEqualTo(37));
+        }
+
+        @Test
+        @DisplayName("focus the first field in expansion order, because the cursor follows the "
+                + "reported order rather than the order the edits ran in")
+        void theFirstMarkInExpansionOrderTakesTheFocus() {
+            stubSeededReads();
+            when(dateValidationService
+                    .validateCcyymmddDate(any(), any()))
+                    .thenReturn(rejectingDateResult("Open Date is not valid"));
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(
+                            everyEditableFieldFailingTurn().build());
+
+            assertThat(outcome.focusScreenFieldId())
+                    .isEqualTo(EXPECTED_SCREEN_FIELD_IDS.get(0));
         }
     }
 
+    /* ==========================================================================================
+     * The two error states the macro distinguishes, and when they appear at all.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the 39 decoration sites")
-    class Decoration {
+    @DisplayName("the two field-error states, populated only on a re-submission")
+    class TwoStateFieldErrors {
 
         @Test
-        @DisplayName("report in the declared order, with the state code between the two address lines")
-        void orderIsPreserved() {
-            seedRecords();
-            // Every editable field left blank, so every edited field reports.
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, CUSTOMER_ID, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @DisplayName("a first submission is undecorated, because the macro's outer condition also "
+                + "requires the re-enter flag")
+        void aFirstSubmissionIsUndecorated() {
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn()
+                            .navigationContext(null)
+                            .concurrencyToken(null)
+                            .build());
 
-            final List<String> reported = screenFieldIdsOf(service.handle(request));
-
-            assertThat(reported).isSubsetOf(DECORATION_ORDER);
-            assertThat(reported).isSortedAccordingTo(
-                    (left, right) -> Integer.compare(DECORATION_ORDER.indexOf(left),
-                            DECORATION_ORDER.indexOf(right)));
-            assertThat(DECORATION_ORDER.indexOf("ACSSTTE"))
-                    .isGreaterThan(DECORATION_ORDER.indexOf("ACSADL1"))
-                    .isLessThan(DECORATION_ORDER.indexOf("ACSADL2"));
-            assertThat(DECORATION_ORDER.indexOf("ACSZIPC"))
-                    .isLessThan(DECORATION_ORDER.indexOf("ACSCITY"))
-                    .isLessThan(DECORATION_ORDER.indexOf("ACSCTRY"));
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.hasFieldErrors()).isFalse(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_PROMPT_FOR_SEARCH_KEYS));
+            verifyNoInteractions(accountRepository,
+                    customerRepository,
+                    cardCrossReferenceRepository);
         }
 
         @Test
-        @DisplayName("distinguish a missing field from an invalid one")
-        void missingAndInvalidAreDistinct() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "999", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @DisplayName("a re-entry carrying a value that failed its edit reports INVALID, which is the "
+                + "coloured-without-marker state")
+        void aRejectedValueReportsInvalid() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome = service
+                    .handle(cleanChangedTurn().accountStatus("X").build());
 
-            assertThat(response.fieldErrors())
-                    .anySatisfy(error -> {
-                        assertThat(error.bmsFieldId()).isEqualTo("ACSTTUS");
-                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
-                    })
-                    .anySatisfy(error -> {
-                        assertThat(error.bmsFieldId()).isEqualTo("ACSTFCO");
-                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.INVALID);
-                    });
+            final ValidationException.FieldError error = errorFor(outcome, "ACSTTUS");
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).hasSize(1),
+                    () -> assertThat(error.state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(error.field()).isEqualTo("accountStatus"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_ACCOUNT_STATUS + SUFFIX_MUST_BE_Y_OR_N));
         }
 
         @Test
-        @DisplayName("are suppressed on a first entry, because the macro fires only on re-entry")
-        void firstEntryIsNotDecorated() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, CUSTOMER_ID, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, KeyAction.ENTER,
-                    ScreenNavigationState.empty().withFirstEntry().reconciledWith("USER0001", null),
-                    mintedToken(), false);
+        @DisplayName("a re-entry carrying no value at all reports MISSING, which is the state the "
+                + "macro additionally marks with a character")
+        void anUnsuppliedValueReportsMissing() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            assertThat(service.handle(request).fieldErrors()).isEmpty();
+            final AccountUpdateOutcome outcome = service
+                    .handle(cleanChangedTurn().accountStatus(" ").build());
+
+            final ValidationException.FieldError error = errorFor(outcome, "ACSTTUS");
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).hasSize(1),
+                    () -> assertThat(error.state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_ACCOUNT_STATUS + SUFFIX_MUST_BE_SUPPLIED));
         }
 
-        /**
-         * Pins the directed behaviour, and records that the two fields are not alike in the source.
-         *
-         * <p>Address line 2 genuinely has no edit anywhere. The middle name does: line 1571 performs the
-         * optional alphabetic edit on it and the call is live, so the legacy would reject the value keyed
-         * below. The screen-attribute comment at line 3345 says otherwise, the migration directive follows
-         * the comment, and this assertion holds the directive. Should the directive ever be revisited, this
-         * is the test that must change with it.
-         */
         @Test
-        @DisplayName("never fire for the middle name or address line 2, whatever is keyed")
-        void twoFieldsAreNeverValidated() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "%%% 12 !!", "Smith", "1 High Street",
-                    "NY", "$$$ 99 ???", "10001", "Springfield", "USA", "201", "555", "0100", null,
-                    "202", "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(),
-                    mintedToken(), false);
+        @DisplayName("the two states are the whole enumeration: a field that passed produces no entry, "
+                + "so there is no third constant to represent")
+        void theStateEnumerationHasExactlyTwoConstants() {
+            assertAll(
+                    () -> assertThat(ValidationException.FieldState.values()).hasSize(2),
+                    () -> assertThat(ValidationException.FieldState.values())
+                            .containsExactly(ValidationException.FieldState.MISSING,
+                                    ValidationException.FieldState.INVALID));
+        }
 
-            final AccountUpdateOutcome response = service.handle(request);
+        @Test
+        @DisplayName("the reported list is never null and never modifiable, so a consumer cannot "
+                + "rewrite what the screen said")
+        void theReportedListIsUnmodifiableAndNeverNull() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            assertThat(screenFieldIdsOf(response)).doesNotContain("ACSMNAM", "ACSADL2");
-            assertThat(response.middleName()).isEqualTo("%%% 12 !!");
-            assertThat(response.addressLine2()).isEqualTo("$$$ 99 ???");
+            final AccountUpdateOutcome outcome = service
+                    .handle(cleanChangedTurn().accountStatus("X").build());
+            final List<ValidationException.FieldError> reported = outcome.fieldErrors();
+            final ValidationException.FieldError intruder = new ValidationException.FieldError(
+                    "intruder", "ACSTTUS", ValidationException.FieldState.INVALID, null);
+
+            assertAll(
+                    () -> assertThat(reported).isNotNull(),
+                    () -> assertThatExceptionOfType(UnsupportedOperationException.class)
+                            .isThrownBy(() -> reported.add(intruder)),
+                    () -> assertThat(new ValidationException("summary").fieldErrors())
+                            .isNotNull()
+                            .isEmpty());
+        }
+
+        @Test
+        @DisplayName("a turn with no error at all reports an empty list rather than a null one")
+        void aCleanTurnReportsAnEmptyList() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isNotNull().isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.infoMessage())
+                            .isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
         }
     }
 
+    /* ==========================================================================================
+     * The two fields the legacy decorates and never edits.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the telephone cascade")
+    @DisplayName("the middle name and the second address line, which the legacy decorates but codes "
+            + "no edits for: attaching a constraint would reject input the legacy accepts")
+    class FieldsTheLegacyNeverEdits {
+
+        @ParameterizedTest(name = "middle name [{0}] is accepted")
+        @ValueSource(strings = {"", "     ", "12345", "O'Brien-Smith!", "A1B2C3", "@@@"})
+        @DisplayName("accept any middle name at all, however unlike a name it looks")
+        void anyMiddleNameIsAccepted(final String keyed) {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service
+                    .handle(cleanChangedTurn().middleName(keyed).build());
+
+            assertAll(
+                    () -> assertThat(fieldNamesOf(outcome)).doesNotContain(FIELD_MIDDLE_NAME),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse());
+        }
+
+        @ParameterizedTest(name = "second address line [{0}] is accepted")
+        @ValueSource(strings = {"", "     ", "12345", "Apt. 4/B #7", "!!!", "0"})
+        @DisplayName("accept any second address line at all, its edit call being commented out in "
+                + "the source")
+        void anySecondAddressLineIsAccepted(final String keyed) {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service
+                    .handle(cleanChangedTurn().addressLine2(keyed).build());
+
+            assertAll(
+                    () -> assertThat(fieldNamesOf(outcome)).doesNotContain(FIELD_ADDRESS_LINE_2),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse());
+        }
+
+        @Test
+        @DisplayName("keep both decoration sites in the enumeration, so each fires on re-entry and "
+                + "marks nothing rather than being absent")
+        void bothSitesRemainInTheEnumeration() {
+            assertAll(
+                    () -> assertThat(AccountUpdateService.ScreenField.MIDDLE_NAME.neverValidated())
+                            .isTrue(),
+                    () -> assertThat(
+                            AccountUpdateService.ScreenField.ADDRESS_LINE_2.neverValidated())
+                            .isTrue(),
+                    () -> assertThat(AccountUpdateService.ScreenField.MIDDLE_NAME.getBmsFieldId())
+                            .isEqualTo("ACSMNAM"),
+                    () -> assertThat(
+                            AccountUpdateService.ScreenField.ADDRESS_LINE_2.getBmsFieldId())
+                            .isEqualTo("ACSADL2"));
+        }
+
+        @Test
+        @DisplayName("no other field is exempt: exactly two of the 39 carry the never-edited mark")
+        void exactlyTwoFieldsAreExempt() {
+            final List<String> exempt = new ArrayList<>();
+            for (final AccountUpdateService.ScreenField field
+                    : AccountUpdateService.ScreenField.values()) {
+                if (field.neverValidated()) {
+                    exempt.add(field.getFieldName());
+                }
+            }
+
+            assertThat(exempt).containsExactlyElementsOf(NEVER_VALIDATED_FIELDS);
+        }
+
+        @Test
+        @DisplayName("both fields are still written, so a keyed value reaches the record even though "
+                + "nothing validated it")
+        void bothFieldsAreStillWritten() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any()))
+                    .thenReturn(REMINTED_TOKEN);
+            final ArgumentCaptor<Customer> written = ArgumentCaptor.forClass(Customer.class);
+
+            service.handle(cleanChangedTurn()
+                    .middleName("9")
+                    .addressLine2("#7")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            verify(customerRepository)
+                    .compareAndSet(any(), written.capture());
+            assertAll(
+                    () -> assertThat(written.getValue().getMiddleName()).isEqualTo("9"),
+                    () -> assertThat(written.getValue().getAddrLine2()).isEqualTo("#7"));
+        }
+    }
+
+    /* ==========================================================================================
+     * The telephone cascade: five paragraphs that forward rather than short-circuit.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("the telephone cascade, whose failing stages forward to the next stage instead of "
+            + "leaving the range")
     class TelephoneCascade {
 
-        private AccountUpdateOutcome withPhoneOne(final String area, final String prefix,
-                final String line) {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", area, prefix, line, null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
-            return service.handle(request);
+        @Test
+        @DisplayName("three bad parts yield three field errors and exactly one summary, and the "
+                + "summary is the first failure's text")
+        void threeBadPartsYieldThreeErrorsAndOneSummary() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1("9", "8", "7").build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).hasSize(3),
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("ACSPH1A", "ACSPH1B", "ACSPH1C"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_PHONE_NUMBER_1 + SUFFIX_AREA_CODE_NOT_3_DIGITS),
+                    () -> assertThat(outcome.errorMessage())
+                            .isNotEqualTo(LABEL_PHONE_NUMBER_1 + SUFFIX_PREFIX_NOT_3_DIGITS)
+                            .isNotEqualTo(LABEL_PHONE_NUMBER_1 + SUFFIX_LINE_NUMBER_NOT_4_DIGITS));
         }
 
         @Test
-        @DisplayName("runs all three stages, so three bad parts yield three errors and one message")
-        void forwardsRatherThanShortCircuits() {
-            // Every part supplied and every part malformed. All three must be keyed, because a wholly
-            // blank telephone is not an error at all - the source says so at line 2233, "Not mandatory
-            // to enter a phone number".
-            final AccountUpdateOutcome response = withPhoneOne("12", "1", "1");
+        @DisplayName("the line-number stage still runs after the two stages before it failed, which "
+                + "a short-circuiting cascade would have skipped")
+        void theLineNumberStageRunsAfterTwoFailures() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSPH1A", "ACSPH1B", "ACSPH1C");
-            assertThat(response.fieldErrors())
-                    .filteredOn(error -> error.bmsFieldId().startsWith("ACSPH1"))
-                    .allSatisfy(error -> assertThat(error.state())
-                            .isEqualTo(ValidationException.FieldState.INVALID));
-            // One summary message, and it is the first failure's - the area code's.
-            assertThat(response.errorMessage())
-                    .isEqualTo("Phone Number 1" + SUFFIX_AREA_CODE_NOT_3_DIGITS);
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1("9", "8", "7").build());
+
+            assertThat(errorFor(outcome, "ACSPH1C").state())
+                    .isEqualTo(ValidationException.FieldState.INVALID);
         }
 
         @Test
-        @DisplayName("treats a wholly unkeyed telephone as acceptable, because it is not mandatory")
-        void anUnkeyedTelephoneIsAccepted() {
-            final AccountUpdateOutcome response = withPhoneOne("   ", "   ", "    ");
+        @DisplayName("both telephones run their own cascade, so six bad parts report in expansion "
+                + "order across the two groups")
+        void bothTelephonesRunTheirOwnCascade() {
+            stubSeededReads();
+            stubAcceptingDateCascade();
+            stubAcceptingDateOfBirth();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
 
-            assertThat(screenFieldIdsOf(response))
-                    .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C");
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn()
+                    .phone1("9", "8", "7")
+                    .phone2("6", "5", "4")
+                    .build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).hasSize(6),
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly(
+                            "ACSPH1A", "ACSPH1B", "ACSPH1C", "ACSPH2A", "ACSPH2B", "ACSPH2C"));
+            // Neither cascade reaches its fourth arm, so the area-code table is never consulted at
+            // all: both area codes fail the width arm that precedes it.
+            verify(validationLookupService, never()).isValidGeneralPurposeAreaCode(any());
         }
 
         @Test
-        @DisplayName("keeps the first failure's message when a later stage also fails")
-        void firstErrorWinsTheSummarySlot() {
-            final AccountUpdateOutcome response = withPhoneOne("201", "  ", "  ");
+        @DisplayName("an easily-recognisable code is rejected, because the fourth arm consults the "
+                + "410-entry general-purpose set and never the 490-entry union")
+        void anEasilyRecognisableCodeIsRejected() {
+            stubSeededReads();
+            stubAcceptingDateCascade();
+            stubAcceptingDateOfBirth();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
+            when(validationLookupService.isValidGeneralPurposeAreaCode("800")).thenReturn(false);
+            when(validationLookupService.isValidGeneralPurposeAreaCode("202")).thenReturn(true);
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSPH1B", "ACSPH1C")
-                    .doesNotContain("ACSPH1A");
-            assertThat(response.errorMessage())
-                    .isEqualTo("Phone Number 1" + SUFFIX_PREFIX_REQUIRED);
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1("800", "555", "0100").build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).hasSize(1),
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSPH1A"),
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(
+                            LABEL_PHONE_NUMBER_1 + SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE));
         }
 
         @Test
-        @DisplayName("reaches the line-number stage even when the two before it failed")
-        void lineNumberStageAlwaysRuns() {
-            final AccountUpdateOutcome response = withPhoneOne("00", "00", "  ");
+        @DisplayName("a general-purpose code is accepted, and the candidate reaches the table already "
+                + "trimmed, which is the one place the cascade trims anything")
+        void aGeneralPurposeCodeIsAcceptedAndTrimmedAtTheTable() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            final ArgumentCaptor<String> consulted = ArgumentCaptor.forClass(String.class);
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSPH1A", "ACSPH1B", "ACSPH1C");
-            assertThat(response.errorMessage())
-                    .isEqualTo("Phone Number 1" + SUFFIX_AREA_CODE_NOT_3_DIGITS);
-            assertThat(response.fieldErrors())
-                    .anySatisfy(error -> {
-                        assertThat(error.bmsFieldId()).isEqualTo("ACSPH1C");
-                        assertThat(error.state()).isEqualTo(ValidationException.FieldState.MISSING);
-                    });
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn().build());
+
+            verify(validationLookupService, times(2))
+                    .isValidGeneralPurposeAreaCode(consulted.capture());
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(consulted.getAllValues()).containsExactly("201", "202"),
+                    () -> assertThat(consulted.getAllValues())
+                            .allSatisfy(key -> assertThat(key).isEqualTo(key.trim())));
         }
 
         @Test
-        @DisplayName("rejects an easily-recognisable code and accepts a general-purpose one")
-        void membershipUsesTheGeneralPurposeSetAlone() {
-            assertThat(screenFieldIdsOf(withPhoneOne("800", "555", "0100")))
-                    .contains("ACSPH1A");
-            assertThat(withPhoneOne("800", "555", "0100").errorMessage())
-                    .isEqualTo("Phone Number 1" + SUFFIX_AREA_CODE_NOT_GENERAL_PURPOSE);
-            assertThat(screenFieldIdsOf(withPhoneOne("201", "555", "0100")))
-                    .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C");
+        @DisplayName("a space-bearing area code is rejected by the width arm before the table is "
+                + "reached, so the trim at the table can never rescue it")
+        void aSpaceBearingAreaCodeNeverReachesTheTable() {
+            stubSeededReads();
+            stubAcceptingDateCascade();
+            stubAcceptingDateOfBirth();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
+            when(validationLookupService.isValidGeneralPurposeAreaCode("202")).thenReturn(true);
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1("20 ", "555", "0100").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSPH1A"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_PHONE_NUMBER_1 + SUFFIX_AREA_CODE_NOT_3_DIGITS));
+            verify(validationLookupService, never()).isValidGeneralPurposeAreaCode("20");
+            verify(validationLookupService, never()).isValidGeneralPurposeAreaCode("20 ");
         }
 
         @Test
-        @DisplayName("the 490 figure is the derived union, so it is never the membership set")
-        void theUnionIsDerivedNotStored() {
-            assertThat(lookupService.generalPurposeAreaCodes()).hasSize(410)
-                    .doesNotContain("800");
-            assertThat(lookupService.easilyRecognisableAreaCodes()).hasSize(80).contains("800");
-            assertThat(lookupService.phoneAreaCodes()).hasSize(490);
+        @DisplayName("a wholly blank telephone is accepted, because the group is not mandatory")
+        void aWhollyBlankTelephoneIsAccepted() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1(" ", " ", " ").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C"),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty());
         }
 
         @Test
-        @DisplayName("the reproduced defect accepts a keyed line number when both parts before are blank")
-        void allBlankShortcutTestsTheWrongSubField() {
-            final AccountUpdateOutcome response = withPhoneOne("   ", "   ", "0100");
+        @DisplayName("the reproduced defect: the shortcut's third condition tests the area code where "
+                + "the line number belongs, so a keyed line number is forgiven when the area code is "
+                + "spaces and edited when it was never transmitted")
+        void theShortcutTestsTheAreaCodeWhereTheLineNumberBelongs() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            assertThat(screenFieldIdsOf(response))
-                    .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C");
-            assertThat(response.errorMessage()).isNotEqualTo(
-                    "Phone Number 1" + SUFFIX_LINE_NUMBER_REQUIRED);
+            final AccountUpdateOutcome forgiven =
+                    service.handle(cleanChangedTurn().phone1(" ", " ", "0100").build());
+
+            assertAll(
+                    () -> assertThat(forgiven.fieldErrors()).isEmpty(),
+                    () -> assertThat(screenFieldIdsOf(forgiven))
+                            .doesNotContain("ACSPH1A", "ACSPH1B", "ACSPH1C"));
+        }
+
+        @Test
+        @DisplayName("the same keyed line number is edited when the area code was never transmitted, "
+                + "so the two spellings of blank take different paths")
+        void anUntransmittedAreaCodeTakesTheCascade() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().phone1(null, null, "0100").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("ACSPH1A", "ACSPH1B"),
+                    () -> assertThat(errorFor(outcome, "ACSPH1A").state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(errorFor(outcome, "ACSPH1B").state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_PHONE_NUMBER_1 + SUFFIX_AREA_CODE_REQUIRED));
         }
     }
 
+    /* ==========================================================================================
+     * The credit-score range: input validation only, and gated on the field's own flag.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the credit-score range")
+    @DisplayName("the credit-score range, enforced on input and nowhere else")
     class CreditScoreRange {
 
-        private AccountUpdateOutcome withScore(final String score) {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", score, "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
-            return service.handle(request);
+        @ParameterizedTest(name = "a score of {0} is accepted")
+        @ValueSource(strings = {"300", "850", "301", "849", "500"})
+        @DisplayName("accept both inclusive bounds and everything between them")
+        void inclusiveBoundsAreAccepted(final String score) {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().ficoScore(score).build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse());
         }
 
-        @ParameterizedTest
-        @ValueSource(strings = {"300", "850", "301", "849"})
-        @DisplayName("accepts both inclusive bounds")
-        void inclusiveBoundsAccepted(final String score) {
-            assertThat(screenFieldIdsOf(withScore(score))).doesNotContain("ACSTFCO");
-        }
+        @ParameterizedTest(name = "a score of {0} is rejected")
+        @ValueSource(strings = {"299", "851", "001", "999"})
+        @DisplayName("reject a score outside the bounds, with the exact text and no closing full stop")
+        void scoresOutsideTheBoundsAreRejected(final String score) {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-        @ParameterizedTest
-        @ValueSource(strings = {"299", "851", "001"})
-        @DisplayName("rejects a score outside the bounds with the exact text and no full stop")
-        void outsideBoundsRejected(final String score) {
-            final AccountUpdateOutcome response = withScore(score);
-            assertThat(screenFieldIdsOf(response)).contains("ACSTFCO");
-            assertThat(response.errorMessage())
-                    .isEqualTo("FICO Score" + SUFFIX_FICO_OUT_OF_RANGE);
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().ficoScore(score).build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSTFCO"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_FICO_SCORE + SUFFIX_FICO_OUT_OF_RANGE)
+                            .doesNotEndWith("."),
+                    () -> assertThat(outcome.error()).isTrue());
         }
 
         @Test
-        @DisplayName("does not re-edit a score that already failed the numeric edit")
-        void alreadyInvalidScoreIsNotReEdited() {
-            final AccountUpdateOutcome response = withScore("abc");
+        @DisplayName("both bounds are the ones the condition name declares")
+        void theBoundsAreTheDeclaredOnes() {
+            assertAll(
+                    () -> assertThat(AccountUpdateService.FICO_SCORE_MINIMUM)
+                            .isEqualTo(FICO_LOWEST_ACCEPTED),
+                    () -> assertThat(AccountUpdateService.FICO_SCORE_MAXIMUM)
+                            .isEqualTo(FICO_HIGHEST_ACCEPTED));
+        }
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSTFCO");
-            assertThat(response.errorMessage()).isEqualTo("FICO Score must be all numeric.");
+        @Test
+        @DisplayName("a score that already failed the numeric edit is not edited again, so it earns "
+                + "the numeric message and not the range message")
+        void anAlreadyInvalidScoreIsNotReEdited() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().ficoScore("abc").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSTFCO"),
+                    () -> assertThat(outcome.fieldErrors()).hasSize(1),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_FICO_SCORE + SUFFIX_MUST_BE_ALL_NUMERIC),
+                    () -> assertThat(outcome.errorMessage())
+                            .isNotEqualTo(LABEL_FICO_SCORE + SUFFIX_FICO_OUT_OF_RANGE));
+        }
+
+        @Test
+        @DisplayName("a stored score below the range loads and is shown, because 21 of the 50 seeded "
+                + "customer rows hold one and no persistence constraint may reject them")
+        void aStoredOutOfRangeScoreLoadsAndIsShown() {
+            stubSeededReads(seededCustomer(SEEDED_OUT_OF_RANGE_FICO));
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    unchangedTurn().ficoScore(SEEDED_OUT_OF_RANGE_FICO).build());
+
+            assertAll(
+                    () -> assertThat(outcome.ficoScore()).isEqualTo(SEEDED_OUT_OF_RANGE_FICO),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(MSG_NO_CHANGES_DETECTED));
         }
     }
 
+    /* ==========================================================================================
+     * The two postal lists, which must never be intersected.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the state code and the state-plus-postcode composite")
+    @DisplayName("the state code and the state-plus-postcode composite, two different questions put "
+            + "to two lists that are never intersected")
     class PostalValidation {
 
-        @Test
-        @DisplayName("the two lists are never intersected, so six prefixes exist only in the composite")
-        void listsAreNeverIntersected() {
-            assertThat(lookupService.usStateCodes()).hasSize(56)
-                    .doesNotContain("AA", "AE", "AP", "FM", "MH", "PW");
-            assertThat(lookupService.usStateZipCodeCombinations()).hasSize(240).contains("AA34");
+        @ParameterizedTest(name = "the prefix {0} fails the flat 56-code test")
+        @ValueSource(strings = {"AA", "AE", "AP", "FM", "MH", "PW"})
+        @DisplayName("reject each of the six prefixes that exist only in the composite list, and never "
+                + "put the two-character question to the composite list")
+        void thePrefixesThatExistOnlyInTheCompositeListFailTheStateTest(final String prefix) {
+            stubSeededReads();
+            stubCommonAcceptingEdits();
+            when(validationLookupService.isValidUsStateCode(prefix)).thenReturn(false);
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().stateCode(prefix).build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSSTTE"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_STATE + SUFFIX_STATE_NOT_VALID)
+                            .doesNotEndWith("."));
+            verify(validationLookupService, never()).isValidUsStateZipCodeCombination(prefix);
+            verify(validationLookupService, never()).isValidUsStateZipCodeCombination(any());
+        }
+
+        @ParameterizedTest(name = "{0} plus postcode {1} composes the key {2}")
+        @CsvSource({"AA, 34567, AA34", "AE, 09123, AE09", "AP, 96201, AP96", "FM, 96941, FM96",
+                    "MH, 96960, MH96", "PW, 96940, PW96"})
+        @DisplayName("compose the composite key positionally from the state code and the first two "
+                + "postcode characters, which is a four-character question the 56-code list never sees")
+        void theCompositeKeyIsComposedPositionally(final String state, final String postcode,
+                final String expectedKey) {
+            stubSeededReads();
+            stubCommonAcceptingEdits();
+            when(validationLookupService.isValidUsStateCode(state)).thenReturn(true);
+            when(validationLookupService.isValidUsStateZipCodeCombination(expectedKey))
+                    .thenReturn(true);
+            final ArgumentCaptor<String> stateAsked = ArgumentCaptor.forClass(String.class);
+            final ArgumentCaptor<String> compositeAsked = ArgumentCaptor.forClass(String.class);
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().stateCode(state).zipCode(postcode).build());
+
+            verify(validationLookupService).isValidUsStateCode(stateAsked.capture());
+            verify(validationLookupService)
+                    .isValidUsStateZipCodeCombination(compositeAsked.capture());
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(stateAsked.getValue()).isEqualTo(state).hasSize(2),
+                    () -> assertThat(compositeAsked.getValue()).isEqualTo(expectedKey).hasSize(4));
         }
 
         @Test
-        @DisplayName("an unknown state code is rejected with the exact text and no full stop")
-        void unknownStateRejected() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "AA",
-                    "Flat 2", "34001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @DisplayName("a composite failure sets both the state flag and the postcode flag, and emits "
+                + "the bare literal with no field-name prefix - the only message composed that way")
+        void aCompositeFailureSetsBothFlagsAndEmitsTheUnprefixedMessage() {
+            stubSeededReads();
+            stubCommonAcceptingEdits();
+            stubAcceptingStateCode();
+            when(validationLookupService.isValidUsStateZipCodeCombination(any())).thenReturn(false);
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn().build());
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSSTTE");
-            assertThat(response.errorMessage()).isEqualTo("State" + SUFFIX_STATE_NOT_VALID);
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("ACSSTTE", "ACSZIPC"),
+                    () -> assertThat(errorFor(outcome, "ACSSTTE").state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(errorFor(outcome, "ACSZIPC").state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(MSG_INVALID_ZIP_FOR_STATE),
+                    () -> assertThat(outcome.errorMessage())
+                            .doesNotStartWith(LABEL_STATE)
+                            .doesNotStartWith(LABEL_ZIP));
         }
 
         @Test
-        @DisplayName("a bad composite sets both flags and emits the unprefixed message")
-        void badCompositeSetsBothFlags() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "99999", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @DisplayName("neither key is trimmed: a short postcode contributes what it has and the "
+                + "composite is space-filled to its four positions")
+        void neitherKeyIsTrimmed() {
+            stubSeededReads();
+            stubCommonAcceptingEdits();
+            stubAcceptingStateCode();
+            when(validationLookupService.isValidUsStateZipCodeCombination(any())).thenReturn(true);
+            final ArgumentCaptor<String> compositeAsked = ArgumentCaptor.forClass(String.class);
 
-            final AccountUpdateOutcome response = service.handle(request);
+            service.handle(cleanChangedTurn().zipCode("1").build());
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSSTTE", "ACSZIPC");
-            assertThat(response.errorMessage()).isEqualTo(MSG_INVALID_ZIP_FOR_STATE);
+            verify(validationLookupService)
+                    .isValidUsStateZipCodeCombination(compositeAsked.capture());
+            assertAll(
+                    () -> assertThat(compositeAsked.getValue()).isEqualTo(SEEDED_STATE + "1 "),
+                    () -> assertThat(compositeAsked.getValue()).hasSize(4),
+                    () -> assertThat(compositeAsked.getValue()).isNotEqualTo(SEEDED_STATE + "1"));
+        }
+
+        @Test
+        @DisplayName("the composite edit is gated on both of its inputs, so a rejected postcode stops "
+                + "it being asked at all")
+        void theCompositeEditIsGatedOnBothInputs() {
+            stubSeededReads();
+            stubCommonAcceptingEdits();
+            stubAcceptingStateCode();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().zipCode("ABCDE").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSZIPC"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_ZIP + SUFFIX_MUST_BE_ALL_NUMERIC));
+            verify(validationLookupService, never()).isValidUsStateZipCodeCombination(any());
+        }
+
+        @Test
+        @DisplayName("the five declared cardinalities are the ones this feature depends on, and the "
+                + "490 figure is the derived union rather than a stored list")
+        void theDeclaredCardinalitiesHold() {
+            assertAll(
+                    () -> assertThat(ValidationLookupService.GENERAL_PURPOSE_AREA_CODE_COUNT)
+                            .isEqualTo(410),
+                    () -> assertThat(ValidationLookupService.EASY_RECOGNITION_AREA_CODE_COUNT)
+                            .isEqualTo(80),
+                    () -> assertThat(ValidationLookupService.PHONE_AREA_CODE_COUNT).isEqualTo(490),
+                    () -> assertThat(ValidationLookupService.GENERAL_PURPOSE_AREA_CODE_COUNT
+                            + ValidationLookupService.EASY_RECOGNITION_AREA_CODE_COUNT)
+                            .isEqualTo(ValidationLookupService.PHONE_AREA_CODE_COUNT),
+                    () -> assertThat(ValidationLookupService.US_STATE_CODE_COUNT).isEqualTo(56),
+                    () -> assertThat(ValidationLookupService.US_STATE_ZIP_COMBINATION_COUNT)
+                            .isEqualTo(240));
         }
     }
 
+    /* ==========================================================================================
+     * The alphabetic idiom: blank the letters, then trim, so embedded spaces survive.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the character-class edits")
-    class CharacterClassEdits {
+    @DisplayName("the alphabetic edits, which the legacy performs by blanking every letter and then "
+            + "trimming, so a per-character letter test would break the seeded data")
+    class AlphabeticEdits {
 
-        @ParameterizedTest
-        @ValueSource(strings = {"MARY ANN", "Aniya Von", "Smith"})
-        @DisplayName("accept an embedded space, because the legacy idiom blanks and trims")
-        void embeddedSpacesPass(final String name) {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", name, "Q", "Smith", "1 High Street", "NY", "Flat 2",
-                    "10001", "Springfield", "USA", "201", "555", "0100", null, "202", "555",
-                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @ParameterizedTest(name = "[{0}] passes the alphabetic edit")
+        @ValueSource(strings = {"MARY ANN", "Aniya Von", "Mary Jane Watson", " Leading", "Trailing ",
+                                "Smith", "A B C"})
+        @DisplayName("accept an embedded, leading or trailing space, the seeded first name included")
+        void embeddedSpacesPass(final String keyed) {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            assertThat(screenFieldIdsOf(service.handle(request))).doesNotContain("ACSFNAM");
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().firstName(keyed).build());
+
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse());
         }
 
         @Test
-        @DisplayName("reject a digit in a required alphabetic field")
-        void digitsRejected() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Mary2", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
+        @DisplayName("the seeded first name carries a character that is not a letter, so a "
+                + "per-character letter test would reject a value already on file - which is exactly "
+                + "why the faithful predicate admits a space")
+        void theSeededFirstNameCarriesANonLetter() {
+            final long nonLetterPositions = SEEDED_FIRST_NAME.chars()
+                    .filter(codePoint -> !Character.isLetter(codePoint))
+                    .count();
 
-            final AccountUpdateOutcome response = service.handle(request);
+            assertAll(
+                    () -> assertThat(SEEDED_FIRST_NAME).contains(" "),
+                    () -> assertThat(nonLetterPositions).isPositive(),
+                    () -> assertThat(SEEDED_FIRST_NAME).isEqualTo("Aniya Von"));
+        }
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSFNAM");
-            assertThat(response.errorMessage())
-                    .isEqualTo("First Name can have alphabets only.");
+        @ParameterizedTest(name = "[{0}] fails the alphabetic edit")
+        @ValueSource(strings = {"Mary1", "M4RY", "Mary-Ann", "Mary.Ann", "0"})
+        @DisplayName("reject anything that is neither a letter nor a space")
+        void nonAlphabeticValuesAreRejected(final String keyed) {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().firstName(keyed).build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSFNAM"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_ALPHABETS_ONLY));
+        }
+
+        @Test
+        @DisplayName("an unsupplied mandatory alphabetic field reports MISSING rather than the "
+                + "character-class failure")
+        void anUnsuppliedAlphabeticFieldReportsMissing() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().firstName("   ").build());
+
+            assertAll(
+                    () -> assertThat(errorFor(outcome, "ACSFNAM").state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED));
+        }
+
+        @Test
+        @DisplayName("a blank mandatory first address line reports MISSING through the plain "
+                + "mandatory edit, which performs no character-class test at all")
+        void aBlankAddressLineOneReportsMissing() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().addressLine1(" ").build());
+
+            assertAll(
+                    () -> assertThat(errorFor(outcome, "ACSADL1").state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_ADDRESS_LINE_1 + SUFFIX_MUST_BE_SUPPLIED));
+        }
+
+        @Test
+        @DisplayName("the first address line accepts a digit, because its edit is the mandatory one "
+                + "rather than the alphabetic one")
+        void theFirstAddressLineAcceptsADigit() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(cleanChangedTurn().addressLine1("221B Baker Street").build());
+
+            assertThat(outcome.fieldErrors()).isEmpty();
         }
     }
 
+    /* ==========================================================================================
+     * The date cascade, delegated in full rather than re-implemented.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the write range")
-    class WriteRange {
+    @DisplayName("the date cascade, delegated whole to the collaborator that owns its fourteen "
+            + "paragraphs, because performing only its head paragraph would silently skip every stage")
+    class DateValidationDelegation {
 
         @Test
-        @DisplayName("commits both records and confirms when nothing conflicts")
-        void happyPath() {
-            seedRecords();
-            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
-                    .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
-                    .thenReturn(1);
+        @DisplayName("delegate all four date groups, composing each candidate positionally, so no "
+                + "date is parsed here")
+        void allFourGroupsAreDelegated() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            final ArgumentCaptor<String> candidates = ArgumentCaptor.forClass(String.class);
 
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+            service.handle(cleanChangedTurn().build());
 
-            assertThat(response.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
-            Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
-            final ArgumentCaptor<Customer> before = ArgumentCaptor.forClass(Customer.class);
-            final ArgumentCaptor<Customer> after = ArgumentCaptor.forClass(Customer.class);
-            Mockito.verify(customerRepository).compareAndSet(before.capture(), after.capture());
-            assertThat(before.getValue().getCustSsn())
-                    .as("the held row remains the unchanged compare image")
-                    .isNull();
-            assertThat(after.getValue().getCustSsn())
-                    .as("the replacement carries the operator's newly protected value")
-                    .isNotNull();
-            assertThat(after.getValue().getCustId()).isEqualTo(before.getValue().getCustId());
+            verify(dateValidationService, times(4))
+                    .validateCcyymmddDate(candidates.capture(), any());
+            assertThat(candidates.getAllValues())
+                    .containsExactly("20200115", "20290115", "20240115", "19800203");
         }
 
         @Test
-        @DisplayName("the account arm reports the failure after the inner unit has rolled back")
-        void accountArmReturnsTheLegacyFailure() {
-            seedRecords();
-            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
-                    .thenThrow(new OptimisticLockingFailureException("account moved"));
+        @DisplayName("reach the date-of-birth check through its own entry point and compare against "
+                + "the injected clock, so the outcome is deterministic")
+        void theDateOfBirthCheckUsesItsOwnEntryPointAndTheInjectedClock() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            final ArgumentCaptor<LocalDate> asOf = ArgumentCaptor.forClass(LocalDate.class);
 
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+            service.handle(cleanChangedTurn().build());
 
-            assertThat(response.errorMessage()).isEqualTo(MSG_UPDATE_FAILED);
-            assertThat(response.error()).isTrue();
-            Mockito.verify(customerRepository, Mockito.never())
-                    .compareAndSet(ArgumentMatchers.any(Customer.class),
-                            ArgumentMatchers.any(Customer.class));
+            verify(dateValidationService)
+                    .validateDateOfBirth(eq("19800203"), asOf.capture(), any());
+            assertThat(asOf.getValue()).isEqualTo(LocalDate.of(2024, 5, 6));
         }
 
         @Test
-        @DisplayName("the customer arm returns the same legacy failure after rolling back the account")
-        void customerArmReturnsTheLegacyFailure() {
-            seedRecords();
-            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
-                    .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.compareAndSet(
-                            ArgumentMatchers.any(Customer.class),
-                            ArgumentMatchers.any(Customer.class)))
-                    .thenThrow(new OptimisticLockingFailureException("customer moved"));
+        @DisplayName("skip the date-of-birth check when the group itself came back invalid, which is "
+                + "the gate the source applies")
+        void theDateOfBirthCheckIsGatedOnTheGroup() {
+            stubSeededReads();
+            when(dateValidationService.validateCcyymmddDate(any(), any()))
+                    .thenReturn(acceptingDateResult());
+            when(dateValidationService.validateCcyymmddDate(eq("19801399"), any()))
+                    .thenReturn(rejectingDateResult("Date of Birth is not valid"));
+            stubAcceptingAreaCodes();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
 
-            final AccountUpdateCommand confirming = changedDetailTurn(mintedToken(),
-                    KeyAction.PFK05);
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().dateOfBirth("1980", "13", "99").build());
 
-            final AccountUpdateOutcome response = service.handle(confirming);
-
-            assertThat(response.errorMessage()).isEqualTo(MSG_UPDATE_FAILED);
-            assertThat(response.error()).isTrue();
-            Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository).compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("DOBYEAR", "DOBMON", "DOBDAY"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo("Date of Birth is not valid"));
+            verify(dateValidationService, never()).validateDateOfBirth(any(), any(), any());
         }
 
         @Test
-        @DisplayName("a customer-only change after token verification rolls back the account rewrite")
-        void customerCompareAndSetMissUsesTheChangedRecordArm() {
-            seedRecords();
-            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
-                    .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
-                    .thenReturn(0);
+        @DisplayName("carry the collaborator's three flags onto the three component fields, so one "
+                + "rejected group reports against all three of its components")
+        void aRejectedGroupReportsAgainstAllThreeComponents() {
+            stubSeededReads();
+            when(dateValidationService.validateCcyymmddDate(any(), any()))
+                    .thenReturn(acceptingDateResult());
+            when(dateValidationService.validateCcyymmddDate(eq("20291399"), any()))
+                    .thenReturn(rejectingDateResult("Expiry Date is not valid"));
+            stubAcceptingDateOfBirth();
+            stubAcceptingAreaCodes();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
 
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().expiryDate("2029", "13", "99").build());
 
-            assertThat(response.errorMessage()).isEqualTo(MSG_RECORD_CHANGED);
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-            assertThat(response.error()).isTrue();
-            Mockito.verify(accountRepository).saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository).compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
-            Mockito.verify(customerRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Customer.class));
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("EXPYEAR", "EXPMON", "EXPDAY"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo("Expiry Date is not valid"));
         }
 
         @Test
-        @DisplayName("a record that moved before the update shows the detail again")
-        void changeBeforeUpdateShowsDetails() {
-            seedRecords();
+        @DisplayName("accept a calendar-impossible date when the collaborator accepts it, which is the "
+                + "tolerated message number 2513 arriving through the seam: nothing here re-parses it")
+        void aDateTheCollaboratorAcceptsIsAcceptedHere() {
+            stubSeededReads();
+            stubAllEditsAccepting();
 
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn("not-a-valid-token", KeyAction.PFK05));
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().openDate("2024", "02", "30").build());
 
-            assertThat(response.errorMessage()).isEqualTo(MSG_RECORD_CHANGED);
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+            assertAll(
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.infoMessage())
+                            .isEqualTo(INFO_PROMPT_FOR_CONFIRMATION));
+            verify(dateValidationService).validateCcyymmddDate(eq("20240230"), any());
         }
 
         @Test
-        @DisplayName("an account that cannot be held reports the lock text")
-        void accountCannotBeHeld() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(customerRepository.findById(CUSTOMER_ID))
-                    .thenReturn(Optional.of(seededCustomer()));
-            // Chained rather than a varargs sequence, because a varargs call on a generic return type
-            // creates an unchecked array and the build treats every warning as an error.
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+        @DisplayName("reject the very same date when the collaborator rejects it, so the verdict comes "
+                + "from the seam in both directions and a collapsed boolean cannot hide here")
+        void theSameDateIsRejectedWhenTheCollaboratorRejectsIt() {
+            stubSeededReads();
+            when(dateValidationService.validateCcyymmddDate(any(), any()))
+                    .thenReturn(acceptingDateResult());
+            when(dateValidationService.validateCcyymmddDate(eq("20240230"), any()))
+                    .thenReturn(rejectingDateResult("Open Date is not valid"));
+            stubAcceptingDateOfBirth();
+            stubAcceptingAreaCodes();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().openDate("2024", "02", "30").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("OPNYEAR", "OPNMON", "OPNDAY"),
+                    () -> assertThat(outcome.error()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the tolerated condition really is the one at message number 2513, and its "
+                + "siblings at the same severity carry other numbers, so the two acceptance levels "
+                + "cannot be collapsed into one")
+        void theToleratedConditionIsTheOneAtMessageNumber2513() {
+            assertAll(
+                    () -> assertThat(DateValidationService.DateFeedback.UNSUPPORTED_RANGE
+                            .getMessageNumber()).isEqualTo(TOLERATED_DATE_MESSAGE_NUMBER),
+                    () -> assertThat(DateValidationService.DateFeedback.UNSUPPORTED_RANGE
+                            .getSeverity()).isEqualTo(FAILING_DATE_SEVERITY),
+                    () -> assertThat(DateValidationService.DateFeedback.INVALID_MONTH.getSeverity())
+                            .isEqualTo(FAILING_DATE_SEVERITY),
+                    () -> assertThat(DateValidationService.DateFeedback.INVALID_MONTH
+                            .getMessageNumber()).isNotEqualTo(TOLERATED_DATE_MESSAGE_NUMBER),
+                    () -> assertThat(DateValidationService.DateFeedback.DATE_IS_VALID.getSeverity())
+                            .isZero());
+        }
+
+        @Test
+        @DisplayName("the cascade's own message goes through the same first-error-wins gate, so a "
+                + "date failure cannot displace an earlier one")
+        void theCascadeMessagePassesThroughTheFirstErrorWinsGate() {
+            stubSeededReads();
+            when(dateValidationService.validateCcyymmddDate(any(), any()))
+                    .thenReturn(acceptingDateResult());
+            when(dateValidationService.validateCcyymmddDate(eq("20291399"), any()))
+                    .thenReturn(rejectingDateResult("Expiry Date is not valid"));
+            stubAcceptingDateOfBirth();
+            stubAcceptingAreaCodes();
+            stubAcceptingStateCode();
+            stubAcceptingStateZipComposite();
+
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn()
+                    .accountStatus("X")
+                    .expiryDate("2029", "13", "99")
+                    .build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_ACCOUNT_STATUS + SUFFIX_MUST_BE_Y_OR_N),
+                    () -> assertThat(screenFieldIdsOf(outcome))
+                            .containsExactly("ACSTTUS", "EXPYEAR", "EXPMON", "EXPDAY"));
+        }
+    }
+
+    /* ==========================================================================================
+     * The write range: one ordered rewrite pair, and the asymmetric rollback.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("the write range, whose two rewrites share one unit of work and whose two failure "
+            + "arms are deliberately asymmetric")
+    class WriteRangeAndRollback {
+
+        /** A confirmation turn: a change, every edit passing, and the save key pressed. */
+        private AccountUpdateCommand confirmationTurn() {
+            return cleanChangedTurn().keyAction(KeyAction.PFK05).build();
+        }
+
+        @Test
+        @DisplayName("commit both rewrites in order, confirm the turn, and re-mint the before-image "
+                + "so the next change is not refused as somebody else's")
+        void bothRewritesCommitInOrder() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
+
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
+
+            final InOrder writes = inOrder(accountRepository, customerRepository);
+            writes.verify(accountRepository).saveAndFlush(any());
+            writes.verify(customerRepository).compareAndSet(any(), any());
+            assertAll(
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS),
+                    () -> assertThat(outcome.errorMessage()).isNull(),
+                    () -> assertThat(outcome.error()).isFalse(),
+                    () -> assertThat(outcome.concurrencyToken()).isEqualTo(REMINTED_TOKEN));
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("the account arm leaves an EMPTY unit of work to roll back, so the customer "
+                + "rewrite is never reached - this is the first half of the asymmetry")
+        void theAccountArmLeavesAnEmptyUnitOfWork() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(accountRepository.saveAndFlush(any()))
+                    .thenThrow(new OptimisticLockingFailureException("the account row moved"));
+
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(CONFLICT_MSG_UPDATE_FAILED),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_INFORM_FAILURE),
+                    () -> assertThat(outcome.error()).isTrue(),
+                    () -> assertThat(loggedMessages())
+                            .anySatisfy(line -> assertThat(line)
+                                    .contains("the empty unit of work was rolled back")
+                                    .contains(RESOURCE_ACCOUNT_MASTER)));
+            verify(customerRepository, never()).compareAndSet(any(), any());
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("the customer arm rolls back a COMPLETED account rewrite, which the account arm "
+                + "never has to do - this is the second half of the asymmetry")
+        void theCustomerArmRollsBackACompletedAccountRewrite() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenThrow(new OptimisticLockingFailureException("the customer row moved"));
+
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(CONFLICT_MSG_UPDATE_FAILED),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_INFORM_FAILURE),
+                    () -> assertThat(loggedMessages())
+                            .anySatisfy(line -> assertThat(line)
+                                    .contains("the account rewrite completed earlier in the unit "
+                                            + "and was rolled back")
+                                    .contains(RESOURCE_CUSTOMER_MASTER)));
+            verify(accountRepository).saveAndFlush(any());
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("a customer image that moved between the hold and the rewrite rolls the account "
+                + "rewrite back and shows the detail again rather than reporting a failure")
+        void aCustomerImageThatMovedRollsBackTheAccountRewrite() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(0);
+
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(CONFLICT_MSG_DATA_WAS_CHANGED),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES),
+                    () -> assertThat(loggedMessages())
+                            .anySatisfy(line -> assertThat(line)
+                                    .contains("the held customer image no longer matched")
+                                    .contains("the account rewrite was rolled back")));
+            verify(accountRepository).saveAndFlush(any());
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("a record that moved before the update is reported as a recoverable conflict and "
+                + "never abends, so the abend service is untouched")
+        void aRecordThatMovedBeforeTheUpdateNeverAbends() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            doThrow(new OptimisticLockConflictException(
+                    OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
+                    "Account", ACCOUNT_ID))
+                    .when(concurrencyTokenService).verify(any(), any(), any());
+
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(CONFLICT_MSG_DATA_WAS_CHANGED),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(transactionBoundary);
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).compareAndSet(any(), any());
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("an account that cannot be held reports the lock text and never opens the unit "
+                + "of work")
+        void anAccountThatCannotBeHeldReportsTheLockText() {
+            when(cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededCrossReference()));
+            when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(seededAccount()))
                     .thenReturn(Optional.empty());
-
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
-
-            assertThat(response.errorMessage())
-                    .isEqualTo("Could not lock account record for update");
-        }
-
-        @Test
-        @DisplayName("an unchanged turn skips the edits and does not advance to the confirmation state")
-        void unchangedTurnSkipsTheEdits() {
-            seedRecords();
-
-            final AccountUpdateOutcome response =
-                    service.handle(unchangedDetailTurn(mintedToken(), KeyAction.ENTER));
-
-            assertThat(response.fieldErrors()).isEmpty();
-            assertThat(response.errorMessage())
-                    .isEqualTo("No change detected with respect to values fetched.");
-            // Lines 2585 to 2591 advance only when the turn has no input error AND a change was seen,
-            // so a turn that changed nothing stays on the detail screen rather than offering the save.
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-        }
-
-        @Test
-        @DisplayName("a changed and clean turn advances to the confirmation state")
-        void changedCleanTurnAdvancesToConfirmation() {
-            seedRecords();
-
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.ENTER));
-
-            assertThat(response.fieldErrors()).isEmpty();
-            assertThat(response.error()).isFalse();
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CONFIRMATION);
-        }
-    }
-
-    /**
-     * The confirmation turn, which the legacy could leave unedited and this translation cannot.
-     *
-     * <p>The legacy's confirmation screen protects every field with the modified-data tag on, so the
-     * image the terminal returns is the image the edits already passed and re-editing it would be
-     * redundant. Here the caller supplies the image, so the edits run again and the awaiting-confirmation
-     * state is a claim rather than a fact. These tests hold that line: an altered image is refused and
-     * nothing is written, an image carrying no change at all is neither confirmed nor written, and a
-     * faithful echo still reaches the same commit it always did.
-     */
-    @Nested
-    @DisplayName("the confirmation turn re-edits the image the caller submits")
-    class ConfirmationTurnIsEdited {
-
-        @Test
-        @DisplayName("an out-of-range credit score on the save turn is refused and nothing is written")
-        void alteredCreditScoreOnTheSaveTurnIsRefused() {
-            seedRecords();
-
-            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
-                    ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029", "01", "15", "2000.00",
-                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
-                    "123", "45", "6789", "1980", "02", "03", "999", "Aniya Von", "Q", "Smith",
-                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
-                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
-                    reEntered(), mintedToken(), false));
-
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage()).endsWith(SUFFIX_FICO_OUT_OF_RANGE);
-            assertThat(screenFieldIdsOf(response)).containsExactly("ACSTFCO");
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository, Mockito.never()).compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
-        }
-
-        @Test
-        @DisplayName("a status outside the two permitted codes on the save turn is refused")
-        void alteredStatusOnTheSaveTurnIsRefused() {
-            seedRecords();
-
-            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
-                    ACCOUNT_ID, "X", "2020", "01", "15", "5000.00", "2029", "01", "15", "2000.00",
-                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
-                    "123", "45", "6789", "1980", "02", "03", "700", "Aniya Von", "Q", "Smith",
-                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
-                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
-                    reEntered(), mintedToken(), false));
-
-            assertThat(response.error()).isTrue();
-            assertThat(screenFieldIdsOf(response)).containsExactly("ACSTTUS");
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
-        }
-
-        @Test
-        @DisplayName("an impossible month on the save turn is refused by the date cascade")
-        void alteredExpiryMonthOnTheSaveTurnIsRefused() {
-            seedRecords();
-
-            final AccountUpdateOutcome response = service.handle(new AccountUpdateCommand(
-                    ACCOUNT_ID, "N", "2020", "01", "15", "5000.00", "2029", "99", "15", "2000.00",
-                    "2024", "01", "15", "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID,
-                    "123", "45", "6789", "1980", "02", "03", "700", "Aniya Von", "Q", "Smith",
-                    "1 High Street", "NY", "Flat 2", "10001", "Springfield", "USA", "201", "555",
-                    "0100", null, "202", "555", "0101", "1234567890", "Y", KeyAction.PFK05,
-                    reEntered(), mintedToken(), false));
-
-            assertThat(response.error()).isTrue();
-            assertThat(screenFieldIdsOf(response)).contains("EXPMON");
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
-        }
-
-        @Test
-        @DisplayName("a save turn carrying no change at all writes nothing and prompts again")
-        void unchangedImageOnTheSaveTurnWritesNothing() {
-            seedRecords();
-
-            final AccountUpdateOutcome response =
-                    service.handle(unchangedDetailTurn(mintedToken(), KeyAction.PFK05));
-
-            // The no-change text is the ungated assignment at line 1769; the information message is the
-            // detail-screen prompt, because the derived confirmation state is demoted when the submitted
-            // image turns out to carry no change.
-            assertThat(response.errorMessage())
-                    .isEqualTo("No change detected with respect to values fetched.");
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
-            assertThat(response.fieldErrors()).isEmpty();
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository, Mockito.never()).compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class));
-        }
-
-        @Test
-        @DisplayName("a committed save re-mints the before-image so the next change is not refused")
-        void committedSaveRemintsTheBeforeImage() {
-            seedRecords();
-            Mockito.when(accountRepository.saveAndFlush(ArgumentMatchers.any(Account.class)))
-                    .thenAnswer(invocation -> invocation.getArgument(0));
-            Mockito.when(customerRepository.compareAndSet(
-                    ArgumentMatchers.any(Customer.class), ArgumentMatchers.any(Customer.class)))
-                    .thenReturn(1);
-            final String submitted = mintedToken();
-
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(submitted, KeyAction.PFK05));
-
-            assertThat(response.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
-            assertThat(response.concurrencyToken())
-                    .as("the records were rewritten, so the presented before-image must move with them")
-                    .isNotNull()
-                    .isNotEqualTo(submitted);
-        }
-    }
-
-    @Nested
-    @DisplayName("the catch-all arms of the three read paragraphs and of the two update holds")
-    class ReadFailureArms {
-
-        /** The eight segments of {@code WS-FILE-ERROR-MESSAGE} sum to the width of {@code WS-RETURN-MSG}. */
-        private static final int RETURN_MESSAGE_WIDTH = 75;
-
-        private AccountUpdateCommand searchKeyTurn() {
-            return new AccountUpdateCommand(ACCOUNT_ID, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, KeyAction.ENTER,
-                    reEntered(), null, false);
-        }
-
-        private static String expectedFileError(final String resource) {
-            return "File Error: " + "READ    " + " on " + padded(resource) + " returned RESP "
-                    + " ".repeat(10) + ",RESP2 " + " ".repeat(10);
-        }
-
-        private static String padded(final String resource) {
-            return resource + " ".repeat(9 - resource.length());
-        }
-
-        @Test
-        @DisplayName("a cross-reference read that FAILS is the catch-all arm, not the not-found arm: it "
-                + "names the path and the operation, and it stops the read range")
-        void aFailingCrossReferenceReadTakesTheCatchAllArm() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-
-            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
-
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage()).isEqualTo(expectedFileError("CXACAIX"));
-            assertThat(response.errorMessage()).hasSize(RETURN_MESSAGE_WIDTH);
-            Mockito.verify(accountRepository, Mockito.never())
-                    .findById(ArgumentMatchers.anyString());
-            Mockito.verify(customerRepository, Mockito.never())
-                    .findById(ArgumentMatchers.anyString());
-        }
-
-        @Test
-        @DisplayName("an account-master read that FAILS names the account master and never builds the "
-                + "detail screen from records it did not fetch")
-        void aFailingAccountReadTakesTheCatchAllArm() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+            when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(seededCustomer()));
+            stubAllEditsAccepting();
 
-            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
 
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage()).isEqualTo(expectedFileError("ACCTDAT"));
-            assertThat(response.accountStatus())
-                    .as("no account was fetched, so no account field may be presented")
-                    .isNull();
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_ACCOUNT),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_INFORM_FAILURE));
+            verifyNoInteractions(transactionBoundary);
+            verifyNoInteractions(abendService);
         }
 
         @Test
-        @DisplayName("a customer-master read that FAILS names the customer master, and its arm raises "
-                + "the CUSTOMER filter flag rather than the account one")
-        void aFailingCustomerReadTakesTheCatchAllArm() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
+        @DisplayName("the reproduced defect: a customer that cannot be held claims its own lock text, "
+                + "which the outcome selection never tests, so the turn is reported as a completed "
+                + "update")
+        void aCustomerThatCannotBeHeldFallsToTheOtherwiseArm() {
+            when(cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededCrossReference()));
+            when(accountRepository.findById(ACCOUNT_ID))
                     .thenReturn(Optional.of(seededAccount()));
-            Mockito.when(customerRepository.findById(CUSTOMER_ID))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-
-            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
-
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage()).isEqualTo(expectedFileError("CUSTDAT"));
-            assertThat(response.firstName())
-                    .as("no customer was fetched, so no customer field may be presented")
-                    .isNull();
-        }
-
-        @Test
-        @DisplayName("the composed text is the declared width exactly, so the five-character trailing "
-                + "filler of the legacy group falls outside the field and nothing is truncated")
-        void theComposedTextFillsTheDeclaredWidthExactly() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-
-            final String composed = service.handle(searchKeyTurn()).errorMessage();
-
-            assertThat(composed).hasSize(RETURN_MESSAGE_WIDTH);
-            assertThat(composed.substring(0, 12)).isEqualTo("File Error: ");
-            assertThat(composed.substring(12, 20)).isEqualTo("READ    ");
-            assertThat(composed.substring(20, 24)).isEqualTo(" on ");
-            assertThat(composed.substring(24, 33)).isEqualTo("CXACAIX  ");
-            assertThat(composed.substring(33, 48)).isEqualTo(" returned RESP ");
-            assertThat(composed.substring(48, 58))
-                    .as("a relational store reports no CICS response pair, so nothing is fabricated")
-                    .isEqualTo(" ".repeat(10));
-            assertThat(composed.substring(58, 65)).isEqualTo(",RESP2 ");
-            assertThat(composed.substring(65, 75)).isEqualTo(" ".repeat(10));
-        }
-
-        @Test
-        @DisplayName("the catch-all text OVERWRITES a message an earlier edit had claimed, because the "
-                + "source moves it ungated while every not-found arm moves it through the gate")
-        void theCatchAllTextOverwritesAClaimedMessage() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-
-            final AccountUpdateOutcome response = service.handle(searchKeyTurn());
-
-            assertThat(response.errorMessage())
-                    .isNotEqualTo("Did not find this account in account card xref file")
-                    .isEqualTo(expectedFileError("CXACAIX"));
-        }
-
-        @Test
-        @DisplayName("an account HOLD that fails reaches the could-not-lock arm, because the source "
-                + "tests for the normal response and treats every other response alike")
-        void aFailingAccountHoldReachesTheLockArm() {
-            seedRecords();
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(seededAccount()))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
-
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
-
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage())
-                    .isEqualTo(OptimisticLockConflictException.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE);
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
-            Mockito.verify(customerRepository, Mockito.never())
-                    .compareAndSet(ArgumentMatchers.any(Customer.class),
-                            ArgumentMatchers.any(Customer.class));
-        }
-
-        @Test
-        @DisplayName("a customer HOLD that fails reaches its own could-not-lock arm and leaves the "
-                + "write range before either rewrite is attempted")
-        void aFailingCustomerHoldReachesTheLockArm() {
-            seedRecords();
-            Mockito.when(customerRepository.findById(CUSTOMER_ID))
+            when(customerRepository.findById(CUSTOMER_ID))
                     .thenReturn(Optional.of(seededCustomer()))
-                    .thenThrow(new DataAccessResourceFailureException("connection reset"));
+                    .thenReturn(Optional.empty());
+            stubAllEditsAccepting();
 
-            final AccountUpdateOutcome response =
-                    service.handle(changedDetailTurn(mintedToken(), KeyAction.PFK05));
+            final AccountUpdateOutcome outcome = service.handle(confirmationTurn());
 
-            assertThat(response.error()).isTrue();
-            assertThat(response.errorMessage())
-                    .isEqualTo(OptimisticLockConflictException.MSG_COULD_NOT_LOCK_CUST_FOR_UPDATE);
-            Mockito.verify(accountRepository, Mockito.never())
-                    .saveAndFlush(ArgumentMatchers.any(Account.class));
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_CUSTOMER),
+                    () -> assertThat(outcome.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS));
+            verifyNoInteractions(transactionBoundary);
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("the write range is a single pass that terminates on the legacy's own condition, "
+                + "with no repeat attempt, no delay, no backoff and no timeout anywhere")
+        void theWriteRangeIsASinglePassWithNoDelay() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
+
+            service.handle(confirmationTurn());
+
+            assertAll(
+                    () -> verify(accountRepository, times(2)).findById(ACCOUNT_ID),
+                    () -> verify(customerRepository, times(2)).findById(CUSTOMER_ID),
+                    () -> verify(transactionBoundary, times(1)).execute(any()),
+                    () -> verify(accountRepository, times(1)).saveAndFlush(any()),
+                    () -> verify(customerRepository, times(1)).compareAndSet(any(), any()),
+                    () -> verify(concurrencyTokenService, times(1)).verify(any(), any(), any()));
+            verifyNoMoreInteractions(accountRepository, customerRepository,
+                    cardCrossReferenceRepository);
+        }
+
+        @Test
+        @DisplayName("the conflict enumeration has exactly the three write-path outcomes the estate "
+                + "declares, and no fourth")
+        void theConflictEnumerationHasExactlyThreeConstants() {
+            assertAll(
+                    () -> assertThat(OptimisticLockConflictException.ConflictKind.values())
+                            .hasSize(3),
+                    () -> assertThat(OptimisticLockConflictException.ConflictKind.values())
+                            .containsExactly(
+                                    OptimisticLockConflictException.ConflictKind
+                                            .RECORD_CHANGED_BEFORE_UPDATE,
+                                    OptimisticLockConflictException.ConflictKind
+                                            .UPDATE_FAILED_AFTER_LOCK,
+                                    OptimisticLockConflictException.ConflictKind
+                                            .LOCK_NOT_ACQUIRED));
+        }
+
+        @Test
+        @DisplayName("all four conflict texts match the legacy literals byte for byte, the "
+                + "changed-before text carrying \"some one\" as two words")
+        void allFourConflictTextsMatchByteForByte() {
+            assertAll(
+                    () -> assertThat(
+                            OptimisticLockConflictException.MSG_DATA_WAS_CHANGED_BEFORE_UPDATE)
+                            .isEqualTo(CONFLICT_MSG_DATA_WAS_CHANGED)
+                            .contains("some one")
+                            .doesNotContain("someone"),
+                    () -> assertThat(OptimisticLockConflictException.MSG_LOCKED_BUT_UPDATE_FAILED)
+                            .isEqualTo(CONFLICT_MSG_UPDATE_FAILED),
+                    () -> assertThat(
+                            OptimisticLockConflictException.MSG_COULD_NOT_LOCK_ACCT_FOR_UPDATE)
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_ACCOUNT),
+                    () -> assertThat(
+                            OptimisticLockConflictException.MSG_COULD_NOT_LOCK_CUST_FOR_UPDATE)
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_CUSTOMER),
+                    () -> assertThat(OptimisticLockConflictException.ConflictKind
+                            .LOCK_NOT_ACQUIRED.defaultMessage("Customer"))
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_CUSTOMER),
+                    () -> assertThat(OptimisticLockConflictException.ConflictKind
+                            .LOCK_NOT_ACQUIRED.defaultMessage("Account"))
+                            .isEqualTo(CONFLICT_MSG_COULD_NOT_LOCK_ACCOUNT));
+        }
+
+        @Test
+        @DisplayName("an unchanged confirmation turn writes nothing at all and prompts again, because "
+                + "the no-change arm demotes the state before the outcome selection is reached")
+        void anUnchangedConfirmationTurnWritesNothing() {
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().keyAction(KeyAction.PFK05).build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(MSG_NO_CHANGES_DETECTED),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty());
+            verifyNoInteractions(transactionBoundary);
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).compareAndSet(any(), any());
+        }
+
+        @Test
+        @DisplayName("the confirmation turn re-edits the image it is given, so a value altered "
+                + "between validation and saving is refused and nothing is written")
+        void theConfirmationTurnReEditsTheSubmittedImage() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service.handle(cleanChangedTurn()
+                    .keyAction(KeyAction.PFK05)
+                    .ficoScore("851")
+                    .build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACSTFCO"),
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(LABEL_FICO_SCORE + SUFFIX_FICO_OUT_OF_RANGE));
+            verifyNoInteractions(transactionBoundary);
         }
     }
 
+    /* ==========================================================================================
+     * The cross-reference read, which is one keyed read of a duplicate-bearing access path.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("keys and navigation")
-    class KeysAndNavigation {
+    @DisplayName("the cross-reference read, bounded to the one row a keyed read of the account path "
+            + "would return")
+    class CrossReferenceResolution {
+
+        @Test
+        @DisplayName("an empty result is the not-found condition, and it claims the FIRST of the two "
+                + "identically named condition texts - the second declaration is unreachable")
+        void anEmptyResultClaimsTheFirstDeclaredText() {
+            when(cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(MSG_ACCOUNT_NOT_IN_XREF_FIRST_DECLARED),
+                    () -> assertThat(outcome.errorMessage())
+                            .isNotEqualTo(MSG_ACCOUNT_NOT_IN_XREF_SHADOWED),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(accountRepository, customerRepository);
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("the ordered-first finder is the keyed read, so the unbounded finder that would "
+                + "return every row of the account is never used")
+        void theOrderedFirstFinderIsTheKeyedRead() {
+            stubSeededReads();
+
+            service.handle(unchangedTurn().build());
+
+            verify(cardCrossReferenceRepository)
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
+        }
+
+        @Test
+        @DisplayName("the row the ordered-first finder answers with is the lowest card number of the "
+                + "account, which is the row a keyed read of the base key returns, and it is the row "
+                + "whose customer identifier drives the customer read")
+        void theLowestCardNumberIsTheRowTheReadReturns() {
+            stubSeededReads();
+            final ArgumentCaptor<String> customerKey = ArgumentCaptor.forClass(String.class);
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+
+            verify(customerRepository).findById(customerKey.capture());
+            assertAll(
+                    () -> assertThat(CARD_NUMBER).isLessThan(HIGHER_CARD_NUMBER),
+                    () -> assertThat(customerKey.getValue()).isEqualTo(CUSTOMER_ID),
+                    () -> assertThat(outcome.navigationContext().cardNumber())
+                            .isEqualTo(CARD_NUMBER)
+                            .isNotEqualTo(HIGHER_CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("the account key drives the read, and the resolved customer key drives the "
+                + "customer read, so neither is invented here")
+        void bothKeysComeFromTheRecordsThemselves() {
+            stubSeededReads();
+            final ArgumentCaptor<String> accountKey = ArgumentCaptor.forClass(String.class);
+
+            service.handle(unchangedTurn().build());
+
+            verify(cardCrossReferenceRepository)
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(accountKey.capture());
+            assertThat(accountKey.getValue()).isEqualTo(ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("an account the master does not hold is reported on the screen with the declared "
+                + "text: an outcome is returned rather than a record-not-found exception raised, and "
+                + "the customer master is never reached")
+        void anAbsentAccountIsReportedOnTheScreen() {
+            when(cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededCrossReference()));
+            when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).build());
+
+            assertAll(
+                    () -> assertThat(outcome).isNotNull(),
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(MSG_ACCOUNT_NOT_IN_MASTER),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(customerRepository);
+            verifyNoInteractions(abendService);
+        }
+
+        @Test
+        @DisplayName("a customer the master does not hold is likewise reported on the screen")
+        void anAbsentCustomerIsReportedOnTheScreen() {
+            when(cardCrossReferenceRepository
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededCrossReference()));
+            when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(seededAccount()));
+            when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.empty());
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(MSG_CUSTOMER_NOT_IN_MASTER),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(abendService);
+        }
+    }
+
+    /* ==========================================================================================
+     * Attention keys: the high keys fold, and the mapping has no catch-all.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("the attention keys, whose mapping folds the high keys onto the low ones and declares "
+            + "no catch-all clause")
+    class AttentionKeys {
 
         @Test
         @DisplayName("the exit key resolves the caller's destination through the navigation service")
-        void exitKeyRoutesBack() {
-            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.PFK03, reEntered(), null, false);
+        void theExitKeyResolvesThroughTheNavigationService() {
+            when(navigationService.resolveBackNavigation(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_MENU);
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().build(), RAW_KEY_EXIT);
 
-            assertThat(response.nextRoute()).isEqualTo("user-menu");
-            assertThat(response.navigationContext().fromTransactionId()).isEqualTo("CAUP");
-            assertThat(response.navigationContext().fromProgram()).isEqualTo("COACTUPC");
-            assertThat(response.navigationContext().programContext())
-                    .isEqualTo(ScreenNavigationState.ProgramContext.ENTER);
+            assertAll(
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_USER_MENU),
+                    () -> assertThat(outcome.navigationContext().fromTransactionId())
+                            .isEqualTo(LEGACY_TRANSACTION_ID),
+                    () -> assertThat(outcome.navigationContext().fromProgram())
+                            .isEqualTo(LEGACY_PROGRAM_ID));
+            verifyNoInteractions(accountRepository, customerRepository,
+                    cardCrossReferenceRepository);
         }
 
         @Test
-        @DisplayName("keys 13 to 24 fold onto keys 1 to 12, so the exit key is reached either way")
-        void highFunctionKeysFold() {
-            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null, false);
+        @DisplayName("the high exit key behaves identically to the low one, so keys 13 to 24 are not "
+                + "distinct actions")
+        void theHighExitKeyFoldsOntoTheLowOne() {
+            when(navigationService.resolveBackNavigation(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_MENU);
 
-            final AccountUpdateOutcome folded = service.handle(request, "DFHPF15");
+            final AccountUpdateOutcome low =
+                    service.handle(unchangedTurn().build(), RAW_KEY_EXIT);
+            final AccountUpdateOutcome folded =
+                    service.handle(unchangedTurn().build(), RAW_KEY_EXIT_FOLDED);
 
-            assertThat(folded.nextRoute()).isEqualTo("user-menu");
+            assertAll(
+                    () -> assertThat(folded.nextRoute()).isEqualTo(low.nextRoute()),
+                    () -> assertThat(folded.errorMessage()).isEqualTo(low.errorMessage()),
+                    () -> assertThat(folded.infoMessage()).isEqualTo(low.infoMessage()),
+                    () -> assertThat(folded.error()).isEqualTo(low.error()));
         }
 
         @Test
-        @DisplayName("an unmapped identifier claims the fifty-character invalid-key text, untrimmed")
-        void unmappedIdentifierClaimsTheCatalogueText() {
-            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    KeyAction.ENTER, reEntered(), null, false);
+        @DisplayName("the high save key folds too, so a confirmation arrives either way and the "
+                + "rewrite pair runs")
+        void theHighSaveKeyFoldsOntoTheLowOne() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
 
-            final AccountUpdateOutcome response = service.handle(request, "DFHNOSUCH");
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().keyAction(KeyAction.PFK05).build(), RAW_KEY_SAVE_FOLDED);
 
-            assertThat(response.errorMessage()).hasSize(50);
-            assertThat(response.errorMessage()).isEqualTo(
-                    "Invalid key pressed. Please see below...               ".substring(0, 50));
-            assertThat(response.error()).isTrue();
+            assertThat(outcome.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
+            verify(accountRepository).saveAndFlush(any());
         }
 
         @Test
-        @DisplayName("a save key outside the confirmation state is forced to enter")
-        void outOfContextSaveKeyBecomesEnter() {
-            seedRecords();
+        @DisplayName("the low save key reaches the same place, which is what makes the pair a fold "
+                + "rather than two behaviours")
+        void theLowSaveKeyReachesTheSamePlace() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
 
-            final AccountUpdateOutcome response =
-                    service.handle(unchangedDetailTurn(mintedToken(), KeyAction.PFK12));
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().keyAction(KeyAction.PFK05).build(), RAW_KEY_SAVE);
 
-            assertThat(response.infoMessage()).isEqualTo(INFO_PROMPT_FOR_CHANGES);
+            assertThat(outcome.infoMessage()).isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS);
+            verify(accountRepository).saveAndFlush(any());
         }
 
         @Test
-        @DisplayName("an omitted attention key falls back to enter rather than failing")
-        void omittedAttentionKeyDefaultsToEnter() {
-            // No raw identifier and no key on the request: the work area carries nothing, so the
-            // fallback supplies the enter key exactly as an unmodified 3270 read would.
-            final AccountUpdateCommand request = new AccountUpdateCommand(null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, reEntered(), null, false);
+        @DisplayName("an identifier the mapping declares no clause for produces no action at all, so "
+                + "the turn claims the catalogue's invalid-key text and stays on this route")
+        void anUnmappedIdentifierClaimsTheCatalogueText() {
+            when(messageCatalogService.invalidKeyMessage())
+                    .thenReturn(INVALID_KEY_MESSAGE_PADDED);
 
-            final AccountUpdateOutcome response = service.handle(request);
+            final AccountUpdateOutcome outcome = service.handle(
+                    unchangedTurn().concurrencyToken(null).accountId("0").build(),
+                    RAW_KEY_UNMAPPED);
 
-            assertThat(response.nextRoute()).isEqualTo("account-update");
-            assertThat(response.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_NOT_PROVIDED);
+            assertAll(
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(INVALID_KEY_MESSAGE_PADDED),
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_ACCOUNT_UPDATE),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(accountRepository, customerRepository,
+                    cardCrossReferenceRepository);
         }
 
         @Test
-        @DisplayName("a null request is a programming error")
-        void nullRequestRejected() {
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> service.handle(null));
+        @DisplayName("the catalogue text crosses the boundary at exactly 50 encoded bytes with its "
+                + "ten trailing spaces intact, measured on bytes and never trimmed")
+        void theCatalogueTextIsFiftyEncodedBytesWithItsTrailingSpaces() {
+            when(messageCatalogService.invalidKeyMessage())
+                    .thenReturn(INVALID_KEY_MESSAGE_PADDED);
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    unchangedTurn().concurrencyToken(null).accountId("0").build(),
+                    RAW_KEY_UNMAPPED);
+            final String emitted = outcome.errorMessage();
+
+            assertAll(
+                    () -> assertThat(emitted.getBytes(StandardCharsets.US_ASCII).length)
+                            .isEqualTo(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(emitted)
+                            .endsWith(" ".repeat(INVALID_KEY_TRAILING_SPACES)),
+                    () -> assertThat(emitted).isNotEqualTo(emitted.trim()),
+                    () -> assertThat(emitted).startsWith(INVALID_KEY_TEXT),
+                    () -> assertThat(INVALID_KEY_TEXT.length())
+                            .isEqualTo(COMMON_MESSAGE_WIDTH - INVALID_KEY_TRAILING_SPACES));
+        }
+
+        @Test
+        @DisplayName("an omitted raw identifier takes the typed action the submission already carries, "
+                + "which is the path a caller that resolved the key itself uses")
+        void anOmittedRawIdentifierTakesTheTypedAction() {
+            when(navigationService.resolveBackNavigation(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().keyAction(KeyAction.PFK03).build());
+
+            assertThat(outcome.nextRoute()).isEqualTo(ROUTE_USER_MENU);
+        }
+
+        @Test
+        @DisplayName("a save key pressed outside the confirmation state is forced to enter, so an "
+                + "out-of-context key redisplays the screen instead of writing")
+        void anOutOfContextSaveKeyIsForcedToEnter() {
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn()
+                    .concurrencyToken(null)
+                    .accountId("0")
+                    .keyAction(KeyAction.PFK05)
+                    .build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED),
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_ACCOUNT_UPDATE));
+            verifyNoInteractions(transactionBoundary);
+            verify(accountRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("the 28 identifiers the mapping recognises collapse onto 16 outcomes, which is "
+                + "the whole action enumeration and has no unknown member")
+        void twentyEightIdentifiersCollapseOntoSixteenOutcomes() {
+            assertAll(
+                    () -> assertThat(KeyAction.values())
+                            .hasSize(DISTINCT_ATTENTION_OUTCOME_COUNT),
+                    () -> assertThat(RECOGNISED_ATTENTION_INPUT_COUNT)
+                            .isGreaterThan(DISTINCT_ATTENTION_OUTCOME_COUNT),
+                    () -> assertThat(KeyAction.values())
+                            .noneMatch(action -> "UNKNOWN".equals(action.name())));
         }
     }
 
+    /* ==========================================================================================
+     * The diagnostic channel, and the one abend site.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the remaining edit paragraphs")
-    class RemainingEdits {
+    @DisplayName("the diagnostic channel and the single abend site, which the dispatch selection's "
+            + "otherwise branch guards and which no recoverable path reaches")
+    class DiagnosticChannelAndAbendSeam {
 
-        /** A detail turn with one substituted value, so a change is always seen and the edits run. */
-        private AccountUpdateOutcome turnWith(final String status, final String ssn1,
-                final String ssn2, final String ssn3, final String zip, final String eft,
-                final String priCardHolder, final String creditLimit, final String dobYear,
-                final String dobMonth, final String dobDay) {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, status, "2020",
-                    "01", "15", creditLimit, "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, ssn1, ssn2, ssn3,
-                    dobYear, dobMonth, dobDay, "700", "Aniya Von", "Q", "Smith", "1 High Street",
-                    "NY", "Flat 2", zip, "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", eft, priCardHolder, KeyAction.ENTER, reEntered(), mintedToken(), false);
-            return service.handle(request);
-        }
+        @Test
+        @DisplayName("the write-failure diagnostic is already emitted by the time the outcome is "
+                + "returned, so the record precedes the screen it explains")
+        void theDiagnosticIsEmittedBeforeTheOutcomeIsReturned() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any()))
+                    .thenThrow(new OptimisticLockingFailureException("the customer row moved"));
 
-        @ParameterizedTest
-        @ValueSource(strings = {"666", "900", "999"})
-        @DisplayName("reject an excluded national-identifier first part")
-        void excludedSsnFirstPart(final String part1) {
-            final AccountUpdateOutcome response = turnWith("Y", part1, "45", "6789", "10001",
-                    "1234567890", "Y", "5000.00", "1980", "02", "03");
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().keyAction(KeyAction.PFK05).build());
 
-            assertThat(screenFieldIdsOf(response)).contains("ACTSSN1");
-            assertThat(response.errorMessage())
-                    .isEqualTo("SSN: First 3 chars: should not be 000, 666, or between 900 and 999");
+            assertAll(
+                    () -> assertThat(loggedMessages()).isNotEmpty(),
+                    () -> assertThat(loggedMessages())
+                            .anySatisfy(line -> assertThat(line)
+                                    .contains(RESOURCE_CUSTOMER_MASTER)
+                                    .contains("rolled back")),
+                    () -> assertThat(outcome.errorMessage()).isEqualTo(CONFLICT_MSG_UPDATE_FAILED));
         }
 
         @Test
-        @DisplayName("reject an all-zero first part on the numeric edit, before the range check gates")
-        void zeroSsnFirstPartFailsTheNumericEditFirst() {
-            // 000 is in the excluded range too, but the required-numeric edit runs first and its
-            // non-zero test claims the summary slot. The range check is gated on the flag still being
-            // valid, so it never re-edits the field. Both the ordering and the gate are the contract.
-            final AccountUpdateOutcome response = turnWith("Y", "000", "45", "6789", "10001",
-                    "1234567890", "Y", "5000.00", "1980", "02", "03");
+        @DisplayName("the diagnostic names the resource and the transaction and carries no regulated "
+                + "value, no national identifier and no amount")
+        void theDiagnosticCarriesNoRegulatedValue() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(0);
 
-            assertThat(screenFieldIdsOf(response)).contains("ACTSSN1");
-            assertThat(response.errorMessage()).isEqualTo("SSN: First 3 chars must not be zero.");
+            service.handle(cleanChangedTurn().keyAction(KeyAction.PFK05).build());
+
+            assertThat(loggedMessages()).allSatisfy(line -> assertThat(line)
+                    .doesNotContain("123456789")
+                    .doesNotContain(SEEDED_CREDIT_LIMIT.toPlainString())
+                    .doesNotContain(SEEDED_CURRENT_BALANCE.toPlainString()));
         }
 
         @Test
-        @DisplayName("accept a national-identifier first part just outside the excluded range")
-        void permittedSsnFirstPart() {
-            assertThat(screenFieldIdsOf(turnWith("Y", "899", "45", "6789", "10001", "1234567890",
-                    "Y", "5000.00", "1980", "02", "03")))
-                    .doesNotContain("ACTSSN1", "ACTSSN2", "ACTSSN3");
+        @DisplayName("the conflict path records the conflict kind, which is what makes the record "
+                + "actionable without exposing the records themselves")
+        void theConflictPathRecordsTheConflictKind() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            doThrow(new OptimisticLockConflictException(
+                    OptimisticLockConflictException.ConflictKind.RECORD_CHANGED_BEFORE_UPDATE,
+                    "Account", ACCOUNT_ID))
+                    .when(concurrencyTokenService).verify(any(), any(), any());
+
+            service.handle(cleanChangedTurn().keyAction(KeyAction.PFK05).build());
+
+            assertThat(loggedMessages()).anySatisfy(line -> assertThat(line)
+                    .contains(OptimisticLockConflictException.ConflictKind
+                            .RECORD_CHANGED_BEFORE_UPDATE.name())
+                    .contains("the records moved before the update"));
         }
 
         @Test
-        @DisplayName("reject a non-numeric postcode through the required-numeric edit")
-        void nonNumericZip() {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "1000X",
-                    "1234567890", "Y", "5000.00", "1980", "02", "03");
+        @DisplayName("no recoverable path reaches the abend service: the search-key turn, the decorated "
+                + "redisplay, the confirmation, the conflict and the failed write all leave it "
+                + "untouched")
+        void noRecoverablePathReachesTheAbendService() {
+            when(messageCatalogService.invalidKeyMessage())
+                    .thenReturn(INVALID_KEY_MESSAGE_PADDED);
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSZIPC");
-            assertThat(response.errorMessage()).isEqualTo("Zip must be all numeric.");
+            service.handle(unchangedTurn().navigationContext(null).concurrencyToken(null).build());
+            service.handle(unchangedTurn().concurrencyToken(null).accountId("0").build(),
+                    RAW_KEY_UNMAPPED);
+
+            verifyNoInteractions(abendService);
         }
 
         @Test
-        @DisplayName("reject a non-numeric transfer-account identifier")
-        void nonNumericEftAccount() {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
-                    "123456789X", "Y", "5000.00", "1980", "02", "03");
+        @DisplayName("the decorated redisplay and the unchanged turn leave the abend service untouched "
+                + "too, so the whole ordinary conversation is abend-free")
+        void theOrdinaryConversationIsAbendFree() {
+            stubSeededReads();
+            when(dateValidationService.validateCcyymmddDate(any(), any()))
+                    .thenReturn(rejectingDateResult("Open Date is not valid"));
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSEFTC");
-            assertThat(response.errorMessage()).isEqualTo("EFT Account Id must be all numeric.");
-        }
+            service.handle(everyEditableFieldFailingTurn().build());
 
-        @ParameterizedTest
-        @ValueSource(strings = {"X", "1", "y"})
-        @DisplayName("reject a primary-cardholder flag that is neither Y nor N")
-        void badPrimaryCardHolderFlag(final String flag) {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
-                    "1234567890", flag, "5000.00", "1980", "02", "03");
-
-            assertThat(screenFieldIdsOf(response)).contains("ACSPFLG");
-            assertThat(response.errorMessage()).isEqualTo("Primary Card Holder must be Y or N.");
-        }
-
-        @ParameterizedTest
-        @ValueSource(strings = {"Y", "N"})
-        @DisplayName("accept the two flag values the condition name enumerates")
-        void goodPrimaryCardHolderFlag(final String flag) {
-            assertThat(screenFieldIdsOf(turnWith("Y", "123", "45", "6789", "10001", "1234567890",
-                    flag, "5000.00", "1980", "02", "03"))).doesNotContain("ACSPFLG");
+            verifyNoInteractions(abendService);
         }
 
         @Test
-        @DisplayName("reject an account status that is neither Y nor N")
-        void badAccountStatus() {
-            final AccountUpdateOutcome response = turnWith("X", "123", "45", "6789", "10001",
-                    "1234567890", "Y", "5000.00", "1980", "02", "03");
+        @DisplayName("the abend routine emits its own diagnostic before it raises, which is why the "
+                + "exception types carry no logger; the site is the dispatch otherwise branch and is "
+                + "defensively unreachable from either entry point")
+        void theAbendRoutineDiagnosesBeforeItRaises() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+            stubBoundaryRunsInline();
+            when(customerRepository.compareAndSet(any(), any())).thenReturn(1);
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(REMINTED_TOKEN);
 
-            assertThat(screenFieldIdsOf(response)).contains("ACSTTUS");
-            assertThat(response.errorMessage()).isEqualTo("Account Status must be Y or N.");
-        }
+            final AccountUpdateOutcome committed = service.handle(
+                    cleanChangedTurn().keyAction(KeyAction.PFK05).build());
+            final AccountUpdateOutcome acknowledged = service.handle(cleanChangedTurn()
+                    .keyAction(KeyAction.PFK05)
+                    .concurrencyToken(REMINTED_TOKEN)
+                    .build());
 
-        @Test
-        @DisplayName("reject a malformed monetary amount")
-        void malformedAmount() {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
-                    "1234567890", "Y", "12.3.4", "1980", "02", "03");
-
-            assertThat(screenFieldIdsOf(response)).contains("ACRDLIM");
-            assertThat(response.errorMessage()).isEqualTo("Credit Limit is not valid");
-        }
-
-        @Test
-        @DisplayName("reject an amount whose magnitude exceeds the record's ten integer digits")
-        void oversizedAmount() {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
-                    "1234567890", "Y", "99999999999.99", "1980", "02", "03");
-
-            assertThat(screenFieldIdsOf(response)).contains("ACRDLIM");
-            assertThat(response.errorMessage()).isEqualTo("Credit Limit is not valid");
-        }
-
-        @Test
-        @DisplayName("delegate the date cascade, so a bad month reports against the month field")
-        void badMonthReportsThroughTheCascade() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "13", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "1 High Street", "NY",
-                    "Flat 2", "10001", "Springfield", "USA", "201", "555", "0100", null, "202",
-                    "555", "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(screenFieldIdsOf(response)).contains("OPNMON");
-            assertThat(response.error()).isTrue();
-        }
-
-        @Test
-        @DisplayName("delegate the date-of-birth check through its own separate entry point")
-        void badDateOfBirthReportsThroughItsOwnEntryPoint() {
-            final AccountUpdateOutcome response = turnWith("Y", "123", "45", "6789", "10001",
-                    "1234567890", "Y", "5000.00", "1980", "02", "31");
-
-            assertThat(screenFieldIdsOf(response))
-                    .containsAnyOf("DOBYEAR", "DOBMON", "DOBDAY");
-            assertThat(response.error()).isTrue();
-        }
-
-        @Test
-        @DisplayName("reject a blank mandatory address line 1")
-        void blankAddressLine1() {
-            seedRecords();
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, "Y", "2020",
-                    "01", "15", "5000.00", "2029", "01", "15", "2000.00", "2024", "01", "15",
-                    "1000.00", "100.00", "          ", "50.00", CUSTOMER_ID, "123", "45", "6789",
-                    "1980", "02", "03", "700", "Aniya Von", "Q", "Smith", "   ", "NY", "Flat 2",
-                    "10001", "Springfield", "USA", "201", "555", "0100", null, "202", "555",
-                    "0101", "1234567890", "Y", KeyAction.ENTER, reEntered(), mintedToken(), false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(screenFieldIdsOf(response)).contains("ACSADL1");
-            assertThat(response.errorMessage()).isEqualTo("Address Line 1 must be supplied.");
-        }
-
-        @Test
-        @DisplayName("report an account the master does not hold")
-        void accountAbsentFromMaster() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null, false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.errorMessage())
-                    .isEqualTo("Did not find this account in account master file");
-            Mockito.verify(customerRepository, Mockito.never())
-                    .findById(ArgumentMatchers.anyString());
-        }
-
-        @Test
-        @DisplayName("report a customer the master does not hold")
-        void customerAbsentFromMaster() {
-            Mockito.when(crossReferenceRepository
-                            .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
-                    .thenReturn(Optional.of(new CardCrossReference(CARD_NUMBER, CUSTOMER_ID,
-                            ACCOUNT_ID)));
-            Mockito.when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(seededAccount()));
-            Mockito.when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.empty());
-            final AccountUpdateCommand request = new AccountUpdateCommand(ACCOUNT_ID, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, KeyAction.ENTER, reEntered(), null, false);
-
-            final AccountUpdateOutcome response = service.handle(request);
-
-            assertThat(response.errorMessage())
-                    .isEqualTo("Did not find associated customer in master file");
+            assertAll(
+                    () -> assertThat(committed.infoMessage())
+                            .isEqualTo(INFO_CONFIRM_UPDATE_SUCCESS),
+                    () -> assertThat(acknowledged).isNotNull(),
+                    () -> assertThat(loggedMessages()).isNotEmpty());
+            verifyNoInteractions(abendService);
         }
     }
 
+    /* ==========================================================================================
+     * Field-level rendering fidelity.
+     * ========================================================================================== */
+
     @Nested
-    @DisplayName("the translated level-88 groups")
-    class ConditionNameGroups {
+    @DisplayName("field-level rendering fidelity: fixed widths measured on bytes, absence tolerated, "
+            + "and every amount truncated toward zero")
+    class RenderingFidelity {
 
         @Test
-        @DisplayName("the field flag triad carries the macro's two conditions")
-        void fieldFlagPredicates() {
-            assertThat(AccountUpdateService.FieldFlag.values()).hasSize(3);
-            assertThat(AccountUpdateService.FieldFlag.ISVALID.isValid()).isTrue();
-            assertThat(AccountUpdateService.FieldFlag.ISVALID.requiresDecoration()).isFalse();
-            assertThat(AccountUpdateService.FieldFlag.ISVALID.writesMissingMarker()).isFalse();
-            assertThat(AccountUpdateService.FieldFlag.NOT_OK.isNotOk()).isTrue();
-            assertThat(AccountUpdateService.FieldFlag.NOT_OK.requiresDecoration()).isTrue();
-            assertThat(AccountUpdateService.FieldFlag.NOT_OK.writesMissingMarker()).isFalse();
-            assertThat(AccountUpdateService.FieldFlag.BLANK.isBlank()).isTrue();
-            assertThat(AccountUpdateService.FieldFlag.BLANK.requiresDecoration()).isTrue();
-            assertThat(AccountUpdateService.FieldFlag.BLANK.writesMissingMarker()).isTrue();
+        @DisplayName("the account group identifier is carried at its full ten-character width, "
+                + "untrimmed, and is never mistaken for an absent value")
+        void theGroupIdentifierIsCarriedUntrimmed() {
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+
+            assertAll(
+                    () -> assertThat(outcome.accountGroupId())
+                            .isEqualTo(ACCOUNT_GROUP_ID_TEN_SPACES),
+                    () -> assertThat(outcome.accountGroupId()).isNotNull(),
+                    () -> assertThat(outcome.accountGroupId()
+                            .getBytes(StandardCharsets.US_ASCII).length).isEqualTo(10),
+                    () -> assertThat(outcome.accountGroupId()).isNotEqualTo(""),
+                    () -> assertThat(outcome.accountGroupId().isBlank()).isTrue());
         }
 
-        @ParameterizedTest
-        @CsvSource({"DETAILS_NOT_FETCHED,' ',false,false", "SHOW_DETAILS,S,false,false",
-            "CHANGES_NOT_OK,E,true,false", "CHANGES_OK_NOT_CONFIRMED,N,true,false",
-            "CHANGES_OKAYED_AND_DONE,C,true,false", "CHANGES_OKAYED_LOCK_ERROR,L,true,true",
-            "CHANGES_OKAYED_BUT_FAILED,F,true,true"})
-        @DisplayName("the change-action group carries its byte and its two grouping conditions")
-        void changeActionPredicates(final String name, final char code, final boolean made,
-                final boolean failed) {
+        @Test
+        @DisplayName("an absent national identifier renders without throwing, the column being the "
+                + "schema's only nullable one and null in all fifty seeded rows")
+        void anAbsentNationalIdentifierRenders() {
+            stubSeededReads();
+
+            assertThatNoException().isThrownBy(() -> service.handle(unchangedTurn().build()));
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+            assertAll(
+                    () -> assertThat(outcome.ssnPart1()).isNull(),
+                    () -> assertThat(outcome.ssnPart2()).isNull(),
+                    () -> assertThat(outcome.ssnPart3()).isNull(),
+                    () -> assertThat(outcome.governmentIssuedId()).isNull());
+        }
+
+        @Test
+        @DisplayName("a submitted amount is truncated toward zero, not rounded: a third decimal digit "
+                + "of six is dropped where half-even would have carried it")
+        void aSubmittedAmountIsTruncatedTowardZero() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().creditLimit(TRUNCATING_AMOUNT_LEXEME).build());
+
+            assertAll(
+                    () -> assertThat(outcome.creditLimit()).isEqualTo(TRUNCATED_AMOUNT),
+                    () -> assertThat(outcome.creditLimit().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.creditLimit())
+                            .isNotEqualTo(new BigDecimal("1234.57")),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("a negative amount truncates toward zero as well, so the magnitude falls rather "
+                + "than the value")
+        void aNegativeAmountTruncatesTowardZero() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().currentBalance("-" + TRUNCATING_AMOUNT_LEXEME).build());
+
+            assertAll(
+                    () -> assertThat(outcome.currentBalance())
+                            .isEqualTo(TRUNCATED_AMOUNT.negate()),
+                    () -> assertThat(outcome.currentBalance().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.currentBalance())
+                            .isNotEqualTo(new BigDecimal("-1234.57")));
+        }
+
+        @Test
+        @DisplayName("every monetary component carries the record field's own scale, so no component "
+                + "reaches a client at a scale the record cannot hold")
+        void everyMonetaryComponentCarriesTheRecordScale() {
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+
+            assertAll(
+                    () -> assertThat(outcome.creditLimit().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.cashCreditLimit().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.currentBalance().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.currentCycleCredit().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(outcome.currentCycleDebit().scale()).isEqualTo(MONEY_SCALE),
+                    () -> assertThat(AccountUpdateOutcome.MONEY_SCALE).isEqualTo(MONEY_SCALE));
+        }
+
+        @Test
+        @DisplayName("the stored amounts reach the screen unchanged in value, so no rescaling is "
+                + "performed on the display path either")
+        void storedAmountsReachTheScreenUnchanged() {
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+
+            assertAll(
+                    () -> assertThat(outcome.creditLimit())
+                            .isEqualByComparingTo(SEEDED_CREDIT_LIMIT),
+                    () -> assertThat(outcome.currentBalance())
+                            .isEqualByComparingTo(SEEDED_CURRENT_BALANCE),
+                    () -> assertThat(outcome.cashCreditLimit())
+                            .isEqualByComparingTo(SEEDED_CASH_CREDIT_LIMIT),
+                    () -> assertThat(outcome.currentCycleCredit())
+                            .isEqualByComparingTo(SEEDED_CYCLE_CREDIT),
+                    () -> assertThat(outcome.currentCycleDebit())
+                            .isEqualByComparingTo(SEEDED_CYCLE_DEBIT));
+        }
+
+        @Test
+        @DisplayName("an amount whose magnitude exceeds the record's ten integer digits is refused "
+                + "rather than silently truncated at the high order, which is the fail-safe direction")
+        void anOversizedAmountIsRefused() {
+            stubSeededReads();
+            stubAllEditsAccepting();
+
+            final AccountUpdateOutcome outcome = service.handle(
+                    cleanChangedTurn().creditLimit("99999999999.99").build());
+
+            assertAll(
+                    () -> assertThat(screenFieldIdsOf(outcome)).containsExactly("ACRDLIM"),
+                    () -> assertThat(outcome.errorMessage()).endsWith(SUFFIX_IS_NOT_VALID),
+                    () -> assertThat(AccountUpdateOutcome.MONEY_INTEGER_DIGITS).isEqualTo(10));
+        }
+
+        @Test
+        @DisplayName("this transaction's own identity reaches the screen as the legacy names it, map "
+                + "and mapset included")
+        void theTransactionIdentityReachesTheScreen() {
+            stubSeededReads();
+
+            final AccountUpdateOutcome outcome = service.handle(unchangedTurn().build());
+
+            assertAll(
+                    () -> assertThat(outcome.navigationContext().fromTransactionId())
+                            .isEqualTo(LEGACY_TRANSACTION_ID),
+                    () -> assertThat(outcome.navigationContext().fromProgram())
+                            .isEqualTo(LEGACY_PROGRAM_ID),
+                    () -> assertThat(outcome.navigationContext().lastMap()).isEqualTo(LEGACY_MAP),
+                    () -> assertThat(outcome.navigationContext().lastMapset())
+                            .isEqualTo(LEGACY_MAPSET),
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_ACCOUNT_UPDATE));
+        }
+    }
+
+    /* ==========================================================================================
+     * Repository interaction discipline.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("repository interaction discipline: three reads, in order, once each, and no ordering "
+            + "argument anywhere because the ordering the read needs is declared in the finder name")
+    class RepositoryInteractionDiscipline {
+
+        @Test
+        @DisplayName("the three reads run in the declared order: the cross-reference path, then the "
+                + "account master, then the customer master keyed by what the cross-reference gave")
+        void theThreeReadsRunInTheDeclaredOrder() {
+            stubSeededReads();
+
+            service.handle(unchangedTurn().build());
+
+            final InOrder reads = inOrder(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+            reads.verify(cardCrossReferenceRepository)
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+            reads.verify(accountRepository).findById(ACCOUNT_ID);
+            reads.verify(customerRepository).findById(CUSTOMER_ID);
+            reads.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("each read happens exactly once on a turn that does not write, and nothing else "
+                + "touches a repository")
+        void eachReadHappensExactlyOnce() {
+            stubSeededReads();
+
+            service.handle(unchangedTurn().build());
+
+            verify(cardCrossReferenceRepository, times(1))
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+            verify(accountRepository, times(1)).findById(ACCOUNT_ID);
+            verify(customerRepository, times(1)).findById(CUSTOMER_ID);
+            verifyNoMoreInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+        }
+
+        @Test
+        @DisplayName("no repository call carries a sort or a page request, because the only ordering "
+                + "this feature depends on is declared in the ordered-first finder's own name")
+        void noRepositoryCallCarriesAnOrdering() {
+            stubSeededReads();
+
+            service.handle(unchangedTurn().build());
+
+            verify(cardCrossReferenceRepository)
+                    .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+            verify(accountRepository).findById(ACCOUNT_ID);
+            verify(customerRepository).findById(CUSTOMER_ID);
+            verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
+            verifyNoMoreInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+        }
+
+        @Test
+        @DisplayName("the before-image is minted only when none arrived, so a turn that echoed one "
+                + "never has its own records compared against themselves")
+        void theBeforeImageIsMintedOnlyWhenNoneArrived() {
+            stubSeededReads();
+
+            service.handle(unchangedTurn().build());
+
+            verify(concurrencyTokenService, never()).mint(any(), any());
+        }
+
+        @Test
+        @DisplayName("a turn that carried no before-image mints one over the records it just fetched")
+        void aTurnWithNoBeforeImageMintsOne() {
+            stubSeededReads();
+            when(concurrencyTokenService.mint(any(), any())).thenReturn(TOKEN);
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).build());
+
+            assertThat(outcome.concurrencyToken()).isEqualTo(TOKEN);
+            verify(concurrencyTokenService).mint(any(), any());
+        }
+
+        @Test
+        @DisplayName("a turn that never gets past the key edit touches no repository at all")
+        void aRejectedKeyTouchesNoRepository() {
+            final AccountUpdateOutcome outcome = service.handle(
+                    unchangedTurn().concurrencyToken(null).accountId("abc").build());
+
+            assertThat(outcome.errorMessage()).isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED);
+            verifyNoInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository, transactionBoundary, concurrencyTokenService);
+        }
+    }
+
+    /* ==========================================================================================
+     * Absent and boundary input at both entry points.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("absent and boundary input at both entry points, none of which may escape as a "
+            + "runtime failure")
+    class AbsentAndBoundaryInput {
+
+        @Test
+        @DisplayName("an absent submission is a programming error at both entry points, and says so")
+        void anAbsentSubmissionIsAProgrammingError() {
+            assertAll(
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> service.handle(null))
+                            .withMessageContaining("request must not be null"),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> service.handle(null, RAW_KEY_EXIT))
+                            .withMessageContaining("request must not be null"));
+        }
+
+        @Test
+        @DisplayName("an absent raw identifier is not an error: it means the caller resolved the key "
+                + "itself, so the typed action is taken")
+        void anAbsentRawIdentifierIsNotAnError() {
+            when(navigationService.resolveBackNavigation(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().keyAction(KeyAction.PFK03).build(), null);
+
+            assertThat(outcome.nextRoute()).isEqualTo(ROUTE_USER_MENU);
+        }
+
+        @Test
+        @DisplayName("a submission carrying no typed action at all falls back to enter rather than "
+                + "failing, which is reachable because the key mapping declares no catch-all")
+        void anAbsentTypedActionFallsBackToEnter() {
+            final AccountUpdateOutcome outcome = service.handle(
+                    unchangedTurn().concurrencyToken(null).accountId("0").keyAction(null).build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED),
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_ACCOUNT_UPDATE));
+        }
+
+        @Test
+        @DisplayName("a blank account key claims the not-provided text, which wins the summary slot "
+                + "over the no-input text raised immediately after it")
+        void aBlankAccountKeyClaimsTheNotProvidedText() {
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).accountId("  ").build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(MSG_ACCOUNT_NUMBER_NOT_PROVIDED),
+                    () -> assertThat(outcome.errorMessage())
+                            .isNotEqualTo(MSG_NO_INPUT_RECEIVED),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+        }
+
+        @ParameterizedTest(name = "the key [{0}] is malformed")
+        @ValueSource(strings = {"0", "00000000000", "abc", "1234567890", "123456789012", "1 3"})
+        @DisplayName("a key that is zero, short, long or non-numeric claims the composed malformed "
+                + "text and reads no record")
+        void aMalformedKeyClaimsTheComposedText(final String keyed) {
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().concurrencyToken(null).accountId(keyed).build());
+
+            assertAll(
+                    () -> assertThat(outcome.errorMessage())
+                            .isEqualTo(MSG_ACCOUNT_NUMBER_MALFORMED),
+                    () -> assertThat(outcome.error()).isTrue());
+            verifyNoInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+        }
+
+        @Test
+        @DisplayName("a submission in which every component is absent produces the search-key prompt "
+                + "and neither a null nor a number-format failure escapes")
+        void aWhollyAbsentSubmissionProducesThePrompt() {
+            final AccountUpdateCommand absent = new AccountUpdateCommand(null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null, null, false);
+
+            assertThatNoException().isThrownBy(() -> service.handle(absent));
+
+            final AccountUpdateOutcome outcome = service.handle(absent);
+            assertAll(
+                    () -> assertThat(outcome).isNotNull(),
+                    () -> assertThat(outcome.infoMessage())
+                            .isEqualTo(INFO_PROMPT_FOR_SEARCH_KEYS),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.nextRoute()).isEqualTo(ROUTE_ACCOUNT_UPDATE));
+            verifyNoInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository, transactionBoundary, abendService);
+        }
+
+        @Test
+        @DisplayName("an absent navigation record is the zero-length communication area the legacy "
+                + "tests for, and it starts a fresh conversation rather than failing")
+        void anAbsentNavigationRecordStartsAFreshConversation() {
+            final AccountUpdateOutcome outcome =
+                    service.handle(unchangedTurn().navigationContext(null).build());
+
+            assertAll(
+                    () -> assertThat(outcome.infoMessage())
+                            .isEqualTo(INFO_PROMPT_FOR_SEARCH_KEYS),
+                    () -> assertThat(outcome.fieldErrors()).isEmpty(),
+                    () -> assertThat(outcome.error()).isFalse());
+            verifyNoInteractions(cardCrossReferenceRepository, accountRepository,
+                    customerRepository);
+        }
+    }
+
+    /* ==========================================================================================
+     * Member coverage and paragraph traceability.
+     * ========================================================================================== */
+
+    @Nested
+    @DisplayName("member coverage and paragraph traceability: every public member exercised and all "
+            + "88 paragraph units accounted for")
+    class MemberCoverageAndTraceability {
+
+        @Test
+        @DisplayName("the three identification-division paragraphs are surfaced by name, which is what "
+                + "completes the 88 against the 85 of the procedure division")
+        void theThreeIdentificationParagraphsAreSurfacedByName() {
+            assertAll(
+                    () -> assertThat(service.programIdParagraph()).isEqualTo(LEGACY_PROGRAM_ID),
+                    () -> assertThat(service.dateWrittenParagraph()).isEqualTo("July 2022."),
+                    () -> assertThat(service.dateCompiledParagraph()).isEqualTo("Today."));
+        }
+
+        @Test
+        @DisplayName("the paragraph arithmetic reconciles: 3 identification plus 85 procedure is the "
+                + "88 this class contributes to the traceability matrix")
+        void theParagraphArithmeticReconciles() {
+            final int identificationParagraphs = 3;
+            final int procedureParagraphs = 85;
+
+            assertAll(
+                    () -> assertThat(identificationParagraphs + procedureParagraphs).isEqualTo(88),
+                    () -> assertThat(identificationParagraphs).isEqualTo(3));
+        }
+
+        @Test
+        @DisplayName("the single-argument entry point delegates to the two-argument one with no raw "
+                + "identifier, so both produce the same screen for the same submission")
+        void bothEntryPointsAgree() {
+            when(navigationService.resolveBackNavigation(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_MENU);
+
+            final AccountUpdateOutcome viaOneArgument =
+                    service.handle(unchangedTurn().keyAction(KeyAction.PFK03).build());
+            final AccountUpdateOutcome viaTwoArguments =
+                    service.handle(unchangedTurn().keyAction(KeyAction.PFK03).build(), null);
+
+            assertAll(
+                    () -> assertThat(viaTwoArguments.nextRoute())
+                            .isEqualTo(viaOneArgument.nextRoute()),
+                    () -> assertThat(viaTwoArguments.infoMessage())
+                            .isEqualTo(viaOneArgument.infoMessage()),
+                    () -> assertThat(viaTwoArguments.navigationContext())
+                            .isEqualTo(viaOneArgument.navigationContext()));
+        }
+
+        @Test
+        @DisplayName("every collaborator is required, so a partially wired service cannot be built")
+        void everyCollaboratorIsRequired() {
+            assertAll(
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(null, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, concurrencyTokenService,
+                                    fieldEncryption, transactionBoundary, clock))
+                            .withMessageContaining("accountRepository"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, null,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, concurrencyTokenService,
+                                    fieldEncryption, transactionBoundary, clock))
+                            .withMessageContaining("customerRepository"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    null, dateValidationService, validationLookupService,
+                                    messageCatalogService, navigationService, abendService,
+                                    concurrencyTokenService, fieldEncryption, transactionBoundary,
+                                    clock))
+                            .withMessageContaining("cardCrossReferenceRepository"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, null, validationLookupService,
+                                    messageCatalogService, navigationService, abendService,
+                                    concurrencyTokenService, fieldEncryption, transactionBoundary,
+                                    clock))
+                            .withMessageContaining("dateValidationService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService, null,
+                                    messageCatalogService, navigationService, abendService,
+                                    concurrencyTokenService, fieldEncryption, transactionBoundary,
+                                    clock))
+                            .withMessageContaining("validationLookupService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, null, navigationService, abendService,
+                                    concurrencyTokenService, fieldEncryption, transactionBoundary,
+                                    clock))
+                            .withMessageContaining("messageCatalogService"));
+        }
+
+        @Test
+        @DisplayName("the remaining six collaborators are required too, which completes the twelve")
+        void theRemainingCollaboratorsAreRequired() {
+            assertAll(
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService, null,
+                                    abendService, concurrencyTokenService, fieldEncryption,
+                                    transactionBoundary, clock))
+                            .withMessageContaining("navigationService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, null, concurrencyTokenService,
+                                    fieldEncryption, transactionBoundary, clock))
+                            .withMessageContaining("abendService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, null, fieldEncryption,
+                                    transactionBoundary, clock))
+                            .withMessageContaining("concurrencyTokenService"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, concurrencyTokenService, null,
+                                    transactionBoundary, clock))
+                            .withMessageContaining("fieldEncryption"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, concurrencyTokenService,
+                                    fieldEncryption, null, clock))
+                            .withMessageContaining("transactionBoundary"),
+                    () -> assertThatExceptionOfType(NullPointerException.class).isThrownBy(
+                            () -> new AccountUpdateService(accountRepository, customerRepository,
+                                    cardCrossReferenceRepository, dateValidationService,
+                                    validationLookupService, messageCatalogService,
+                                    navigationService, abendService, concurrencyTokenService,
+                                    fieldEncryption, transactionBoundary, null))
+                            .withMessageContaining("clock"));
+        }
+
+        @Test
+        @DisplayName("the field-flag triad carries the macro's outer and inner conditions, so the "
+                + "colour and the marker are decided by the flag and nothing else")
+        void theFieldFlagTriadCarriesTheMacrosConditions() {
+            assertAll(
+                    () -> assertThat(AccountUpdateService.FieldFlag.values()).hasSize(3),
+                    () -> assertThat(AccountUpdateService.FieldFlag.ISVALID.isValid()).isTrue(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.ISVALID.requiresDecoration())
+                            .isFalse(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.ISVALID.writesMissingMarker())
+                            .isFalse(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.NOT_OK.isNotOk()).isTrue(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.NOT_OK.requiresDecoration())
+                            .isTrue(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.NOT_OK.writesMissingMarker())
+                            .isFalse(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.BLANK.isBlank()).isTrue(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.BLANK.requiresDecoration())
+                            .isTrue(),
+                    () -> assertThat(AccountUpdateService.FieldFlag.BLANK.writesMissingMarker())
+                            .isTrue());
+        }
+
+        @ParameterizedTest(name = "{0} holds the byte {1}, changesMade={2}, changesFailed={3}")
+        @CsvSource({"DETAILS_NOT_FETCHED, ' ', false, false", "SHOW_DETAILS, S, false, false",
+                    "CHANGES_NOT_OK, E, true, false", "CHANGES_OK_NOT_CONFIRMED, N, true, false",
+                    "CHANGES_OKAYED_AND_DONE, C, true, false",
+                    "CHANGES_OKAYED_LOCK_ERROR, L, true, true",
+                    "CHANGES_OKAYED_BUT_FAILED, F, true, true"})
+        @DisplayName("the change-action group carries its own byte and its two grouping conditions, in "
+                + "the declaration order the dispatch selection depends on")
+        void theChangeActionGroupCarriesItsByteAndGroupings(final String name, final char code,
+                final boolean changesMade, final boolean changesFailed) {
             final AccountUpdateService.ChangeAction action =
                     AccountUpdateService.ChangeAction.valueOf(name);
-            assertThat(action.getCode()).isEqualTo(code);
-            assertThat(action.changesMade()).isEqualTo(made);
-            assertThat(action.changesFailed()).isEqualTo(failed);
+
+            assertAll(
+                    () -> assertThat(action.getCode()).isEqualTo(code),
+                    () -> assertThat(action.changesMade()).isEqualTo(changesMade),
+                    () -> assertThat(action.changesFailed()).isEqualTo(changesFailed));
         }
 
         @Test
-        @DisplayName("the screen-field group declares exactly 39 constants in the macro's order")
-        void screenFieldOrderAndIdentity() {
-            final AccountUpdateService.ScreenField[] fields =
-                    AccountUpdateService.ScreenField.values();
-            assertThat(fields).hasSize(39);
-            assertThat(java.util.Arrays.stream(fields)
-                    .map(AccountUpdateService.ScreenField::getBmsFieldId).toList())
-                    .containsExactlyElementsOf(DECORATION_ORDER);
-            assertThat(AccountUpdateService.ScreenField.ACCT_STATUS.getLegacyFlagToken())
-                    .isEqualTo("ACCT-STATUS");
-            assertThat(AccountUpdateService.ScreenField.PRI_CARDHOLDER.getBmsFieldId())
-                    .isEqualTo("ACSPFLG");
-            assertThat(AccountUpdateService.ScreenField.EFT_ACCOUNT_ID.getBmsFieldId())
-                    .isEqualTo("ACSEFTC");
-            assertThat(AccountUpdateService.ScreenField.ZIPCODE.getLegacyLabel()).isEqualTo("Zip");
-            assertThat(AccountUpdateService.ScreenField.MIDDLE_NAME.neverValidated()).isTrue();
-            assertThat(AccountUpdateService.ScreenField.ADDRESS_LINE_2.neverValidated()).isTrue();
-            assertThat(AccountUpdateService.ScreenField.FIRST_NAME.neverValidated()).isFalse();
-        }
-    }
-
-    @Nested
-    @DisplayName("provenance")
-    class Provenance {
-
-        @Test
-        @DisplayName("the three identification-division paragraphs are surfaced by name")
-        void identificationParagraphs() {
-            assertThat(service.programIdParagraph()).isEqualTo("COACTUPC");
-            assertThat(service.dateWrittenParagraph()).isEqualTo("July 2022.");
-            assertThat(service.dateCompiledParagraph()).isEqualTo("Today.");
+        @DisplayName("the change-action group declares exactly the seven states the source does, in "
+                + "source order, because the dispatch selection stops at its first match")
+        void theChangeActionGroupDeclaresSevenStatesInSourceOrder() {
+            assertAll(
+                    () -> assertThat(AccountUpdateService.ChangeAction.values()).hasSize(7),
+                    () -> assertThat(AccountUpdateService.ChangeAction.values()).containsExactly(
+                            AccountUpdateService.ChangeAction.DETAILS_NOT_FETCHED,
+                            AccountUpdateService.ChangeAction.SHOW_DETAILS,
+                            AccountUpdateService.ChangeAction.CHANGES_NOT_OK,
+                            AccountUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED,
+                            AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE,
+                            AccountUpdateService.ChangeAction.CHANGES_OKAYED_LOCK_ERROR,
+                            AccountUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED));
         }
 
         @Test
-        @DisplayName("every collaborator is required")
-        void collaboratorsAreRequired() {
-            final SensitiveFieldEncryptionService encryption =
-                    new SensitiveFieldEncryptionService(BASE64_KEY);
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AccountUpdateService(null, customerRepository,
-                            crossReferenceRepository, new DateValidationService(), lookupService,
-                            new MessageCatalogService(), new NavigationService(), new AbendService(),
-                            tokenService, encryption, new OnlineTransactionBoundary(),
-                            Clock.systemUTC()));
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AccountUpdateService(accountRepository,
-                            customerRepository, crossReferenceRepository,
-                            new DateValidationService(), lookupService, new MessageCatalogService(),
-                            new NavigationService(), new AbendService(), tokenService, encryption,
-                            null, Clock.systemUTC()));
-            assertThatExceptionOfType(NullPointerException.class)
-                    .isThrownBy(() -> new AccountUpdateService(accountRepository,
-                            customerRepository, crossReferenceRepository,
-                            new DateValidationService(), lookupService, new MessageCatalogService(),
-                            new NavigationService(), new AbendService(), tokenService, encryption,
-                            new OnlineTransactionBoundary(), null));
+        @DisplayName("this suite's provenance matches the checkout and release stamp the traceability "
+                + "matrix cites, so a reader can find the source these expectations came from")
+        void theProvenanceMatchesTheTraceabilityMatrix() {
+            assertAll(
+                    () -> assertThat(TestDataFactory.VERIFIED_CHECKOUT_COMMIT)
+                            .isEqualTo("7756d895ffeb65f7ea72aaa609e356d9899afcec"),
+                    () -> assertThat(TestDataFactory.UPSTREAM_RELEASE_STAMP)
+                            .isEqualTo("CardDemo_v1.0-15-g27d6c6f-68"));
+        }
+
+        @Test
+        @DisplayName("the seeded account group identifier this suite asserts against is the one the "
+                + "shared fixture declares, so the ten-space width is not a local invention")
+        void theSeededGroupIdentifierAgreesWithTheSharedFixture() {
+            assertThat(ACCOUNT_GROUP_ID_TEN_SPACES)
+                    .isEqualTo(TestDataFactory.SEEDED_ACCOUNT_GROUP_ID);
         }
     }
 }

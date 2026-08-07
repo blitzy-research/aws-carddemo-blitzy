@@ -17,32 +17,36 @@
 package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.awspring.cloud.s3.S3Operations;
-import java.io.UncheckedIOException;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.nio.file.StandardCopyOption;
+import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -51,524 +55,1682 @@ import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.launch.JobOperator;
-import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.batch.BatchAutoConfiguration;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.actuate.autoconfigure.tracing.prometheus.PrometheusExemplarsAutoConfiguration;
+import org.springframework.boot.autoconfigure.batch.JobLauncherApplicationRunner;
+import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
-import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.metrics.MetricsAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.metrics.export.simple.SimpleMetricsExportAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.observation.ObservationAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.observation.batch.BatchObservationAutoConfiguration;
-import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
-import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
+import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
-import com.carddemo.config.JpaAuditConfig;
 import com.carddemo.domain.TransactionCategoryBalance;
+import com.carddemo.domain.id.TransactionCategoryBalanceId;
+import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.AbendService;
 import com.carddemo.service.FileMaintenanceService;
+import com.carddemo.service.PostingRecordTransactionBoundary;
+import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.TestDataFactory;
 
 /**
- * The category-balance report job, run end to end against a real PostgreSQL 16 server with the delivered
- * migrations applied.
+ * The category-balance report job, run end to end against a real PostgreSQL 16 server carrying the
+ * delivered migrations, with every expectation built here from first principles rather than from the code
+ * under test.
  *
- * <p>The subject is the translation of the legacy job stream {@code app/jcl/PRTCATBL.jcl} at checkout
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Six measured facts are asserted, each of which
- * a translation can get wrong while still compiling:
+ * <p>Provenance: the translated job stream is {@code app/jcl/PRTCATBL.jcl} (66 lines) read at checkout
+ * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}. The upstream release stamp
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19 is carried only as the provenance string of the
+ * traceability-matrix header; the stamp is not universal across the estate, so nothing here asserts it
+ * against any member. No job-stream, control-card, copybook or program source line is transcribed: the
+ * estate is cited by step name, data-definition name, dataset name, field name, width, offset and count.
  *
- * <ol>
- * <li>The member declares three steps and no condition-code dependency on any of them, so the job runs
- *     all three unconditionally and carries no failure-ending transition.</li>
- * <li>The first step's disposition removes a previous run's output and allocates it when absent, so
- *     clearing an output that does not exist must succeed.</li>
- * <li>The unload emits fifty-byte records - the category-balance layout, which is a different file from
- *     the equally fifty-byte card cross-reference the planning material confused it with.</li>
- * <li>The reprojection emits forty-byte records, thirty-two content bytes and eight blanks, never the
- *     forty-one its own filler run would have produced.</li>
- * <li>The ordering is account identifier, then type code, then category code, all ascending, with the
- *     two zoned-decimal keys compared as signed numbers and the character key lexicographically. Rows
- *     carrying an overpunched category code separate the two readings: lexicographically {@code 0001}
- *     precedes {@code 000A} precedes {@code 000J}, while numerically {@code 000J} is minus one and
- *     sorts first of the three.</li>
- * <li>The balance is not a sort key, which the same rows prove by carrying balances whose own order
- *     contradicts the key order.</li>
- * </ol>
+ * <h2>This job has no application-program antecedent, and that governs what may be asserted</h2>
+ * The planning material describes this job as driven by an application COBOL program. Measured from the
+ * member itself, it is not. Its three steps invoke, in order, the no-op allocation utility at line 21
+ * (a dataset delete-and-allocate and nothing else), the generic copy-utility wrapper procedure at line 29,
+ * and the external sort utility at line 43. There is no application-program step anywhere in the member.
+ * Nothing here therefore asserts program-derived business logic, paragraph-level behaviour, a program's
+ * abend path, or a two-level file-status normalisation performed by a program: only the three
+ * utility-derived steps are asserted. Recorded as a decision-log candidate.
  *
- * <p>The job takes no date parameter and applies no date filter, because the comment at line 41 of the
- * member claims a date filter and a card-number ordering that its control stream does not contain. That
- * absence is asserted rather than assumed.
+ * <h2>The program the plan named reads the card cross-reference, and both layouts are fifty bytes</h2>
+ * The sequential-reader program the plan attributes to this job selects the cross-reference dataset, keys
+ * on the cross-reference card number and splits its record as a sixteen-byte key plus a thirty-four-byte
+ * remainder; it belongs to the file-probe job. The mis-attribution was plausible because <strong>both
+ * record layouts are exactly fifty bytes</strong>, so a width check alone cannot tell them apart. This
+ * class therefore asserts the category-balance <em>field decomposition</em> - an eleven-digit account
+ * identifier, a two-character type code, a four-digit category code, an eleven-byte signed balance and a
+ * twenty-two-byte filler - and separately refutes the cross-reference decomposition. Corroboration worth
+ * recording: only the interest program and the posting program reference the category-balance resource at
+ * all, and both do so transactionally rather than sequentially.
+ *
+ * <h2>The comment at line 41 of the member is untrue</h2>
+ * It claims a parameter-date filter and a card-number ordering. The control stream performs neither, so
+ * this class asserts that the job takes no date parameter, applies no date filter and never orders by card
+ * number, rather than assuming that absence. A separate cosmetic oddity: the comment banner at line 26
+ * carries a stray backtick. Both are recorded as decision-log candidates and neither is reproduced.
+ *
+ * <h2>The fourth sort specification, and why its comparator cannot be shared</h2>
+ * A verb census across all twenty-eight programs finds zero internal sort and zero merge statements: all
+ * ordering in the estate is external, in four distinct specifications, of which this member's is the
+ * fourth. Its keys, at one-based offsets, are the account identifier at 1 for 11 as zoned decimal, the
+ * type code at 12 for 2 as character, and the category code at 14 for 4 as zoned decimal, all ascending;
+ * the balance at 18 for 11 is declared as a field and is <strong>not</strong> a key. <strong>This one
+ * specification mixes zoned-decimal and character keys within itself</strong>, which is why the comparator
+ * belongs privately to the job configuration and is never shared. The decisive cross-job proof that
+ * sharing would be wrong is that byte offset 263 is typed character in the statement job and zoned decimal
+ * in the transaction-report job - the same offset, two typings, two jobs.
+ *
+ * <h2>The fifth contractual output width, and a one-byte conflict inside the specification</h2>
+ * The planning material names four fixed output widths - 80, 100, 133 and 430. This job introduces a
+ * <strong>fifth: 40 bytes</strong>. That is a gap in the plan rather than a misreading of the member, and
+ * it is recorded here as one. The reprojection at lines 53 to 56 assembles an eleven-byte account
+ * identifier, a blank, a two-byte type code, a blank, a four-byte category code, a blank and a
+ * twelve-character edited balance - nine digits, a decimal point and two decimals - which is thirty-two
+ * content bytes, and then declares a nine-byte blank run. Thirty-two plus nine is forty-one, against the
+ * declared record length of forty at line 61. The specification over-runs its own record by exactly one
+ * byte. <strong>Resolved to forty</strong>: thirty-two content bytes followed by exactly eight blanks,
+ * never nine, and never a forty-one-byte line. Recorded as a decision-log candidate citing the
+ * reprojection at lines 53 to 56 against the record length at line 61.
+ *
+ * <h2>Why the posting job runs as set-up</h2>
+ * Measured across the delivered fifty-record category-balance fixture, every row carries the same balance
+ * image and it decodes to zero - exactly one distinct value in fifty rows. A report produced against
+ * unmodified seed data would therefore render the same zero on every line, and neither the balance-editing
+ * projection nor the zoned-decimal sign handling would be observable at all. The posting job is run first,
+ * by name, so that non-zero balances exist before the subject job is launched; it is the only prerequisite
+ * this job has. This class is not a second end-to-end test - the chained pipeline run and the shared golden
+ * comparisons belong to the end-to-end batch pipeline test, and nothing here asserts against those goldens.
+ *
+ * <h2>The filler census is measured and is not uniform</h2>
+ * The delivered category-balance fixture pads its twenty-two-byte filler with the ASCII digit zero, while
+ * the account, card, customer and daily-transaction fixtures pad with the space character and the
+ * cross-reference fixture materialises no filler at all. That census is the contract and is asserted here
+ * against the fixture. The module's own re-emission writes the same run as spaces, because the copybook
+ * declares the filler with no value clause and therefore fixes no byte value; the two are asserted
+ * separately for that reason, and neither is quietly unified with the other.
+ *
+ * <h2>Every expectation is independent of the code under test</h2>
+ * No expected image, ordering or mask is produced by delegating to the job configuration, to the shared
+ * zoned-decimal codec or to any record mapper. The fifty-byte images, the forty-byte report lines, the
+ * overpunched sign byte and the key ordering are all built in this class from plain string arithmetic and
+ * a locally declared overpunch table, so an error copied into the production encoder cannot be copied into
+ * the expectation that is supposed to catch it.
  */
-@DisplayName("category-balance report job, run against a real server: three steps, no gate, "
-        + "fifty-byte unload, forty-byte report")
-final class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
+@SpringBootTest(classes = CategoryBalanceReportJobConfigIT.JobsUnderTest.class,
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+            "spring.main.banner-mode=off",
+            "spring.jpa.hibernate.ddl-auto=none",
+            "management.tracing.enabled=false",
+            // The shared server is already at the head of the migration set before this context starts,
+            // so a second in-context migration would only repeat work and the mappings are read against
+            // a schema the migrations already own. Nothing is generated either way: the setting above is
+            // none, so no table, index or constraint here comes from anywhere but a delivered migration.
+            "spring.flyway.enabled=false",
+            "management.endpoint.health.validate-group-membership=false",
+            // ONE key configures both jobs. Each job configuration falls back to this shared directory
+            // when its own is unset, so setting this one resolves every staged dataset of both the
+            // prerequisite posting run and the subject run. It is fixed rather than temporary because the
+            // value is bound while the context starts, which is before a temporary directory could exist.
+            CategoryBalanceReportJobConfigIT.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + "=${java.io.tmpdir}/" + CategoryBalanceReportJobConfigIT.STAGING_SUBDIRECTORY,
+            // Both logical names are stated rather than left to their defaults, so that the destinations
+            // this class inspects are provably the ones configuration resolved and not paths it invented.
+            CategoryBalanceReportJobConfigIT.BACKUP_DATASET_BASE_PROPERTY
+                    + "=" + CategoryBalanceReportJobConfigIT.BACKUP_DATASET_BASE,
+            CategoryBalanceReportJobConfigIT.REPORT_DATASET_PROPERTY
+                    + "=" + CategoryBalanceReportJobConfigIT.REPORT_DATASET})
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@DisplayName("category-balance report job against a real server: three ungated steps, a fifty-byte "
+        + "unload and a forty-byte report of thirty-two content bytes and eight blanks")
+class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
 
-    /** Rows the reference seed loads from {@code app/data/ASCII/tcatbal.txt}. */
+    // -----------------------------------------------------------------------------------------------
+    // Configuration keys and logical names. Property keys and dataset names are estate identifiers, so
+    // they are stated here as literals; no filesystem path is written anywhere in this class.
+    // -----------------------------------------------------------------------------------------------
+
+    /** The one staging-directory key both job configurations fall back to. */
+    static final String SHARED_STAGING_DIRECTORY_PROPERTY = "carddemo.batch.staging-directory";
+
+    /** Key of the logical name of the generation-group base the unload writes a new generation of. */
+    static final String BACKUP_DATASET_BASE_PROPERTY =
+            "carddemo.batch.category-balance-report.backup-dataset-base";
+
+    /** Key of the logical name of the report dataset the first step clears and the third step writes. */
+    static final String REPORT_DATASET_PROPERTY =
+            "carddemo.batch.category-balance-report.report-dataset";
+
+    /** Directory beneath the platform temporary directory that this class's staged datasets resolve in. */
+    static final String STAGING_SUBDIRECTORY = "carddemo-category-balance-report-it";
+
+    /** Logical name of the backup generation-group base, as the legacy stream names that resource. */
+    static final String BACKUP_DATASET_BASE = "AWS.M2.CARDDEMO.TCATBALF.BKUP";
+
+    /** Logical name of the report dataset, as the legacy stream names that resource. */
+    static final String REPORT_DATASET = "AWS.M2.CARDDEMO.TCATBALF.REPT";
+
+    /** Classpath location of the delivered category-balance fixture, discovered on the test classpath. */
+    private static final String CATEGORY_BALANCE_FIXTURE = "fixtures/input/tcatbal.txt";
+
+    /** Classpath location of the delivered cross-reference fixture, used only to contrast the layouts. */
+    private static final String CROSS_REFERENCE_FIXTURE = "fixtures/input/cardxref.txt";
+
+    /** Classpath location of the delivered daily-transaction fixture the prerequisite run consumes. */
+    private static final String DAILY_TRANSACTION_FIXTURE = "fixtures/input/dailytran.txt";
+
+    // -----------------------------------------------------------------------------------------------
+    // The layout, declared independently of the production mapper so that this class is an oracle and
+    // not an echo. Every figure below is measured from the copybook and from the member.
+    // -----------------------------------------------------------------------------------------------
+
+    /** Width of the account identifier, the first key part. */
+    private static final int ACCOUNT_ID_WIDTH = 11;
+
+    /** Width of the transaction type code, the second key part and the only character-typed key. */
+    private static final int TYPE_CODE_WIDTH = 2;
+
+    /** Width of the transaction category code, the third key part. */
+    private static final int CATEGORY_CODE_WIDTH = 4;
+
+    /** Width of the whole composite key: eleven plus two plus four. */
+    private static final int COMPOSITE_KEY_WIDTH = ACCOUNT_ID_WIDTH + TYPE_CODE_WIDTH
+            + CATEGORY_CODE_WIDTH;
+
+    /** Width of the signed zoned-decimal balance field. */
+    private static final int BALANCE_WIDTH = 11;
+
+    /** Implied decimal positions the balance carries. */
+    private static final int BALANCE_SCALE = 2;
+
+    /** Integer digit positions the balance carries, and the index of the mask's decimal point. */
+    private static final int BALANCE_INTEGER_DIGITS = BALANCE_WIDTH - BALANCE_SCALE;
+
+    /** Width of the trailing filler run of the record. */
+    private static final int FILLER_WIDTH = 22;
+
+    /** Bytes of the record the key and the balance occupy: seventeen plus eleven. */
+    private static final int MAPPED_PREFIX_WIDTH = COMPOSITE_KEY_WIDTH + BALANCE_WIDTH;
+
+    /** Encoded width of one unloaded record: twenty-eight mapped bytes plus twenty-two filler bytes. */
+    private static final int UNLOAD_RECORD_WIDTH = MAPPED_PREFIX_WIDTH + FILLER_WIDTH;
+
+    /** Width of the edited balance the reprojection emits: nine digits, a point and two decimals. */
+    private static final int BALANCE_MASK_WIDTH = BALANCE_WIDTH + 1;
+
+    /** Width of one blank separator the reprojection places between two fields. */
+    private static final int SEPARATOR_WIDTH = 1;
+
+    /** Content bytes the reprojection emits before its trailing blank run. */
+    private static final int REPORT_CONTENT_WIDTH = ACCOUNT_ID_WIDTH + SEPARATOR_WIDTH + TYPE_CODE_WIDTH
+            + SEPARATOR_WIDTH + CATEGORY_CODE_WIDTH + SEPARATOR_WIDTH + BALANCE_MASK_WIDTH;
+
+    /** The declared record length of the report, and the resolution of the one-byte conflict. */
+    private static final int REPORT_RECORD_WIDTH = 40;
+
+    /** Trailing blanks a report line carries: eight, never the nine the reprojection declares. */
+    private static final int REPORT_TRAILING_BLANKS = REPORT_RECORD_WIDTH - REPORT_CONTENT_WIDTH;
+
+    /** The blank run the reprojection itself declares, which would have produced a forty-first byte. */
+    private static final int DECLARED_TRAILING_BLANKS = 9;
+
+    /** The over-long record the declared blank run would have produced, asserted never to be emitted. */
+    private static final int OVER_RUN_RECORD_WIDTH = REPORT_CONTENT_WIDTH + DECLARED_TRAILING_BLANKS;
+
+    /** Width of the cross-reference card number, the leading field of the layout this job does NOT read. */
+    private static final int CROSS_REFERENCE_KEY_WIDTH = 16;
+
+    /** Width of the cross-reference remainder, which with its key totals the same fifty bytes. */
+    private static final int CROSS_REFERENCE_REMAINDER_WIDTH = 34;
+
+    /** Encoded width of one delivered cross-reference fixture record, whose filler is not materialised. */
+    private static final int CROSS_REFERENCE_FIXTURE_RECORD_WIDTH = 36;
+
+    /** Key width of the transaction-category record, kept only to keep the two composites distinct. */
+    private static final int TRANSACTION_CATEGORY_KEY_WIDTH = 6;
+
+    /** Rows the delivered reference seed loads into the category-balance table. */
     private static final int SEEDED_ROWS = 50;
 
-    /** Additional rows this class inserts to separate numeric from lexicographic key ordering. */
-    private static final int DISCRIMINATING_ROWS = 4;
+    /** Distinct balance values across those seeded rows, measured over the whole fixture. */
+    private static final int SEEDED_DISTINCT_BALANCES = 1;
 
-    /** Every row the unload and the report must carry once this class has inserted its own. */
-    private static final int EXPECTED_ROWS = SEEDED_ROWS + DISCRIMINATING_ROWS;
+    // -----------------------------------------------------------------------------------------------
+    // The overpunched sign convention, declared here rather than imported, because an expectation that
+    // borrowed the production table could not detect an error in it.
+    // -----------------------------------------------------------------------------------------------
 
-    /** A seeded account identifier, so the foreign key to the account master resolves. */
-    private static final String SEEDED_ACCOUNT = "00000000001";
+    /** Final-byte encodings of a positive zero through a positive nine. */
+    private static final String POSITIVE_OVERPUNCH = "{ABCDEFGHI";
 
-    /** Logical name of the report dataset, as the configuration resolves it by default. */
-    private static final String REPORT_DATASET = "AWS.M2.CARDDEMO.TCATBALF.REPT";
+    /** Final-byte encodings of a negative zero through a negative nine. */
+    private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
 
-    /** Logical name prefix of a backup generation, as the configuration resolves it by default. */
-    private static final String GENERATION_PREFIX = "AWS.M2.CARDDEMO.TCATBALF.BKUP.G";
+    /** The digit that left pads a numeric field to its declared width. */
+    private static final char ZERO_DIGIT = '0';
 
-    /** Logical name prefix of a report generation, which the fixed alias above is replaced from. */
-    private static final String REPORT_GENERATION_PREFIX = REPORT_DATASET + ".G";
+    /** The blank that separates two projected fields and fills the report's trailing run. */
+    private static final char BLANK = ' ';
 
-    /** Width of the key prefix a report line carries: the three keys and their two separators. */
-    private static final int KEY_PREFIX_WIDTH = 19;
+    /** The point the edit mask places between the integer and the fractional digits. */
+    private static final char DECIMAL_POINT = '.';
 
-    /** Staging directory this run's datasets resolve within. */
-    @TempDir
-    private Path stagingDirectory;
+    /** Filler character the delivered category-balance fixture measurably uses. */
+    private static final char FIXTURE_FILLER_CHARACTER = ZERO_DIGIT;
+
+    /** Filler character the module re-emits, the copybook having declared no value for the run. */
+    private static final char REEMITTED_FILLER_CHARACTER = BLANK;
+
+    /** Separator written after each fixed-length record of a staged dataset. */
+    private static final String RECORD_SEPARATOR = "\n";
+
+    /** Every byte either overpunch table can place in a final position, for a membership test. */
+    private static final String SIGN_BYTES = POSITIVE_OVERPUNCH + NEGATIVE_OVERPUNCH;
+
+    /** Suffix a generation still being written carries, so a sealed one can be told from it. */
+    private static final String WORKING_FILE_SUFFIX = ".part";
+
+    /** Upper bound of one instance-metadata query; far above any count this class can produce. */
+    private static final int INSTANCE_QUERY_CEILING = 1000;
+
+    // -----------------------------------------------------------------------------------------------
+    // Legacy identities the diagnostics and the metric tags carry. Step names are identifiers.
+    // -----------------------------------------------------------------------------------------------
+
+    /** Legacy step name the clear-down equivalent reports, and its metric tag value. */
+    private static final String LEGACY_CLEAR_STEP = "DELDEF";
+
+    /** Legacy step name the unload equivalent reports, and its metric tag value. */
+    private static final String LEGACY_UNLOAD_STEP = "STEP05R";
+
+    /** Legacy step name the order-and-reproject equivalent reports, and its metric tag value. */
+    private static final String LEGACY_SORT_STEP = "STEP10R";
+
+    /** Metric the shared batch-program skeleton records one timer per lifecycle under. */
+    private static final String COBOL_STEP_TIMER = "carddemo.batch.cobol.step";
+
+    /** Tag naming the legacy step a timer belongs to. */
+    private static final String TIMER_STEP_TAG = "step";
+
+    /** Tag naming the outcome a timer belongs to. */
+    private static final String TIMER_OUTCOME_TAG = "outcome";
+
+    /** Outcome tag value a completed lifecycle records. */
+    private static final String TIMER_COMPLETED_OUTCOME = "COMPLETED";
+
+    // -----------------------------------------------------------------------------------------------
+    // The rows this class adds, on a SEEDED account because the schema constrains the account key.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The highest seeded account identifier, used for every row this class adds.
+     *
+     * <p>A seeded account is not a convenience: the schema carries a foreign key from the category-balance
+     * account key to the account master, so an unseeded identifier would be refused. The highest one is
+     * chosen so that the rows added here sort to the end of the report and can be asserted as an ordered
+     * tail without depending on how the seeded and posted rows interleave ahead of them.
+     */
+    private static final String DISCRIMINATING_ACCOUNT = "00000000050";
+
+    /** Type code of the three rows that separate a numeric category reading from a character one. */
+    private static final String SEEDED_TYPE_CODE = "01";
+
+    /** Type code that sorts after every code the seed and the posting run produce, as a character. */
+    private static final String TRAILING_TYPE_CODE = "0Z";
+
+    /** Category code the seed and the posting run use, whose zoned reading is plus one. */
+    private static final String SEEDED_CATEGORY_CODE = "0001";
+
+    /** Category code whose overpunched final byte makes its zoned reading minus one. */
+    private static final String NEGATIVE_CATEGORY_CODE = "000J";
+
+    /** Category code whose zoned reading is plus two. */
+    private static final String HIGHER_CATEGORY_CODE = "0002";
+
+    /** Balance of the row whose category reads minus one. */
+    private static final BigDecimal BALANCE_ON_NEGATIVE_CATEGORY = new BigDecimal("7.00");
+
+    /** Balance of the row whose category reads plus one, and the negative value the mask must render. */
+    private static final BigDecimal NEGATIVE_BALANCE = new BigDecimal("-5.00");
+
+    /** Balance of the row whose category reads plus two, filling every declared integer digit. */
+    private static final BigDecimal WIDEST_BALANCE = new BigDecimal("123456789.99");
+
+    /** Balance of the trailing row, proving the mask never blanks a zero. */
+    private static final BigDecimal ZERO_BALANCE = new BigDecimal("0.00");
+
+    // -----------------------------------------------------------------------------------------------
+    // Collaborators, taken from the delivered application context. The database and the report file I/O
+    // are real; only the object-store edge is replaced, and it is replaced by a bean rather than by a
+    // reset-between-methods override so that a job launched from any method finds it stubbed.
+    // -----------------------------------------------------------------------------------------------
+
+    /** The context itself, so that the absence of a start-up launcher can be asserted by bean type. */
+    @Autowired
+    private ApplicationContext context;
+
+    /** The environment, so that the shipped inertness settings can be read rather than assumed. */
+    @Autowired
+    private Environment environment;
+
+    /** The framework's registry, which is how the operational surface finds a job by name. */
+    @Autowired
+    private JobRegistry jobRegistry;
+
+    /** The framework's operator, which advances a job to its next instance by name. */
+    @Autowired
+    private JobOperator jobOperator;
+
+    /** The framework's explorer, which resolves a launched identifier to its execution. */
+    @Autowired
+    private JobExplorer jobExplorer;
+
+    /** The repository under the job, used to seed the discriminating rows and to read them back. */
+    @Autowired
+    private TransactionCategoryBalanceRepository categoryBalanceRepository;
+
+    /** Owner of the shared sequential-read and two-level file-status discipline. */
+    @Autowired
+    private FileMaintenanceService fileMaintenanceService;
+
+    /** The registry the shared batch-program skeleton records its lifecycle timers in. */
+    @Autowired
+    private MeterRegistry meterRegistry;
+
+    /** Directory every staged dataset of both jobs resolves within, as configuration resolved it. */
+    @Value("${" + SHARED_STAGING_DIRECTORY_PROPERTY + "}")
+    private String stagingDirectory;
+
+    /** Logical name of the report dataset, as configuration resolved it. */
+    @Value("${" + REPORT_DATASET_PROPERTY + "}")
+    private String reportDatasetName;
+
+    /** Logical name of the backup generation-group base, as configuration resolved it. */
+    @Value("${" + BACKUP_DATASET_BASE_PROPERTY + "}")
+    private String backupDatasetBaseName;
+
+    /** The report lines the two runs produced, captured once so each contract is asserted separately. */
+    private final List<String> reportLines = new ArrayList<>();
+
+    /** The unloaded records the first run produced, captured for the same reason. */
+    private final List<String> unloadedRecords = new ArrayList<>();
+
+    /** Encoded size of the report artefact, captured before anything reads its contents. */
+    private long reportArtefactBytes;
+
+    /** Encoded size of the unloaded artefact, captured for the same reason. */
+    private long unloadArtefactBytes;
 
     /** Creates the test class. */
     CategoryBalanceReportJobConfigIT() {
+        // Intentionally empty: every collaborator arrives by injection and every fixture by measurement.
     }
 
     /**
-     * The job's collaborators, assembled directly rather than through the application entry point so
-     * that a defect elsewhere in the bean graph can neither mask nor manufacture a result here.
+     * The two jobs and exactly the collaborators they declare, assembled explicitly.
+     *
+     * <p><strong>Explicitly rather than by scanning the application entry point, and that is a
+     * correctness requirement rather than a preference.</strong> A scan rooted at the base package
+     * reaches the test tree as well as the production tree, and several test classes here publish nested
+     * configurations of their own that declare the same repository beans; a scanned context therefore
+     * fails to refresh on a duplicate bean definition that has nothing to do with the job under test.
+     * Naming the slice also keeps the reason for every bean visible: a defect elsewhere in the bean graph
+     * can neither mask nor manufacture a result here.
+     *
+     * <p>The database is real and carries the delivered migrations, and the staging store, the generation
+     * publication lock, the job-boundary listener, the shared read discipline and both jobs are the
+     * production classes. Only the remote object store is stood in for, because reaching one would make an
+     * external service a prerequisite of a database-focused test; the same upload operations are proven
+     * against the AWS emulator by the object-store integration tier. Neither the database nor the report
+     * and unload file I/O is stood in for.
+     *
+     * <p>The clock is pinned to the shared fixed instant so that anything stamping a timestamp agrees with
+     * the seeded fixtures rather than drifting away from them a day at a time.
      */
     @Configuration(proxyBeanMethods = false)
+    @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
+    @Import({CategoryBalanceReportJobConfig.class, PostTransactionJobConfig.class, BatchConfig.class,
+            FileMaintenanceService.class, TransactionPostingService.class,
+            PostingRecordTransactionBoundary.class, AbendService.class, RecordWriter.class,
+            FixedWidthFlatFileReaderFactory.class, BatchStagingArea.class, StagedGenerationStore.class,
+            AdvisoryGenerationPublicationLock.class})
+    @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = TransactionCategoryBalanceRepository.class)
     @EntityScan(basePackageClasses = TransactionCategoryBalance.class)
-    // AdvisoryGenerationPublicationLock is imported because the generation store now requires the
-    // per-base publication lock, and this slice runs against a real PostgreSQL server, so the
-    // production lock is the faithful choice rather than a direct-run stand-in.
-    @Import({BatchConfig.class, JpaAuditConfig.class, CategoryBalanceReportJobConfig.class,
-            FixedWidthFlatFileReaderFactory.class, StagedGenerationStore.class,
-            AdvisoryGenerationPublicationLock.class, FileMaintenanceService.class,
-            AbendService.class})
-    static class JobUnderTest {
+    static class JobsUnderTest {
 
         /** Creates the configuration. */
-        JobUnderTest() {
+        JobsUnderTest() {
+            // Intentionally empty: this configuration publishes two beans and holds no state.
         }
 
         /**
-         * Keeps this PostgreSQL-focused integration test deterministic at the object-store boundary.
-         * The real staging store and job listener remain active; {@code BatchAwsIntegrationIT} covers
-         * the same upload operations against LocalStack.
+         * The one clock of this slice, pinned rather than read from the system.
          *
-         * @return an object store that accepts uploads and reports no older retained generations
+         * <p>Published here because the slice deliberately does not import the persistence-auditing
+         * configuration that publishes a clock in the application, and because a system clock would let an
+         * assertion about a derived date mean something different on every run.
+         *
+         * @return the shared fixed clock
+         */
+        @Bean
+        Clock fixedClock() {
+            return FIXED_CLOCK;
+        }
+
+        /**
+         * The object-store edge: it accepts an upload, reports that nothing is already staged so a local
+         * input is read, and reports no retained older generation so retention has nothing to remove.
+         *
+         * @return the stubbed object-store edge
          */
         @Bean
         S3Operations objectStore() {
             final S3Operations objectStore = mock(S3Operations.class);
+            when(objectStore.objectExists(anyString(), anyString())).thenReturn(false);
             when(objectStore.listObjects(anyString(), anyString())).thenReturn(List.of());
             return objectStore;
         }
     }
 
     /**
-     * Inserts the rows that separate a numeric key comparison from a lexicographic one, and whose
-     * balances are deliberately ordered against their keys.
+     * Creates the staging directory this class owns, before any job resolves a dataset within it.
      *
-     * @throws SQLException if the server cannot be reached
+     * <p>Only the directory is prepared. Nothing is deleted here, because the first assertion of the
+     * clear-down contract is that the report output does <em>not</em> exist before the first run, and a
+     * blanket clean would make that assertion true by the test's own hand rather than by the job's.
+     *
+     * @throws IOException if the directory cannot be created
      */
     @BeforeEach
-    void insertDiscriminatingRows() throws SQLException {
-        try (Connection connection = connect(); Statement statement = connection.createStatement()) {
-            statement.executeUpdate("DELETE FROM transaction_category_balance"
-                    + " WHERE trancat_cd IN ('000A','000J') OR trancat_type_cd IN ('0A','0B')");
-            statement.executeUpdate("INSERT INTO transaction_category_balance"
-                    + " (trancat_acct_id, trancat_type_cd, trancat_cd, tran_cat_bal) VALUES"
-                    + " ('" + SEEDED_ACCOUNT + "', '01', '000J', 900.00),"
-                    + " ('" + SEEDED_ACCOUNT + "', '01', '000A', 500.00),"
-                    + " ('" + SEEDED_ACCOUNT + "', '0A', '0001', 100.00),"
-                    + " ('" + SEEDED_ACCOUNT + "', '0B', '0001', 0.05)");
+    void prepareStagingDirectory() throws IOException {
+        Files.createDirectories(stagingRoot());
+    }
+
+    /**
+     * Returns the shared server to the state a fresh migration leaves it in, and removes every dataset
+     * this class staged.
+     *
+     * <p>Both halves are obligations rather than tidiness. The prerequisite posting run commits per record
+     * on its own connections, so no rollback can reach it, and the server is shared by every integration
+     * class in the run - leaving posted transactions and moved balances behind would break classes that
+     * assert against the delivered seed for a reason unrelated to what they test. The staged datasets are
+     * removed because the directory outlives a single Maven run while the framework's execution
+     * identifiers restart, so a stale generation could otherwise appear to belong to a later execution.
+     *
+     * @throws Exception if the server cannot be restored or the staged datasets cannot be removed
+     */
+    @AfterAll
+    void restoreSharedState() throws Exception {
+        restoreSeededState();
+        final Path root = stagingRoot();
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        try (Stream<Path> staged = Files.list(root)) {
+            for (final Path artefact : staged.toList()) {
+                if (Files.isRegularFile(artefact)) {
+                    Files.deleteIfExists(artefact);
+                }
+            }
         }
     }
 
+    // -----------------------------------------------------------------------------------------------
+    // The contracts.
+    // -----------------------------------------------------------------------------------------------
+
     @Test
-    @DisplayName("the whole job runs twice over: three steps every time, the clear succeeds whether or "
-            + "not a prior report exists, and each execution owns its own generation")
-    void theJobRunsEndToEnd() throws Exception {
-        final long executionsBefore = jobExecutionRows();
+    @Order(1)
+    @DisplayName("registered under its own name with exactly three steps and no condition-code gate, and "
+            + "nothing whatsoever ran when the context came up")
+    void theJobIsRegisteredWithThreeUngatedStepsAndNothingRanAtStartUp() throws Exception {
+        assertThat(this.jobRegistry.getJobNames())
+                .as("the operational surface launches by name, so the job has to be registered under one")
+                .contains(CategoryBalanceReportJobConfig.JOB_NAME, PostTransactionJobConfig.JOB_NAME);
 
-        runner().run(context -> {
-            assertThat(context).hasNotFailed();
-            assertThat(jobExecutionRows())
-                    .as("bringing the context up must not fire a run")
-                    .isEqualTo(executionsBefore);
+        final Job job = this.jobRegistry.getJob(CategoryBalanceReportJobConfig.JOB_NAME);
+        assertThat(job)
+                .as("a flow job is the shape a condition-code gate, a split or a parallel flow produces. "
+                        + "Step-level condition codes exist on exactly four steps in the whole estate - "
+                        + "three in the statement job and one in the backup job - and none of them is in "
+                        + "this member, so a simple sequential job is the only faithful shape")
+                .isExactlyInstanceOf(SimpleJob.class);
+        assertThat(((SimpleJob) job).getStepNames())
+                .as("the three steps the member declares, in the order it declares them: the clear-down "
+                        + "standing in for the no-op allocation utility, the unload standing in for the "
+                        + "copy-utility wrapper, and the order-and-reproject standing in for the external "
+                        + "sort. No application-program step exists in the member to add a fourth")
+                .containsExactly(
+                        CategoryBalanceReportJobConfig.CLEAR_PRIOR_REPORT_STEP_NAME,
+                        CategoryBalanceReportJobConfig.UNLOAD_STEP_NAME,
+                        CategoryBalanceReportJobConfig.SORT_AND_REPROJECT_STEP_NAME)
+                .doesNotHaveDuplicates()
+                .hasSize(CategoryBalanceReportJobConfig.STEP_COUNT);
 
-            final JobRegistry registry = context.getBean(JobRegistry.class);
-            assertThat(registry.getJobNames())
-                    .as("the batch controller launches by name, so the job must be registered under one")
-                    .contains(CategoryBalanceReportJobConfig.JOB_NAME);
-
-            final Job job = registry.getJob(CategoryBalanceReportJobConfig.JOB_NAME);
-            assertThat(job)
-                    .as("a flow job is the shape a condition-code gate produces, and the member declares "
-                            + "no gate on any step")
-                    .isInstanceOf(SimpleJob.class);
-            assertThat(((SimpleJob) job).getStepNames())
-                    .containsExactly(
-                            CategoryBalanceReportJobConfig.CLEAR_PRIOR_REPORT_STEP_NAME,
-                            CategoryBalanceReportJobConfig.UNLOAD_STEP_NAME,
-                            CategoryBalanceReportJobConfig.SORT_AND_REPROJECT_STEP_NAME)
-                    .doesNotHaveDuplicates()
-                    .hasSize(CategoryBalanceReportJobConfig.STEP_COUNT);
-
-            final JobOperator operator = context.getBean(JobOperator.class);
-            final JobExplorer explorer = context.getBean(JobExplorer.class);
-            final BatchStagingArea stagingArea = context.getBean(BatchStagingArea.class);
-
-            assertThat(report())
-                    .as("the first run must clear an output that does not exist yet")
-                    .doesNotExist();
-            final JobExecution first = run(operator, explorer);
-            assertCompleted(first);
-            assertNoDateParameter(first);
-            verifyReport();
-            assertThat(generations()).hasSize(1);
-            verifyUnload(generations().get(0));
-
-            assertThat(report())
-                    .as("the second run must clear an output that does exist")
-                    .exists();
-            final JobExecution second = run(operator, explorer);
-            assertCompleted(second);
-            assertThat(second.getId()).isNotEqualTo(first.getId());
-            verifyReport();
-
-            assertThat(generations())
-                    .as("a new generation per execution, which is what the relative generation the "
-                            + "member names resolves to")
-                    .hasSize(2);
-            for (final Path generation : generations()) {
-                verifyUnload(generation);
-                verify(stagingArea).publish(generation);
-            }
-            // The sealed REPORT generation of each execution, not the fixed logical alias. The alias is
-            // replaced only by the durable publication that ends a job, so a step that published it
-            // read a path that did not exist yet - which the staging boundary below now refuses.
-            for (final Path generation : reportGenerations()) {
-                verify(stagingArea).publish(generation);
-            }
-            verify(stagingArea, times(4)).publish(any(Path.class));
-
-            assertThat(explorer.findRunningJobExecutions(CategoryBalanceReportJobConfig.JOB_NAME))
-                    .as("nothing may be left running")
-                    .isEmpty();
-        });
+        assertThat(this.environment.getProperty("spring.batch.job.enabled"))
+                .as("the shipped profile disables start-up launching; this reads the setting rather than "
+                        + "restating it, so a profile that lost it fails here")
+                .isEqualTo("false");
+        assertThat(this.environment.getProperty("spring.batch.job.name"))
+                .as("naming a job would launch it at start-up")
+                .isNull();
+        assertThat(this.context.getBeansOfType(JobLauncherApplicationRunner.class))
+                .as("the framework's own start-up launcher must not be published")
+                .isEmpty();
+        assertThat(this.context.getBeansOfType(CommandLineRunner.class))
+                .as("no start-up runner of any kind may exist to fire a job as a side effect of a refresh")
+                .isEmpty();
+        assertThat(this.context.getBeansOfType(ApplicationRunner.class))
+                .as("no start-up runner of any kind may exist to fire a job as a side effect of a refresh")
+                .isEmpty();
+        assertThat(this.jobExplorer.findRunningJobExecutions(CategoryBalanceReportJobConfig.JOB_NAME))
+                .as("nothing may be running before this class launches anything")
+                .isEmpty();
     }
 
-    // ------------------------------------------------------------------ the runtime
+    @Test
+    @Order(2)
+    @DisplayName("the posting run supplies the non-zero balances the delivered seed cannot, because all "
+            + "fifty seeded rows carry one and the same zero balance")
+    void thePostingRunSuppliesTheBalancesTheSeedCannotSupply() throws Exception {
+        // The one server is shared by every integration class in the run, and a batch job commits per
+        // record on its own connections so no rollback can reach it. Starting from the state a fresh
+        // migration leaves - which is the opt-in reset the shared base offers rather than a context
+        // discard - is what makes the seeded census below a measurement instead of a hope.
+        restoreSeededState();
+
+        assertThat(distinctBalances())
+                .as("measured over the whole delivered fixture: fifty rows, one distinct balance, and it "
+                        + "decodes to zero. A report produced against this state alone would render the "
+                        + "same zero on every line, so neither the edit mask nor the sign handling would "
+                        + "be observable - which is why the posting job runs first")
+                .hasSize(SEEDED_DISTINCT_BALANCES)
+                .containsExactly(ZERO_BALANCE);
+        assertThat(this.categoryBalanceRepository.count()).isEqualTo(SEEDED_ROWS);
+
+        stageDailyTransactionInput();
+        final JobExecution posting = launch(PostTransactionJobConfig.JOB_NAME);
+        assertThat(posting.getStatus())
+                .as("the prerequisite run has to complete, or the balances the subject job reports are "
+                        + "still the seeded zeros. Its input is the delivered three-hundred-record "
+                        + "daily-transaction fixture, staged under the logical name its own configuration "
+                        + "resolves")
+                .isEqualTo(BatchStatus.COMPLETED);
+
+        assertThat(distinctBalances())
+                .as("the posting run moved balances, so the edit mask and the sign handling are now "
+                        + "observable in the report the subject job produces")
+                .hasSizeGreaterThan(SEEDED_DISTINCT_BALANCES);
+        assertThat(this.categoryBalanceRepository.count())
+                .as("the posting arm creates a category-balance row for a key it does not find, so the "
+                        + "population grows past the seeded fifty")
+                .isGreaterThan(SEEDED_ROWS);
+
+        addDiscriminatingRows();
+    }
+
+    @Test
+    @Order(3)
+    @DisplayName("runs twice over: three completed steps every time, a clear-down that succeeds whether or "
+            + "not a prior report exists, and no date parameter on either launch")
+    void theJobRunsTwiceOverWithAnIdempotentClearDown() throws Exception {
+        removeStaleArtefactsOfThisJob();
+        final int instancesBefore = reportJobInstanceCount();
+
+        assertThat(reportDataset())
+                .as("the first run has to clear an output that is not there. The legacy data definition "
+                        + "allocates the dataset when it is absent and deletes it at normal end, so the "
+                        + "step cannot fail on a first run and neither may its equivalent")
+                .doesNotExist();
+        final JobExecution first = launch(CategoryBalanceReportJobConfig.JOB_NAME);
+        assertCompletedWithThreeSteps(first);
+        assertNoDateOrCardParameter(first);
+
+        assertThat(reportDataset())
+                .as("the second run has to clear an output that IS there, which is the other half of the "
+                        + "idempotence the disposition promises")
+                .exists();
+        final JobExecution second = launch(CategoryBalanceReportJobConfig.JOB_NAME);
+        assertCompletedWithThreeSteps(second);
+        assertNoDateOrCardParameter(second);
+        assertThat(second.getId())
+                .as("each launch is its own instance, which is what advancing a job by name produces")
+                .isNotEqualTo(first.getId());
+
+        assertThat(reportJobInstanceCount())
+                .as("exactly the two runs this method launched, and not one more: nothing else started a "
+                        + "run of this job while the context was alive")
+                .isEqualTo(instancesBefore + 2);
+
+        final List<Path> generations = backupGenerations();
+        assertThat(generations)
+                .as("a new generation per execution, which is what the relative generation the member "
+                        + "names resolves to. Retention belongs to the generation store and its limit of "
+                        + "five, not to this job")
+                .hasSize(2);
+        final List<String> firstGeneration =
+                Files.readAllLines(generations.get(0), StandardCharsets.US_ASCII);
+        assertThat(Files.readAllLines(generations.get(1), StandardCharsets.US_ASCII))
+                .as("nothing changed between the runs, so the two unloads are byte-identical; a "
+                        + "difference here would mean the unload was not a function of the cluster alone")
+                .isEqualTo(firstGeneration);
+
+        this.unloadArtefactBytes = Files.size(generations.get(0));
+        this.unloadedRecords.clear();
+        this.unloadedRecords.addAll(firstGeneration);
+        this.reportArtefactBytes = Files.size(reportDataset());
+        this.reportLines.clear();
+        this.reportLines.addAll(Files.readAllLines(reportDataset(), StandardCharsets.US_ASCII));
+
+        assertThat(this.unloadedRecords).isNotEmpty();
+        assertThat(this.reportLines)
+                .as("the reprojection emits one line per unloaded record")
+                .hasSameSizeAs(this.unloadedRecords);
+    }
+
+    @Test
+    @Order(4)
+    @DisplayName("the unload is the fifty-byte CATEGORY-BALANCE layout - eleven-digit account, "
+            + "two-character type, four-digit category, eleven-byte signed balance, twenty-two-byte "
+            + "filler - and provably not the equally fifty-byte cross-reference layout")
+    void theUnloadCarriesTheCategoryBalanceDecomposition() {
+        requireCapturedArtefacts();
+
+        final long content = encodedLengthOf(this.unloadedRecords);
+        assertThat(content % UNLOAD_RECORD_WIDTH)
+                .as("the unloaded artefact is a whole number of fifty-byte records; %d encoded byte(s) "
+                        + "over %d record(s) leaves a remainder", content, this.unloadedRecords.size())
+                .isZero();
+        assertThat(content).isEqualTo((long) this.unloadedRecords.size() * UNLOAD_RECORD_WIDTH);
+        assertThat(this.unloadArtefactBytes)
+                .as("the staged dataset carries one separator byte after each fixed-length record, which "
+                        + "the record images themselves do not; stating the accounting keeps the "
+                        + "multiple-of-fifty claim above about the records rather than about the file")
+                .isEqualTo((long) this.unloadedRecords.size()
+                        * (UNLOAD_RECORD_WIDTH + RECORD_SEPARATOR.length()));
+
+        for (final String record : this.unloadedRecords) {
+            assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
+                    .as("every unloaded record is the declared fifty encoded bytes, never trimmed: <%s>",
+                            record)
+                    .isEqualTo(UNLOAD_RECORD_WIDTH);
+
+            assertThat(record.substring(0, ACCOUNT_ID_WIDTH))
+                    .as("an eleven-digit account identifier opens the record")
+                    .hasSize(ACCOUNT_ID_WIDTH)
+                    .containsOnlyDigits();
+            assertThat(record.substring(ACCOUNT_ID_WIDTH, COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH))
+                    .as("a two-character type code follows it, and it is the one character-typed key of "
+                            + "this specification, so it is not asserted to be numeric")
+                    .hasSize(TYPE_CODE_WIDTH)
+                    .isNotBlank();
+            assertZonedField(
+                    record.substring(COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH, COMPOSITE_KEY_WIDTH),
+                    CATEGORY_CODE_WIDTH, "the four-byte category code");
+            assertZonedField(record.substring(COMPOSITE_KEY_WIDTH, MAPPED_PREFIX_WIDTH), BALANCE_WIDTH,
+                    "the eleven-byte signed balance");
+            assertThat(record.substring(MAPPED_PREFIX_WIDTH))
+                    .as("a twenty-two-byte filler run closes the record. The module re-emits it as the "
+                            + "space character because the copybook declares the run with no value clause "
+                            + "and therefore fixes no byte value; the delivered fixture's own measured "
+                            + "census, which is the ASCII digit zero, is asserted against the fixture "
+                            + "itself rather than against this re-emission")
+                    .hasSize(FILLER_WIDTH)
+                    .isEqualTo(String.valueOf(REEMITTED_FILLER_CHARACTER).repeat(FILLER_WIDTH));
+
+            // THE DECISIVE REFUTATION OF THE OTHER FIFTY-BYTE LAYOUT. In the cross-reference record the
+            // byte at this index falls inside an eleven-digit account identifier and is therefore a
+            // digit; here it is the overpunched final byte of the balance and is never one. A width
+            // check cannot tell the two layouts apart, because both are fifty bytes - this can.
+            final char signByte = record.charAt(MAPPED_PREFIX_WIDTH - 1);
+            assertThat(SIGN_BYTES.indexOf(signByte))
+                    .as("the byte at zero-based index %d is the overpunched sign of the balance, one of "
+                            + "%s. In the cross-reference layout - a sixteen-character card number and a "
+                            + "thirty-four-byte remainder, also totalling fifty bytes - the same index "
+                            + "sits inside an eleven-digit account identifier, so it would be a digit "
+                            + "there. It is '%s' here", MAPPED_PREFIX_WIDTH - 1, SIGN_BYTES, signByte)
+                    .isNotNegative();
+            assertThat(Character.isDigit(signByte))
+                    .as("and it is provably not a digit, which is what the other fifty-byte layout would "
+                            + "have put at that index")
+                    .isFalse();
+        }
+
+        assertThat(CROSS_REFERENCE_KEY_WIDTH + CROSS_REFERENCE_REMAINDER_WIDTH)
+                .as("the arithmetic that made the mis-attribution plausible: the cross-reference layout "
+                        + "is also exactly fifty bytes")
+                .isEqualTo(UNLOAD_RECORD_WIDTH);
+        assertThat(COMPOSITE_KEY_WIDTH + BALANCE_WIDTH + FILLER_WIDTH)
+                .as("and so is this one, from a completely different decomposition: seventeen plus eleven "
+                        + "plus twenty-two")
+                .isEqualTo(UNLOAD_RECORD_WIDTH);
+
+        final List<TransactionCategoryBalance> rows = rowsInClusterKeyOrder();
+        final List<String> expected = new ArrayList<>();
+        rows.forEach(row -> expected.add(expectedUnloadRecord(row)));
+        assertThat(this.unloadedRecords)
+                .as("byte for byte against an image this class builds from the layout alone, in the "
+                        + "cluster's own composite-key order, which is the order a sequential read of an "
+                        + "indexed cluster returns")
+                .isEqualTo(expected);
+    }
+
+    @Test
+    @Order(5)
+    @DisplayName("every report line is exactly forty encoded bytes - thirty-two content bytes and EXACTLY "
+            + "EIGHT blanks, never the forty-one the reprojection's own nine-byte run would give")
+    void theReportResolvesTheOneByteConflictToForty() {
+        requireCapturedArtefacts();
+
+        assertThat(OVER_RUN_RECORD_WIDTH)
+                .as("the conflict, stated as arithmetic: thirty-two content bytes plus the nine-byte "
+                        + "blank run the reprojection at lines 53 to 56 declares is forty-one, against "
+                        + "the record length of forty declared at line 61")
+                .isEqualTo(REPORT_RECORD_WIDTH + 1);
+        assertThat(REPORT_TRAILING_BLANKS)
+                .as("resolved in favour of the declared record length, so the run is eight and not nine")
+                .isEqualTo(DECLARED_TRAILING_BLANKS - 1)
+                .isEqualTo(8);
+
+        final long content = encodedLengthOf(this.reportLines);
+        assertThat(content % REPORT_RECORD_WIDTH)
+                .as("the reprojected artefact is a whole number of forty-byte records; %d encoded byte(s) "
+                        + "over %d line(s) leaves a remainder", content, this.reportLines.size())
+                .isZero();
+        assertThat(content).isEqualTo((long) this.reportLines.size() * REPORT_RECORD_WIDTH);
+        assertThat(this.reportArtefactBytes)
+                .as("one separator byte per record on the staged dataset, as with the unload")
+                .isEqualTo((long) this.reportLines.size()
+                        * (REPORT_RECORD_WIDTH + RECORD_SEPARATOR.length()));
+
+        for (final String line : this.reportLines) {
+            final int encoded = line.getBytes(StandardCharsets.US_ASCII).length;
+            assertThat(encoded)
+                    .as("the declared record length is the dataset contract, measured in encoded bytes "
+                            + "and never trimmed: <%s>", line)
+                    .isEqualTo(REPORT_RECORD_WIDTH);
+            assertThat(encoded)
+                    .as("and never the forty-first byte the declared blank run would have produced")
+                    .isNotEqualTo(OVER_RUN_RECORD_WIDTH);
+
+            final String trailing = line.substring(REPORT_CONTENT_WIDTH);
+            assertThat(trailing)
+                    .as("exactly eight trailing blanks. Eight against nine is precisely the defect, so "
+                            + "the count is asserted rather than the emptiness of a trimmed tail")
+                    .hasSize(REPORT_TRAILING_BLANKS)
+                    .isEqualTo(String.valueOf(BLANK).repeat(REPORT_TRAILING_BLANKS));
+            assertThat(trailing.chars().filter(character -> character == BLANK).count())
+                    .as("counted, so a nine-blank run could not satisfy this by being mostly blank")
+                    .isEqualTo(REPORT_TRAILING_BLANKS);
+
+            assertThat(line.charAt(ACCOUNT_ID_WIDTH))
+                    .as("a single blank separates the account identifier from the type code")
+                    .isEqualTo(BLANK);
+            assertThat(line.charAt(typeCodeOffset() + TYPE_CODE_WIDTH))
+                    .as("a single blank separates the type code from the category code")
+                    .isEqualTo(BLANK);
+            assertThat(line.charAt(categoryCodeOffset() + CATEGORY_CODE_WIDTH))
+                    .as("a single blank separates the category code from the edited balance")
+                    .isEqualTo(BLANK);
+
+            final String mask = editedBalanceOf(line);
+            assertThat(mask)
+                    .as("the edited balance occupies twelve characters: nine integer digits, the point "
+                            + "and two decimals")
+                    .hasSize(BALANCE_MASK_WIDTH)
+                    .doesNotContain(String.valueOf(BLANK));
+            assertThat(mask.charAt(BALANCE_INTEGER_DIGITS))
+                    .as("the decimal point sits at a FIXED position, the tenth character of the mask; a "
+                            + "floating point would move with the magnitude and every downstream reader "
+                            + "of a fixed-width dataset would read the wrong field: <%s>", mask)
+                    .isEqualTo(DECIMAL_POINT);
+            assertThat(mask.substring(0, BALANCE_INTEGER_DIGITS))
+                    .as("every declared integer position carries a digit, leading zeros included, because "
+                            + "the mask is written entirely from the always-print selector and never from "
+                            + "the zero-suppressing one")
+                    .containsOnlyDigits();
+            assertThat(mask.substring(BALANCE_INTEGER_DIGITS + 1))
+                    .as("and both fractional positions carry a digit")
+                    .hasSize(BALANCE_SCALE)
+                    .containsOnlyDigits();
+        }
+
+        assertThat(reportLineFor(SEEDED_TYPE_CODE, NEGATIVE_CATEGORY_CODE))
+                .as("a positive balance renders its digits with the point fixed")
+                .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
+                        NEGATIVE_CATEGORY_CODE, BALANCE_ON_NEGATIVE_CATEGORY));
+        assertThat(reportLineFor(SEEDED_TYPE_CODE, SEEDED_CATEGORY_CODE))
+                .as("a NEGATIVE balance renders the same twelve-character shape at the same fixed point. "
+                        + "The specification requests no sign character, so the magnitude is what appears "
+                        + "and a negative balance is indistinguishable from its positive counterpart in "
+                        + "this report - a property of the specification, not of the translation")
+                .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
+                        SEEDED_CATEGORY_CODE, NEGATIVE_BALANCE));
+        assertThat(reportLineFor(SEEDED_TYPE_CODE, HIGHER_CATEGORY_CODE))
+                .as("a balance filling every one of the nine declared integer digits still fits the mask")
+                .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
+                        HIGHER_CATEGORY_CODE, WIDEST_BALANCE));
+        assertThat(reportLineFor(TRAILING_TYPE_CODE, SEEDED_CATEGORY_CODE))
+                .as("and a balance of exactly zero renders nine zeros, the point and two more zeros "
+                        + "rather than blanking the field")
+                .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, TRAILING_TYPE_CODE,
+                        SEEDED_CATEGORY_CODE, ZERO_BALANCE));
+    }
+
+    @Test
+    @Order(6)
+    @DisplayName("ordered by account, then type, then category, all ascending, with the two zoned keys "
+            + "read as signed numbers and the character key lexicographically - and the balance is no key")
+    void theOrderingIsAccountThenTypeThenCategoryAscending() {
+        requireCapturedArtefacts();
+
+        final List<TransactionCategoryBalance> rows = rowsInClusterKeyOrder();
+        final List<TransactionCategoryBalance> ordered = new ArrayList<>(rows);
+        ordered.sort(expectedSortSpecification());
+        final List<String> expected = new ArrayList<>();
+        ordered.forEach(row -> expected.add(expectedReportLine(row)));
+        assertThat(this.reportLines)
+                .as("byte for byte against a projection this class orders itself, by decoding the two "
+                        + "zoned keys and comparing the character key as characters. No level of the "
+                        + "ordering is reordered and none is dropped")
+                .isEqualTo(expected);
+
+        final List<String> keys = new ArrayList<>();
+        this.reportLines.forEach(line -> keys.add(keyPrefixOf(line)));
+
+        final List<Long> accounts = new ArrayList<>();
+        this.reportLines.forEach(line ->
+                accounts.add(decodeZonedKey(accountIdentifierOf(line), ACCOUNT_ID_WIDTH)));
+        assertThat(accounts)
+                .as("first level: the account identifier ascending across the whole report")
+                .isSorted();
+
+        assertThat(keys)
+                .as("second and third levels, on one account so the first level is a tie throughout: the "
+                        + "character type code orders 01 before 0Z, and within one type code the "
+                        + "zoned-decimal category code orders minus one before plus one before plus two - "
+                        + "which a character comparison would reverse, putting 000J last")
+                .containsSubsequence(
+                        keyPrefix(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE, NEGATIVE_CATEGORY_CODE),
+                        keyPrefix(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE, SEEDED_CATEGORY_CODE),
+                        keyPrefix(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE, HIGHER_CATEGORY_CODE),
+                        keyPrefix(DISCRIMINATING_ACCOUNT, TRAILING_TYPE_CODE, SEEDED_CATEGORY_CODE));
+
+        assertThat(keys)
+                .as("the report as a whole is NOT in character order, and that is what proves the two "
+                        + "zoned keys were compared as numbers rather than as text")
+                .isNotEqualTo(keys.stream().sorted().toList());
+
+        final List<TransactionCategoryBalance> byBalance = new ArrayList<>(ordered);
+        byBalance.sort(Comparator.comparing(TransactionCategoryBalance::getTranCatBal));
+        final List<String> keysByBalance = new ArrayList<>();
+        byBalance.forEach(row -> keysByBalance.add(
+                keyPrefix(row.getTrancatAcctId(), row.getTrancatTypeCd(), row.getTrancatCd())));
+        assertThat(keys)
+                .as("the balance is declared as a field by the specification and is NOT one of its three "
+                        + "keys. The rows added here carry balances whose own order contradicts the key "
+                        + "order, so an ordering that consulted the balance would differ from this one")
+                .isNotEqualTo(keysByBalance);
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("the delivered fixture carries this record's own measured census: fifty fifty-byte "
+            + "records, a seventeen-byte composite key and a twenty-two-byte ASCII-zero filler")
+    void theDeliveredFixtureCarriesTheMeasuredCensusForThisRecord() {
+        final List<String> fixture = readFixtureRecords(CATEGORY_BALANCE_FIXTURE);
+
+        assertThat(fixture)
+                .as("the delivered category-balance fixture, discovered on the test classpath rather than "
+                        + "read from the legacy tree")
+                .hasSize(SEEDED_ROWS);
+
+        final String positiveZeroBalance = leftPadZeros("", BALANCE_WIDTH - 1)
+                + POSITIVE_OVERPUNCH.charAt(0);
+        for (final String record : fixture) {
+            assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
+                    .as("fifty encoded bytes per record: <%s>", record)
+                    .isEqualTo(UNLOAD_RECORD_WIDTH);
+            assertThat(record.substring(0, ACCOUNT_ID_WIDTH)).containsOnlyDigits();
+            assertThat(record.substring(ACCOUNT_ID_WIDTH, COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH))
+                    .hasSize(TYPE_CODE_WIDTH);
+            assertThat(record.substring(COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH, COMPOSITE_KEY_WIDTH))
+                    .containsOnlyDigits();
+            assertThat(record.substring(COMPOSITE_KEY_WIDTH, MAPPED_PREFIX_WIDTH))
+                    .as("one distinct balance image across all fifty rows, and it is the positive-zero "
+                            + "overpunch this class builds independently from the sign table")
+                    .isEqualTo(positiveZeroBalance);
+            assertThat(record.substring(MAPPED_PREFIX_WIDTH))
+                    .as("THIS record's filler is the ASCII digit zero. The census is measured and is not "
+                            + "uniform: the account, card, customer and daily-transaction fixtures pad "
+                            + "with the space character and the cross-reference fixture materialises no "
+                            + "filler at all, so the fillers are deliberately not unified")
+                    .hasSize(FILLER_WIDTH)
+                    .isEqualTo(String.valueOf(FIXTURE_FILLER_CHARACTER).repeat(FILLER_WIDTH));
+        }
+
+        final String firstRecord = fixture.get(0);
+        final TransactionCategoryBalanceId identifier = new TransactionCategoryBalanceId(
+                firstRecord.substring(0, ACCOUNT_ID_WIDTH),
+                firstRecord.substring(ACCOUNT_ID_WIDTH, COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH),
+                firstRecord.substring(COMPOSITE_KEY_WIDTH - CATEGORY_CODE_WIDTH, COMPOSITE_KEY_WIDTH));
+        assertThat(identifier.getTrancatAcctId() + identifier.getTrancatTypeCd()
+                + identifier.getTrancatCd())
+                .as("the composite identifier is constructed account, then type, then category, and its "
+                        + "three parts reassemble the record's own leading seventeen bytes in that order")
+                .isEqualTo(firstRecord.substring(0, COMPOSITE_KEY_WIDTH))
+                .hasSize(COMPOSITE_KEY_WIDTH);
+        assertThat(COMPOSITE_KEY_WIDTH)
+                .as("seventeen bytes, which is also the key length the cluster definition declares. It is "
+                        + "not the six-byte transaction-category composite - the two are similarly named "
+                        + "in the legacy and conflating them would key this job on the wrong record")
+                .isEqualTo(17)
+                .isNotEqualTo(TRANSACTION_CATEGORY_KEY_WIDTH);
+        assertThat(this.categoryBalanceRepository.findById(identifier))
+                .as("and that ordering resolves a real row, so the argument order is the schema's own")
+                .isPresent();
+
+        assertThat(readFixtureRecords(CROSS_REFERENCE_FIXTURE))
+                .as("the layout the planning material confused this one with. Its copybook record is also "
+                        + "fifty bytes - a sixteen-character card number and a thirty-four-byte remainder "
+                        + "- but its delivered fixture materialises thirty-six bytes and no filler, which "
+                        + "is a second way the two are told apart once a width check has failed to")
+                .isNotEmpty()
+                .allSatisfy(record -> assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
+                        .isEqualTo(CROSS_REFERENCE_FIXTURE_RECORD_WIDTH));
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("the unload's sequential pass is the shared discipline's GENERIC category-balance entry "
+            + "point, read once, in composite key order, and ending at end of file")
+    void theUnloadUsesTheGenericCategoryBalanceEntryPoint() {
+        final List<String> observed = new ArrayList<>();
+        final FileMaintenanceService.FileReadSummary summary =
+                this.fileMaintenanceService.readTransactionCategoryBalanceFile(record ->
+                        observed.add(keyPrefix(record.getTrancatAcctId(), record.getTrancatTypeCd(),
+                                record.getTrancatCd())));
+
+        assertThat(summary.endedAtEndOfFile())
+                .as("end of file is the only route by which a sequential reader returns rather than "
+                        + "abending; the terminal status was <%s>", summary.terminalFileStatus())
+                .isTrue();
+        assertThat(summary.recordsRead())
+                .as("every row of the cluster, counted by the pass itself")
+                .isEqualTo(this.categoryBalanceRepository.count());
+        assertThat(observed)
+                .as("the pass delivers each record as it reads it, so the sink sees exactly the rows the "
+                        + "count reports")
+                .hasSize((int) summary.recordsRead());
+
+        final List<String> expected = new ArrayList<>();
+        rowsInClusterKeyOrder().forEach(row -> expected.add(
+                keyPrefix(row.getTrancatAcctId(), row.getTrancatTypeCd(), row.getTrancatCd())));
+        assertThat(observed)
+                .as("in the cluster's own composite key order, which is the order an explicitly ascending "
+                        + "repository read returns. No cross-reference-oriented entry point of the shared "
+                        + "discipline is used here: that one belongs to the file-probe job")
+                .isEqualTo(expected);
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("one lifecycle timer per legacy step, tagged by step name and completed outcome - "
+            + "presence and shape only, because the estate documents no performance figure")
+    void theProgramLifecycleTimersArePresentAndTagged() {
+        for (final String legacyStep : List.of(LEGACY_CLEAR_STEP, LEGACY_UNLOAD_STEP, LEGACY_SORT_STEP)) {
+            final Timer timer = this.meterRegistry.find(COBOL_STEP_TIMER)
+                    .tag(TIMER_STEP_TAG, legacyStep)
+                    .tag(TIMER_OUTCOME_TAG, TIMER_COMPLETED_OUTCOME)
+                    .timer();
+            assertThat(timer)
+                    .as("the shared batch-program skeleton records one timer per lifecycle under <%s>, "
+                            + "tagged with the legacy step <%s>; its absence means the step ran outside "
+                            + "the instrumented skeleton", COBOL_STEP_TIMER, legacyStep)
+                    .isNotNull();
+            assertThat(timer.count())
+                    .as("both runs of the job recorded a completed lifecycle for <%s>. Only the presence "
+                            + "and the shape of the instrument are asserted; no latency, throughput or "
+                            + "memory figure is, because the legacy estate documents none to compare "
+                            + "against", legacyStep)
+                    .isGreaterThanOrEqualTo(2L);
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Launching, and the assertions shared by both runs.
+    // -----------------------------------------------------------------------------------------------
 
     /**
-     * The context this job runs in: the framework's own auto-configurations over the migrated container,
-     * plus exactly the collaborators the job declares.
+     * Advances one job to its next instance by name and returns the execution that ran.
      *
-     * @return the runner
-     */
-    private ApplicationContextRunner runner() {
-        return new ApplicationContextRunner()
-                .withConfiguration(AutoConfigurations.of(
-                        DataSourceAutoConfiguration.class,
-                        DataSourceTransactionManagerAutoConfiguration.class,
-                        JdbcTemplateAutoConfiguration.class,
-                        HibernateJpaAutoConfiguration.class,
-                        BatchAutoConfiguration.class,
-                        ObservationAutoConfiguration.class,
-                        BatchObservationAutoConfiguration.class,
-                        MetricsAutoConfiguration.class,
-                        CompositeMeterRegistryAutoConfiguration.class,
-                        SimpleMetricsExportAutoConfiguration.class))
-                .withUserConfiguration(JobUnderTest.class)
-                .withBean(BatchStagingArea.class,
-                        CategoryBalanceReportJobConfigIT::stagingAreaRefusingAnAbsentFile)
-                .withPropertyValues(
-                        "spring.datasource.url=" + jdbcUrl(),
-                        "spring.datasource.username=" + databaseUser(),
-                        "spring.datasource.password=" + databasePassword(),
-                        "spring.jpa.hibernate.ddl-auto=validate",
-                        "spring.jpa.open-in-view=false",
-                        "spring.batch.job.enabled=false",
-                        "spring.batch.jdbc.initialize-schema=always",
-                        "carddemo.aws.s3.batch-staging-bucket=category-balance-it",
-                        "carddemo.batch.category-balance-report.staging-directory="
-                                + this.stagingDirectory.toAbsolutePath());
-    }
-
-    /**
-     * Launches the job by name and advances it to its next instance, which is how the batch controller
-     * starts one.
+     * <p>By name and through the framework's own operator, because that is how the module's operational
+     * surface starts a job; no job name is written into this class as a literal.
      *
-     * @param operator the framework's operator
-     * @param explorer the framework's explorer
-     * @return the execution that ran
-     * @throws Exception if the launch is refused
+     * @param jobName the registered job name
+     * @return the execution the launch produced
+     * @throws Exception if the framework refuses the launch
      */
-    private static JobExecution run(final JobOperator operator, final JobExplorer explorer)
-            throws Exception {
-        return explorer.getJobExecution(
-                operator.startNextInstance(CategoryBalanceReportJobConfig.JOB_NAME));
+    private JobExecution launch(final String jobName) throws Exception {
+        return this.jobExplorer.getJobExecution(this.jobOperator.startNextInstance(jobName));
     }
 
     /**
-     * Asserts an execution completed with all three steps completed, so no transition short-circuited it.
+     * Asserts one execution completed with all three of its steps completed.
      *
      * @param execution the execution to inspect
      */
-    private static void assertCompleted(final JobExecution execution) {
-        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+    private static void assertCompletedWithThreeSteps(final JobExecution execution) {
+        assertThat(execution.getStatus())
+                .as("the whole job completes; the member gates nothing, so no step may be skipped")
+                .isEqualTo(BatchStatus.COMPLETED);
         assertThat(execution.getStepExecutions())
-                .as("all three steps run, because no step carries a condition-code gate")
+                .as("all three steps ran and all three completed, which is what having no condition-code "
+                        + "dependency means")
                 .hasSize(CategoryBalanceReportJobConfig.STEP_COUNT)
                 .allSatisfy(step -> assertThat(step.getStatus()).isEqualTo(BatchStatus.COMPLETED));
         assertThat(execution.getStepExecutions())
                 .extracting(StepExecution::getStepName)
                 .doesNotHaveDuplicates();
+        assertThat(execution.getFailureExceptions())
+                .as("a failure-ending transition would leave a recorded failure behind")
+                .isEmpty();
     }
 
     /**
-     * Asserts the launch surface carries no date parameter, guarding the legacy comment that claims a
-     * date filter its control stream does not contain.
+     * Asserts the launch surface carries neither a date parameter nor a card-number parameter.
+     *
+     * <p>This guards the comment at line 41 of the member, which claims a parameter-date filter and a
+     * card-number ordering that its control stream does not contain. The only parameter a launch may carry
+     * is the run identity the shared incrementer mints, which is what lets the job be submitted again.
      *
      * @param execution the execution to inspect
      */
-    private static void assertNoDateParameter(final JobExecution execution) {
+    private static void assertNoDateOrCardParameter(final JobExecution execution) {
         final List<String> keys =
                 new ArrayList<>(execution.getJobParameters().getParameters().keySet());
-
         assertThat(keys)
-                .as("a date parameter here would be the one the line-41 comment describes and the "
-                        + "control stream refuses")
-                .allSatisfy(key -> assertThat(key.toLowerCase(java.util.Locale.ROOT))
-                        .doesNotContain("date"))
+                .as("no date parameter: the member passes no parameter string, so a date key here would "
+                        + "be the filter the line-41 comment describes and the control stream refuses")
+                .allSatisfy(key -> assertThat(key.toLowerCase(Locale.ROOT)).doesNotContain("date"))
+                .as("and no card-number key either, for the same reason")
+                .allSatisfy(key -> assertThat(key.toLowerCase(Locale.ROOT)).doesNotContain("card"))
+                .as("nothing beyond the run identity the incrementer mints")
                 .hasSizeLessThanOrEqualTo(1);
     }
 
-    // ------------------------------------------------------------------ the staged datasets
+    /**
+     * Counts the instances of the subject job the framework has recorded.
+     *
+     * @return the instance count
+     */
+    private int reportJobInstanceCount() {
+        return this.jobExplorer
+                .getJobInstances(CategoryBalanceReportJobConfig.JOB_NAME, 0, INSTANCE_QUERY_CEILING)
+                .size();
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Staged datasets, all resolved from configuration by logical name.
+    // -----------------------------------------------------------------------------------------------
 
     /**
-     * The report dataset this run writes.
+     * The directory configuration resolved for every staged dataset of both jobs.
      *
-     * @return the report path
+     * @return the staging root
      */
-    private Path report() {
-        return this.stagingDirectory.resolve(REPORT_DATASET);
+    private Path stagingRoot() {
+        return Path.of(this.stagingDirectory);
     }
 
     /**
-     * Every backup generation present in the staging directory, in name order.
+     * The report dataset, resolved by its configured logical name within the configured directory.
      *
-     * @return the generations
-     * @throws java.io.IOException if the directory cannot be listed
+     * @return the report dataset
      */
-    private List<Path> generations() throws java.io.IOException {
-        return generationsNamed(GENERATION_PREFIX);
+    private Path reportDataset() {
+        return stagingRoot().resolve(this.reportDatasetName);
     }
 
     /**
-     * Every report generation present in the staging directory, in name order.
+     * Every completed backup generation present in the staging directory, in name order.
      *
-     * <p>Held separately from the backup generations because the two are published by different steps
-     * and only one of them is aliased to a fixed logical name.
+     * <p>A working file still being written carries a distinct suffix and is excluded, so a generation is
+     * counted only once it has been sealed.
      *
-     * @return the report generations
-     * @throws java.io.IOException if the directory cannot be listed
+     * @return the completed generations
+     * @throws IOException if the staging directory cannot be listed
      */
-    private List<Path> reportGenerations() throws java.io.IOException {
-        return generationsNamed(REPORT_GENERATION_PREFIX);
-    }
-
-    /**
-     * Lists the staging directory entries whose names begin with one generation prefix.
-     *
-     * @param prefix the logical generation prefix
-     * @return matching entries in name order
-     * @throws java.io.IOException if the directory cannot be listed
-     */
-    private List<Path> generationsNamed(final String prefix) throws java.io.IOException {
-        try (Stream<Path> entries = Files.list(this.stagingDirectory)) {
+    private List<Path> backupGenerations() throws IOException {
+        try (Stream<Path> entries = Files.list(stagingRoot())) {
             return entries
-                    .filter(path -> path.getFileName().toString().startsWith(prefix))
+                    .filter(Files::isRegularFile)
+                    .filter(path -> generationName(path).startsWith(this.backupDatasetBaseName + '.'))
+                    .filter(path -> !generationName(path).endsWith(WORKING_FILE_SUFFIX))
                     .sorted()
                     .toList();
         }
     }
 
     /**
-     * A staging boundary that refuses a file which does not exist, as the real one does.
+     * Removes datasets of this job's own two logical names left by an earlier build.
      *
-     * <p>An unstubbed mock accepts any path silently, and that is what allowed a step publishing a
-     * logical alias no run had created yet to pass here and fail in the delivered container. The real
-     * boundary opens the file it uploads, so absence surfaces as an {@link UncheckedIOException} wrapping
-     * a {@link NoSuchFileException}; this reproduces exactly that, and nothing else about the upload.
+     * <p>The staging directory outlives one build while the framework's execution identifiers restart with
+     * a fresh database, so a generation from an earlier build could otherwise appear to belong to an
+     * execution of this one. Only the two logical names this job owns are touched, so the prerequisite
+     * run's own staged input and reject generations are left alone. This establishes the precondition the
+     * clear-down contract is then asserted against rather than standing in for it: the job, not this
+     * method, is what has to survive an absent output.
      *
-     * @return the mocked boundary
+     * @throws IOException if the staging directory cannot be listed or an entry cannot be removed
      */
-    private static BatchStagingArea stagingAreaRefusingAnAbsentFile() {
-        final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
-        doAnswer(invocation -> {
-            final Path published = invocation.getArgument(0);
-            if (!Files.exists(published)) {
-                throw new UncheckedIOException("staged batch file could not be read for publication: "
-                        + published, new NoSuchFileException(published.toString()));
+    private void removeStaleArtefactsOfThisJob() throws IOException {
+        try (Stream<Path> entries = Files.list(stagingRoot())) {
+            for (final Path entry : entries.toList()) {
+                final String name = generationName(entry);
+                if (Files.isRegularFile(entry)
+                        && (name.startsWith(this.reportDatasetName)
+                                || name.startsWith(this.backupDatasetBaseName))) {
+                    Files.deleteIfExists(entry);
+                }
             }
-            return null;
-        }).when(stagingArea).publish(any(Path.class));
-        return stagingArea;
+        }
     }
 
     /**
-     * Asserts one generation carries every row at the category-balance record width.
+     * Stages the delivered daily-transaction fixture under the logical name the prerequisite job resolves.
      *
-     * @param generation the generation to inspect
-     * @throws java.io.IOException if it cannot be read
+     * @throws IOException if the fixture cannot be read or the staged copy cannot be written
      */
-    private static void verifyUnload(final Path generation) throws java.io.IOException {
-        final List<String> records = Files.readAllLines(generation, StandardCharsets.US_ASCII);
-
-        assertThat(records).hasSize(EXPECTED_ROWS);
-        assertThat(records).allSatisfy(record ->
-                assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
-                        .as("the unload is the fifty-byte category-balance layout")
-                        .isEqualTo(CategoryBalanceReportJobConfig.UNLOAD_RECORD_LENGTH));
+    private void stageDailyTransactionInput() throws IOException {
+        final Path staged = stagingRoot().resolve(PostTransactionJobConfig.DEFAULT_DALYTRAN_DATASET);
+        try (InputStream fixture = new ClassPathResource(DAILY_TRANSACTION_FIXTURE).getInputStream()) {
+            Files.copy(fixture, staged, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /**
-     * Asserts the report's width contract and its ordering.
+     * The file name of one staged entry, named rather than assumed so a rootless path cannot slip through.
      *
-     * @throws java.io.IOException if it cannot be read
+     * @param staged the staged entry
+     * @return its file name
      */
-    private void verifyReport() throws java.io.IOException {
-        final List<String> lines = Files.readAllLines(report(), StandardCharsets.US_ASCII);
+    private static String generationName(final Path staged) {
+        final Path fileName = staged.getFileName();
+        assertThat(fileName)
+                .as("a staged dataset always names a file; <%s> names none", staged)
+                .isNotNull();
+        return fileName.toString();
+    }
 
-        assertThat(lines).hasSize(EXPECTED_ROWS);
-        assertThat(lines).allSatisfy(line -> {
-            assertThat(line.getBytes(StandardCharsets.US_ASCII).length)
-                    .as("the declared record length is the dataset contract, and the reprojection's own "
-                            + "filler run would have produced one byte more")
-                    .isEqualTo(CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH)
-                    .isNotEqualTo(41);
-            assertThat(line.substring(CategoryBalanceReportJobConfig.REPORT_CONTENT_LENGTH))
-                    .as("eight trailing blanks, not nine")
-                    .isEqualTo(" ".repeat(CategoryBalanceReportJobConfig.REPORT_TRAILING_FILLER_LENGTH));
-            assertThat(line.charAt(11)).isEqualTo(' ');
-            assertThat(line.charAt(14)).isEqualTo(' ');
-            assertThat(line.charAt(19)).isEqualTo(' ');
-        });
+    // -----------------------------------------------------------------------------------------------
+    // The rows this class adds, written through the real repository rather than through a statement.
+    // -----------------------------------------------------------------------------------------------
 
-        final List<String> keys = new ArrayList<>();
-        lines.forEach(line -> keys.add(line.substring(0, KEY_PREFIX_WIDTH)));
+    /**
+     * Adds the rows that separate a numeric key reading from a character one, and whose balances are
+     * deliberately ordered against their keys.
+     *
+     * <p>Written through the repository and the entity, so no statement text is assembled anywhere in this
+     * class and the values pass through exactly the mapping the job reads them back through. All four rows
+     * sit on one seeded account, so the first ordering level is a tie across them and the second and third
+     * levels are what separates them. No two of them decode to the same key triple, so the ordering is a
+     * strict total order and nothing depends on how equal keys happen to be arranged.
+     */
+    private void addDiscriminatingRows() {
+        final List<TransactionCategoryBalance> rows = List.of(
+                categoryBalance(SEEDED_TYPE_CODE, NEGATIVE_CATEGORY_CODE, BALANCE_ON_NEGATIVE_CATEGORY),
+                categoryBalance(SEEDED_TYPE_CODE, SEEDED_CATEGORY_CODE, NEGATIVE_BALANCE),
+                categoryBalance(SEEDED_TYPE_CODE, HIGHER_CATEGORY_CODE, WIDEST_BALANCE),
+                categoryBalance(TRAILING_TYPE_CODE, SEEDED_CATEGORY_CODE, ZERO_BALANCE));
+        this.categoryBalanceRepository.saveAll(rows);
+        this.categoryBalanceRepository.flush();
 
-        assertThat(keys.subList(0, 5))
-                .as("account identifier ascending first; then the character type code "
-                        + "lexicographically, so 01 precedes 0A precedes 0B; and within one type code "
-                        + "the zoned-decimal category code numerically, so the overpunched minus one "
-                        + "sorts ahead of plus one - which a lexicographic comparison would reverse")
-                .containsExactly(
-                        SEEDED_ACCOUNT + " 01 000J",
-                        SEEDED_ACCOUNT + " 01 0001",
-                        SEEDED_ACCOUNT + " 01 000A",
-                        SEEDED_ACCOUNT + " 0A 0001",
-                        SEEDED_ACCOUNT + " 0B 0001");
-
-        assertThat(keys.subList(0, 5))
-                .as("the balance is not a key: these five carry 900.00, 0.00, 500.00, 100.00 and 0.05, "
-                        + "whose own order contradicts the key order above")
-                .isNotEqualTo(List.of(
-                        SEEDED_ACCOUNT + " 01 0001",
-                        SEEDED_ACCOUNT + " 0B 0001",
-                        SEEDED_ACCOUNT + " 0A 0001",
-                        SEEDED_ACCOUNT + " 01 000A",
-                        SEEDED_ACCOUNT + " 01 000J"));
-
-        // EDIT=(TTTTTTTTT.TT) is written entirely from the always-print digit selector, so every one
-        // of the eleven digit positions carries a digit for every value and nothing is ever blanked.
-        assertThat(amountOf(lines.get(0)))
-                .as("every declared integer digit position is emitted, leading zeros included")
-                .isEqualTo("000000900.00");
-        assertThat(amountOf(lines.get(1)))
-                .as("a balance of exactly zero renders nine zeros, the point and two more zeros - it "
-                        + "does NOT blank the field, which is what the zero-suppressing selector would "
-                        + "have done and this specification does not use it")
-                .isEqualTo("000000000.00");
-        assertThat(amountOf(lines.get(4)))
-                .as("a magnitude below one carries nine integer zeros, the point and both fractional "
-                        + "digits")
-                .isEqualTo("000000000.05");
-        assertThat(lines)
-                .as("no line may carry a blank anywhere inside the twelve-character mask")
-                .allSatisfy(line -> assertThat(amountOf(line)).doesNotContain(" "));
-
-        // Beyond the five discriminating rows every key is plainly zero padded, so for that tail - and
-        // ONLY for that tail - a character comparison and a zoned-decimal one agree. The whole file is
-        // deliberately NOT in character order: the overpunched category code above is exactly the row
-        // that separates the two readings, and a file that were in character order throughout would be
-        // evidence that the zoned-decimal typing had been lost.
-        final List<String> plainlyPaddedKeys = new ArrayList<>(keys.subList(5, keys.size()));
-        final List<String> ascending = new ArrayList<>(plainlyPaddedKeys);
-        ascending.sort(null);
-        assertThat(plainlyPaddedKeys)
-                .as("every remaining key is zero padded, so the tail is ascending under either reading")
-                .isEqualTo(ascending)
-                .hasSize(SEEDED_ROWS - 1);
-        assertThat(keys)
-                .as("the file as a whole is NOT in character order, which is what proves the "
-                        + "zoned-decimal keys were compared as numbers")
-                .isNotEqualTo(keys.stream().sorted().toList());
+        for (final TransactionCategoryBalance row : rows) {
+            assertThat(this.categoryBalanceRepository.findById(row.toId()))
+                    .as("each added row is readable back by its own composite identifier <%s>", row.toId())
+                    .isPresent();
+        }
     }
 
     /**
-     * The edited balance a report line carries.
+     * Builds one category-balance row on the discriminating account.
+     *
+     * @param typeCode the two-character type code
+     * @param categoryCode the four-byte category code
+     * @param balance the balance to store
+     * @return the row
+     */
+    private static TransactionCategoryBalance categoryBalance(final String typeCode,
+            final String categoryCode, final BigDecimal balance) {
+
+        return TestDataFactory.transactionCategoryBalance()
+                .accountId(DISCRIMINATING_ACCOUNT)
+                .typeCode(typeCode)
+                .categoryCode(categoryCode)
+                .balance(balance)
+                .build();
+    }
+
+    /**
+     * The distinct balance values the table currently holds.
+     *
+     * @return the distinct balances, each at the column's own scale
+     */
+    private List<BigDecimal> distinctBalances() {
+        return this.categoryBalanceRepository.findAll().stream()
+                .map(TransactionCategoryBalance::getTranCatBal)
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * Every row in the cluster's own composite key order.
+     *
+     * <p>The ordering is stated explicitly because no repository method imposes one, and a read whose order
+     * was left to the server could agree with an expectation by accident.
+     *
+     * @return the rows, ascending by account, then type, then category
+     */
+    private List<TransactionCategoryBalance> rowsInClusterKeyOrder() {
+        return this.categoryBalanceRepository.findAll(
+                Sort.by(Sort.Direction.ASC, "trancatAcctId", "trancatTypeCd", "trancatCd"));
+    }
+
+    /**
+     * Fails with a diagnostic naming what is missing when the artefacts of the two runs were not captured.
+     *
+     * <p>Never skips and is never conditional: a missing artefact means the run that produces it did not
+     * complete, and that is a failure rather than a reason to pass quietly.
+     */
+    private void requireCapturedArtefacts() {
+        assertThat(this.unloadedRecords)
+                .as("the unloaded generation of the first run was not captured, which means the run that "
+                        + "produces it did not complete; it is written to the configured generation of <%s> "
+                        + "beneath <%s>", this.backupDatasetBaseName, this.stagingDirectory)
+                .isNotEmpty();
+        assertThat(this.reportLines)
+                .as("the report of the second run was not captured; it is written to <%s> beneath <%s>",
+                        this.reportDatasetName, this.stagingDirectory)
+                .isNotEmpty();
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // THE INDEPENDENT ORACLE. Nothing below delegates to the job configuration, to the shared
+    // zoned-decimal codec or to any record mapper: every expected image, mask and ordering is built here
+    // from the layout and from a locally declared sign table, so an error copied into the production
+    // encoder cannot be copied into the expectation meant to catch it.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * The total encoded length of a list of record images, excluding any separator between them.
+     *
+     * @param images the record images
+     * @return the summed encoded byte count
+     */
+    private static long encodedLengthOf(final List<String> images) {
+        long total = 0L;
+        for (final String image : images) {
+            total += image.getBytes(StandardCharsets.US_ASCII).length;
+        }
+        return total;
+    }
+
+    /**
+     * Builds the fifty-byte record image one row unloads as.
+     *
+     * <p>The numeric key parts are right justified and zero filled, which preserves their significant
+     * leading zeros; the type code is left justified because it is character data; the balance carries its
+     * sign in its final byte; and the trailing run is the filler the module re-emits.
+     *
+     * @param row the row to encode
+     * @return the fifty-character record image
+     */
+    private static String expectedUnloadRecord(final TransactionCategoryBalance row) {
+        final String image = leftPadZeros(row.getTrancatAcctId(), ACCOUNT_ID_WIDTH)
+                + rightPadBlanks(row.getTrancatTypeCd(), TYPE_CODE_WIDTH)
+                + leftPadZeros(row.getTrancatCd(), CATEGORY_CODE_WIDTH)
+                + zonedBalanceImage(row.getTranCatBal())
+                + String.valueOf(REEMITTED_FILLER_CHARACTER).repeat(FILLER_WIDTH);
+        assertThat(image.getBytes(StandardCharsets.US_ASCII).length)
+                .as("the oracle's own image must be the declared width before it may be compared: <%s>",
+                        image)
+                .isEqualTo(UNLOAD_RECORD_WIDTH);
+        return image;
+    }
+
+    /**
+     * Builds the forty-byte report line one row projects to.
+     *
+     * @param row the row to project
+     * @return the forty-character report line
+     */
+    private static String expectedReportLine(final TransactionCategoryBalance row) {
+        return expectedReportLine(row.getTrancatAcctId(), row.getTrancatTypeCd(), row.getTrancatCd(),
+                row.getTranCatBal());
+    }
+
+    /**
+     * Builds the forty-byte report line one key and balance project to.
+     *
+     * <p>Thirty-two content bytes - the three key parts with a single blank between each pair, then the
+     * twelve-character edited balance - followed by exactly eight blanks. Never nine, and therefore never
+     * forty-one bytes.
+     *
+     * @param accountId the account identifier
+     * @param typeCode the type code
+     * @param categoryCode the category code
+     * @param balance the balance
+     * @return the forty-character report line
+     */
+    private static String expectedReportLine(final String accountId, final String typeCode,
+            final String categoryCode, final BigDecimal balance) {
+
+        final StringBuilder line = new StringBuilder(REPORT_RECORD_WIDTH);
+        line.append(leftPadZeros(accountId, ACCOUNT_ID_WIDTH))
+                .append(BLANK)
+                .append(rightPadBlanks(typeCode, TYPE_CODE_WIDTH))
+                .append(BLANK)
+                .append(leftPadZeros(categoryCode, CATEGORY_CODE_WIDTH))
+                .append(BLANK)
+                .append(editedBalanceMask(balance));
+        assertThat(line.length())
+                .as("the oracle's own content run must be thirty-two bytes before the blanks are added")
+                .isEqualTo(REPORT_CONTENT_WIDTH);
+        line.append(String.valueOf(BLANK).repeat(REPORT_TRAILING_BLANKS));
+
+        final String image = line.toString();
+        assertThat(image.getBytes(StandardCharsets.US_ASCII).length)
+                .as("and the completed line must be forty encoded bytes: <%s>", image)
+                .isEqualTo(REPORT_RECORD_WIDTH);
+        return image;
+    }
+
+    /**
+     * Renders the twelve-character edit mask: nine integer digits, the point and two decimals.
+     *
+     * <p>Every declared digit position carries a digit, leading zeros included, and no position is ever
+     * blanked. The specification requests no sign character, so the magnitude is rendered and a negative
+     * balance is indistinguishable from its positive counterpart.
+     *
+     * @param balance the balance to render
+     * @return the twelve-character mask
+     */
+    private static String editedBalanceMask(final BigDecimal balance) {
+        final String digits = magnitudeDigits(balance);
+        return digits.substring(0, BALANCE_INTEGER_DIGITS) + DECIMAL_POINT
+                + digits.substring(BALANCE_INTEGER_DIGITS);
+    }
+
+    /**
+     * Renders the eleven-byte zoned-decimal balance image, folding the sign into the final byte.
+     *
+     * @param balance the balance to encode
+     * @return the eleven-character field image
+     */
+    private static String zonedBalanceImage(final BigDecimal balance) {
+        final String digits = magnitudeDigits(balance);
+        final int finalDigit = digits.charAt(BALANCE_WIDTH - 1) - ZERO_DIGIT;
+        final String overpunch = balance.signum() < 0 ? NEGATIVE_OVERPUNCH : POSITIVE_OVERPUNCH;
+        return digits.substring(0, BALANCE_WIDTH - 1) + overpunch.charAt(finalDigit);
+    }
+
+    /**
+     * The magnitude of one balance as exactly eleven digits, left padded.
+     *
+     * <p>The stored scale is asserted rather than imposed. The column carries two implied decimal
+     * positions, so every value read back from it already has them; a value at any other scale did not come
+     * from the report's own source and rescaling it here would hide that rather than reveal it.
+     *
+     * @param balance the balance whose magnitude is wanted
+     * @return the eleven magnitude digits
+     */
+    private static String magnitudeDigits(final BigDecimal balance) {
+        assertThat(balance.scale())
+                .as("the balance column carries two implied decimal positions, so <%s> should already be "
+                        + "at that scale; the oracle rescales nothing, because the estate declares no "
+                        + "rounding anywhere and truncation is the module-wide rule", balance)
+                .isEqualTo(BALANCE_SCALE);
+        final String digits = balance.unscaledValue().abs().toString();
+        assertThat(digits.length())
+                .as("<%s> needs more than the eleven digit positions the field declares", balance)
+                .isLessThanOrEqualTo(BALANCE_WIDTH);
+        return leftPadZeros(digits, BALANCE_WIDTH);
+    }
+
+    /**
+     * Reads one zoned-decimal field as a signed number, honouring the overpunched final byte.
+     *
+     * @param image the field image, which may be narrower than the declared field
+     * @param width the declared field width
+     * @return the signed value the field carries
+     */
+    private static long decodeZonedKey(final String image, final int width) {
+        final String padded = leftPadZeros(image, width);
+        final String leading = padded.substring(0, width - 1);
+        final char last = padded.charAt(width - 1);
+        if (Character.isDigit(last)) {
+            return Long.parseLong(leading + last);
+        }
+        final int positive = POSITIVE_OVERPUNCH.indexOf(last);
+        if (positive >= 0) {
+            return Long.parseLong(leading + (char) (ZERO_DIGIT + positive));
+        }
+        final int negative = NEGATIVE_OVERPUNCH.indexOf(last);
+        if (negative >= 0) {
+            return -Long.parseLong(leading + (char) (ZERO_DIGIT + negative));
+        }
+        throw new AssertionError("the final byte of the zoned-decimal field <" + image + "> is '" + last
+                + "', which is neither a digit nor one of the overpunched signs "
+                + POSITIVE_OVERPUNCH + NEGATIVE_OVERPUNCH + "; it cannot be read as a signed zoned"
+                + " decimal at width " + width);
+    }
+
+    /**
+     * The ordering this member's own sort specification declares, built here rather than borrowed.
+     *
+     * <p>Account identifier ascending as a signed zoned-decimal value, then type code ascending as
+     * character data, then category code ascending as a signed zoned-decimal value. This one specification
+     * therefore mixes the two typings within itself, which is why the production comparator that
+     * corresponds to it is private to its own job and is never shared with another. Each stage is a fully
+     * witnessed comparator so that the character key cannot be resolved against a numeric overload by
+     * inference.
+     *
+     * @return the expected ordering
+     */
+    private static Comparator<TransactionCategoryBalance> expectedSortSpecification() {
+        return Comparator.<TransactionCategoryBalance, Long>comparing(
+                        row -> decodeZonedKey(row.getTrancatAcctId(), ACCOUNT_ID_WIDTH))
+                .thenComparing(Comparator.<TransactionCategoryBalance, String>comparing(
+                        TransactionCategoryBalance::getTrancatTypeCd))
+                .thenComparing(Comparator.<TransactionCategoryBalance, Long>comparing(
+                        row -> decodeZonedKey(row.getTrancatCd(), CATEGORY_CODE_WIDTH)));
+    }
+
+    /**
+     * Right justifies a value in a numeric field by padding it with the zero digit.
+     *
+     * @param value the value to place
+     * @param width the field width
+     * @return the placed value
+     */
+    private static String leftPadZeros(final String value, final int width) {
+        assertThat(value.length())
+                .as("<%s> is wider than the %d-byte field it is placed in", value, width)
+                .isLessThanOrEqualTo(width);
+        return String.valueOf(ZERO_DIGIT).repeat(width - value.length()) + value;
+    }
+
+    /**
+     * Left justifies a value in a character field by padding it with blanks.
+     *
+     * @param value the value to place
+     * @param width the field width
+     * @return the placed value
+     */
+    private static String rightPadBlanks(final String value, final int width) {
+        assertThat(value.length())
+                .as("<%s> is wider than the %d-byte field it is placed in", value, width)
+                .isLessThanOrEqualTo(width);
+        return value + String.valueOf(BLANK).repeat(width - value.length());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Field placements within one record, and the slices this class reads back.
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Asserts one field is a well formed zoned-decimal image: digits, then a digit or an overpunched sign.
+     *
+     * @param field the field image
+     * @param width the declared field width
+     * @param description what the field is, for the diagnostic
+     */
+    private static void assertZonedField(final String field, final int width, final String description) {
+        assertThat(field)
+                .as("%s is %d bytes wide", description, width)
+                .hasSize(width);
+        assertThat(field.substring(0, width - 1))
+                .as("%s carries digits ahead of its final byte: <%s>", description, field)
+                .containsOnlyDigits();
+        final char last = field.charAt(width - 1);
+        assertThat(Character.isDigit(last) || SIGN_BYTES.indexOf(last) >= 0)
+                .as("%s ends in a digit or one of the overpunched signs %s, but ends in '%s': <%s>",
+                        description, SIGN_BYTES, last, field)
+                .isTrue();
+    }
+
+    /**
+     * @return the offset of the type code within a report line
+     */
+    private static int typeCodeOffset() {
+        return ACCOUNT_ID_WIDTH + SEPARATOR_WIDTH;
+    }
+
+    /**
+     * @return the offset of the category code within a report line
+     */
+    private static int categoryCodeOffset() {
+        return typeCodeOffset() + TYPE_CODE_WIDTH + SEPARATOR_WIDTH;
+    }
+
+    /**
+     * @return the offset of the edited balance within a report line
+     */
+    private static int balanceMaskOffset() {
+        return categoryCodeOffset() + CATEGORY_CODE_WIDTH + SEPARATOR_WIDTH;
+    }
+
+    /**
+     * @return the width of the key run a report line opens with: the three parts and their two separators
+     */
+    private static int keyPrefixWidth() {
+        return categoryCodeOffset() + CATEGORY_CODE_WIDTH;
+    }
+
+    /**
+     * The account identifier one report line carries.
+     *
+     * @param line the report line
+     * @return the eleven-byte account field
+     */
+    private static String accountIdentifierOf(final String line) {
+        return line.substring(0, ACCOUNT_ID_WIDTH);
+    }
+
+    /**
+     * The edited balance one report line carries.
      *
      * @param line the report line
      * @return the twelve-character mask
      */
-    private static String amountOf(final String line) {
-        return line.substring(KEY_PREFIX_WIDTH + 1,
-                KEY_PREFIX_WIDTH + 1 + CategoryBalanceReportJobConfig.BALANCE_MASK_WIDTH);
+    private static String editedBalanceOf(final String line) {
+        return line.substring(balanceMaskOffset(), balanceMaskOffset() + BALANCE_MASK_WIDTH);
     }
 
-    // ------------------------------------------------------------------ framework metadata
+    /**
+     * The key run one report line opens with.
+     *
+     * @param line the report line
+     * @return the nineteen-character key run
+     */
+    private static String keyPrefixOf(final String line) {
+        return line.substring(0, keyPrefixWidth());
+    }
 
     /**
-     * Rows the framework's execution table holds, or zero before the framework has created it.
+     * The key run one composite key projects to, built independently of any report line.
      *
-     * @return the row count
-     * @throws SQLException if the server cannot be reached
+     * @param accountId the account identifier
+     * @param typeCode the type code
+     * @param categoryCode the category code
+     * @return the nineteen-character key run
      */
-    private static long jobExecutionRows() throws SQLException {
-        try (Connection connection = connect(); Statement statement = connection.createStatement()) {
-            try (ResultSet present = statement.executeQuery(
-                    "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
-                            + " AND table_name = 'batch_job_execution'")) {
-                assertThat(present.next()).isTrue();
-                if (present.getLong(1) == 0L) {
-                    return 0L;
-                }
-            }
-            try (ResultSet rows =
-                    statement.executeQuery("SELECT count(*) FROM batch_job_execution")) {
-                assertThat(rows.next()).isTrue();
-                return rows.getLong(1);
-            }
+    private static String keyPrefix(final String accountId, final String typeCode,
+            final String categoryCode) {
+
+        return leftPadZeros(accountId, ACCOUNT_ID_WIDTH) + BLANK
+                + rightPadBlanks(typeCode, TYPE_CODE_WIDTH) + BLANK
+                + leftPadZeros(categoryCode, CATEGORY_CODE_WIDTH);
+    }
+
+    /**
+     * The one report line belonging to one key on the discriminating account.
+     *
+     * @param typeCode the type code
+     * @param categoryCode the category code
+     * @return the forty-character report line
+     */
+    private String reportLineFor(final String typeCode, final String categoryCode) {
+        final String wanted = keyPrefix(DISCRIMINATING_ACCOUNT, typeCode, categoryCode);
+        final List<String> matches = this.reportLines.stream()
+                .filter(line -> keyPrefixOf(line).equals(wanted))
+                .toList();
+        assertThat(matches)
+                .as("exactly one report line carries the key run <%s>; the key is a primary key, so a "
+                        + "second line under it would mean the reprojection emitted a row twice", wanted)
+                .hasSize(1);
+        return matches.get(0);
+    }
+
+    /**
+     * Reads one delivered fixture from the test classpath as its record images.
+     *
+     * @param classpathLocation the fixture's classpath location
+     * @return the record images, in file order
+     */
+    private static List<String> readFixtureRecords(final String classpathLocation) {
+        final ClassPathResource fixture = new ClassPathResource(classpathLocation);
+        try (InputStream content = fixture.getInputStream()) {
+            return new String(content.readAllBytes(), StandardCharsets.US_ASCII)
+                    .lines()
+                    .toList();
+        } catch (IOException unreadable) {
+            throw new AssertionError("the delivered fixture <" + classpathLocation + "> could not be read"
+                    + " from the test classpath, where it is expected beneath"
+                    + " src/test/resources; the legacy tree is never read at run time, so a missing"
+                    + " fixture cannot be substituted for from it", unreadable);
         }
     }
 }

@@ -82,6 +82,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.env.Environment;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -92,7 +93,7 @@ import org.springframework.test.context.DynamicPropertySource;
  * migrations, so that the fixed-width generation it writes can be measured rather than described.
  *
  * <p>What this specification proves that a unit test cannot: that the job is reachable under the name a
- * launcher addresses it by and that no instance of it exists until something launches one; that the
+ * launcher addresses it by and that refreshing its context starts no execution of its own; that the
  * launch boundary refuses a parameter the run date's cascade refuses; that a completing run leaves an
  * artefact whose size is an exact multiple of the layout's own record width, with no separator anywhere;
  * that the identifier of every synthesized transaction is the ten-character launch parameter used
@@ -236,6 +237,9 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
     @Autowired
     private S3Operations objectStore;
 
+    @Autowired
+    private Environment environment;
+
     /** The driving input as it was found, so it can be put back. */
     private final List<TransactionCategoryBalance> displacedRows = new ArrayList<>();
 
@@ -372,16 +376,19 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
 
     @Test
     @Order(1)
-    @DisplayName("the job is registered under its own name and no instance exists until one is "
-            + "launched")
-    void theJobIsRegisteredAndNothingRanAtStartUp() throws Exception {
+    @DisplayName("the job is registered under its own name and context refresh starts no execution")
+    void theJobIsRegisteredAndNothingRanAtStartUp() {
         assertThat(this.jobRegistry.getJobNames())
                 .contains(InterestCalculationJobConfig.JOB_NAME);
         assertThat(this.interestCalculationJob.getName())
                 .isEqualTo(InterestCalculationJobConfig.JOB_NAME);
-        assertThat(this.jobExplorer.getJobInstanceCount(InterestCalculationJobConfig.JOB_NAME))
+        assertThat(this.environment.getProperty("spring.batch.job.enabled", Boolean.class))
                 .as("launch-on-start is disabled and this configuration adds no trigger of its own")
-                .isZero();
+                .isFalse();
+        assertThat(this.jobExplorer.findRunningJobExecutions(
+                InterestCalculationJobConfig.JOB_NAME))
+                .as("no interest execution is running until this class explicitly launches one")
+                .isEmpty();
     }
 
     @Test

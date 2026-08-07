@@ -17,10 +17,12 @@
 package com.carddemo.service;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
@@ -32,26 +34,35 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.Supplier;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
 import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.UserType;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.CobolStringUtils;
 
 import ch.qos.logback.classic.Level;
@@ -60,8 +71,17 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for the four administrative user transactions.
@@ -104,7 +124,33 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  *   <li><em>The unmapped-key message is fixed width and never trimmed.</em> Fifty encoded bytes, on
  *       every one of the four screens.</li>
  * </ol>
+ *
+ * <p><strong>Two harnesses, deliberately.</strong> Most behaviour is asserted against an in-memory
+ * stand-in for the repository, because a page walk is a sequence of positioned reads whose answers must
+ * be mutually consistent and a hand-written store is the honest way to supply that. A second set of
+ * groups drives the same service through Mockito doubles instead, because three contracts can only be
+ * proven by <em>observing the collaborator</em> rather than its answers: that the paged read asks for
+ * the window it says it asks for, that a credential-free save never reaches the encoder at all, and
+ * that no operation reaches the store on a path the legacy does not read on. Those groups are the ones
+ * that capture arguments and bound interactions.</p>
+ *
+ * <p><strong>Paragraph coverage.</strong> All 47 paragraph units of the four members are exercised
+ * here. {@code app/cbl/COUSR00C.cbl} contributes 16: {@code MAIN-PARA}, {@code PROCESS-ENTER-KEY},
+ * {@code PROCESS-PF7-KEY}, {@code PROCESS-PF8-KEY}, {@code PROCESS-PAGE-FORWARD},
+ * {@code PROCESS-PAGE-BACKWARD}, {@code POPULATE-USER-DATA}, {@code INITIALIZE-USER-DATA},
+ * {@code RETURN-TO-PREV-SCREEN}, {@code SEND-USRLST-SCREEN}, {@code RECEIVE-USRLST-SCREEN},
+ * {@code POPULATE-HEADER-INFO}, {@code STARTBR-USER-SEC-FILE}, {@code READNEXT-USER-SEC-FILE},
+ * {@code READPREV-USER-SEC-FILE} and {@code ENDBR-USER-SEC-FILE}. {@code app/cbl/COUSR01C.cbl}
+ * contributes 9: {@code MAIN-PARA}, {@code PROCESS-ENTER-KEY}, {@code RETURN-TO-PREV-SCREEN},
+ * {@code SEND-USRADD-SCREEN}, {@code RECEIVE-USRADD-SCREEN}, {@code POPULATE-HEADER-INFO},
+ * {@code WRITE-USER-SEC-FILE}, {@code CLEAR-CURRENT-SCREEN} and {@code INITIALIZE-ALL-FIELDS}.
+ * {@code app/cbl/COUSR02C.cbl} contributes 11: those nine with {@code UPDATE-USER-INFO},
+ * {@code READ-USER-SEC-FILE} and {@code UPDATE-USER-SEC-FILE} in place of the add screen's write, and
+ * its own send and receive. {@code app/cbl/COUSR03C.cbl} contributes 11 in the same shape with
+ * {@code DELETE-USER-INFO} and {@code DELETE-USER-SEC-FILE}. Each nested group names the member it
+ * derives from, so a row of the traceability matrix resolves to a group and a method.</p>
  */
+@ExtendWith(MockitoExtension.class)
 @DisplayName("User management service: the four administrative user transactions")
 class UserManagementServiceTest {
 
@@ -121,6 +167,8 @@ class UserManagementServiceTest {
     private static final String MSG_LIST_AT_TOP = "You are at the top of the page...";
 
     private static final String MSG_LIST_REACHED_BOTTOM = "You have reached the bottom of the page...";
+
+    private static final String MSG_LIST_REACHED_TOP = "You have reached the top of the page...";
 
     private static final String MSG_LIST_UNABLE_TO_LOOKUP_USER = "Unable to lookup User...";
 
@@ -162,10 +210,21 @@ class UserManagementServiceTest {
 
     private static final String FIELD_ADD_USER_ID = "USERID";
 
-    private static final String FIELD_PASSWORD = "PASSWD";
+    private static final String FIELD_CREDENTIAL_ITEM = "PASSWD";
 
     /** Screen row count, from the ten-occurrence table at {@code app/cbl/COUSR00C.cbl} L56-L57. */
     private static final int SCREEN_ROWS = 10;
+
+    /**
+     * Rows one positioning read asks for: the screen's own ten, plus the single extra row the source
+     * reads past the page at {@code app/cbl/COUSR00C.cbl} L308-L316 to answer whether a further page
+     * follows.
+     *
+     * <p>Declared as {@link #SCREEN_ROWS} plus one rather than as eleven, so that the assertion on the
+     * captured window states <em>why</em> it is eleven. It is not the page size: the page size is what
+     * the response carries and is asserted separately as exactly ten.</p>
+     */
+    private static final int POSITIONING_WINDOW_ROWS = SCREEN_ROWS + 1;
 
     /** Width of the common message contract, which the unmapped-key text occupies in full. */
     private static final int COMMON_MESSAGE_WIDTH = 50;
@@ -173,10 +232,128 @@ class UserManagementServiceTest {
     /** Digest length the credential column is sized for. */
     private static final int DIGEST_LENGTH = 60;
 
+    /**
+     * Visible portion of the shared unmapped-key text, declared here rather than read from the
+     * catalogue, so a text that drifted in the catalogue would fail this class instead of agreeing with
+     * it.
+     */
+    private static final String INVALID_KEY_TEXT_VISIBLE = "Invalid key pressed. Please see below...";
+
+    /** Space-fill the fifty-character field carries once the forty visible characters are placed. */
+    private static final int INVALID_KEY_TRAILING_SPACES =
+            COMMON_MESSAGE_WIDTH - INVALID_KEY_TEXT_VISIBLE.length();
+
+    /**
+     * The whole field content of the unmapped-key message, with its padding written as an explicit
+     * repeat count so that no trailing space can be lost to an editor or miscounted by a reader.
+     */
+    private static final String MSG_INVALID_KEY_PADDED =
+            INVALID_KEY_TEXT_VISIBLE + " ".repeat(INVALID_KEY_TRAILING_SPACES);
+
+    /** Property name the identifier findings carry, as the response contract publishes it. */
+    private static final String PROPERTY_USER_ID = "userId";
+
+    /** Property name the given-name findings carry. */
+    private static final String PROPERTY_FIRST_NAME = "firstName";
+
+    /** Route token of the list screen, declared here rather than read from the navigation service. */
+    private static final String ROUTE_USER_LIST = "user-list";
+
+    /**
+     * Legacy program name of the one CICS program definition in {@code app/csd/CARDDEMO.CSD} that has
+     * no source member: declared at L211 and bound at L390, with nothing to translate. No route may
+     * name it.
+     */
+    private static final String DANGLING_CSD_PROGRAM = "COCRDSEC";
+
+    /** Identifier of the first seeded administrative identity; non-secret reference data. */
+    private static final String SEEDED_ADMIN_ID = "ADMIN001";
+
+    /** Given name of the first seeded administrative identity; non-secret reference data. */
+    private static final String SEEDED_ADMIN_FIRST_NAME = "MARGARET";
+
+    /** Family name of the first seeded administrative identity; non-secret reference data. */
+    private static final String SEEDED_ADMIN_LAST_NAME = "GOLD";
+
+    /** Role code of the seeded administrative identities. */
+    private static final String ROLE_CODE_ADMIN = "A";
+
+    /** Role code of the seeded standard identities. */
+    private static final String ROLE_CODE_USER = "U";
+
+    /**
+     * The ten identifiers a full first page presents, ascending, written out rather than generated so
+     * the expected order is visible at the assertion.
+     */
+    private static final List<String> FIRST_PAGE_IDS = List.of(
+            "USER0001", "USER0002", "USER0003", "USER0004", "USER0005",
+            "USER0006", "USER0007", "USER0008", "USER0009", "USER0010");
+
+    /**
+     * The ten identifiers a backward page presents, ascending, written out separately from the
+     * descending order they arrive in so that the reversal is stated rather than computed.
+     */
+    private static final List<String> BACKWARD_PAGE_IDS_ASCENDING = List.of(
+            "USER0002", "USER0003", "USER0004", "USER0005", "USER0006",
+            "USER0007", "USER0008", "USER0009", "USER0010", "USER0011");
+
+    /**
+     * The eleven identifiers the descending range read answers with below anchor {@code USER0012}, in
+     * the order the read returns them. The first ten fill slots ten down to one and the eleventh is the
+     * read past the page.
+     */
+    private static final List<String> BACKWARD_READ_IDS_DESCENDING = List.of(
+            "USER0011", "USER0010", "USER0009", "USER0008", "USER0007", "USER0006",
+            "USER0005", "USER0004", "USER0003", "USER0002", "USER0001");
+
+    /** Anchor the backward page is walked from: the first identifier the operator's page displayed. */
+    private static final String BACKWARD_ANCHOR_ID = "USER0012";
+
+    /** The page indicator a first page displays, zero-filled to the eight positions it declares. */
+    private static final String DISPLAYED_PAGE_ONE = "00000001";
+
+    /** Property the browse orders on, which is the record's own key. */
+    private static final String BROWSE_SORT_PROPERTY = "secUsrId";
+
+    /** Lower-case half of the estate's twenty-six character fold table, written out here. */
+    private static final String FOLD_TABLE_FROM = "abcdefghijklmnopqrstuvwxyz";
+
+    /** Upper-case half of the same table, in the same positions. */
+    private static final String FOLD_TABLE_TO = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    /**
+     * Alphabet a throwaway credential is drawn from: upper-case letters and digits only, so the value
+     * is its own fold and no production folding routine is needed to predict what the encoder receives.
+     */
+    private static final String THROWAWAY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    /** Length of a throwaway credential, matching the legacy field's eight character positions. */
+    private static final int THROWAWAY_LENGTH = 8;
+
+    /** Source of throwaway credential material. Never seeded, never recorded, never asserted upon. */
+    private static final SecureRandom THROWAWAY_SOURCE = new SecureRandom();
+
     // ---------------------------------------------------------------- fixtures
 
-    private static final PasswordEncoder ENCODER = new BCryptPasswordEncoder(12);
+    /**
+     * An encoder used only as this class's own verifier, never as the service's collaborator.
+     *
+     * <p>Kept separate from the injected spy so that a verification made <em>by an assertion</em>
+     * cannot be miscounted as an interaction the service performed. Configured at the module's own
+     * cost factor, because a digest produced at any other cost would not be the shape the storage
+     * column and the entity both require.
+     */
+    private static final PasswordEncoder ENCODER =
+            new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR);
 
+    /**
+     * The page-snapshot sealer, keyed with an obviously fake, human-readable test key.
+     *
+     * <p>The value is a plain sentence about what it is, so it cannot be mistaken for a credential and
+     * cannot match any provider's key format. No deployed key, and no default a deployment could
+     * inherit, appears anywhere in this class: the production profile resolves its key from the
+     * environment with no fallback.
+     */
     private static final UserListPageTokenService PAGE_TOKEN_SERVICE =
             new UserListPageTokenService(new SensitiveFieldEncryptionService(
                     Base64.getEncoder().encodeToString(
@@ -199,18 +376,87 @@ class UserManagementServiceTest {
 
     private ListAppender<ILoggingEvent> logCapture;
 
+    /** The logger the capture is attached to, retained so the attachment can be undone. */
+    private ch.qos.logback.classic.Logger capturedLogger;
+
+    /** The level that logger carried before the capture lowered it, restored on the way out. */
+    private Level capturedLoggerLevel;
+
+    /**
+     * The store, as a double whose calls can be counted. Declared on the enclosing class so every
+     * nested group shares one instance per test; the extension supplies a fresh one for each.
+     */
+    @Mock
+    private UserSecurityRepository mockRepository;
+
+    /** The catalogue, as a double, so a fixed-width text can be handed in and traced through. */
+    @Mock
+    private MessageCatalogService mockCatalog;
+
+    /** The navigation rules, as a double, so a route can be proven to come from them. */
+    @Mock
+    private NavigationService mockNavigation;
+
+    /** The insert-and-flush collaborator, as a double, so the written record can be captured. */
+    @Mock
+    private RecordWriter mockRecordWriter;
+
+    /**
+     * The encoder, as a spy over a real one at the module's cost factor.
+     *
+     * <p>A spy and not a stub, because both halves matter. The real implementation runs, so a digest
+     * this class inspects is a genuine sixty-character digest and {@code matches} answers genuinely -
+     * a stub returning a fixed string would make every shape assertion vacuous. And the calls are
+     * recorded, so the assertion that a credential-free save never reaches {@code encode} at all is
+     * provable rather than inferred from the digest happening to be unchanged.</p>
+     */
+    private PasswordEncoder encoderSpy;
+
     @BeforeEach
     void setUp() {
         messageCatalogService = new MessageCatalogService();
         navigationService = new NavigationService();
+        encoderSpy = Mockito.spy(new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR));
         final LoggerContext context = (LoggerContext) org.slf4j.LoggerFactory.getILoggerFactory();
-        final ch.qos.logback.classic.Logger serviceLogger =
-                context.getLogger(UserManagementService.class);
-        serviceLogger.setLevel(Level.TRACE);
+        capturedLogger = context.getLogger(UserManagementService.class);
+        capturedLoggerLevel = capturedLogger.getLevel();
+        capturedLogger.setLevel(Level.TRACE);
         logCapture = new ListAppender<>();
         logCapture.setContext(context);
         logCapture.start();
-        serviceLogger.addAppender(logCapture);
+        capturedLogger.addAppender(logCapture);
+    }
+
+    /**
+     * Detaches the capture and restores the level.
+     *
+     * <p>The logger is a process-wide singleton, so an attachment left behind would accumulate one
+     * appender per test and every later test would see every earlier test's events. The assertions that
+     * no captured event carries credential material are only meaningful over the events of the test that
+     * made them.
+     */
+    @AfterEach
+    void tearDown() {
+        capturedLogger.detachAppender(logCapture);
+        logCapture.stop();
+        capturedLogger.setLevel(capturedLoggerLevel);
+    }
+
+    /**
+     * Builds the service over the doubles, with the two collaborators that must genuinely run kept
+     * real.
+     *
+     * <p>The unit-of-work boundary is real because a double would not invoke the operation it is given,
+     * and every maintenance assertion in this class is about what happens inside that unit. The page
+     * token service is real because it mints and reopens the sealed page snapshot the selection paths
+     * resolve against, and a double would have to reimplement it to be useful.
+     *
+     * @return the service under test, wired to the doubles declared on this class
+     */
+    private UserManagementService serviceWithMocks() {
+        return new UserManagementService(mockRepository, mockCatalog, mockNavigation,
+                PAGE_TOKEN_SERVICE, new OnlineTransactionBoundary(), mockRecordWriter, encoderSpy,
+                FIXED_CLOCK);
     }
 
     private UserManagementService serviceFor(final FakeRepository repository) {
@@ -238,6 +484,49 @@ class UserManagementServiceTest {
     }
 
     /**
+     * A fresh throwaway credential drawn only from characters that are their own upper-case fold.
+     *
+     * <p>Fold-stable on purpose. The write paths fold a submitted credential before hashing it, so a
+     * test that must predict what the encoder received would otherwise have to fold the value itself -
+     * and the only fold available would be the production one, which is the artefact under test. A value
+     * that cannot change under the fold removes the question.
+     *
+     * @return eight upper-case characters, never the legacy value and never recorded anywhere
+     */
+    private static String foldStableThrowawayCredential() {
+        final StringBuilder value = new StringBuilder(THROWAWAY_LENGTH);
+        for (int position = 0; position < THROWAWAY_LENGTH; position++) {
+            value.append(THROWAWAY_ALPHABET.charAt(
+                    THROWAWAY_SOURCE.nextInt(THROWAWAY_ALPHABET.length())));
+        }
+        return value.toString();
+    }
+
+    /**
+     * This class's own upper fold, written independently of the production one.
+     *
+     * <p>The estate's fold is a strict twenty-six character table substitution: a character present in
+     * the lower-case table is replaced by the character in the same position of the upper-case table, and
+     * every other character is emitted untouched. Reproduced here from the two tables so that an expected
+     * value is never obtained from the production utility, which is itself covered elsewhere. Not
+     * {@code String.toUpperCase}, in either form: both are locale-sensitive or Unicode-aware and would
+     * transform characters this table leaves alone.
+     *
+     * @param value the value to fold
+     * @return the value with every lower-case ASCII letter replaced by its upper-case counterpart
+     */
+    private static String foldedByThisClass(final String value) {
+        final char[] folded = value.toCharArray();
+        for (int index = 0; index < folded.length; index++) {
+            final int position = FOLD_TABLE_FROM.indexOf(folded[index]);
+            if (position >= 0) {
+                folded[index] = FOLD_TABLE_TO.charAt(position);
+            }
+        }
+        return new String(folded);
+    }
+
+    /**
      * A stored digest in the form both write paths produce and the sign-on path verifies: taken over
      * the credential folded to upper case, exactly as the terminal delivered it to the mainframe.
      *
@@ -245,7 +534,75 @@ class UserManagementServiceTest {
      * @return the digest a stored row carries for that credential
      */
     private static String storedDigestOf(final String credential) {
-        return ENCODER.encode(CobolStringUtils.asciiUpperFold(credential));
+        return ENCODER.encode(foldedByThisClass(credential));
+    }
+
+    /**
+     * A projected row for one ordinal position of the synthetic key sequence.
+     *
+     * @param ordinal the one-based ordinal, which becomes the eight-character identifier
+     * @return the four screen columns of that row
+     */
+    private static UserSecurityRepository.AdminEntry projectionFor(final int ordinal) {
+        // Locale.ROOT is mandatory: the identifier is a fixed-width US-ASCII field, and an unqualified
+        // format emits the default locale's digits, which under a non-Latin numbering system are not
+        // ASCII digits at all.
+        return new ProjectedEntry(String.format(Locale.ROOT, "USER%04d", ordinal),
+                "GIVEN" + ordinal, "FAMILY" + ordinal,
+                ordinal % 2 == 0 ? ROLE_CODE_ADMIN : ROLE_CODE_USER);
+    }
+
+    /**
+     * Projected rows for a run of ordinals, in the order the identifiers are listed.
+     *
+     * @param identifiers the identifiers to project, in read order
+     * @return one projected row per identifier, in the same order
+     */
+    private static List<UserSecurityRepository.AdminEntry> projectionsOf(
+            final List<String> identifiers) {
+        final List<UserSecurityRepository.AdminEntry> rows = new ArrayList<>(identifiers.size());
+        for (final String identifier : identifiers) {
+            rows.add(new ProjectedEntry(identifier, "GIVEN" + identifier, "FAMILY" + identifier,
+                    ROLE_CODE_USER));
+        }
+        return List.copyOf(rows);
+    }
+
+    /**
+     * An identity carrying a stored digest, built through the shared factory so no credential literal
+     * is needed.
+     *
+     * @param userId   the eight-character identifier
+     * @param digest   the stored digest the row carries
+     * @param roleCode the one-character role code, which may be one the estate never declared
+     * @return the identity, ready to be answered from a stubbed read
+     */
+    private static UserSecurity identityHolding(final String userId, final String digest,
+                                                final String roleCode) {
+        return TestDataFactory.userSecurity()
+                .userId(userId)
+                .firstName(SEEDED_ADMIN_FIRST_NAME)
+                .lastName(SEEDED_ADMIN_LAST_NAME)
+                .userTypeCode(roleCode)
+                .storedDigest(digest)
+                .build();
+    }
+
+    /**
+     * An identity whose stored digest hashes nothing at all.
+     *
+     * <p>For the many tests whose subject is not the credential. The shared factory's structurally valid
+     * placeholder satisfies the entity's own refusal to hold anything but a digest, and costs no hash -
+     * which matters, because the module's cost factor is a security parameter and a test that hashed
+     * needlessly would pay it needlessly. A test whose subject <em>is</em> the credential uses
+     * {@link #identityHolding(String, String, String)} with a real digest instead.
+     *
+     * @param userId   the eight-character identifier
+     * @param roleCode the one-character role code, which may be one the estate never declared
+     * @return the identity, ready to be answered from a stubbed read
+     */
+    private static UserSecurity identityFor(final String userId, final String roleCode) {
+        return identityHolding(userId, TestDataFactory.SYNTHETIC_BCRYPT_DIGEST, roleCode);
     }
 
     private static ScreenNavigationState reEntered() {
@@ -592,7 +949,7 @@ class UserManagementServiceTest {
             assertThat(stored.credentialDigest()).hasSize(DIGEST_LENGTH)
                     .isNotEqualTo(submitted)
                     .startsWith("$2");
-            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(submitted),
+            assertThat(ENCODER.matches(foldedByThisClass(submitted),
                     stored.credentialDigest()))
                     .as("the sign-on path verifies the folded credential, so that is what is stored")
                     .isTrue();
@@ -620,7 +977,7 @@ class UserManagementServiceTest {
                             KeyAction.ENTER));
 
             final String stored = repository.rows.get("MIXEDCS1").credentialDigest();
-            assertThat(verifier.matches(CobolStringUtils.asciiUpperFold(keyed), stored))
+            assertThat(verifier.matches(foldedByThisClass(keyed), stored))
                     .as("the sign-on transaction folds the presented secret before verifying it")
                     .isTrue();
             assertThat(verifier.matches(keyed, stored))
@@ -913,7 +1270,7 @@ class UserManagementServiceTest {
 
             final UserOutcome response = serviceFor(repository)
                     .updateUser(recordRequest("UPDUSR07", "IVY", "NOLAN",
-                            known.toUpperCase(Locale.ROOT), "U", KeyAction.PFK05));
+                            foldedByThisClass(known), "U", KeyAction.PFK05));
 
             assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
             assertThat(repository.rows.get("UPDUSR07").credentialDigest())
@@ -936,7 +1293,7 @@ class UserManagementServiceTest {
 
             assertThat(response.actionSucceeded()).isTrue();
             final String digestAfter = repository.rows.get("UPDUSR08").credentialDigest();
-            assertThat(verifier.matches(CobolStringUtils.asciiUpperFold(replacement), digestAfter))
+            assertThat(verifier.matches(foldedByThisClass(replacement), digestAfter))
                     .isTrue();
             assertThat(verifier.matches(replacement, digestAfter)).isFalse();
         }
@@ -957,9 +1314,9 @@ class UserManagementServiceTest {
             final String digestAfter = repository.rows.get("UPDUSR03").credentialDigest();
             assertThat(response.actionSucceeded()).isTrue();
             assertThat(digestAfter).hasSize(DIGEST_LENGTH).isNotEqualTo(digestBefore);
-            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(replacement), digestAfter))
+            assertThat(ENCODER.matches(foldedByThisClass(replacement), digestAfter))
                     .isTrue();
-            assertThat(ENCODER.matches(CobolStringUtils.asciiUpperFold(previous), digestAfter))
+            assertThat(ENCODER.matches(foldedByThisClass(previous), digestAfter))
                     .isFalse();
             assertThat(String.valueOf(response)).doesNotContain(digestBefore)
                     .doesNotContain(digestAfter).doesNotContain(replacement);
@@ -977,7 +1334,7 @@ class UserManagementServiceTest {
 
             assertThat(response.message()).isEqualTo(MSG_CREDENTIAL_EMPTY);
             assertThat(response.generalError()).isTrue();
-            assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_PASSWORD);
+            assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_CREDENTIAL_ITEM);
             assertThat(repository.rows.get("UPDUSR04").credentialDigest()).isEqualTo(FILLER_DIGEST);
         }
 
@@ -2374,4 +2731,1014 @@ class UserManagementServiceTest {
             assertThat(response.generalError()).isTrue();
         }
     }
+
+    // ==============================================================================================
+    // The groups below drive the same service through Mockito doubles, because three contracts can
+    // only be proven by observing a collaborator rather than its answers: what window the paged read
+    // asks for, that a credential-free save never reaches the encoder at all, and that no operation
+    // touches the store on a path the legacy does not read on.
+    // ==============================================================================================
+
+    @Nested
+    @DisplayName("CU01 add, observed at the writer: what is handed to the store is a digest")
+    class AddObservedAtTheWriter {
+
+        @Test
+        @DisplayName("the record handed to the writer carries a sixty-character digest that is not the "
+                + "submitted value, and the store is never read or written")
+        void handsTheWriterADigestAndNeverTouchesTheStore() {
+            final String submitted = foldStableThrowawayCredential();
+            final String different = foldStableThrowawayCredential() + "Z";
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            final UserOutcome response = serviceWithMocks().addUser(
+                    recordRequest("NEWUSR11", "GIVEN", "FAMILY", submitted, ROLE_CODE_USER,
+                            KeyAction.ENTER));
+
+            final ArgumentCaptor<UserSecurity> written =
+                    ArgumentCaptor.forClass(UserSecurity.class);
+            verify(mockRecordWriter).insertIndependently(written.capture());
+            final String stored = written.getValue().credentialDigest();
+            assertThat(stored).hasSize(DIGEST_LENGTH);
+            assertThat(TestDataFactory.hasStoredDigestShape(stored))
+                    .as("the digest must carry the module's own cost factor, not merely be long enough")
+                    .isTrue();
+            // Cleartext comparison is impossible by construction, asserted under every comparison a
+            // careless implementation might reach for.
+            assertThat(stored.equals(submitted)).isFalse();
+            assertThat(stored.equalsIgnoreCase(submitted)).isFalse();
+            assertThat(stored.contains(submitted)).isFalse();
+            // The permitted oracle: a digest cannot be predicted, so verification is the only test of
+            // whether it corresponds to an input. The credential is fold-stable, so the value submitted
+            // is the value the encoder received and no production fold is needed to know that.
+            assertThat(ENCODER.matches(submitted, stored)).isTrue();
+            assertThat(ENCODER.matches(different, stored))
+                    .as("a digest that accepted anything would make the acceptance check worthless")
+                    .isFalse();
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(response.message()).isEqualTo("User NEWUSR11 has been added ...");
+            assertThat(String.valueOf(response)).doesNotContain(stored).doesNotContain(submitted);
+            assertThat(noCapturedLogContains(stored)).isTrue();
+            assertThat(noCapturedLogContains(submitted)).isTrue();
+            verifyNoInteractions(mockRepository);
+            verifyNoMoreInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("an existing identifier is refused with the exact duplicate text, nothing is "
+                + "overwritten and the store is never consulted")
+        void refusesADuplicateWithoutConsultingTheStore() {
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenThrow(new DuplicateKeyException("duplicate test identifier"));
+
+            final UserOutcome response = serviceWithMocks().addUser(
+                    recordRequest("DUPUSR11", "GIVEN", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.ENTER));
+
+            assertThat(response.message()).isEqualTo(MSG_ADD_USER_ID_ALREADY_EXIST);
+            assertThat(response.message()).isEqualTo(response.message().stripTrailing());
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_ADD_USER_ID);
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(finding -> {
+                        assertThat(finding.state())
+                                .isEqualTo(ValidationException.FieldState.INVALID);
+                        assertThat(finding.field()).isEqualTo(PROPERTY_USER_ID);
+                        assertThat(finding.bmsFieldId()).isEqualTo(FIELD_ADD_USER_ID);
+                        assertThat(finding.message()).isEqualTo(MSG_ADD_USER_ID_ALREADY_EXIST);
+                    });
+            verify(mockRecordWriter).insertIndependently(any(UserSecurity.class));
+            verifyNoInteractions(mockRepository);
+            verifyNoMoreInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("a writer that refuses for any other reason takes the default arm and stores "
+                + "nothing")
+        void reportsAFailedWriteWithoutStoringAnything() {
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenThrow(new IllegalStateException("store unavailable"));
+
+            final UserOutcome response = serviceWithMocks().addUser(
+                    recordRequest("FAILUS11", "GIVEN", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.ENTER));
+
+            assertThat(response.message()).isEqualTo(MSG_ADD_UNABLE_TO_ADD_USER);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.focusScreenFieldId()).isEqualTo(FIELD_FIRST_NAME);
+            verify(mockRecordWriter).insertIndependently(any(UserSecurity.class));
+            verifyNoInteractions(mockRepository);
+            verifyNoMoreInteractions(mockRecordWriter);
+        }
+    }
+
+    @Nested
+    @DisplayName("CU02 update, observed at the encoder: an unchanged credential is never re-hashed")
+    class UpdateObservedAtTheEncoder {
+
+        @Test
+        @DisplayName("updating without supplying a credential leaves the stored digest byte-identical "
+                + "and never reaches the encoder at all")
+        void carriesTheDigestForwardWithoutReachingTheEncoder() {
+            // THE DECISIVE ASSERTION OF THIS CLASS. A digest-of-a-digest would be sixty characters
+            // long, structurally valid, and would lock the identity out of every future sign-on. No
+            // other assertion here detects it: the record saves, the screen reports success, and the
+            // stored value still looks exactly like a credential digest.
+            final String seededDigest = TestDataFactory.digestOfFixtureCredentialWindow();
+            final UserSecurity held = identityHolding("UPDMCK01", seededDigest, ROLE_CODE_USER);
+            when(mockRepository.findByIdForUpdate("UPDMCK01")).thenReturn(Optional.of(held));
+            when(mockRepository.save(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest("UPDMCK01", "CHANGED", "ALTERED", null, ROLE_CODE_ADMIN,
+                            KeyAction.PFK05));
+
+            final ArgumentCaptor<UserSecurity> saved = ArgumentCaptor.forClass(UserSecurity.class);
+            verify(mockRepository).save(saved.capture());
+            assertThat(saved.getValue().credentialDigest())
+                    .as("byte-identical, not merely still valid: a re-hash would also be valid")
+                    .isEqualTo(seededDigest);
+            verify(encoderSpy, never()).encode(any());
+            verify(encoderSpy, never()).matches(any(), any());
+            assertThat(saved.getValue().getSecUsrFname()).isEqualTo("CHANGED");
+            assertThat(saved.getValue().getSecUsrLname()).isEqualTo("ALTERED");
+            assertThat(saved.getValue().getSecUsrType()).isEqualTo(ROLE_CODE_ADMIN);
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(response.message()).isEqualTo("User UPDMCK01 has been updated ...");
+            assertThat(noCapturedLogContains(seededDigest)).isTrue();
+            verify(mockRepository).findByIdForUpdate("UPDMCK01");
+            verifyNoMoreInteractions(mockRepository);
+            verify(mockRecordWriter).flush();
+            verifyNoMoreInteractions(mockRecordWriter);
+            // The complement of the byte-identity assertion: the carried digest is still the one the
+            // seeded value opens, so carrying it forward preserved a working credential rather than an
+            // arbitrary sixty characters.
+            assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(ENCODER,
+                    saved.getValue().credentialDigest())).isTrue();
+        }
+
+        @Test
+        @DisplayName("supplying a genuinely different credential produces a different sixty-character "
+                + "digest, hashed exactly once")
+        void hashesAReplacementExactlyOnce() {
+            final String previous = foldStableThrowawayCredential();
+            final String replacement = foldStableThrowawayCredential() + "Q";
+            final String digestBefore = ENCODER.encode(previous);
+            final UserSecurity held = identityHolding("UPDMCK02", digestBefore, ROLE_CODE_USER);
+            when(mockRepository.findByIdForUpdate("UPDMCK02")).thenReturn(Optional.of(held));
+            when(mockRepository.save(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest("UPDMCK02", SEEDED_ADMIN_FIRST_NAME, SEEDED_ADMIN_LAST_NAME,
+                            replacement, ROLE_CODE_USER, KeyAction.PFK05));
+
+            final ArgumentCaptor<UserSecurity> saved = ArgumentCaptor.forClass(UserSecurity.class);
+            verify(mockRepository).save(saved.capture());
+            final String digestAfter = saved.getValue().credentialDigest();
+            assertThat(digestAfter).hasSize(DIGEST_LENGTH).isNotEqualTo(digestBefore);
+            assertThat(ENCODER.matches(replacement, digestAfter)).isTrue();
+            assertThat(ENCODER.matches(previous, digestAfter))
+                    .as("the previous credential must stop working the moment it is replaced")
+                    .isFalse();
+            verify(encoderSpy, times(1)).encode(any());
+            verify(encoderSpy, times(1)).matches(any(), any());
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(String.valueOf(response)).doesNotContain(digestAfter)
+                    .doesNotContain(replacement);
+            assertThat(noCapturedLogContains(digestAfter)).isTrue();
+            assertThat(noCapturedLogContains(replacement)).isTrue();
+            verify(mockRepository).findByIdForUpdate("UPDMCK02");
+            verifyNoMoreInteractions(mockRepository);
+            verify(mockRecordWriter).flush();
+        }
+
+        @Test
+        @DisplayName("re-typing the credential already stored is not a change, so nothing is hashed "
+                + "and nothing is saved")
+        void treatsAReTypedCredentialAsUnchanged() {
+            final String credential = foldStableThrowawayCredential();
+            final String digest = ENCODER.encode(credential);
+            final UserSecurity held = identityHolding("UPDMCK03", digest, ROLE_CODE_ADMIN);
+            when(mockRepository.findByIdForUpdate("UPDMCK03")).thenReturn(Optional.of(held));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest("UPDMCK03", SEEDED_ADMIN_FIRST_NAME, SEEDED_ADMIN_LAST_NAME,
+                            credential, ROLE_CODE_ADMIN, KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(response.generalError())
+                    .as("the source emits this text without raising the error flag")
+                    .isFalse();
+            assertThat(held.credentialDigest()).isEqualTo(digest);
+            verify(encoderSpy, never()).encode(any());
+            verify(encoderSpy, times(1)).matches(any(), any());
+            verify(mockRepository).findByIdForUpdate("UPDMCK03");
+            verify(mockRepository, never()).save(any(UserSecurity.class));
+            verifyNoMoreInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+    }
+
+    @Nested
+    @DisplayName("The seeded credential is exercised at run time and never written down")
+    class SeededCredentialHandling {
+
+        @Test
+        @DisplayName("the seeded credential, read from the class-path fixture at run time, is "
+                + "recognised as unchanged and no assertion here discloses it")
+        void recognisesTheSeededCredentialWithoutRevealingIt() {
+            // The value arrives by offset out of a known column of a known record, is used, and is
+            // overwritten. It is never compared against a literal, never logged and never named. The
+            // stored digest is taken over the value as the terminal would have delivered it, because
+            // that is the form the write paths store and the sign-on path verifies.
+            final char[] window = TestDataFactory.fixtureCredentialWindow();
+            final String asAnOperatorKeysIt;
+            try {
+                asAnOperatorKeysIt = new String(window);
+            } finally {
+                Arrays.fill(window, ' ');
+            }
+            final String asTheTerminalDelivers = foldedByThisClass(asAnOperatorKeysIt);
+            final String seededDigest = ENCODER.encode(asTheTerminalDelivers);
+            final UserSecurity held =
+                    identityHolding(SEEDED_ADMIN_ID, seededDigest, ROLE_CODE_ADMIN);
+            when(mockRepository.findByIdForUpdate(SEEDED_ADMIN_ID)).thenReturn(Optional.of(held));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest(SEEDED_ADMIN_ID, SEEDED_ADMIN_FIRST_NAME, SEEDED_ADMIN_LAST_NAME,
+                            asAnOperatorKeysIt, ROLE_CODE_ADMIN, KeyAction.PFK05));
+
+            // Boolean outcomes only, every one of them.
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
+            assertThat(held.credentialDigest()).isEqualTo(seededDigest);
+            verify(encoderSpy, never()).encode(any());
+            verify(mockRepository).findByIdForUpdate(SEEDED_ADMIN_ID);
+            verify(mockRepository, never()).save(any(UserSecurity.class));
+            verifyNoMoreInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+            assertThat(ENCODER.matches(asTheTerminalDelivers, seededDigest))
+                    .as("the digest the identity holds is genuinely the seeded credential's")
+                    .isTrue();
+            assertThat(TestDataFactory.digestRefusesOtherValues(ENCODER, seededDigest))
+                    .as("and it refuses a value it was not derived from, so the check discriminates")
+                    .isTrue();
+            assertThat(noCapturedLogContains(seededDigest)).isTrue();
+            assertThat(noCapturedLogContains(asAnOperatorKeysIt)).isTrue();
+            assertThat(noCapturedLogContains(asTheTerminalDelivers)).isTrue();
+            assertThat(String.valueOf(response)).doesNotContain(seededDigest)
+                    .doesNotContain(asAnOperatorKeysIt);
+        }
+
+        @Test
+        @DisplayName("a digest of the seeded credential is sixty characters at the module's cost "
+                + "factor, and two of them differ because each carries its own salt")
+        void seededDigestsAreDistinctDespiteOneSharedInput() {
+            // The property the credential migration relies on: ten records of one shared value carry
+            // ten different digests, so replacing any one of them is observable. Two are enough to
+            // prove it and cost two hashes rather than ten.
+            final String first = TestDataFactory.digestOfFixtureCredentialWindow();
+            final String second = TestDataFactory.digestOfFixtureCredentialWindow();
+
+            assertThat(first).hasSize(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+            assertThat(second).hasSize(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+            assertThat(first).isNotEqualTo(second);
+            assertThat(TestDataFactory.hasStoredDigestShape(first)).isTrue();
+            assertThat(TestDataFactory.hasStoredDigestShape(second)).isTrue();
+            assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(ENCODER, first)).isTrue();
+            assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(ENCODER, second)).isTrue();
+            assertThat(TestDataFactory.digestRefusesOtherValues(ENCODER, first)).isTrue();
+            assertThat(TestDataFactory.digestRefusesOtherValues(ENCODER, second)).isTrue();
+            // The stored column is sixty characters wide for exactly this reason, and it is the one
+            // intentional width change in the whole schema: the legacy field held eight.
+            assertThat(TestDataFactory.BCRYPT_DIGEST_LENGTH).isEqualTo(DIGEST_LENGTH);
+        }
+    }
+
+    @Nested
+    @DisplayName("CU00 list, observed at the paged read: the window asked for and the order presented")
+    class ListObservedAtThePagedRead {
+
+        @Test
+        @DisplayName("a full page presents exactly ten rows ascending, from one positioning read that "
+                + "asks for the ten plus the one the source reads past the page")
+        void asksForTenPlusOneAndPresentsExactlyTen() {
+            final List<String> window = new ArrayList<>(FIRST_PAGE_IDS);
+            window.add("USER0011");
+            when(mockRepository.findAllProjectedBy(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(projectionsOf(window)));
+
+            final UserOutcome response = serviceWithMocks().listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            final ArgumentCaptor<Pageable> asked = ArgumentCaptor.forClass(Pageable.class);
+            verify(mockRepository).findAllProjectedBy(asked.capture());
+            assertThat(asked.getValue().getPageNumber()).isZero();
+            assertThat(asked.getValue().getPageSize())
+                    .as("ten screen rows plus the one extra read that answers the next-page question")
+                    .isEqualTo(POSITIONING_WINDOW_ROWS);
+            final Sort.Order order = asked.getValue().getSort().getOrderFor(BROWSE_SORT_PROPERTY);
+            assertThat(order).isNotNull();
+            assertThat(order.getDirection()).isEqualTo(Sort.Direction.ASC);
+            assertThat(userIdsOf(response)).hasSize(SCREEN_ROWS)
+                    .containsExactlyElementsOf(FIRST_PAGE_IDS);
+            assertThat(response.rows()).doesNotContainNull();
+            assertThat(response.pageMetadata().pageSize()).isEqualTo(SCREEN_ROWS);
+            assertThat(response.pageMetadata().direction())
+                    .isEqualTo(BrowseWindow.PagingDirection.FORWARD);
+            assertThat(response.pageMetadata().hasMorePages()).isTrue();
+            assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
+            assertThat(response.pageMetadata().previousCursorKey()).isEqualTo("USER0001");
+            assertThat(response.pageMetadata().nextCursorKey()).isEqualTo("USER0010");
+            assertThat(response.pageMetadata().displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_ONE);
+            verifyNoMoreInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+            verifyNoInteractions(mockNavigation);
+        }
+
+        @Test
+        @DisplayName("a partial page presents only the rows that exist, with no blank filler and no "
+                + "absent entry")
+        void presentsAPartialPageWithoutFiller() {
+            final List<String> present = List.of("USER0001", "USER0002", "USER0003", "USER0004");
+            when(mockRepository.findAllProjectedBy(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(projectionsOf(present)));
+
+            final UserOutcome response = serviceWithMocks().listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            assertThat(userIdsOf(response)).hasSize(present.size())
+                    .containsExactlyElementsOf(present);
+            assertThat(response.rows()).doesNotContainNull();
+            assertThat(response.pageMetadata().pageSize()).isEqualTo(present.size());
+            assertThat(response.pageMetadata().hasMorePages()).isFalse();
+            assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
+            assertThat(response.pageMetadata().nextCursorKey())
+                    .as("the tenth slot never filled, so the page retains no last-row cursor")
+                    .isNull();
+            assertThat(response.pageMetadata().displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_ONE);
+            assertThat(response.message()).isEqualTo(MSG_LIST_REACHED_BOTTOM);
+            verify(mockRepository).findAllProjectedBy(any(Pageable.class));
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("an empty table - the genuine state before the credential seed is applied - "
+                + "presents no rows, reports no further page and raises nothing")
+        void presentsAnEmptyTableWithoutRaising() {
+            when(mockRepository.findAllProjectedBy(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(List.of()));
+
+            final UserOutcome response = serviceWithMocks().listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            assertThat(response.rows()).isEmpty();
+            assertThat(response.hasRows()).isFalse();
+            assertThat(response.rowSnapshotToken()).isNull();
+            assertThat(response.pageMetadata().pageSize()).isZero();
+            assertThat(response.pageMetadata().hasMorePages()).isFalse();
+            assertThat(response.pageMetadata().hasPreviousPages()).isFalse();
+            assertThat(response.message()).isEqualTo(MSG_LIST_AT_TOP);
+            assertThat(response.generalError())
+                    .as("the end-of-sequence arm emits its text without raising the flag")
+                    .isFalse();
+            verify(mockRepository).findAllProjectedBy(any(Pageable.class));
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("a backward page reads descending and presents ascending, in that exact order")
+        void readsDescendingAndPresentsAscending() {
+            when(mockRepository.findProjectedBySecUsrId(BACKWARD_ANCHOR_ID))
+                    .thenReturn(Optional.of(projectionFor(12)));
+            when(mockRepository.countBySecUsrIdLessThan(BACKWARD_ANCHOR_ID)).thenReturn(11L);
+            when(mockRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                    eq(BACKWARD_ANCHOR_ID), any(Limit.class)))
+                    .thenReturn(projectionsOf(BACKWARD_READ_IDS_DESCENDING));
+
+            final UserOutcome response = serviceWithMocks().listUsers(
+                    listRequest(KeyAction.PFK07, null, BACKWARD_ANCHOR_ID, null, List.of()));
+
+            // Ordered, never membership. The legacy fills its slots from the bottom upward on a
+            // backward walk, so a translation that returned the read order would present the page
+            // inverted and a set comparison would call that correct.
+            assertThat(userIdsOf(response)).containsExactlyElementsOf(BACKWARD_PAGE_IDS_ASCENDING);
+            assertThat(userIdsOf(response))
+                    .as("and it is not the order the rows arrived in")
+                    .isNotEqualTo(BACKWARD_READ_IDS_DESCENDING);
+            final ArgumentCaptor<Limit> asked = ArgumentCaptor.forClass(Limit.class);
+            verify(mockRepository).findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                    eq(BACKWARD_ANCHOR_ID), asked.capture());
+            assertThat(asked.getValue().max()).isEqualTo(POSITIONING_WINDOW_ROWS);
+            // The direction is carried by which finder is asked, because the ordering is declared in
+            // the derived name rather than passed as a sort. So the descending finder answering and the
+            // ascending one never being asked is the whole of the direction contract.
+            verify(mockRepository, never()).findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(
+                    any(), any(Limit.class));
+            verify(mockRepository, never()).findAllProjectedBy(any(Pageable.class));
+            verify(mockRepository, times(2)).findProjectedBySecUsrId(BACKWARD_ANCHOR_ID);
+            verify(mockRepository).countBySecUsrIdLessThan(BACKWARD_ANCHOR_ID);
+            verifyNoMoreInteractions(mockRepository);
+            assertThat(response.pageMetadata().direction())
+                    .isEqualTo(BrowseWindow.PagingDirection.BACKWARD);
+            assertThat(response.pageMetadata().pageSize()).isEqualTo(SCREEN_ROWS);
+            assertThat(response.pageMetadata().previousCursorKey()).isEqualTo("USER0002");
+            assertThat(response.pageMetadata().nextCursorKey()).isEqualTo("USER0011");
+            assertThat(response.pageMetadata().hasMorePages()).isTrue();
+            assertThat(response.pageMetadata().displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_ONE);
+            assertThat(response.preserveDisplayedPage())
+                    .as("a key that actually moved a page asks for a rebuild, not a retention")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a backward walk that finds fewer rows than the counter promised still presents "
+                + "ascending and leaves the earlier slots empty rather than padding them")
+        void presentsAShortBackwardPageAscendingWithoutPadding() {
+            // A store may legitimately answer this way: the count is taken first and rows below the
+            // anchor may be removed before the range read runs. The slot rule is what is under test -
+            // rows land in the highest slots and the page is read in slot order.
+            final List<String> arriving = List.of("USER0004", "USER0003", "USER0002", "USER0001");
+            when(mockRepository.findProjectedBySecUsrId(BACKWARD_ANCHOR_ID))
+                    .thenReturn(Optional.of(projectionFor(12)));
+            when(mockRepository.countBySecUsrIdLessThan(BACKWARD_ANCHOR_ID)).thenReturn(11L);
+            when(mockRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                    eq(BACKWARD_ANCHOR_ID), any(Limit.class)))
+                    .thenReturn(projectionsOf(arriving));
+
+            final UserOutcome response = serviceWithMocks().listUsers(
+                    listRequest(KeyAction.PFK07, null, BACKWARD_ANCHOR_ID, null, List.of()));
+
+            assertThat(userIdsOf(response))
+                    .containsExactly("USER0001", "USER0002", "USER0003", "USER0004");
+            assertThat(response.rows()).hasSize(arriving.size()).doesNotContainNull();
+            assertThat(response.pageMetadata().pageSize()).isEqualTo(arriving.size());
+            assertThat(response.message()).isEqualTo(MSG_LIST_REACHED_TOP);
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("a submitted page indicator is never trusted: the store is asked for the same "
+                + "window and the indicator the response carries is the one the walk derived")
+        void ignoresASubmittedPageIndicator() {
+            when(mockRepository.findAllProjectedBy(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(projectionsOf(
+                            List.of("USER0001", "USER0002", "USER0003", "USER0004"))));
+
+            final UserOutcome zero = serviceWithMocks().listUsers(new UserCommand(null, null, null,
+                    null, null, null, List.of(), "0", null, null, null, KeyAction.ENTER, reEntered()));
+
+            assertThat(zero.pageMetadata().displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_ONE);
+            assertThat(zero.rows()).hasSize(4);
+
+            final UserOutcome negative = serviceWithMocks().listUsers(new UserCommand(null, null,
+                    null, null, null, null, List.of(), "-1", null, null, null, KeyAction.ENTER,
+                    reEntered()));
+
+            assertThat(negative.pageMetadata().displayedPageNumber()).isEqualTo(DISPLAYED_PAGE_ONE);
+            assertThat(negative.rows()).hasSize(4);
+            verify(mockRepository, times(2)).findAllProjectedBy(any(Pageable.class));
+            verifyNoMoreInteractions(mockRepository);
+        }
+    }
+
+    @Nested
+    @DisplayName("CU03 delete, observed at the store: removed once, by key, and only on confirmation")
+    class DeleteObservedAtTheStore {
+
+        @Test
+        @DisplayName("the confirming key removes the row exactly once, naming the key the record "
+                + "carries")
+        void removesExactlyOnceByKey() {
+            when(mockRepository.findByIdForUpdate("DELMCK01"))
+                    .thenReturn(Optional.of(identityFor("DELMCK01", ROLE_CODE_USER)));
+
+            final UserOutcome response = serviceWithMocks().deleteUser(
+                    recordRequest("DELMCK01", null, null, null, null, KeyAction.PFK05));
+
+            final ArgumentCaptor<String> removed = ArgumentCaptor.forClass(String.class);
+            verify(mockRepository, times(1)).deleteById(removed.capture());
+            assertThat(removed.getValue()).isEqualTo("DELMCK01");
+            assertThat(response.actionSucceeded()).isTrue();
+            assertThat(response.message()).isEqualTo("User DELMCK01 has been deleted ...");
+            verify(mockRepository).findByIdForUpdate("DELMCK01");
+            verifyNoMoreInteractions(mockRepository);
+            verify(mockRecordWriter).flush();
+            verifyNoMoreInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("an absent identifier reports the not-found text and no removal is attempted")
+        void removesNothingWhenTheIdentifierIsAbsent() {
+            when(mockRepository.findByIdForUpdate("GONEMCK1")).thenReturn(Optional.empty());
+
+            final UserOutcome response = serviceWithMocks().deleteUser(
+                    recordRequest("GONEMCK1", null, null, null, null, KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_USER_ID_NOT_FOUND);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(finding -> {
+                        assertThat(finding.state())
+                                .isEqualTo(ValidationException.FieldState.INVALID);
+                        assertThat(finding.bmsFieldId()).isEqualTo(FIELD_LIST_USER_ID);
+                    });
+            verify(mockRepository).findByIdForUpdate("GONEMCK1");
+            verify(mockRepository, never()).deleteById(any());
+            verifyNoMoreInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("the enter key displays the record with the confirmation prompt and removes "
+                + "nothing, which is the clause order the source performs")
+        void displaysBeforeRemoving() {
+            when(mockRepository.findById("DELMCK02"))
+                    .thenReturn(Optional.of(identityFor("DELMCK02", ROLE_CODE_ADMIN)));
+
+            final UserOutcome response = serviceWithMocks().deleteUser(
+                    recordRequest("DELMCK02", null, null, null, null, KeyAction.ENTER));
+
+            assertThat(response.message()).isEqualTo(MSG_DELETE_PRESS_PF5);
+            assertThat(response.generalError()).isFalse();
+            assertThat(response.actionSucceeded()).isFalse();
+            assertThat(response.firstName()).isEqualTo(SEEDED_ADMIN_FIRST_NAME);
+            assertThat(response.lastName()).isEqualTo(SEEDED_ADMIN_LAST_NAME);
+            assertThat(response.userType()).isEqualTo(ROLE_CODE_ADMIN);
+            verify(mockRepository).findById("DELMCK02");
+            verify(mockRepository, never()).findByIdForUpdate(any());
+            verify(mockRepository, never()).deleteById(any());
+            verifyNoMoreInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("a blank identifier is refused before the store is asked anything at all")
+        void refusesABlankIdentifierBeforeReading() {
+            final UserOutcome response = serviceWithMocks().deleteUser(
+                    recordRequest("   ", null, null, null, null, KeyAction.PFK05));
+
+            assertThat(response.message()).isEqualTo(MSG_USER_ID_EMPTY);
+            assertThat(response.generalError()).isTrue();
+            assertThat(response.fieldErrors()).singleElement()
+                    .satisfies(finding -> assertThat(finding.state())
+                            .isEqualTo(ValidationException.FieldState.MISSING));
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+    }
+
+    @Nested
+    @DisplayName("The catalogue's fixed-width text crosses all four screens byte-identically")
+    class FixedWidthCatalogueText {
+
+        @Test
+        @DisplayName("the unmapped-key text is fifty encoded bytes on every one of the four screens, "
+                + "with its ten trailing spaces intact and never trimmed")
+        void carriesFiftyEncodedBytesThroughAllFourScreens() {
+            when(mockCatalog.invalidKeyMessage()).thenReturn(MSG_INVALID_KEY_PADDED);
+            final UserManagementService service = serviceWithMocks();
+
+            final List<UserOutcome> responses = List.of(
+                    service.listUsers(listRequest(KeyAction.PFK09, null, null, null, List.of())),
+                    service.addUser(recordRequest("ANYUSR01", "GIVEN", "FAMILY",
+                            foldStableThrowawayCredential(), ROLE_CODE_USER, KeyAction.PFK06)),
+                    service.updateUser(recordRequest("ANYUSR02", "GIVEN", "FAMILY", null,
+                            ROLE_CODE_USER, KeyAction.PFK09)),
+                    service.deleteUser(recordRequest("ANYUSR03", null, null, null, null,
+                            KeyAction.PFK09)));
+
+            assertThat(INVALID_KEY_TEXT_VISIBLE.getBytes(StandardCharsets.US_ASCII).length)
+                    .as("forty visible characters, before the field's own space fill")
+                    .isEqualTo(COMMON_MESSAGE_WIDTH - INVALID_KEY_TRAILING_SPACES);
+            assertThat(INVALID_KEY_TRAILING_SPACES).isEqualTo(10);
+            for (final UserOutcome response : responses) {
+                assertThat(response.message()).isEqualTo(MSG_INVALID_KEY_PADDED);
+                // Measured on encoded bytes, which is what the fixed-width contract is expressed in,
+                // and never on the character count of a Java string.
+                assertThat(response.message().getBytes(StandardCharsets.US_ASCII).length)
+                        .isEqualTo(COMMON_MESSAGE_WIDTH);
+                assertThat(response.message()).endsWith(" ".repeat(INVALID_KEY_TRAILING_SPACES));
+                assertThat(response.message())
+                        .as("passed through untrimmed: the space fill is contract, not whitespace")
+                        .isNotEqualTo(MSG_INVALID_KEY_PADDED.trim());
+                assertThat(response.generalError()).isTrue();
+                assertThat(response.actionSucceeded()).isFalse();
+            }
+            verify(mockCatalog, times(4)).invalidKeyMessage();
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+            verifyNoInteractions(mockNavigation);
+        }
+    }
+
+    @Nested
+    @DisplayName("Every destination comes from the navigation service, and none names a program "
+            + "without a source member")
+    class RoutingThroughTheNavigationService {
+
+        @Test
+        @DisplayName("all four operations publish the destination the navigation service resolves, "
+                + "not the default they asked with")
+        void publishTheResolvedDestinationRatherThanTheDefault() {
+            // The stub deliberately answers with a route that is NOT the caller's default, because
+            // that is the only way to tell a resolved destination apart from a hardcoded one: a service
+            // that emitted its own default would pass an assertion made against that default.
+            when(mockNavigation.resolveNominatedDestination(any(), any()))
+                    .thenReturn(NavigationService.Route.USER_LIST);
+            final UserManagementService service = serviceWithMocks();
+
+            final List<UserOutcome> responses = List.of(
+                    service.listUsers(new UserCommand(null, null, null, null, null, null, List.of(),
+                            null, null, null, null, KeyAction.ENTER, null)),
+                    service.addUser(new UserCommand(null, null, null, null, null, null, List.of(),
+                            null, null, null, null, KeyAction.ENTER, null)),
+                    service.updateUser(new UserCommand(null, null, null, null, null, null, List.of(),
+                            null, null, null, null, KeyAction.ENTER, null)),
+                    service.deleteUser(new UserCommand(null, null, null, null, null, null, List.of(),
+                            null, null, null, null, KeyAction.ENTER, null)));
+
+            for (final UserOutcome response : responses) {
+                assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_LIST);
+            }
+            verify(mockNavigation, times(4)).resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.SIGN_ON));
+            verifyNoMoreInteractions(mockNavigation);
+            // A route is a value in the response and nothing is forwarded on the server: no operation
+            // touched the store on the way out, so nothing was dispatched behind the response.
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("the update screen's exit key saves first and then leaves by the back navigation "
+                + "the service resolved")
+        void savesBeforeLeavingByTheResolvedBackNavigation() {
+            when(mockNavigation.resolveBackNavigation(any(),
+                    eq(NavigationService.Route.ADMIN_MENU)))
+                    .thenReturn(NavigationService.Route.USER_LIST);
+            when(mockNavigation.resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.USER_LIST)))
+                    .thenReturn(NavigationService.Route.USER_LIST);
+            when(mockRepository.findByIdForUpdate("UPDMCK04"))
+                    .thenReturn(Optional.of(identityFor("UPDMCK04", ROLE_CODE_USER)));
+            when(mockRepository.save(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest("UPDMCK04", "CHANGED", "ALTERED", null, ROLE_CODE_ADMIN,
+                            KeyAction.PFK03));
+
+            assertThat(response.nextRoute()).isEqualTo(ROUTE_USER_LIST);
+            verify(mockRepository).save(any(UserSecurity.class));
+            verify(mockNavigation).resolveBackNavigation(any(),
+                    eq(NavigationService.Route.ADMIN_MENU));
+            verify(mockNavigation).resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.USER_LIST));
+            verifyNoMoreInteractions(mockNavigation);
+        }
+
+        @Test
+        @DisplayName("the delete screen's exit key leaves by the same resolved navigation and deletes "
+                + "nothing on the way out")
+        void leavesTheDeleteScreenWithoutRemovingAnything() {
+            when(mockNavigation.resolveBackNavigation(any(),
+                    eq(NavigationService.Route.ADMIN_MENU)))
+                    .thenReturn(NavigationService.Route.ADMIN_MENU);
+            when(mockNavigation.resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.ADMIN_MENU)))
+                    .thenReturn(NavigationService.Route.ADMIN_MENU);
+
+            final UserOutcome response = serviceWithMocks().deleteUser(
+                    recordRequest("DELMCK03", null, null, null, null, KeyAction.PFK03));
+
+            assertThat(response.nextRoute()).isEqualTo(ROUTE_ADMIN_MENU);
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("no route in the table names the one CICS program definition that has no source "
+                + "member, and the four user routes name the four members that do")
+        void noRouteNamesTheProgramWithoutASourceMember() {
+            assertThat(NavigationService.Route.values())
+                    .extracting(NavigationService.Route::getLegacyProgramName)
+                    .as("app/csd/CARDDEMO.CSD declares this program at L211 and binds it at L390, "
+                            + "with nothing to translate, so no route may resolve to it")
+                    .doesNotContain(DANGLING_CSD_PROGRAM);
+            assertThat(NavigationService.Route.USER_LIST.getLegacyProgramName())
+                    .isEqualTo("COUSR00C");
+            assertThat(NavigationService.Route.USER_ADD.getLegacyProgramName())
+                    .isEqualTo("COUSR01C");
+            assertThat(NavigationService.Route.USER_UPDATE.getLegacyProgramName())
+                    .isEqualTo("COUSR02C");
+            assertThat(NavigationService.Route.USER_DELETE.getLegacyProgramName())
+                    .isEqualTo("COUSR03C");
+            assertThat(NavigationService.Route.USER_LIST.getLegacyTransactionId()).isEqualTo("CU00");
+            assertThat(NavigationService.Route.USER_ADD.getLegacyTransactionId()).isEqualTo("CU01");
+            assertThat(NavigationService.Route.USER_UPDATE.getLegacyTransactionId()).isEqualTo("CU02");
+            assertThat(NavigationService.Route.USER_DELETE.getLegacyTransactionId()).isEqualTo("CU03");
+            assertThat(NavigationService.Route.USER_LIST.getRouteValue()).isEqualTo(ROUTE_USER_LIST);
+            assertThat(NavigationService.Route.USER_UPDATE.getRouteValue())
+                    .isEqualTo(ROUTE_USER_UPDATE);
+            assertThat(NavigationService.Route.USER_DELETE.getRouteValue())
+                    .isEqualTo(ROUTE_USER_DELETE);
+            assertThat(NavigationService.Route.ADMIN_MENU.getRouteValue())
+                    .isEqualTo(ROUTE_ADMIN_MENU);
+            assertThat(NavigationService.Route.SIGN_ON.getRouteValue()).isEqualTo(ROUTE_SIGN_ON);
+        }
+    }
+
+    @Nested
+    @DisplayName("The two-state field-error contract: missing for blank, invalid for refused")
+    class TwoStateFieldErrorContract {
+
+        @Test
+        @DisplayName("the state contract carries exactly two constants and no third")
+        void carriesExactlyTwoStates() {
+            assertThat(ValidationException.FieldState.values()).hasSize(2)
+                    .containsExactly(ValidationException.FieldState.MISSING,
+                            ValidationException.FieldState.INVALID);
+        }
+
+        @Test
+        @DisplayName("a blank required item is reported as missing, naming its property and its screen "
+                + "field")
+        void reportsABlankItemAsMissing() {
+            final UserOutcome response = serviceWithMocks().addUser(
+                    recordRequest("NEWUSR12", "   ", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.ENTER));
+
+            assertThat(response.fieldErrors()).singleElement().satisfies(finding -> {
+                assertThat(finding.state()).isEqualTo(ValidationException.FieldState.MISSING);
+                assertThat(finding.field()).isEqualTo(PROPERTY_FIRST_NAME);
+                assertThat(finding.bmsFieldId()).isEqualTo(FIELD_FIRST_NAME);
+                assertThat(finding.message()).isEqualTo(MSG_FIRST_NAME_EMPTY);
+            });
+            assertThat(response.hasFieldErrors()).isTrue();
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("a value the store refuses is reported as invalid, which is a different state and "
+                + "a different instruction to the operator")
+        void reportsARefusedValueAsInvalid() {
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenThrow(new DuplicateKeyException("duplicate test identifier"));
+
+            final UserOutcome response = serviceWithMocks().addUser(
+                    recordRequest("DUPUSR12", "GIVEN", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.ENTER));
+
+            assertThat(response.fieldErrors()).singleElement().satisfies(finding -> {
+                assertThat(finding.state()).isEqualTo(ValidationException.FieldState.INVALID);
+                assertThat(finding.field()).isEqualTo(PROPERTY_USER_ID);
+            });
+        }
+
+        @Test
+        @DisplayName("the finding list is never absent and cannot be mutated, whether it is empty or "
+                + "populated")
+        void publishesAnUnmodifiableFindingList() {
+            final ValidationException.FieldError intruder = new ValidationException.FieldError(
+                    PROPERTY_USER_ID, FIELD_LIST_USER_ID,
+                    ValidationException.FieldState.MISSING, MSG_USER_ID_EMPTY);
+
+            final UserOutcome populated = serviceWithMocks().addUser(
+                    recordRequest("NEWUSR13", "   ", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.ENTER));
+            final List<ValidationException.FieldError> populatedFindings = populated.fieldErrors();
+            assertThat(populatedFindings).isNotNull().hasSize(1);
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> populatedFindings.add(intruder));
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(populatedFindings::clear);
+
+            final UserOutcome clean = serviceWithMocks().addUser(
+                    recordRequest("NEWUSR14", "GIVEN", "FAMILY", foldStableThrowawayCredential(),
+                            ROLE_CODE_USER, KeyAction.PFK04));
+            final List<ValidationException.FieldError> emptyFindings = clean.fieldErrors();
+            assertThat(emptyFindings).isNotNull().isEmpty();
+            assertThat(clean.hasFieldErrors()).isFalse();
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> emptyFindings.add(intruder));
+
+            // The same guarantee on the exception the boundary raises from those findings.
+            assertThat(new ValidationException(MSG_USER_ID_EMPTY).fieldErrors())
+                    .isNotNull().isEmpty();
+            final ValidationException raised = new ValidationException(PROPERTY_USER_ID,
+                    FIELD_LIST_USER_ID, ValidationException.FieldState.MISSING, MSG_USER_ID_EMPTY);
+            assertThat(raised.fieldErrors()).isNotNull().hasSize(1);
+            assertThat(raised.hasFieldErrors()).isTrue();
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> raised.fieldErrors().add(intruder));
+            verifyNoInteractions(mockRepository);
+        }
+    }
+
+    @Nested
+    @DisplayName("Type codes, alphabetic fidelity and boundary input, observed at the store")
+    class TypeCodesAndBoundaryInput {
+
+        @ParameterizedTest(name = "stored code [{0}]")
+        @ValueSource(strings = {"X", "Z", "1", "a"})
+        @DisplayName("a stored code outside the declared pair loads and is surfaced verbatim, with no "
+                + "enum conversion attempted and nothing raised")
+        void loadsAnUndeclaredCodeVerbatim(final String rawCode) {
+            when(mockRepository.findById("TYPMCK01"))
+                    .thenReturn(Optional.of(identityFor("TYPMCK01", rawCode)));
+
+            final UserOutcome response = serviceWithMocks().updateUser(
+                    recordRequest("TYPMCK01", null, null, null, null, KeyAction.ENTER));
+
+            assertThat(UserType.fromCode(rawCode))
+                    .as("the code really is one the estate never declared")
+                    .isEmpty();
+            assertThat(response.userType()).isEqualTo(rawCode);
+            assertThat(response.message()).isEqualTo(MSG_UPDATE_PRESS_PF5);
+            assertThat(response.generalError()).isFalse();
+            verify(mockRepository).findById("TYPMCK01");
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("the two declared codes map to their enum constants, and only the "
+                + "administrative one is administrative")
+        void mapsTheTwoDeclaredCodes() {
+            assertThat(UserType.fromCode(ROLE_CODE_ADMIN)).contains(UserType.ADMIN);
+            assertThat(UserType.fromCode(ROLE_CODE_USER)).contains(UserType.USER);
+            assertThat(UserType.ADMIN.getCode()).isEqualTo(ROLE_CODE_ADMIN);
+            assertThat(UserType.USER.getCode()).isEqualTo(ROLE_CODE_USER);
+            assertThat(UserType.ADMIN.isAdmin()).isTrue();
+            assertThat(UserType.USER.isAdmin()).isFalse();
+            assertThat(UserType.values()).hasSize(2);
+        }
+
+        @Test
+        @DisplayName("the administrative code drives the administrative role class, the standard code "
+                + "the standard one, and an undeclared code the standard one as well")
+        void driveTheRoleClassFromTheStoredCode() {
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            final UserManagementService service = serviceWithMocks();
+
+            service.addUser(recordRequest("ROLMCK01", "GIVEN", "FAMILY",
+                    foldStableThrowawayCredential(), ROLE_CODE_ADMIN, KeyAction.ENTER));
+            service.addUser(recordRequest("ROLMCK02", "GIVEN", "FAMILY",
+                    foldStableThrowawayCredential(), ROLE_CODE_USER, KeyAction.ENTER));
+            service.addUser(recordRequest("ROLMCK03", "GIVEN", "FAMILY",
+                    foldStableThrowawayCredential(), "Q", KeyAction.ENTER));
+
+            final List<String> added = logCapture.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(message -> message.startsWith("User added:"))
+                    .toList();
+            assertThat(added).hasSize(3);
+            assertThat(added.get(0)).contains("roleClass=administrative");
+            assertThat(added.get(1)).contains("roleClass=standard");
+            assertThat(added.get(2))
+                    .as("an undeclared code takes the unconditional alternative, exactly as the "
+                            + "sign-on program's own role split does, and raises nothing")
+                    .contains("roleClass=standard");
+            assertThat(added).allSatisfy(message ->
+                    assertThat(message).doesNotContain("ROLMCK"));
+            verify(mockRecordWriter, times(3)).insertIndependently(any(UserSecurity.class));
+            verifyNoInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("a name with an embedded space, and one carrying a digit, are both stored "
+                + "verbatim, because these four screens apply no alphabetic edit")
+        void storesNamesVerbatimBecauseNoAlphabeticEditExists() {
+            when(mockRecordWriter.insertIndependently(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            final UserManagementService service = serviceWithMocks();
+
+            service.addUser(recordRequest("NAMMCK01", "MARY ANN", "Aniya Von",
+                    foldStableThrowawayCredential(), ROLE_CODE_USER, KeyAction.ENTER));
+            service.addUser(recordRequest("NAMMCK02", "GIVEN1", "FAMILY2",
+                    foldStableThrowawayCredential(), ROLE_CODE_USER, KeyAction.ENTER));
+
+            final ArgumentCaptor<UserSecurity> written =
+                    ArgumentCaptor.forClass(UserSecurity.class);
+            verify(mockRecordWriter, times(2)).insertIndependently(written.capture());
+            assertThat(written.getAllValues().get(0).getSecUsrFname()).isEqualTo("MARY ANN");
+            assertThat(written.getAllValues().get(0).getSecUsrLname()).isEqualTo("Aniya Von");
+            assertThat(written.getAllValues().get(1).getSecUsrFname())
+                    .as("a digit-bearing name is accepted here, because inventing an edit would "
+                            + "reject input the legacy stores")
+                    .isEqualTo("GIVEN1");
+            verifyNoInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("the estate's alphabetic predicate does discriminate, even though none of these "
+                + "four screens applies it")
+        void theEstateAlphabeticPredicateDiscriminates() {
+            // The predicate is the subject here rather than an oracle: the point is that a blank-and-trim
+            // alphabetic edit admits embedded spaces and refuses a digit, so a translation that reached
+            // for an every-character-is-a-letter test would be wrong wherever the edit IS applied.
+            assertThat(CobolStringUtils.isAlphaOrSpace("MARY ANN")).isTrue();
+            assertThat(CobolStringUtils.isAlphaOrSpace("Aniya Von")).isTrue();
+            assertThat(CobolStringUtils.isAlphaOrSpace("GIVEN1")).isFalse();
+        }
+
+        @Test
+        @DisplayName("a short identifier is space-filled to the record's eight positions before the "
+                + "store is asked")
+        void spaceFillsAShortIdentifier() {
+            when(mockRepository.findById(any())).thenReturn(Optional.empty());
+
+            serviceWithMocks().updateUser(
+                    recordRequest("AB", null, null, null, null, KeyAction.ENTER));
+
+            final ArgumentCaptor<String> asked = ArgumentCaptor.forClass(String.class);
+            verify(mockRepository).findById(asked.capture());
+            assertThat(asked.getValue()).hasSize(8).isEqualTo("AB" + " ".repeat(6));
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @Test
+        @DisplayName("an over-long identifier loses its rightmost characters, which is what a move "
+                + "into a narrower field does")
+        void truncatesAnOverLongIdentifier() {
+            when(mockRepository.findById(any())).thenReturn(Optional.empty());
+
+            serviceWithMocks().deleteUser(
+                    recordRequest("USER00012345", null, null, null, null, KeyAction.ENTER));
+
+            final ArgumentCaptor<String> asked = ArgumentCaptor.forClass(String.class);
+            verify(mockRepository).findById(asked.capture());
+            assertThat(asked.getValue()).hasSize(8).isEqualTo("USER0001");
+            verifyNoMoreInteractions(mockRepository);
+        }
+
+        @ParameterizedTest(name = "identifier [{0}]")
+        @NullAndEmptySource
+        @ValueSource(strings = {" ", "        "})
+        @DisplayName("an absent, empty or all-space identifier is refused on both maintenance screens "
+                + "before any read, with nothing escaping")
+        void refusesAnUnusableIdentifierWithoutReading(final String identifier) {
+            final UserManagementService service = serviceWithMocks();
+
+            final UserOutcome update = service.updateUser(
+                    recordRequest(identifier, "GIVEN", "FAMILY", null, ROLE_CODE_USER,
+                            KeyAction.PFK05));
+            final UserOutcome delete = service.deleteUser(
+                    recordRequest(identifier, null, null, null, null, KeyAction.PFK05));
+
+            assertThat(update.message()).isEqualTo(MSG_USER_ID_EMPTY);
+            assertThat(delete.message()).isEqualTo(MSG_USER_ID_EMPTY);
+            assertThat(update.generalError()).isTrue();
+            assertThat(delete.generalError()).isTrue();
+            verifyNoInteractions(mockRepository);
+            verifyNoInteractions(mockRecordWriter);
+        }
+
+        @Test
+        @DisplayName("no returned representation and no captured log line carries a credential or a "
+                + "digest, on the load, the save or the list")
+        void keepsCredentialMaterialOutOfEveryProjectionAndLogLine() {
+            final String credential = foldStableThrowawayCredential();
+            final String digest = ENCODER.encode(credential);
+            final UserSecurity held = identityHolding("PRVMCK01", digest, ROLE_CODE_USER);
+            when(mockRepository.findById("PRVMCK01")).thenReturn(Optional.of(held));
+            when(mockRepository.findByIdForUpdate("PRVMCK01")).thenReturn(Optional.of(held));
+            when(mockRepository.save(any(UserSecurity.class)))
+                    .thenAnswer(invocation -> invocation.getArgument(0));
+            when(mockRepository.findAllProjectedBy(any(Pageable.class)))
+                    .thenReturn(new PageImpl<>(projectionsOf(FIRST_PAGE_IDS)));
+            final UserManagementService service = serviceWithMocks();
+
+            final UserOutcome loaded = service.updateUser(
+                    recordRequest("PRVMCK01", null, null, null, null, KeyAction.ENTER));
+            final UserOutcome saved = service.updateUser(
+                    recordRequest("PRVMCK01", "CHANGED", "ALTERED", null, ROLE_CODE_ADMIN,
+                            KeyAction.PFK05));
+            final UserOutcome listed = service.listUsers(
+                    listRequest(KeyAction.ENTER, null, null, null, List.of()));
+
+            // The response contract declares no credential component at all, so the assertion is that
+            // nothing rendered from it carries one either - the rendering is where a leak would surface.
+            for (final UserOutcome response : List.of(loaded, saved, listed)) {
+                assertThat(String.valueOf(response)).doesNotContain(digest)
+                        .doesNotContain(credential);
+            }
+            assertThat(listed.rows()).isNotEmpty()
+                    .allSatisfy(row -> assertThat(String.valueOf(row)).doesNotContain(digest)
+                            .doesNotContain(credential));
+            assertThat(noCapturedLogContains(digest)).isTrue();
+            assertThat(noCapturedLogContains(credential)).isTrue();
+            assertThat(loaded.message()).isEqualTo(MSG_UPDATE_PRESS_PF5);
+            assertThat(saved.actionSucceeded()).isTrue();
+            verify(encoderSpy, never()).encode(any());
+        }
+    }
+
 }

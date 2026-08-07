@@ -17,1288 +17,2351 @@
 package com.carddemo.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
-import com.carddemo.domain.enums.KeyAction;
-import com.carddemo.domain.enums.ReportPeriod;
-import com.carddemo.exception.ValidationException;
-
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatchers;
+import org.mockito.Captor;
 import org.mockito.InOrder;
-import org.mockito.Mockito;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
+
+import com.carddemo.domain.enums.DateFormat;
+import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.domain.enums.ReportPeriod;
+import com.carddemo.exception.JobSubmissionException;
+import com.carddemo.exception.ValidationException;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 /**
- * Unit test for {@link ReportRequestService}, the translation of the report-request transaction
- * {@code CR00} carried by {@code app/cbl/CORPT00C.cbl}.
+ * Unit test for {@link ReportRequestService}, the translation of {@code app/cbl/CORPT00C.cbl} —
+ * legacy CICS transaction {@code CR00}, 649 source lines and 10 procedure-division paragraphs, the
+ * online half of the estate's single online-to-batch bridge.
  *
- * <p><strong>What is under test.</strong> One pseudo-conversational turn. The service decides, from
- * the navigation state and the attention key alone, whether to route away without a screen, send the
- * screen for a first entry, or receive and process a submitted screen. On a processed submission it
- * selects one of three reporting periods, gates the submission behind an explicit confirmation, and
- * publishes the job-submission card image as ONE complete submission.
+ * <h2>Harness</h2>
+ * A surefire unit test: no Spring context, no container, no database, no queue client, no port and no
+ * network. All four collaborators — the date-validation subprogram, the queue bridge, the
+ * common-message catalogue and the navigation rules — are Mockito mocks, so every decision this
+ * service makes is observed at its own boundary rather than through another class's behaviour. The
+ * card builder is used through the service as a static contract and is never asked to supply an
+ * expected value.
  *
- * <p><strong>The batch-trigger contract is verified, not counted.</strong> The externally observable
- * contract of a report submission is not "seventeen messages reached the queue"; it is <em>which</em>
- * seventeen, <em>in what order</em>, under <em>which ordinals</em>, carrying <em>which</em>
- * substituted dates, and terminated by the end-of-file sentinel. This suite therefore captures every
- * publish call with an {@link ArgumentCaptor}, orders them with an {@link InOrder}, and compares each
- * captured card against an eighty-column image <strong>authored in this file</strong> from the card
- * literals the legacy program declares. Nothing is asserted with a permissive matcher, no expectation
- * is derived from a production constant or from a live collaborator, and no assertion reduces to a
- * call count.
+ * <p>The clock is injected and fixed. The legacy derives both the month-to-date and the year-to-date
+ * window from {@code FUNCTION CURRENT-DATE} at source lines 215 and 241 and stamps the screen header
+ * from it at line 611, so an ambient time source would make three of this suite's assertions
+ * unrepeatable. Nothing here reads the host clock.
  *
- * <p><strong>Collaborators.</strong> The date validator, the message catalogue and the navigation
- * rules are the real classes, because each is a pure decision this service must agree with rather
- * than a boundary to be stubbed - substituting them would let this suite pass while the module
- * disagreed with itself. Only {@link JobSubmissionService} is a test double, because it publishes to
- * a real queue; its whole-submission contract returns an outcome, so a double states how many cards
- * the queue accepted and whether the stream stopped short, exactly as the bridge does. The clock is
- * fixed so the rendered header is deterministic.
+ * <h2>Every expected value is authored in this file</h2>
+ * No expectation is produced by the class under test or by any production formatter, codec, template
+ * or builder. The seventeen eighty-column card images are written out below as explicit literals with
+ * their padding stated as an explicit repeat count, so each frame is countable by eye; the period
+ * dates are declared rather than recomputed with the same arithmetic the service uses; and every
+ * message literal and every padded catalogue value is declared as a test constant. Asking the card
+ * builder for the expected cards would make the strongest assertion in this suite tautological.
  *
- * <p><strong>The double stubs the whole-submission entry point, not the per-card one, and that change
- * is the point of a corrected contract rather than an incidental edit.</strong> An earlier revision of
- * the service iterated the card slots itself and called the single-card entry point seventeen times,
- * so this suite stubbed and counted that call. Every card of every submission carries one stable
- * message group, so two concurrent turns interleaved their sends and a first-in-first-out queue then
- * preserved the interleaving - an unparseable job stream, reported as two successes. The service now
- * hands the bridge the complete stream and the bridge admits one submission at a time. A suite that
- * kept counting per-card calls would have gone on asserting the shape that caused the defect, so the
- * expectations below assert the submission-level contract instead: one call, carrying all seventeen
- * cards, in order.
+ * <h2>What the suite pins</h2>
+ * <ul>
+ *   <li><strong>The date-acceptance test is two-field, not boolean.</strong> The caller's overlay of
+ *       the subprogram result carries a severity and a message number, and the source accepts a
+ *       non-zero severity when — and only when — the message number is the tolerated one. Both halves
+ *       are asserted independently, and the two non-zero outcomes are compared against each other,
+ *       because a translation that collapsed them into one boolean would still pass a suite that
+ *       asserted only one of them.</li>
+ *   <li><strong>The submission is seventeen cards, sentinel included.</strong> The emitting loop
+ *       raises its end-of-stream flag before writing the card that raised it, so the sentinel is
+ *       transmitted. A translation that held it back as a loop terminator would publish sixteen.</li>
+ *   <li><strong>A publish failure is not fatal.</strong> The queue is defined errors-ignored, so the
+ *       failure is logged, the remaining cards are abandoned, the operator sees the queue-write text
+ *       and the caller receives a value rather than an exception. No retry, back-off or delay
+ *       exists to assert, and the absence is asserted as an invocation count.</li>
+ *   <li><strong>The confirmation gate has three arms and they are not symmetrical.</strong> A blank
+ *       confirmation publishes nothing at all, a declined one raises the error flag with no message
+ *       text whatsoever, and only an affirmative one reaches the queue.</li>
+ *   <li><strong>Message text is an external contract.</strong> Every literal is asserted byte for
+ *       byte and untrimmed, including the one that capitalises {@code NOT} against surrounding mixed
+ *       case and the one that carries a space before its three trailing dots.</li>
+ * </ul>
  *
- * <p><strong>The clock is fixed</strong> at an instant inside July 2022, which makes the derived
- * month-to-date and year-to-date windows deterministic and therefore assertable as literals.
- *
- * <p>Provenance: legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream
- * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The card images are the
- * seventeen eighty-column literals declared at {@code app/cbl/CORPT00C.cbl} lines 84 to 125, with the
- * four substitution slots those lines carry; the queue's ignore-on-error behaviour is defined at
- * {@code app/csd/CARDDEMO.CSD}. No legacy source line is transcribed here - only the card literals
- * themselves, which are the external contract this test exists to pin.
+ * <p>Provenance: legacy checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream
+ * release stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source line is
+ * transcribed here; the card images, the widths, the offsets and the message texts are the external
+ * contract this suite exists to pin, and they are declared as test constants.
  */
+@ExtendWith(MockitoExtension.class)
 @DisplayName("ReportRequestService - the CR00 report-request turn")
 class ReportRequestServiceTest {
 
-    /** A fixed instant, so the rendered date and time are the same on every run and every host. */
-    private static final Clock FIXED_CLOCK =
-            Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
+    // ==============================================================================================
+    // Pinned time. The module's local pinned instant, so a derived window is repeatable.
+    // ==============================================================================================
 
-    /** The affirmative confirmation entry the screen accepts. */
-    private static final String CONFIRM_YES = "Y";
+    /** The module's pinned instant, which lands inside a thirty-day month. */
+    private static final Instant PINNED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
 
-    /** Stable token a caller repeats when retrying one logical report request. */
-    private static final String RETRY_TOKEN = "report-request-retry-001";
+    /** The pinned clock every test uses unless it needs a different calendar month. */
+    private static final Clock PINNED_CLOCK = Clock.fixed(PINNED_INSTANT, ZoneOffset.UTC);
 
-    /** Token naming a deliberate second submission of the same reporting period. */
-    private static final String NEW_SUBMISSION_TOKEN = "report-request-new-002";
+    // ==============================================================================================
+    // Contract widths and counts. Legacy contract values, never tuning parameters.
+    // ==============================================================================================
 
-    /** The selection character the screen writes into whichever period the operator chose. */
-    private static final String SELECTED = "Y";
+    /** One job-submission card occupies an eighty-column frame. */
+    private static final int CARD_IMAGE_WIDTH = 80;
 
-    /** Width of one job-submission card, from the legacy eighty-column card image. */
-    private static final int CARD_WIDTH = 80;
+    /** A complete submission carries seventeen cards, the sentinel among them. */
+    private static final int SUBMISSION_CARD_COUNT = 17;
 
-    /** How many cards one submission carries, from the seventeen literals the source declares. */
-    private static final int EXPECTED_CARD_COUNT = 17;
+    /** The concatenated image is the seventeen frames end to end with nothing between them. */
+    private static final int CONCATENATED_IMAGE_WIDTH = SUBMISSION_CARD_COUNT * CARD_IMAGE_WIDTH;
 
-    /** Width of a date substitution slot, from the ten-character date the source moves into it. */
+    /** A date substitution slot is ten characters wide. */
     private static final int DATE_SLOT_WIDTH = 10;
 
-    /** The card that terminates the stream, which the source transmits rather than merely holding. */
-    private static final String END_OF_FILE_CARD = "/*EOF";
+    /** The two common messages are fifty characters wide, trailing spaces included. */
+    private static final int COMMON_MESSAGE_WIDTH = 50;
+
+    /** The two screen titles are forty characters wide, leading and trailing spaces included. */
+    private static final int SCREEN_TITLE_WIDTH = 40;
+
+    /** The outbound message field is narrower than the eighty-character work field behind it. */
+    private static final int OUTBOUND_MESSAGE_WIDTH = 78;
+
+    /** Byte offset of the start-date slot on the start-date sort-symbol card: 18 + 10 + 52. */
+    private static final int START_SORT_SYMBOL_SLOT_OFFSET = 18;
+
+    /** Byte offset of the end-date slot on the end-date sort-symbol card: 16 + 10 + 54. */
+    private static final int END_SORT_SYMBOL_SLOT_OFFSET = 16;
+
+    /** Byte offset of the start-date slot on the parameter card: 10 + 1 + 10 + 59. */
+    private static final int PARAMETER_START_SLOT_OFFSET = 0;
+
+    /** Byte offset of the separator between the two slots on the parameter card. */
+    private static final int PARAMETER_SEPARATOR_OFFSET = 10;
+
+    /** Byte offset of the end-date slot on the parameter card. */
+    private static final int PARAMETER_END_SLOT_OFFSET = 11;
+
+    /** Zero-based position of the start-date sort-symbol card in the stream. */
+    private static final int START_SORT_SYMBOL_CARD_INDEX = 10;
+
+    /** Zero-based position of the end-date sort-symbol card in the stream. */
+    private static final int END_SORT_SYMBOL_CARD_INDEX = 11;
+
+    /** Zero-based position of the date-parameter card in the stream. */
+    private static final int PARAMETER_CARD_INDEX = 14;
+
+    // ==============================================================================================
+    // The seventeen card images, authored here from the legacy card literals.
+    //
+    // Each frame is a literal plus an explicit repeat count, so the eighty columns are countable
+    // without running anything. Nothing below is obtained from the production card builder.
+    // ==============================================================================================
+
+    /** Card 1: the job card. */
+    private static final String CARD_01_JOB =
+            "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0," + " ".repeat(32);
+
+    /** Card 2: the notify continuation. */
+    private static final String CARD_02_NOTIFY = "// NOTIFY=&SYSUID" + " ".repeat(63);
+
+    /** Cards 3, 5 and 7: the comment card, which appears three times. */
+    private static final String CARD_COMMENT = "//*" + " ".repeat(77);
+
+    /** Card 4: the procedure library. */
+    private static final String CARD_04_JOBLIB =
+            "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')" + " ".repeat(34);
+
+    /** Card 6: the step that invokes the cataloged reporting procedure. */
+    private static final String CARD_06_EXEC_PROC = "//STEP10 EXEC PROC=TRANREPT" + " ".repeat(53);
+
+    /** Card 8: the sort symbol-names override. */
+    private static final String CARD_08_SYMNAMES = "//STEP05R.SYMNAMES DD *" + " ".repeat(57);
+
+    /** Card 9: the card-number sort symbol, zoned decimal at offset 263 for sixteen bytes. */
+    private static final String CARD_09_CARD_NUM_SYMBOL = "TRAN-CARD-NUM,263,16,ZD" + " ".repeat(57);
+
+    /** Card 10: the processing-date sort symbol, character at offset 305 for ten bytes. */
+    private static final String CARD_10_PROC_DT_SYMBOL = "TRAN-PROC-DT,305,10,CH" + " ".repeat(58);
+
+    /** The eighteen-byte leading literal of card 11, which opens the character constant. */
+    private static final String START_SORT_SYMBOL_LEAD = "PARM-START-DATE,C'";
+
+    /** The sixteen-byte leading literal of card 12. */
+    private static final String END_SORT_SYMBOL_LEAD = "PARM-END-DATE,C'";
+
+    /** Cards 13 and 16: the in-stream terminator, which appears twice. */
+    private static final String CARD_IN_STREAM_TERMINATOR = "/*" + " ".repeat(78);
+
+    /** Card 14: the date-parameter override. */
+    private static final String CARD_14_DATEPARM = "//STEP10R.DATEPARM DD *" + " ".repeat(57);
+
+    /** Card 17: the sentinel, which the legacy transmits rather than merely holding. */
+    private static final String CARD_17_SENTINEL = "/*EOF" + " ".repeat(75);
+
+    // ==============================================================================================
+    // Message literals. Byte for byte, never trimmed, never respaced.
+    // ==============================================================================================
 
     /**
-     * The submission identity a stubbed bridge echoes back on its outcome.
-     *
-     * <p>A fixed value, because the identity the screen actually mints carries a nonce and is therefore
-     * not predictable; what these tests assert about it is that the screen obtains one and hands it to the
-     * bridge unchanged, which they do by capturing the argument rather than by comparing it to a literal.
+     * The start-month emptiness text. <strong>{@code NOT} is capitalised</strong> where the
+     * surrounding words are mixed case, and the three trailing dots carry no space before them. Both
+     * are contractual.
      */
-    private static final String RESULT_SUBMISSION_ID = "stubbed-submission";
+    private static final String MSG_START_MONTH_EMPTY = "Start Date - Month can NOT be empty...";
 
-    /** The month-to-date window this fixed clock derives: the first of the current month. */
-    private static final String MONTHLY_START_DATE = "2022-07-01";
+    /** The start-day emptiness text, capitalised the same way. */
+    private static final String MSG_START_DAY_EMPTY = "Start Date - Day can NOT be empty...";
 
-    /** The month-to-date window this fixed clock derives: the last day of the current month. */
-    private static final String MONTHLY_END_DATE = "2022-07-31";
+    /** The start-year emptiness text. */
+    private static final String MSG_START_YEAR_EMPTY = "Start Date - Year can NOT be empty...";
 
-    /** The year-to-date window this fixed clock derives: the first of the current year. */
-    private static final String YEARLY_START_DATE = "2022-01-01";
+    /** The end-month emptiness text. */
+    private static final String MSG_END_MONTH_EMPTY = "End Date - Month can NOT be empty...";
 
-    /** The year-to-date window this fixed clock derives: the last day of the current year. */
-    private static final String YEARLY_END_DATE = "2022-12-31";
+    /** The end-day emptiness text. */
+    private static final String MSG_END_DAY_EMPTY = "End Date - Day can NOT be empty...";
 
-    /** The custom window the operator enters in the custom-period tests. */
-    private static final String CUSTOM_START_DATE = "2022-01-01";
+    /** The end-year emptiness text. */
+    private static final String MSG_END_YEAR_EMPTY = "End Date - Year can NOT be empty...";
 
-    /** The closing bound of that custom window. */
-    private static final String CUSTOM_END_DATE = "2022-12-31";
+    /** The start-month range text. */
+    private static final String MSG_START_MONTH_INVALID = "Start Date - Not a valid Month...";
+
+    /** The start-day range text. */
+    private static final String MSG_START_DAY_INVALID = "Start Date - Not a valid Day...";
+
+    /** The start-year range text. */
+    private static final String MSG_START_YEAR_INVALID = "Start Date - Not a valid Year...";
+
+    /** The end-month range text. */
+    private static final String MSG_END_MONTH_INVALID = "End Date - Not a valid Month...";
+
+    /** The end-day range text. */
+    private static final String MSG_END_DAY_INVALID = "End Date - Not a valid Day...";
+
+    /** The end-year range text. */
+    private static final String MSG_END_YEAR_INVALID = "End Date - Not a valid Year...";
+
+    /** The text a start date the subprogram refuses produces; note the lower-case final word. */
+    private static final String MSG_START_DATE_INVALID = "Start Date - Not a valid date...";
+
+    /** The text a refused end date produces. */
+    private static final String MSG_END_DATE_INVALID = "End Date - Not a valid date...";
+
+    /** The text produced when no reporting period was marked at all. */
+    private static final String MSG_SELECT_REPORT_TYPE = "Select a report type to print report...";
 
     /**
-     * The header date this fixed clock renders, as {@code MM/DD/YY} with a two-digit year taken from
-     * the third character of the four-digit year, which is what the source's {@code (3:2)} reference
-     * modifier does. Pinned as a literal rather than recomputed from the clock, so a change to the
-     * assembly order or to either separator fails here.
+     * The queue-write failure text, with <strong>exactly three</strong> trailing dots. Never two,
+     * never four, and never the single ellipsis character.
      */
-    private static final String EXPECTED_HEADER_DATE = "07/19/22";
-
-    /** The header time this fixed clock renders, as {@code HH:MM:SS} on a twenty-four hour clock. */
-    private static final String EXPECTED_HEADER_TIME = "23:12:33";
-
-    /** The first screen title, at the forty-character width the title copybook declares. */
-    private static final String EXPECTED_TITLE_01 = pad(" ".repeat(6) + "AWS Mainframe Modernization", 40);
-
-    /** The second screen title, at the same declared width. */
-    private static final String EXPECTED_TITLE_02 = pad(" ".repeat(14) + "CardDemo", 40);
-
-    /** The common invalid-key message, at the fifty-character width the message copybook declares. */
-    private static final String EXPECTED_INVALID_KEY_MESSAGE =
-            pad("Invalid key pressed. Please see below...", 50);
-
-    /** The message shown when no reporting period was selected. */
-    private static final String EXPECTED_SELECT_REPORT_TYPE_MESSAGE =
-            "Select a report type to print report...";
-
-    /** The message shown when the queue refuses a card, naming the legacy queue. */
-    private static final String EXPECTED_QUEUE_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
+    private static final String MSG_UNABLE_TO_WRITE_TDQ = "Unable to Write TDQ (JOBS)...";
 
     /**
-     * The report name a monthly selection reports, delimited at its first space.
-     *
-     * <p>The name is held in a ten-character field and is delimited before it reaches either the
-     * prompt or the result, so the field's padding never reaches the operator. That is the source's own
-     * behaviour, and stating the delimited form here is what pins it.
+     * The acknowledgement suffix, which <strong>carries a space before its three dots</strong> where
+     * every other text in this contract does not. The artefact is reproduced, not normalised.
      */
-    private static final String MONTHLY_REPORT_NAME = "Monthly";
+    private static final String FRAGMENT_SUBMITTED_SUFFIX = " report submitted for printing ...";
 
-    /** The prompt shown when a monthly selection has not yet been confirmed. */
-    private static final String EXPECTED_MONTHLY_CONFIRM_PROMPT =
-            "Please confirm to print the " + MONTHLY_REPORT_NAME + " report...";
+    /** The confirmation-prompt prefix, which ends in a space. */
+    private static final String FRAGMENT_CONFIRM_PREFIX = "Please confirm to print the ";
+
+    /** The confirmation-prompt suffix, which opens with a space. */
+    private static final String FRAGMENT_CONFIRM_SUFFIX = " report...";
+
+    /** The unrecognised-confirmation suffix, which closes the quoted entry. */
+    private static final String FRAGMENT_INVALID_CONFIRM_SUFFIX =
+            "\" is not a valid value to confirm...";
+
+    /**
+     * The common invalid-key message at its declared width: forty visible characters and ten trailing
+     * spaces. The single space after the first full stop is part of the text.
+     */
+    private static final String PADDED_INVALID_KEY_MESSAGE =
+            "Invalid key pressed. Please see below..." + " ".repeat(10);
+
+    /**
+     * The common thank-you message at its declared width: forty-three visible characters and seven
+     * trailing spaces. This service never emits it, so it is asserted as a catalogue contract rather
+     * than as a turn outcome.
+     */
+    private static final String PADDED_THANK_YOU_MESSAGE =
+            "Thank you for using CardDemo application..." + " ".repeat(7);
+
+    /** The first screen title at its declared width, centred by six leading spaces. */
+    private static final String PADDED_TITLE_01 =
+            " ".repeat(6) + "AWS Mainframe Modernization" + " ".repeat(7);
+
+    /** The second screen title at its declared width, centred by fourteen leading spaces. */
+    private static final String PADDED_TITLE_02 = " ".repeat(14) + "CardDemo" + " ".repeat(18);
+
+    // ==============================================================================================
+    // Screen values, report names and the periods this clock derives.
+    // ==============================================================================================
+
+    /** The marker character the screen writes into whichever period the operator chose. */
+    private static final String SELECTED = "Y";
+
+    /** The affirmative confirmation entry. */
+    private static final String CONFIRM_YES = "Y";
+
+    /** The affirmative confirmation entry in lower case, which the source admits as well. */
+    private static final String CONFIRM_YES_LOWER = "y";
+
+    /** The declining confirmation entry. */
+    private static final String CONFIRM_NO = "N";
+
+    /** The declining confirmation entry in lower case. */
+    private static final String CONFIRM_NO_LOWER = "n";
 
     /** A confirmation entry the screen does not admit. */
-    private static final String INADMISSIBLE_CONFIRM = "Q";
+    private static final String CONFIRM_INADMISSIBLE = "Q";
 
-    /** The message shown when the confirmation entry is not one the screen admits. */
-    private static final String EXPECTED_INADMISSIBLE_CONFIRM_MESSAGE =
-            "\"" + INADMISSIBLE_CONFIRM + "\" is not a valid value to confirm...";
+    /** The month-to-date report name, as the result reports it delimited at its first space. */
+    private static final String REPORT_NAME_MONTHLY = "Monthly";
+
+    /** The year-to-date report name. */
+    private static final String REPORT_NAME_YEARLY = "Yearly";
+
+    /** The operator-supplied-range report name. */
+    private static final String REPORT_NAME_CUSTOM = "Custom";
+
+    /** The month-to-date window the pinned clock derives: the first of its month. */
+    private static final String PINNED_MONTHLY_START = "2022-06-01";
+
+    /** The month-to-date window the pinned clock derives: the last day of its thirty-day month. */
+    private static final String PINNED_MONTHLY_END = "2022-06-30";
+
+    /** The year-to-date window the pinned clock derives. */
+    private static final String PINNED_YEARLY_START = "2022-01-01";
+
+    /** The closing bound of that year-to-date window. */
+    private static final String PINNED_YEARLY_END = "2022-12-31";
+
+    /** The header date the pinned clock renders, with the legacy's two-digit year. */
+    private static final String PINNED_HEADER_DATE = "06/10/22";
+
+    /** The header time the pinned clock renders on a twenty-four hour clock. */
+    private static final String PINNED_HEADER_TIME = "19:27:53";
+
+    /** The transaction identifier the turn re-arms. */
+    private static final String RE_ARMED_TRANSACTION_ID = "CR00";
+
+    /** The program name the header carries. */
+    private static final String HEADER_PROGRAM_NAME = "CORPT00C";
+
+    // ==============================================================================================
+    // The subprogram result block, at the component widths its record declares.
+    // ==============================================================================================
+
+    /** The four-character severity the source accepts outright. */
+    private static final String SEVERITY_ACCEPTED = "0000";
+
+    /** The four-character severity every failure condition reports. */
+    private static final String SEVERITY_ERROR = "0003";
+
+    /** The one message number a non-zero severity is nevertheless accepted under. */
+    private static final String MESSAGE_NUMBER_TOLERATED = "2513";
+
+    /** A message number that is not the tolerated one, so the same severity is refused. */
+    private static final String MESSAGE_NUMBER_REFUSED = "2508";
+
+    /** The message number the success condition reports. */
+    private static final String MESSAGE_NUMBER_NONE = "0000";
+
+    /** The fifteen-character result text of an accepted date. */
+    private static final String RESULT_TEXT_VALID = "Date is valid" + " ".repeat(2);
+
+    /** The fifteen-character result text of a refused date. */
+    private static final String RESULT_TEXT_ERROR = "Datevalue error";
+
+    /** The ten-character mask the caller transmits. */
+    private static final String MASK_HYPHENATED = "YYYY-MM-DD";
+
+    // ==============================================================================================
+    // Field identities the two-state field contract reports.
+    // ==============================================================================================
+
+    /** The screen field the cursor falls back to, and the property the catch-all arm faults. */
+    private static final String FIELD_MONTHLY = "MONTHLY";
+
+    /** The confirmation field. */
+    private static final String FIELD_CONFIRM = "CONFIRM";
+
+    /** The start-month screen field. */
+    private static final String FIELD_START_MONTH = "SDTMM";
+
+    /** The start-day screen field. */
+    private static final String FIELD_START_DAY = "SDTDD";
+
+    /** The start-year screen field. */
+    private static final String FIELD_START_YEAR = "SDTYYYY";
+
+    /** The end-month screen field. */
+    private static final String FIELD_END_MONTH = "EDTMM";
+
+    /** The end-day screen field. */
+    private static final String FIELD_END_DAY = "EDTDD";
+
+    /** The end-year screen field. */
+    private static final String FIELD_END_YEAR = "EDTYYYY";
+
+    /** The property name of the report-type selection. */
+    private static final String PROPERTY_REPORT_TYPE = "reportType";
+
+    /** The property name of the start month. */
+    private static final String PROPERTY_START_MONTH = "startMonth";
+
+    /** The property name of the start day. */
+    private static final String PROPERTY_START_DAY = "startDay";
+
+    /** The property name of the start year. */
+    private static final String PROPERTY_START_YEAR = "startYear";
+
+    /** The property name of the end month. */
+    private static final String PROPERTY_END_MONTH = "endMonth";
+
+    /** The property name of the end day. */
+    private static final String PROPERTY_END_DAY = "endDay";
+
+    /** The property name of the end year. */
+    private static final String PROPERTY_END_YEAR = "endYear";
+
+    /** The property name of the assembled start date. */
+    private static final String PROPERTY_START_DATE = "startDate";
+
+    /** The property name of the assembled end date. */
+    private static final String PROPERTY_END_DATE = "endDate";
+
+    /** The program name of the dangling CICS program definition that has no source member. */
+    private static final String DANGLING_PROGRAM_DEFINITION = "COCRDSEC";
+
+    /** A submission identity the stubbed bridge echoes back; whitespace-free, as the bridge demands. */
+    private static final String STUBBED_SUBMISSION_ID = "stubbed-submission-identity";
+
+    /** A stable token a caller repeats when retrying one logical request. */
+    private static final String RETRY_TOKEN = "report-request-retry-001";
+
+    /** A token naming a deliberate second submission of the same period. */
+    private static final String OTHER_TOKEN = "report-request-new-002";
+
+    /** The character a 3270 field the terminal did not transmit arrives as. */
+    private static final char LOW_VALUE = '\0';
+
+    // ==============================================================================================
+    // Collaborators. All four are mocks; the clock is fixed.
+    // ==============================================================================================
+
+    /** The shared date-validation subprogram, whose two-field result this suite drives directly. */
+    @Mock
+    private DateValidationService dateValidationService;
+
+    /** The queue bridge. Mocked because publishing is a boundary, never a decision. */
+    @Mock
+    private JobSubmissionService jobSubmissionService;
+
+    /** The common-message catalogue, whose padded values must pass through untrimmed. */
+    @Mock
+    private MessageCatalogService messageCatalogService;
+
+    /** The navigation rules, which the service must consult rather than hardcoding a destination. */
+    @Mock
+    private NavigationService navigationService;
+
+    /** Captures the complete card stream the service hands the bridge. */
+    @Captor
+    private ArgumentCaptor<List<String>> publishedCardsCaptor;
+
+    /** Captures the submission identity the service derives and hands the bridge unchanged. */
+    @Captor
+    private ArgumentCaptor<String> submissionIdentityCaptor;
+
+    /** Captures the format selector the service transmits to the date-validation subprogram. */
+    @Captor
+    private ArgumentCaptor<DateFormat> dateFormatCaptor;
+
+    /** Captures the date the service offers the subprogram, so call order can be asserted. */
+    @Captor
+    private ArgumentCaptor<String> validatedDateCaptor;
+
+    /** The service under test, built over the pinned clock. */
+    private ReportRequestService subject;
+
+    /** The service's own logger, so a non-fatal failure can be proven to have been recorded. */
+    private Logger serviceLogger;
+
+    /** The level the logger held before this test lowered it. */
+    private Level previousLogLevel;
+
+    /** Captures the service's diagnostics. */
+    private ListAppender<ILoggingEvent> logCapture;
 
     /**
-     * Pads a literal to a declared field width the way a fixed-width field holds it.
+     * Builds the service over the pinned clock and attaches the log capture.
      *
-     * @param  text  the significant content
-     * @param  width the declared field width
-     * @return the text at exactly {@code width} characters
+     * <p>The capture is attached here and detached in the paired teardown so that a test asserting on
+     * a recorded diagnostic never observes another test's events and the logger is left as it was
+     * found.
      */
-    private static String pad(final String text, final int width) {
-        return text + " ".repeat(width - text.length());
+    @BeforeEach
+    void setUp() {
+        subject = new ReportRequestService(dateValidationService, jobSubmissionService,
+                messageCatalogService, navigationService, PINNED_CLOCK);
+
+        serviceLogger = (Logger) LoggerFactory.getLogger(ReportRequestService.class);
+        previousLogLevel = serviceLogger.getLevel();
+        serviceLogger.setLevel(Level.TRACE);
+        logCapture = new ListAppender<>();
+        logCapture.start();
+        serviceLogger.addAppender(logCapture);
+    }
+
+    /** Detaches the log capture and restores the logger's level. */
+    @AfterEach
+    void tearDown() {
+        serviceLogger.detachAppender(logCapture);
+        serviceLogger.setLevel(previousLogLevel);
+        logCapture.stop();
+    }
+
+    @Test
+    @DisplayName("the constructor refuses an absent collaborator and an absent clock rather than "
+            + "standing up a service that would fail later in the turn")
+    void theConstructorRefusesAnAbsentCollaborator() {
+        assertAll(
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .isThrownBy(() -> new ReportRequestService(null, jobSubmissionService,
+                                messageCatalogService, navigationService, PINNED_CLOCK)),
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .isThrownBy(() -> new ReportRequestService(dateValidationService, null,
+                                messageCatalogService, navigationService, PINNED_CLOCK)),
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .isThrownBy(() -> new ReportRequestService(dateValidationService,
+                                jobSubmissionService, null, navigationService, PINNED_CLOCK)),
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .isThrownBy(() -> new ReportRequestService(dateValidationService,
+                                jobSubmissionService, messageCatalogService, null, PINNED_CLOCK)),
+                () -> assertThatExceptionOfType(NullPointerException.class)
+                        .as("an absent clock would make the derived windows read the host clock")
+                        .isThrownBy(() -> new ReportRequestService(dateValidationService,
+                                jobSubmissionService, messageCatalogService, navigationService,
+                                null)));
+        verifyNoInteractions(dateValidationService, jobSubmissionService, messageCatalogService,
+                navigationService);
+    }
+
+    // ==============================================================================================
+    // Test-side helpers. Every one of them is an oracle authored here; none delegates to production.
+    // ==============================================================================================
+
+    /**
+     * Builds a service over a clock other than the pinned one, for the month-length matrix.
+     *
+     * @param  clock the clock the derived windows are to be read from
+     * @return a service identical to the one under test except for its clock
+     */
+    private ReportRequestService serviceAt(final Clock clock) {
+        return new ReportRequestService(dateValidationService, jobSubmissionService,
+                messageCatalogService, navigationService, clock);
     }
 
     /**
-     * Places a card literal into its eighty-column frame, left-justified and space-filled.
+     * A fixed clock at the given instant, expressed as a date and a time-of-day.
      *
-     * @param  text the card's significant content
-     * @return the card image, exactly {@value #CARD_WIDTH} characters
+     * @param  isoInstant the instant in ISO form
+     * @return a fixed clock, never an ambient one
      */
-    private static String card(final String text) {
-        return pad(text, CARD_WIDTH);
+    private static Clock clockAt(final String isoInstant) {
+        return Clock.fixed(Instant.parse(isoInstant), ZoneOffset.UTC);
+    }
+
+    /** A navigation state that has already been presented once, so the turn processes a submission. */
+    private static ConversationState reEntry() {
+        return ConversationState.empty().withReEntry();
     }
 
     /**
-     * Builds one of the two sort-symbol cards, which carry a date inside a quoted literal.
+     * Assembles one submitted turn.
      *
-     * <p>The two differ only in their leading text, and therefore in how much filler follows the
-     * closing quote; both still measure exactly one card.
-     *
-     * @param  leadingText the card text up to and including the opening quote
-     * @param  date        the ten-character date placed into the slot
-     * @return the card image, exactly {@value #CARD_WIDTH} characters
+     * @param  monthly    the month-to-date marker
+     * @param  yearly     the year-to-date marker
+     * @param  custom     the operator-range marker
+     * @param  startMonth the start month as transmitted
+     * @param  startDay   the start day as transmitted
+     * @param  startYear  the start year as transmitted
+     * @param  endMonth   the end month as transmitted
+     * @param  endDay     the end day as transmitted
+     * @param  endYear    the end year as transmitted
+     * @param  confirm    the confirmation field as transmitted
+     * @return the input record
      */
-    private static String sortSymbolCard(final String leadingText, final String date) {
-        assertThat(date).as("a date slot holds exactly ten characters").hasSize(DATE_SLOT_WIDTH);
-        return card(leadingText + date + "'");
+    private static ReportRequestService.ReportScreenInput turn(final String monthly,
+            final String yearly, final String custom, final String startMonth, final String startDay,
+            final String startYear, final String endMonth, final String endDay, final String endYear,
+            final String confirm) {
+        return new ReportRequestService.ReportScreenInput(monthly, yearly, custom, startMonth,
+                startDay, startYear, endMonth, endDay, endYear, confirm, KeyAction.ENTER, reEntry());
     }
 
     /**
-     * Builds the in-stream parameter card, which carries both dates separated by one space.
+     * A submitted turn marking the month-to-date period.
      *
-     * @param  startDate the opening bound
-     * @param  endDate   the closing bound
-     * @return the card image, exactly {@value #CARD_WIDTH} characters
+     * @param  confirm the confirmation field as transmitted
+     * @return the input record
      */
-    private static String dateParameterCard(final String startDate, final String endDate) {
-        return card(startDate + " " + endDate);
+    private static ReportRequestService.ReportScreenInput monthlyTurn(final String confirm) {
+        return turn(SELECTED, null, null, null, null, null, null, null, null, confirm);
     }
 
     /**
-     * The seventeen cards a submission carries, authored here from the legacy card literals.
+     * A submitted turn marking the year-to-date period.
      *
-     * <p>Every card is written out rather than generated, and the order is the order the source
-     * declares, because the order is as contractual as the content: an internal reader receives these
-     * as a job stream and a reordered stream is not the same job.
-     *
-     * @param  startDate the date placed into the two start slots
-     * @param  endDate   the date placed into the two end slots
-     * @return the seventeen card images, in submission order
+     * @param  confirm the confirmation field as transmitted
+     * @return the input record
      */
-    private static List<String> expectedCards(final String startDate, final String endDate) {
-        final List<String> cards = List.of(
-                card("//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0,"),
-                card("// NOTIFY=&SYSUID"),
-                card("//*"),
-                card("//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')"),
-                card("//*"),
-                card("//STEP10 EXEC PROC=TRANREPT"),
-                card("//*"),
-                card("//STEP05R.SYMNAMES DD *"),
-                card("TRAN-CARD-NUM,263,16,ZD"),
-                card("TRAN-PROC-DT,305,10,CH"),
-                sortSymbolCard("PARM-START-DATE,C'", startDate),
-                sortSymbolCard("PARM-END-DATE,C'", endDate),
-                card("/*"),
-                card("//STEP10R.DATEPARM DD *"),
-                dateParameterCard(startDate, endDate),
-                card("/*"),
-                card(END_OF_FILE_CARD));
-
-        assertThat(cards)
-                .as("this file's own card oracle must carry seventeen cards")
-                .hasSize(EXPECTED_CARD_COUNT);
-        assertThat(cards)
-                .as("every card must occupy its full eighty-column frame")
-                .allSatisfy(image -> assertThat(image).hasSize(CARD_WIDTH));
-        return cards;
-    }
-
-    /** A publishing double that reports every card as written. */
-    private static JobSubmissionService publishingEveryCard() {
-        final JobSubmissionService publisher = Mockito.mock(JobSubmissionService.class);
-        Mockito.when(publisher.submitCanonicalJobImage(ArgumentMatchers.anyString(),
-                        ArgumentMatchers.anyList()))
-                .thenAnswer(invocation -> {
-                    final int submitted = invocation.<List<String>>getArgument(1).size();
-                    return new JobSubmissionService.SubmissionResult(RESULT_SUBMISSION_ID, submitted, submitted, false, "");
-                });
-        return publisher;
+    private static ReportRequestService.ReportScreenInput yearlyTurn(final String confirm) {
+        return turn(null, SELECTED, null, null, null, null, null, null, null, confirm);
     }
 
     /**
-     * A publishing double that reports a submission refused on its first card, which is the
-     * ignore-on-error path.
+     * A submitted turn marking the operator-supplied range.
      *
-     * @return the double
+     * @param  startMonth the start month as transmitted
+     * @param  startDay   the start day as transmitted
+     * @param  startYear  the start year as transmitted
+     * @param  endMonth   the end month as transmitted
+     * @param  endDay     the end day as transmitted
+     * @param  endYear    the end year as transmitted
+     * @param  confirm    the confirmation field as transmitted
+     * @return the input record
      */
-    private static JobSubmissionService publishingNoCard() {
-        final JobSubmissionService publisher = Mockito.mock(JobSubmissionService.class);
-        Mockito.when(publisher.submitCanonicalJobImage(ArgumentMatchers.anyString(),
-                        ArgumentMatchers.anyList()))
-                .thenAnswer(invocation -> new JobSubmissionService.SubmissionResult(
-                        invocation.getArgument(0),
-                        invocation.<List<String>>getArgument(1).size(), 0, true,
-                        com.carddemo.exception.JobSubmissionException.DEFAULT_MESSAGE));
-        return publisher;
-    }
-
-    /**
-     * A publishing double that accepts every card up to a slot and refuses that slot and every later
-     * one, which is what a queue that fills up part way through a submission looks like.
-     *
-     * @param  refusedSlot the one-based slot at which the queue starts refusing
-     * @return the double
-     */
-    private static JobSubmissionService publishingUntilSlot(final int refusedSlot) {
-        final JobSubmissionService publisher = Mockito.mock(JobSubmissionService.class);
-        Mockito.when(publisher.submitCanonicalJobImage(ArgumentMatchers.anyString(),
-                        ArgumentMatchers.anyList()))
-                .thenAnswer(invocation -> new JobSubmissionService.SubmissionResult(
-                        invocation.getArgument(0),
-                        invocation.<List<String>>getArgument(1).size(), refusedSlot - 1, true,
-                        com.carddemo.exception.JobSubmissionException.DEFAULT_MESSAGE));
-        return publisher;
-    }
-
-    /** Builds the service over the real decision collaborators and the supplied publisher. */
-    private static ReportRequestService serviceWith(final JobSubmissionService publisher) {
-        return new ReportRequestService(new DateValidationService(), publisher,
-                new MessageCatalogService(), new NavigationService(), FIXED_CLOCK);
-    }
-
-    /** A turn carrying navigation state that has already been through one entry. */
-    private static ConversationState returningContext() {
-        return signedOnState(ConversationState.EntryMode.RE_ENTRY);
-    }
-
-    /**
-     * Builds a signed-on navigation state.
-     *
-     * <p>A context equal to {@link ConversationState#empty()} is what the service reads as an absent
-     * communication area, so a turn that is present but has not yet been through the screen must
-     * carry real state with its program context still on first entry.
-     *
-     * @param entryMode whether this turn is a first entry or a re-entry
-     * @return the assembled navigation state
-     */
-    private static ConversationState signedOnState(
-            final ConversationState.EntryMode entryMode) {
-        return new ConversationState("CR00", "COSGN00C", null, null, entryMode);
-    }
-
-    /**
-     * Builds a screen input.
-     *
-     * @param monthly  the monthly selection entry, or {@code null}
-     * @param yearly   the yearly selection entry, or {@code null}
-     * @param custom   the custom selection entry, or {@code null}
-     * @param confirm  the confirmation entry, or {@code null}
-     * @param key      the attention key the turn arrived on
-     * @param context  the navigation state
-     * @return the assembled input
-     */
-    private static ReportRequestService.ReportScreenInput input(final String monthly,
-            final String yearly, final String custom, final String confirm, final KeyAction key,
-            final ConversationState context) {
-        return new ReportRequestService.ReportScreenInput(monthly, yearly, custom,
-                null, null, null, null, null, null, confirm, key, context);
-    }
-
-    /** Builds a custom-period input carrying an explicit start and end date. */
-    private static ReportRequestService.ReportScreenInput customInput(final String startMonth,
+    private static ReportRequestService.ReportScreenInput customTurn(final String startMonth,
             final String startDay, final String startYear, final String endMonth,
             final String endDay, final String endYear, final String confirm) {
-        return new ReportRequestService.ReportScreenInput(null, null, SELECTED,
-                startMonth, startDay, startYear, endMonth, endDay, endYear, confirm,
-                KeyAction.ENTER, returningContext());
+        return turn(null, null, SELECTED, startMonth, startDay, startYear, endMonth, endDay, endYear,
+                confirm);
+    }
+
+    /** A confirmed operator-supplied range covering a whole calendar year, both bounds real days. */
+    private static ReportRequestService.ReportScreenInput confirmedCustomTurn() {
+        return customTurn("01", "01", "2022", "12", "31", "2022", CONFIRM_YES);
+    }
+
+    /** The start date the confirmed operator-supplied range assembles. */
+    private static final String CUSTOM_START = "2022-01-01";
+
+    /** The end date the confirmed operator-supplied range assembles. */
+    private static final String CUSTOM_END = "2022-12-31";
+
+    /**
+     * Card 11, the start-date sort symbol: an eighteen-byte literal, the ten-byte slot, and a
+     * fifty-two-byte trailer opening with the closing apostrophe. {@code 18 + 10 + 52 = 80}.
+     *
+     * @param  startDate the ten-character start date placed into the slot
+     * @return the card image
+     */
+    private static String startSortSymbolCard(final String startDate) {
+        return START_SORT_SYMBOL_LEAD + startDate + "'" + " ".repeat(51);
     }
 
     /**
-     * Captures the canonical image the service published, expanded card by card.
+     * Card 12, the end-date sort symbol: a sixteen-byte literal, the ten-byte slot, and a
+     * fifty-four-byte trailer opening with the closing apostrophe. {@code 16 + 10 + 54 = 80}.
      *
-     * <p>The service offers the whole seventeen-card image to the publisher in one call, because a
-     * submission is only meaningful to the batch tier as a contiguous ordered run and every card shares
-     * one message group. The captor recovers that call's submission identity and its ordered card list,
-     * and this helper expands the list into one entry per card with its one-based ordinal, so every
-     * assertion below can still speak about a card, its slot and the submission it belongs to.
-     *
-     * @param  publisher     the double the service published through
-     * @param  expectedCards how many cards the contract requires the offered image to carry
-     * @return the offered cards, in submission order
+     * @param  endDate the ten-character end date placed into the slot
+     * @return the card image
      */
-    private static List<PublishedCard> capturePublishedCards(final JobSubmissionService publisher,
-            final int expectedCards) {
-        final ArgumentCaptor<String> submissionIds = ArgumentCaptor.forClass(String.class);
-        final ArgumentCaptor<List<String>> images = ArgumentCaptor.captor();
-
-        Mockito.verify(publisher, Mockito.times(1))
-                .submitCanonicalJobImage(submissionIds.capture(), images.capture());
-        Mockito.verify(publisher, Mockito.never()).writeJobSubmissionQueue(
-                ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
-                ArgumentMatchers.anyInt());
-
-        final String submissionId = submissionIds.getValue();
-        final List<String> offered = images.getValue();
-        assertThat(offered)
-                .as("the offered image must carry exactly the number of cards the contract requires")
-                .hasSize(expectedCards);
-
-        final List<PublishedCard> published = new ArrayList<>();
-        for (int index = 0; index < offered.size(); index++) {
-            published.add(new PublishedCard(submissionId, offered.get(index), index + 1));
-        }
-        return published;
+    private static String endSortSymbolCard(final String endDate) {
+        return END_SORT_SYMBOL_LEAD + endDate + "'" + " ".repeat(53);
     }
 
     /**
-     * Asserts that the offered image is exactly the cards the contract requires, in submission order.
+     * Card 15, the report date-parameter card: the ten-byte start slot, a one-byte separator, the
+     * ten-byte end slot, and fifty-nine trailing spaces. {@code 10 + 1 + 10 + 59 = 80}.
      *
-     * @param publisher the double the service published through
-     * @param cards     the cards the contract requires, in submission order
+     * @param  startDate the ten-character start date
+     * @param  endDate   the ten-character end date
+     * @return the card image
      */
-    private static void verifyOrderedStream(final JobSubmissionService publisher,
-            final List<String> cards) {
-        Mockito.verify(publisher, Mockito.times(1)).submitCanonicalJobImage(
-                ArgumentMatchers.anyString(), ArgumentMatchers.eq(cards));
-        Mockito.verify(publisher, Mockito.never()).writeJobSubmissionQueue(
-                ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
-                ArgumentMatchers.anyInt());
+    private static String dateParameterCard(final String startDate, final String endDate) {
+        return startDate + " " + endDate + " ".repeat(59);
     }
 
-    private record PublishedCard(String submissionId, String cardImage, int ordinal) {
+    /**
+     * The complete seventeen-card stream one submission carries, in the order the source declares it.
+     *
+     * <p>Written out card by card rather than generated, because the order is as contractual as the
+     * content: an internal reader that received these frames in another order would not recognise the
+     * job at all.
+     *
+     * @param  startDate the ten-character start date the four slots carry
+     * @param  endDate   the ten-character end date
+     * @return the expected stream
+     */
+    private static List<String> expectedCards(final String startDate, final String endDate) {
+        return List.of(CARD_01_JOB,
+                CARD_02_NOTIFY,
+                CARD_COMMENT,
+                CARD_04_JOBLIB,
+                CARD_COMMENT,
+                CARD_06_EXEC_PROC,
+                CARD_COMMENT,
+                CARD_08_SYMNAMES,
+                CARD_09_CARD_NUM_SYMBOL,
+                CARD_10_PROC_DT_SYMBOL,
+                startSortSymbolCard(startDate),
+                endSortSymbolCard(endDate),
+                CARD_IN_STREAM_TERMINATOR,
+                CARD_14_DATEPARM,
+                dateParameterCard(startDate, endDate),
+                CARD_IN_STREAM_TERMINATOR,
+                CARD_17_SENTINEL);
     }
 
+    /**
+     * The encoded byte width of a value, which is the only width a fixed-column frame is measured in.
+     *
+     * @param  value the value to measure
+     * @return the number of single-byte characters it encodes to
+     */
+    private static int encodedWidth(final String value) {
+        return value.getBytes(StandardCharsets.US_ASCII).length;
+    }
+
+    /**
+     * Reads a slot out of a card by byte offset, so a position assertion is a byte assertion.
+     *
+     * @param  cardImage the card to read
+     * @param  offset    the zero-based byte offset of the slot
+     * @param  width     the slot width in bytes
+     * @return the slot's content
+     */
+    private static String slotAt(final String cardImage, final int offset, final int width) {
+        final byte[] image = cardImage.getBytes(StandardCharsets.US_ASCII);
+        return new String(image, offset, width, StandardCharsets.US_ASCII);
+    }
+
+    /**
+     * Pads a value into a fixed-width field the way a left-justified move fills one.
+     *
+     * <p>The shortfall is computed on the encoded width, so the padding is stated in the same unit the
+     * field reserves rather than in characters.
+     *
+     * @param  value the significant content
+     * @param  width the declared field width in bytes
+     * @return the value at exactly {@code width} bytes
+     */
+    private static String padded(final String value, final int width) {
+        return value + " ".repeat(width - encodedWidth(value));
+    }
+
+    /**
+     * Counts one byte value across a whole value, so a punctuation count is a byte count.
+     *
+     * @param  value    the value to scan
+     * @param  wanted   the byte to count
+     * @return how many times {@code wanted} occurs
+     */
+    private static int countOf(final String value, final char wanted) {
+        final byte[] image = value.getBytes(StandardCharsets.US_ASCII);
+        int occurrences = 0;
+        for (final byte candidate : image) {
+            if (candidate == (byte) wanted) {
+                occurrences++;
+            }
+        }
+        return occurrences;
+    }
+
+    /**
+     * A subprogram result block at the component widths its record declares.
+     *
+     * @param  feedback      the outcome the block reports
+     * @param  severityCode  the four-character severity
+     * @param  messageNumber the four-character message number
+     * @param  resultText    the fifteen-character outcome text
+     * @return the result block
+     */
+    private static DateValidationService.SubprogramResult resultBlock(
+            final DateValidationService.DateFeedback feedback, final String severityCode,
+            final String messageNumber, final String resultText) {
+        return new DateValidationService.SubprogramResult(feedback, severityCode, messageNumber,
+                resultText, CUSTOM_START, MASK_HYPHENATED);
+    }
+
+    /** The block an accepted date produces: the accepted severity outright. */
+    private static DateValidationService.SubprogramResult acceptedBlock() {
+        return resultBlock(DateValidationService.DateFeedback.DATE_IS_VALID, SEVERITY_ACCEPTED,
+                MESSAGE_NUMBER_NONE, RESULT_TEXT_VALID);
+    }
+
+    /** The block a non-zero severity carrying the tolerated message number produces. */
+    private static DateValidationService.SubprogramResult toleratedBlock() {
+        return resultBlock(DateValidationService.DateFeedback.UNSUPPORTED_RANGE, SEVERITY_ERROR,
+                MESSAGE_NUMBER_TOLERATED, RESULT_TEXT_ERROR);
+    }
+
+    /** The block the same non-zero severity carrying any other message number produces. */
+    private static DateValidationService.SubprogramResult refusedBlock() {
+        return resultBlock(DateValidationService.DateFeedback.BAD_DATE_VALUE, SEVERITY_ERROR,
+                MESSAGE_NUMBER_REFUSED, RESULT_TEXT_ERROR);
+    }
+
+    /**
+     * An outcome reporting the whole stream accepted.
+     *
+     * @param  cardCount how many cards the caller supplied
+     * @return the outcome
+     */
+    private static JobSubmissionService.SubmissionResult accepted(final int cardCount) {
+        return new JobSubmissionService.SubmissionResult(STUBBED_SUBMISSION_ID, cardCount, cardCount,
+                false, "");
+    }
+
+    /**
+     * An outcome reporting the queue refusing at a given card, which is the ignore-on-error path.
+     *
+     * @param  cardCount      how many cards the caller supplied
+     * @param  cardsPublished how many the queue accepted before refusing
+     * @return the outcome
+     */
+    private static JobSubmissionService.SubmissionResult refusedAfter(final int cardCount,
+            final int cardsPublished) {
+        return new JobSubmissionService.SubmissionResult(STUBBED_SUBMISSION_ID, cardCount,
+                cardsPublished, true, JobSubmissionException.DEFAULT_MESSAGE);
+    }
+
+    /** Stubs the bridge to accept every card of whatever stream it is handed. */
+    private void bridgeAcceptsEveryCard() {
+        when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
+                .thenReturn(accepted(SUBMISSION_CARD_COUNT));
+    }
+
+    /** Stubs the subprogram to accept every date it is offered, on the accepted severity. */
+    private void validatorAcceptsEveryDate() {
+        when(dateValidationService.validateDate(any(), any(DateFormat.class)))
+                .thenReturn(acceptedBlock());
+    }
+
+    /** Stubs the subprogram to answer with a non-zero severity carrying the tolerated number. */
+    private void validatorToleratesEveryDate() {
+        when(dateValidationService.validateDate(any(), any(DateFormat.class)))
+                .thenReturn(toleratedBlock());
+    }
+
+    /** Stubs the subprogram to refuse with the same severity under a different message number. */
+    private void validatorRefusesEveryDate() {
+        when(dateValidationService.validateDate(any(), any(DateFormat.class)))
+                .thenReturn(refusedBlock());
+    }
+
+    /** Stubs the catalogue to supply both padded screen titles. */
+    private void catalogueSuppliesTitles() {
+        when(messageCatalogService.screenTitle01()).thenReturn(PADDED_TITLE_01);
+        when(messageCatalogService.screenTitle02()).thenReturn(PADDED_TITLE_02);
+    }
+
+    /** Stubs the navigation rules to resolve a nominated destination to the supplied route. */
+    private void navigationResolves(final NavigationService.Route destination) {
+        when(navigationService.resolveNominatedDestination(any(),
+                eq(NavigationService.Route.SIGN_ON))).thenReturn(destination);
+    }
+
+    /**
+     * The card stream the bridge actually received, captured rather than reconstructed.
+     *
+     * @return the published stream
+     */
+    private List<String> capturedPublishedCards() {
+        verify(jobSubmissionService).submitCanonicalJobImage(submissionIdentityCaptor.capture(),
+                publishedCardsCaptor.capture());
+        return publishedCardsCaptor.getValue();
+    }
+
+    /**
+     * The submission identity the bridge actually received, captured rather than recomputed.
+     *
+     * @return the identity handed to the bridge
+     */
+    private String capturedSubmissionIdentity() {
+        verify(jobSubmissionService).submitCanonicalJobImage(submissionIdentityCaptor.capture(),
+                publishedCardsCaptor.capture());
+        return submissionIdentityCaptor.getValue();
+    }
+
+    /**
+     * The six emptiness cases of the operator-supplied cascade, in the order the source tests them.
+     *
+     * <p>An omitted column is a field the terminal did not transmit, which the source's blankness test
+     * treats exactly as it treats spaces. Declared here rather than inside the nested class so the
+     * arguments can name this file's own constants instead of restating each text.
+     *
+     * @return one case per emptiness test
+     */
+    static List<Arguments> emptyDatePartCases() {
+        return List.of(
+                Arguments.of(null, "15", "2022", "12", "31", "2022", MSG_START_MONTH_EMPTY,
+                        PROPERTY_START_MONTH, FIELD_START_MONTH),
+                Arguments.of("01", null, "2022", "12", "31", "2022", MSG_START_DAY_EMPTY,
+                        PROPERTY_START_DAY, FIELD_START_DAY),
+                Arguments.of("01", "15", null, "12", "31", "2022", MSG_START_YEAR_EMPTY,
+                        PROPERTY_START_YEAR, FIELD_START_YEAR),
+                Arguments.of("01", "15", "2022", null, "31", "2022", MSG_END_MONTH_EMPTY,
+                        PROPERTY_END_MONTH, FIELD_END_MONTH),
+                Arguments.of("01", "15", "2022", "12", null, "2022", MSG_END_DAY_EMPTY,
+                        PROPERTY_END_DAY, FIELD_END_DAY),
+                Arguments.of("01", "15", "2022", "12", "31", null, MSG_END_YEAR_EMPTY,
+                        PROPERTY_END_YEAR, FIELD_END_YEAR));
+    }
+
+    /**
+     * The six range cases, in the order the source tests them. A month above the twelfth, a day above
+     * the thirty-first, and a year that is not digits at all, on each side of the range.
+     *
+     * @return one case per range test
+     */
+    static List<Arguments> outOfRangeDatePartCases() {
+        return List.of(
+                Arguments.of("13", "15", "2022", "12", "31", "2022", MSG_START_MONTH_INVALID,
+                        PROPERTY_START_MONTH, FIELD_START_MONTH),
+                Arguments.of("01", "32", "2022", "12", "31", "2022", MSG_START_DAY_INVALID,
+                        PROPERTY_START_DAY, FIELD_START_DAY),
+                Arguments.of("01", "15", "20X2", "12", "31", "2022", MSG_START_YEAR_INVALID,
+                        PROPERTY_START_YEAR, FIELD_START_YEAR),
+                Arguments.of("01", "15", "2022", "13", "31", "2022", MSG_END_MONTH_INVALID,
+                        PROPERTY_END_MONTH, FIELD_END_MONTH),
+                Arguments.of("01", "15", "2022", "12", "32", "2022", MSG_END_DAY_INVALID,
+                        PROPERTY_END_DAY, FIELD_END_DAY),
+                Arguments.of("01", "15", "2022", "12", "31", "20X2", MSG_END_YEAR_INVALID,
+                        PROPERTY_END_YEAR, FIELD_END_YEAR));
+    }
+
+    /**
+     * The diagnostics this turn recorded at error level.
+     *
+     * @return the captured error events, in the order they were recorded
+     */
+    private List<ILoggingEvent> capturedErrorEvents() {
+        final List<ILoggingEvent> errors = new ArrayList<>();
+        for (final ILoggingEvent event : logCapture.list) {
+            if (event.getLevel() == Level.ERROR) {
+                errors.add(event);
+            }
+        }
+        return errors;
+    }
+
+    // ==============================================================================================
+    // The main paragraph and the attention-key dispatch
+    // ==============================================================================================
+
+    /** Covers the main paragraph, the receive, the transfer, the send and the return paragraphs. */
     @Nested
-    @DisplayName("Logical-request identity")
-    class LogicalRequestIdentity {
-
-        @Test
-        @DisplayName("the same retry token and date range reproduce the submission identity exactly")
-        void theSameRetryTokenReproducesTheIdentity() {
-            final JobSubmissionService publisher = publishingEveryCard();
-            final ReportRequestService service = serviceWith(publisher);
-            final ReportRequestService.ReportScreenInput screen =
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
-
-            final ReportRequestService.ReportRequestResult first =
-                    service.processReportRequest(screen, RETRY_TOKEN);
-            final ReportRequestService.ReportRequestResult retry =
-                    service.processReportRequest(screen, RETRY_TOKEN);
-
-            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
-            Mockito.verify(publisher, Mockito.times(2))
-                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
-            assertThat(identities.getAllValues()).hasSize(2)
-                    .allSatisfy(identity -> assertThat(identity)
-                            .contains(MONTHLY_START_DATE)
-                            .contains(MONTHLY_END_DATE)
-                            .doesNotContain(RETRY_TOKEN)
-                            .matches("[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9a-f]{64}"));
-            assertThat(identities.getAllValues().get(1))
-                    .isEqualTo(identities.getAllValues().get(0));
-            assertThat(first.submissionToken()).isEqualTo(RETRY_TOKEN);
-            assertThat(retry.submissionToken()).isEqualTo(RETRY_TOKEN);
-        }
-
-        @Test
-        @DisplayName("a distinct token makes a deliberate new submission of the same date range distinct")
-        void aDistinctTokenMakesANewSubmissionDistinct() {
-            final JobSubmissionService publisher = publishingEveryCard();
-            final ReportRequestService service = serviceWith(publisher);
-            final ReportRequestService.ReportScreenInput screen =
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
-
-            service.processReportRequest(screen, RETRY_TOKEN);
-            service.processReportRequest(screen, NEW_SUBMISSION_TOKEN);
-
-            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
-            Mockito.verify(publisher, Mockito.times(2))
-                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
-            assertThat(identities.getAllValues()).hasSize(2).doesNotHaveDuplicates();
-        }
-
-        @Test
-        @DisplayName("when no token is supplied each deliberate request receives a fresh returned token")
-        void anAbsentTokenIsMintedAndReturned() {
-            final JobSubmissionService publisher = publishingEveryCard();
-            final ReportRequestService service = serviceWith(publisher);
-            final ReportRequestService.ReportScreenInput screen =
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext());
-
-            final ReportRequestService.ReportRequestResult first =
-                    service.processReportRequest(screen);
-            final ReportRequestService.ReportRequestResult second =
-                    service.processReportRequest(screen);
-
-            assertThat(first.submissionToken()).isNotBlank();
-            assertThat(second.submissionToken()).isNotBlank().isNotEqualTo(first.submissionToken());
-
-            final ArgumentCaptor<String> identities = ArgumentCaptor.forClass(String.class);
-            Mockito.verify(publisher, Mockito.times(2))
-                    .submitCanonicalJobImage(identities.capture(), ArgumentMatchers.anyList());
-            assertThat(identities.getAllValues()).hasSize(2).doesNotHaveDuplicates();
-        }
-    }
-
-    @Nested
-    @DisplayName("Turn entry")
+    @DisplayName("Turn entry and the attention-key dispatch")
     class TurnEntry {
 
         @Test
-        @DisplayName("a turn carrying no navigation state routes to the sign-on screen without "
-                + "sending this screen, which is what an absent communication area means")
-        void aTurnCarryingNoStateRoutesToSignOn() {
-            final JobSubmissionService publisher = publishingEveryCard();
+        @DisplayName("mainPara: a turn whose navigation state the rules call absent transfers to the "
+                + "resolved destination, re-arms nothing and publishes nothing")
+        void aTurnCarryingNoNavigationStateTransfersToTheResolvedDestination() {
+            when(navigationService.isConversationStateAbsent(any())).thenReturn(true);
+            when(navigationService.resolveAbsentContextRoute())
+                    .thenReturn(NavigationService.Route.SIGN_ON);
+            navigationResolves(NavigationService.Route.SIGN_ON);
 
             final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publisher).processReportRequest(
-                            input(null, null, null, null, KeyAction.ENTER, null));
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES,
+                            KeyAction.ENTER, ConversationState.empty()));
 
-            assertThat(result.route()).isEqualTo(NavigationService.Route.SIGN_ON);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            Mockito.verifyNoInteractions(publisher);
+            assertAll(() -> assertThat(result.route()).isEqualTo(NavigationService.Route.SIGN_ON),
+                    () -> assertThat(result.reArmedTransactionId()).isEmpty(),
+                    () -> assertThat(result.cardsPublished()).isZero(),
+                    () -> assertThat(result.reportPeriod()).isNull());
+            verifyNoInteractions(jobSubmissionService);
+            verify(navigationService).resolveAbsentContextRoute();
         }
 
         @Test
-        @DisplayName("a first entry sends the screen, positions the cursor on the monthly selection "
-                + "and publishes nothing, because nothing has been submitted yet")
+        @DisplayName("mainPara: a turn whose navigation state is absent altogether behaves the same "
+                + "way and raises no runtime failure of its own")
+        void aTurnWithAnAbsentNavigationStateRaisesNoRuntimeFailure() {
+            when(navigationService.isConversationStateAbsent(null)).thenReturn(true);
+            when(navigationService.resolveAbsentContextRoute())
+                    .thenReturn(NavigationService.Route.SIGN_ON);
+            navigationResolves(NavigationService.Route.SIGN_ON);
+
+            final ReportRequestService.ReportRequestResult result =
+                    assertDoesNotThrow(() -> subject.processReportRequest(
+                            new ReportRequestService.ReportScreenInput(SELECTED, null, null, null,
+                                    null, null, null, null, null, CONFIRM_YES, KeyAction.ENTER,
+                                    null)));
+
+            assertAll(() -> assertThat(result.route()).isEqualTo(NavigationService.Route.SIGN_ON),
+                    () -> assertThat(result.navigationContext()).isNotNull(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("mainPara: a first entry sends the screen, sets the re-entry gate, parks the "
+                + "cursor on the first report-type field and publishes nothing")
         void aFirstEntrySendsTheScreenAndPublishesNothing() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
             final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publisher).processReportRequest(
-                            input(null, null, null, null, KeyAction.ENTER,
-                                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY)));
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(null,
+                            null, null, null, null, null, null, null, null, null, KeyAction.ENTER,
+                            ConversationState.empty()));
 
-            assertThat(result.focusField()).isEqualTo("MONTHLY");
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.errorFlag()).isFalse();
-            assertThat(result.header().currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
-            assertThat(result.header().currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
-            Mockito.verifyNoInteractions(publisher);
+            assertAll(() -> assertThat(result.route())
+                            .isEqualTo(NavigationService.Route.REPORT_REQUEST),
+                    () -> assertThat(result.reArmedTransactionId())
+                            .isEqualTo(RE_ARMED_TRANSACTION_ID),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
+                    () -> assertThat(result.navigationContext().reEntry()).isTrue(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.message()).isEmpty(),
+                    () -> assertThat(result.fieldErrors()).isEmpty(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+            verifyNoInteractions(dateValidationService);
         }
 
         @Test
-        @DisplayName("the rendered header carries both title lines verbatim at their declared widths, "
-                + "so the operator sees the text the title copybook declares")
-        void theRenderedHeaderCarriesBothTitleLines() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            input(null, null, null, null, KeyAction.ENTER,
-                                    signedOnState(ConversationState.EntryMode.FIRST_ENTRY)));
+        @DisplayName("populateHeaderInfo: the header carries both padded titles, the transaction and "
+                + "program names, and the clock-derived date and time")
+        void theHeaderCarriesTheCatalogueTitlesAndTheClockDerivedStamp() {
+            catalogueSuppliesTitles();
 
-            assertThat(result.header().title01()).isEqualTo(EXPECTED_TITLE_01);
-            assertThat(result.header().title02()).isEqualTo(EXPECTED_TITLE_02);
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(null,
+                            null, null, null, null, null, null, null, null, null, KeyAction.ENTER,
+                            ConversationState.empty()));
+
+            final ReportRequestService.ScreenHeader header = result.header();
+            assertAll(() -> assertThat(header.title01()).isEqualTo(PADDED_TITLE_01),
+                    () -> assertThat(encodedWidth(header.title01())).isEqualTo(SCREEN_TITLE_WIDTH),
+                    () -> assertThat(header.title02()).isEqualTo(PADDED_TITLE_02),
+                    () -> assertThat(encodedWidth(header.title02())).isEqualTo(SCREEN_TITLE_WIDTH),
+                    () -> assertThat(header.transactionName()).isEqualTo(RE_ARMED_TRANSACTION_ID),
+                    () -> assertThat(header.programName()).isEqualTo(HEADER_PROGRAM_NAME),
+                    () -> assertThat(header.currentDate()).isEqualTo(PINNED_HEADER_DATE),
+                    () -> assertThat(header.currentTime()).isEqualTo(PINNED_HEADER_TIME),
+                    () -> assertThat(encodedWidth(header.errorMessage()))
+                            .isEqualTo(OUTBOUND_MESSAGE_WIDTH),
+                    () -> assertThat(header.errorMessage())
+                            .isEqualTo(" ".repeat(OUTBOUND_MESSAGE_WIDTH)));
         }
 
         @Test
-        @DisplayName("a null input is refused rather than defaulted")
-        void aNullInputIsRefused() {
-            final ReportRequestService service = serviceWith(publishingEveryCard());
+        @DisplayName("returnToPrevScreen: the exit key transfers to the destination the navigation "
+                + "rules resolve, so no destination is hardcoded and nothing is published")
+        void theExitKeyTransfersToTheResolvedDestination() {
+            navigationResolves(NavigationService.Route.USER_MENU);
 
-            assertThatNullPointerException()
-                    .isThrownBy(() -> service.processReportRequest(null));
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES,
+                            KeyAction.PFK03, reEntry()));
+
+            assertAll(() -> assertThat(result.route()).isEqualTo(NavigationService.Route.USER_MENU),
+                    () -> assertThat(result.reArmedTransactionId()).isEmpty(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verify(navigationService).resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.SIGN_ON));
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = KeyAction.class, names = {"CLEAR", "PA1", "PA2", "PFK01", "PFK12"})
+        @DisplayName("mainPara: a key this screen does not map reports the padded invalid-key message "
+                + "untrimmed and publishes nothing")
+        void anUnmappedKeyReportsTheInvalidKeyMessageUntrimmed(final KeyAction unmappedKey) {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(PADDED_INVALID_KEY_MESSAGE);
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES, unmappedKey,
+                            reEntry()));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(PADDED_INVALID_KEY_MESSAGE),
+                    () -> assertThat(encodedWidth(result.message()))
+                            .isEqualTo(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
+                    () -> assertThat(result.reportPeriod()).isNull(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("mainPara: a key that was never decoded reaches the same catch-all arm, because "
+                + "this screen declares no clear-key arm of its own")
+        void anUndecodedKeyReachesTheCatchAllArm() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(PADDED_INVALID_KEY_MESSAGE);
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES, null,
+                            reEntry()));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(PADDED_INVALID_KEY_MESSAGE),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("receiveTrnrptScreen: every transmitted field is bounded to its declared screen "
+                + "width, so a longer value loses its excess and a shorter one is space filled")
+        void everyTransmittedFieldIsBoundedToItsDeclaredWidth() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    customTurn("011", "011", "20222", "122", "311", "20222", "YY"));
+
+            final ReportRequestService.ScreenFields screen = result.screen();
+            assertAll(() -> assertThat(encodedWidth(screen.startMonth())).isEqualTo(2),
+                    () -> assertThat(encodedWidth(screen.startDay())).isEqualTo(2),
+                    () -> assertThat(encodedWidth(screen.startYear())).isEqualTo(4),
+                    () -> assertThat(encodedWidth(screen.endMonth())).isEqualTo(2),
+                    () -> assertThat(encodedWidth(screen.endDay())).isEqualTo(2),
+                    () -> assertThat(encodedWidth(screen.endYear())).isEqualTo(4),
+                    () -> assertThat(encodedWidth(screen.confirm())).isEqualTo(1),
+                    () -> assertThat(result.startDate()).isEqualTo(CUSTOM_START),
+                    () -> assertThat(result.endDate()).isEqualTo(CUSTOM_END));
+        }
+
+        @Test
+        @DisplayName("returnToCics: a turn that re-presents the screen re-arms its own transaction, "
+                + "which is what makes the next turn a re-entry")
+        void aTurnThatRePresentsTheScreenReArmsItsOwnTransaction() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(null));
+
+            assertThat(result.reArmedTransactionId()).isEqualTo(RE_ARMED_TRANSACTION_ID);
+        }
+
+        @Test
+        @DisplayName("both entry points refuse an absent input rather than defaulting it, and touch "
+                + "no collaborator while doing so")
+        void anAbsentInputIsRefused() {
+            assertAll(() -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> subject.processReportRequest(null)),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .isThrownBy(() -> subject.processReportRequest(null, RETRY_TOKEN)));
+            verifyNoInteractions(jobSubmissionService, dateValidationService, messageCatalogService,
+                    navigationService);
         }
     }
 
-    @Nested
-    @DisplayName("Attention keys")
-    class AttentionKeys {
-
-        @Test
-        @DisplayName("the exit key leaves for the calling menu and submits nothing")
-        void theExitKeyLeavesForTheCallingMenu() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publisher).processReportRequest(
-                            input(null, null, null, null, KeyAction.PFK03, returningContext()));
-
-            assertThat(result.route()).isEqualTo(NavigationService.Route.USER_MENU);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            Mockito.verifyNoInteractions(publisher);
-        }
-
-        @Test
-        @DisplayName("a key the screen does not map reports the common invalid-key message verbatim "
-                + "and submits nothing, rather than being treated as an enter")
-        void anUnmappedKeyReportsTheInvalidKeyMessage() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publisher).processReportRequest(
-                            input(SELECTED, null, null, CONFIRM_YES, KeyAction.PFK12,
-                                    returningContext()));
-
-            assertThat(result.message())
-                    .as("the message is carried at the width the common-message copybook declares, "
-                            + "so it is compared untrimmed against the literal text")
-                    .isEqualTo(EXPECTED_INVALID_KEY_MESSAGE);
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.cardsPublished()).isZero();
-            Mockito.verifyNoInteractions(publisher);
-        }
-    }
-
-    @Nested
-    @DisplayName("Selecting a reporting period")
-    class SelectingAReportingPeriod {
-
-        @Test
-        @DisplayName("a confirmed monthly selection publishes the seventeen cards in order, under "
-                + "ordinals one to seventeen, under one submission identity, with the month-to-date "
-                + "window in all four slots and the end-of-file card transmitted last")
-        void aConfirmedMonthlySelectionPublishesTheContractualCardStream() {
-            final JobSubmissionService publisher = publishingEveryCard();
-            final List<String> expected = expectedCards(MONTHLY_START_DATE, MONTHLY_END_DATE);
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER,
-                            returningContext()));
-
-            assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.MONTHLY);
-            assertThat(result.startDate()).isEqualTo(MONTHLY_START_DATE);
-            assertThat(result.endDate()).isEqualTo(MONTHLY_END_DATE);
-            assertThat(result.submissionAccepted()).isTrue();
-            assertThat(result.errorFlag()).isFalse();
-                assertThat(result.cardsPublished()).isEqualTo(EXPECTED_CARD_COUNT);
-
-                // ONE call carrying ALL seventeen cards, in order - not seventeen calls carrying one card
-                // each. That is the whole of the difference between a submission the batch tier can parse
-                // and one that two concurrent turns can interleave into nonsense.
-                //
-                // The expected stream is the seventeen images THIS FILE authored from the legacy source,
-                // never the builder's own output, so the verification states what the cards must be
-                // rather than echoing whatever was passed.
-                Mockito.verify(publisher, Mockito.times(1)).submitCanonicalJobImage(
-                        ArgumentMatchers.anyString(), ArgumentMatchers.eq(expected));
-                Mockito.verify(publisher, Mockito.never()).writeJobSubmissionQueue(
-                        ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
-                        ArgumentMatchers.anyInt());
-                Mockito.verifyNoMoreInteractions(publisher);
-
-                assertThat(expected.get(EXPECTED_CARD_COUNT - 1))
-                        .as("the oracle's own last card is the sentinel, so the stream compared above "
-                                + "ends with the card the legacy program transmits rather than merely "
-                                + "holds in storage")
-                        .isEqualTo(card(END_OF_FILE_CARD))
-                        .startsWith(END_OF_FILE_CARD);
-        }
-
-        @Test
-        @DisplayName("the four date slots carry the selected window: both sort-symbol cards and both "
-                + "halves of the parameter card, and no other card mentions a date")
-        void theFourDateSlotsCarryTheSelectedWindow() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            serviceWith(publisher).processReportRequest(
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
-
-            final List<PublishedCard> published =
-                    capturePublishedCards(publisher, EXPECTED_CARD_COUNT);
-            final List<String> bodies = new ArrayList<>();
-            published.forEach(publishedCard -> bodies.add(publishedCard.cardImage()));
-
-            assertThat(bodies.get(10))
-                    .isEqualTo(sortSymbolCard("PARM-START-DATE,C'", MONTHLY_START_DATE));
-            assertThat(bodies.get(11))
-                    .isEqualTo(sortSymbolCard("PARM-END-DATE,C'", MONTHLY_END_DATE));
-            assertThat(bodies.get(14))
-                    .isEqualTo(dateParameterCard(MONTHLY_START_DATE, MONTHLY_END_DATE));
-
-            long cardsMentioningTheStartDate = 0;
-            long cardsMentioningTheEndDate = 0;
-            for (final String body : bodies) {
-                if (body.contains(MONTHLY_START_DATE)) {
-                    cardsMentioningTheStartDate++;
-                }
-                if (body.contains(MONTHLY_END_DATE)) {
-                    cardsMentioningTheEndDate++;
-                }
-            }
-
-            assertThat(cardsMentioningTheStartDate)
-                    .as("the start date occupies exactly two slots, on two cards")
-                    .isEqualTo(2);
-            assertThat(cardsMentioningTheEndDate)
-                    .as("the end date occupies exactly two slots, on two cards")
-                    .isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("a confirmed yearly selection publishes the same seventeen cards with the "
-                + "year-to-date window substituted, so the two selections are not interchangeable")
-        void aConfirmedYearlySelectionCarriesItsOwnWindow() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(null, SELECTED, null, CONFIRM_YES, KeyAction.ENTER,
-                            returningContext()));
-
-            assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.YEARLY);
-            assertThat(result.startDate()).isEqualTo(YEARLY_START_DATE);
-            assertThat(result.endDate()).isEqualTo(YEARLY_END_DATE);
-            assertThat(result.submissionAccepted()).isTrue();
-
-            verifyOrderedStream(publisher, expectedCards(YEARLY_START_DATE, YEARLY_END_DATE));
-        }
-
-        @Test
-        @DisplayName("a confirmed custom selection publishes the operator's own window in all four "
-                + "slots, and echoes exactly the dates it submitted")
-        void aConfirmedCustomSelectionSubmitsTheOperatorsWindow() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(customInput("01", "01", "2022", "12", "31", "2022",
-                            CONFIRM_YES));
-
-            assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.CUSTOM);
-            assertThat(result.startDate()).isEqualTo(CUSTOM_START_DATE);
-            assertThat(result.endDate()).isEqualTo(CUSTOM_END_DATE);
-            assertThat(result.submissionAccepted()).isTrue();
-
-            verifyOrderedStream(publisher, expectedCards(CUSTOM_START_DATE, CUSTOM_END_DATE));
-        }
-
-        @Test
-        @DisplayName("selecting no period at all reports the select-a-report-type message verbatim "
-                + "and publishes nothing")
-        void selectingNoPeriodReportsTheSelectionMessage() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publisher).processReportRequest(
-                            input(null, null, null, null, KeyAction.ENTER, returningContext()));
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo(EXPECTED_SELECT_REPORT_TYPE_MESSAGE);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.reportPeriod()).isNull();
-            Mockito.verifyNoInteractions(publisher);
-        }
-    }
-
-    @Nested
-    @DisplayName("The confirmation gate")
-    class TheConfirmationGate {
-
-        @Test
-        @DisplayName("an unconfirmed selection is blocked and prompts for confirmation verbatim "
-                + "instead of publishing, which is the gate the source opens only on an explicit entry")
-        void anUnconfirmedSelectionIsBlocked() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(SELECTED, null, null, null, KeyAction.ENTER,
-                            returningContext()));
-
-            assertThat(result.confirmationBlocked()).isTrue();
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            assertThat(result.message()).isEqualTo(EXPECTED_MONTHLY_CONFIRM_PROMPT);
-            assertThat(result.reportName())
-                    .as("the report name reaches the caller delimited at its first space, so the "
-                            + "ten-character field's padding is not part of the contract")
-                    .isEqualTo(MONTHLY_REPORT_NAME);
-            Mockito.verifyNoInteractions(publisher);
-        }
-
-        @Test
-        @DisplayName("a confirmation entry the screen does not admit is refused, reported verbatim "
-                + "with the offending entry quoted, and publishes nothing")
-        void anInadmissibleConfirmationEntryIsRefused() {
-            final JobSubmissionService publisher = publishingEveryCard();
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(SELECTED, null, null, INADMISSIBLE_CONFIRM,
-                            KeyAction.ENTER, returningContext()));
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo(EXPECTED_INADMISSIBLE_CONFIRM_MESSAGE);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            Mockito.verifyNoInteractions(publisher);
-        }
-    }
-
-    @Nested
-    @DisplayName("The publishing boundary")
-    class ThePublishingBoundary {
-
-        @Test
-        @DisplayName("a queue that refuses the first card leaves the submission unaccepted, reports "
-                + "the transient-data-queue failure verbatim, and sends no further card")
-        void aQueueRefusingTheFirstCardStopsTheStream() {
-            final JobSubmissionService publisher = publishingNoCard();
-            final List<String> expected = expectedCards(MONTHLY_START_DATE, MONTHLY_END_DATE);
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER,
-                            returningContext()));
-
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo(EXPECTED_QUEUE_FAILURE_MESSAGE);
-
-            // Exactly one offer, and it carries the whole image: the publisher owns the card-by-card
-            // walk and its error guard, so the service offers the stream once and reads back how much
-            // of it reached the queue. Ignore-on-error means logged and non-fatal, never retried, so a
-            // refused submission produces no second offer.
-            final List<PublishedCard> published =
-                    capturePublishedCards(publisher, EXPECTED_CARD_COUNT);
-            assertThat(published).extracting(PublishedCard::cardImage)
-                    .as("the refused submission still offered the seventeen cards this file authored")
-                    .containsExactlyElementsOf(expected);
-            assertThat(published.get(0).ordinal()).isEqualTo(1);
-        }
-
-        @Test
-        @DisplayName("a queue that refuses part way through sends every card up to that slot and "
-                + "none after it, so a partial submission is never silently completed")
-        void aQueueRefusingPartWayThroughStopsAtThatSlot() {
-            final int refusedSlot = 5;
-            final JobSubmissionService publisher = publishingUntilSlot(refusedSlot);
-            final List<String> expected = expectedCards(MONTHLY_START_DATE, MONTHLY_END_DATE);
-
-            final ReportRequestService.ReportRequestResult result = serviceWith(publisher)
-                    .processReportRequest(input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER,
-                            returningContext()));
-
-            assertThat(result.cardsPublished()).isEqualTo(refusedSlot - 1);
-            assertThat(result.submissionAccepted())
-                    .as("a submission is accepted only when every card reached the queue")
-                    .isFalse();
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo(EXPECTED_QUEUE_FAILURE_MESSAGE);
-
-            final List<PublishedCard> published =
-                    capturePublishedCards(publisher, EXPECTED_CARD_COUNT);
-            assertThat(published).extracting(PublishedCard::cardImage)
-                    .as("the offer is the whole image; where the queue stopped is reported back rather "
-                            + "than guessed at by the caller")
-                    .containsExactlyElementsOf(expected);
-            assertThat(published).extracting(PublishedCard::ordinal)
-                    .containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
-            assertThat(expected.subList(0, refusedSlot))
-                    .as("the sentinel sits beyond the refused slot, so a stream that stops there never "
-                            + "reaches it")
-                    .doesNotContain(card(END_OF_FILE_CARD));
-        }
-
-        @Test
-        @DisplayName("the turn re-arms its own transaction identifier, which is what makes the next "
-                + "call a continuation of this conversation")
-        void theTurnReArmsItsOwnTransactionIdentifier() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER,
-                                    returningContext()));
-
-            assertThat(result.reArmedTransactionId()).isEqualTo("CR00");
-            assertThat(result.navigationContext()).isEqualTo(returningContext());
-        }
-
-        @Test
-        @DisplayName("two submissions carry two different identities, so the cards of one cannot be "
-                + "interleaved with the cards of the other on the queue")
-        void twoSubmissionsCarryTwoDifferentIdentities() {
-            final JobSubmissionService firstPublisher = publishingEveryCard();
-            final JobSubmissionService secondPublisher = publishingEveryCard();
-
-            serviceWith(firstPublisher).processReportRequest(
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
-            serviceWith(secondPublisher).processReportRequest(
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
-
-            final String firstIdentity =
-                    capturePublishedCards(firstPublisher, EXPECTED_CARD_COUNT).get(0).submissionId();
-            final String secondIdentity =
-                    capturePublishedCards(secondPublisher, EXPECTED_CARD_COUNT).get(0).submissionId();
-
-            assertThat(firstIdentity).isNotBlank().isNotEqualTo(secondIdentity);
-        }
-
-        @Test
-        @DisplayName("two turns requesting the SAME period also carry two different identities, so the "
-                + "queue service cannot discard the second turn behind the first one's success")
-        void twoTurnsForTheSamePeriodCarryTwoDifferentIdentities() {
-            // The defect this pins: an identity derived from the two date slots alone made both turns
-            // produce the same seventeen deduplication identifiers, so a first-in-first-out queue
-            // discarded the second turn's cards inside its deduplication interval and the operator was
-            // told the job had been submitted. The legacy queue's disposition appended, so the second
-            // turn ran the job again; suppressing it silently is the parity break.
-            final JobSubmissionService firstPublisher = publishingEveryCard();
-            final JobSubmissionService secondPublisher = publishingEveryCard();
-
-            serviceWith(firstPublisher).processReportRequest(
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
-            serviceWith(secondPublisher).processReportRequest(
-                    input(SELECTED, null, null, CONFIRM_YES, KeyAction.ENTER, returningContext()));
-
-            final List<PublishedCard> first =
-                    capturePublishedCards(firstPublisher, EXPECTED_CARD_COUNT);
-            final List<PublishedCard> second =
-                    capturePublishedCards(secondPublisher, EXPECTED_CARD_COUNT);
-
-            assertThat(second.get(0).cardImage())
-                    .as("both turns submit the identical card stream, which is what makes the identity "
-                            + "the only thing distinguishing them")
-                    .isEqualTo(first.get(0).cardImage());
-            assertThat(second.get(0).submissionId())
-                    .as("and the identities differ, so nothing is deduplicated away")
-                    .isNotBlank()
-                    .isNotEqualTo(first.get(0).submissionId());
-            assertThat(first.get(0).submissionId())
-                    .as("the identity still names the period it submits, so a diagnostic reads back to "
-                            + "the request")
-                    .startsWith(MONTHLY_START_DATE);
-        }
-    }
-
-    @Nested
-    @DisplayName("The first failure ends the turn")
-    class TheFirstFailureEndsTheTurn {
-
-        /**
-         * The six emptiness checks, each reached only when the ones before it were satisfied.
-         *
-         * <p>The source writes them as one ordered evaluation, so at most one fires; the failing one
-         * sends the screen, and the send ends the task. Each row therefore leaves exactly one part
-         * empty and expects exactly that part's message and exactly one field error.
-         */
-        @ParameterizedTest(name = "{6}")
-        @CsvSource({
-            "'',   01, 2022, 12, 31, 2022, 'Start Date - Month can NOT be empty...'",
-            "01,   '', 2022, 12, 31, 2022, 'Start Date - Day can NOT be empty...'",
-            "01,   01, '',   12, 31, 2022, 'Start Date - Year can NOT be empty...'",
-            "01,   01, 2022, '', 31, 2022, 'End Date - Month can NOT be empty...'",
-            "01,   01, 2022, 12, '', 2022, 'End Date - Day can NOT be empty...'",
-            "01,   01, 2022, 12, 31, '',   'End Date - Year can NOT be empty...'",
-        })
-        @DisplayName("an empty date part reports only its own message, and only one field error")
-        void anEmptyDatePartReportsOnlyItsOwnMessage(final String startMonth, final String startDay,
-                final String startYear, final String endMonth, final String endDay,
-                final String endYear, final String expectedMessage) {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(customInput(startMonth,
-                            startDay, startYear, endMonth, endDay, endYear, CONFIRM_YES));
-
-            assertThat(result.errorFlag()).as("the emptiness check must raise the error flag").isTrue();
-            assertThat(result.message()).as("the summary text is the failing check's own")
-                    .isEqualTo(expectedMessage);
-            assertThat(result.fieldErrors())
-                    .as("the send ended the task, so no later check could have reported a second "
-                            + "field")
-                    .hasSize(1);
-            assertThat(result.fieldErrors().get(0).state())
-                    .as("an empty field is not supplied rather than supplied wrongly")
-                    .isEqualTo(ValidationException.FieldState.MISSING);
-            assertThat(result.cardsPublished()).as("nothing may be published").isZero();
-            assertThat(result.reportPeriod())
-                    .as("the period is set after the validation stages, so it is never reached")
-                    .isNull();
-            assertThat(result.reportName())
-                    .as("the report name is set after the validation stages too").isEmpty();
-        }
-
-        @ParameterizedTest(name = "{6}")
-        @CsvSource({
-            "13, 01, 2022, 12, 31, 2022, 'Start Date - Not a valid Month...'",
-            "01, 32, 2022, 12, 31, 2022, 'Start Date - Not a valid Day...'",
-            "01, 01, 20AB, 12, 31, 2022, 'Start Date - Not a valid Year...'",
-            "01, 01, 2022, 13, 31, 2022, 'End Date - Not a valid Month...'",
-            "01, 01, 2022, 12, 32, 2022, 'End Date - Not a valid Day...'",
-            "01, 01, 2022, 12, 31, 20AB, 'End Date - Not a valid Year...'",
-        })
-        @DisplayName("an out-of-range date part reports only its own message: the range checks do not "
-                + "accumulate, because the first one to fire sends the screen")
-        void anOutOfRangeDatePartReportsOnlyItsOwnMessage(final String startMonth,
-                final String startDay, final String startYear, final String endMonth,
-                final String endDay, final String endYear, final String expectedMessage) {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(customInput(startMonth,
-                            startDay, startYear, endMonth, endDay, endYear, CONFIRM_YES));
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).as("the summary text is the failing check's own")
-                    .isEqualTo(expectedMessage);
-            assertThat(result.fieldErrors())
-                    .as("six independent range statements, but the first to fire is the last reached")
-                    .hasSize(1);
-            assertThat(result.fieldErrors().get(0).state())
-                    .as("a supplied but out-of-range field is supplied wrongly")
-                    .isEqualTo(ValidationException.FieldState.INVALID);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.reportPeriod()).isNull();
-        }
-
-        @Test
-        @DisplayName("two out-of-range parts still report one field error, so the turn cannot describe "
-                + "more failures than the legacy screen carried")
-        void twoOutOfRangePartsStillReportOneFieldError() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("13", "32", "2022", "13", "32", "2022", CONFIRM_YES));
-
-            assertThat(result.message()).isEqualTo("Start Date - Not a valid Month...");
-            assertThat(result.fieldErrors())
-                    .as("five later range statements would each have reported, had the send not ended "
-                            + "the task")
-                    .hasSize(1);
-        }
-
-        @Test
-        @DisplayName("an empty part is not normalised: the turn echoes the field exactly as it was "
-                + "received, because the normalisation runs after the emptiness checks")
-        void anEmptyPartIsNotNormalised() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("", "1", "2022", "12", "31", "2022", CONFIRM_YES));
-
-            assertThat(result.message()).isEqualTo("Start Date - Month can NOT be empty...");
-            assertThat(result.screen().startMonth())
-                    .as("the empty month must not have been zero filled by the conversion stage")
-                    .isBlank();
-            assertThat(result.screen().startDay())
-                    .as("a single-digit day would have become 01 had the conversion stage run")
-                    .isEqualTo("1 ");
-            assertThat(result.startDate())
-                    .as("the two dates are assembled after the range checks, so neither is assembled")
-                    .isEmpty();
-            assertThat(result.endDate()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("an out-of-range part leaves the assembled dates unbuilt, so the turn reports no "
-                + "date it never submitted")
-        void anOutOfRangePartLeavesTheAssembledDatesUnbuilt() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("13", "01", "2022", "12", "31", "2022", CONFIRM_YES));
-
-            assertThat(result.message()).isEqualTo("Start Date - Not a valid Month...");
-            assertThat(result.startDate())
-                    .as("assembly happens after the range stage, which ended the turn").isEmpty();
-            assertThat(result.endDate()).isEmpty();
-        }
-
-        @Test
-        @DisplayName("a start date the validation subprogram refuses ends the turn before the end date "
-                + "is offered to it, so only the start date is reported")
-        void aRefusedStartDateEndsTheTurnBeforeTheEndDateIsChecked() {
-            // Both dates name a day that does not exist, so a translation that called the subprogram
-            // twice would report two failures. The legacy calls it once: the first rejection sends the
-            // screen and the send ends the task.
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("02", "30", "2022", "02", "31", "2022", CONFIRM_YES));
-
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo("Start Date - Not a valid date...");
-            assertThat(result.fieldErrors())
-                    .as("the end date was never offered to the subprogram").hasSize(1);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.reportPeriod())
-                    .as("the period is set only after both dates are accepted").isNull();
-        }
-
-        @Test
-        @DisplayName("an end date the validation subprogram refuses is reported once the start date "
-                + "has been accepted, which is the only route to the second call")
-        void aRefusedEndDateIsReportedOnceTheStartDateIsAccepted() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("01", "01", "2022", "02", "30", "2022", CONFIRM_YES));
-
-            assertThat(result.message()).isEqualTo("End Date - Not a valid date...");
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.cardsPublished()).isZero();
-        }
-
-        @Test
-        @DisplayName("no period selected reports one field error and never reaches the acknowledgement, "
-                + "so the failure text is what the operator is left with")
-        void noPeriodSelectedIsNotOverwrittenByTheAcknowledgement() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            input(null, null, null, CONFIRM_YES, KeyAction.ENTER,
-                                    returningContext()));
-
-            assertThat(result.message()).isEqualTo("Select a report type to print report...");
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.messageHighlightedGreen())
-                    .as("the acknowledgement recolours the message field; it must not be reached")
-                    .isFalse();
-        }
-
-        @Test
-        @DisplayName("a declined confirmation publishes nothing and leaves the message silent, so no "
-                + "card image is even assembled after the screen has been sent")
-        void aDeclinedConfirmationPublishesNothingAndStaysSilent() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            input(SELECTED, null, null, "N", KeyAction.ENTER, returningContext()));
-
-            assertThat(result.errorFlag()).as("the declining arm raises the error flag").isTrue();
-            assertThat(result.confirmationBlocked()).isTrue();
-            assertThat(result.message())
-                    .as("the legacy sets no text on this arm, so inventing one would be new output")
-                    .isEmpty();
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.messageHighlightedGreen())
-                    .as("the acknowledgement is unreachable once the screen has been sent").isFalse();
-        }
-    }
+    // ==============================================================================================
+    // Period derivation: the three arms of the enter-key paragraph
+    // ==============================================================================================
 
     /**
-     * The turn ends at the first failed validation, and nothing sequenced after it runs.
+     * Covers the enter-key paragraph's ordered evaluation and the two derived windows.
      *
-     * <p>This is the reachability contract of the legacy member, and it is a contract rather than an
-     * implementation detail because it decides what an operator sees. Every failure site in
-     * {@code app/cbl/CORPT00C.cbl} performs the send paragraph, that paragraph ends with a jump to the
-     * return paragraph, and the return paragraph issues {@code EXEC CICS RETURN} - so the task ends
-     * where the first failure is found. The statements that follow it in the source text are simply
-     * never executed: the numeric normalisation of the six date parts, the five remaining range tests,
-     * the assembly of the two ten-character dates, both calls to the date-validation subprogram, the
-     * four substitution slots, the report-name assignment and the submission.
-     *
-     * <p>Each test below therefore asserts two things: that the failure the legacy would have shown is
-     * the one reported, and that the work the legacy never reached did not happen. The second half is
-     * what a suite written only against the message text would miss.
+     * <p>Both derived windows are read from the injected clock, and every expected bound below is a
+     * declared literal rather than a value recomputed with the same arithmetic the service applies.
      */
     @Nested
-    @DisplayName("The first failed validation ends the turn")
-    class TheFirstFailedValidationEndsTheTurn {
+    @DisplayName("processEnterKey - deriving the reporting period")
+    class PeriodDerivation {
 
-        @Test
-        @DisplayName("an empty start month is the only failure reported, even though the end date is "
-                + "also empty and five further range tests would have failed")
-        void anEmptyStartMonthIsTheOnlyFailureReported() {
+        @ParameterizedTest(name = "{3}: {0} derives {1} to {2}")
+        @CsvSource({
+            "2023-02-15T08:00:00Z, 2023-02-01, 2023-02-28, a twenty-eight day February",
+            "2024-02-10T08:00:00Z, 2024-02-01, 2024-02-29, a twenty-nine day leap February",
+            "2022-04-05T08:00:00Z, 2022-04-01, 2022-04-30, a thirty day month",
+            "2022-07-19T23:12:33Z, 2022-07-01, 2022-07-31, a thirty-one day month",
+            "2022-12-31T23:59:59Z, 2022-12-01, 2022-12-31, a December start that rolls the year",
+        })
+        @DisplayName("monthToDatePeriod: the window opens on the first of the month and closes on its "
+                + "last day, for every month length and across the year boundary")
+        void theMonthToDateWindowClosesOnTheLastDayOfTheMonth(final String isoInstant,
+                final String expectedStart, final String expectedEnd, final String description) {
+            bridgeAcceptsEveryCard();
+
             final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput(null, null, null, null, null, null, CONFIRM_YES));
+                    serviceAt(clockAt(isoInstant)).processReportRequest(monthlyTurn(CONFIRM_YES));
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo("Start Date - Month can NOT be empty...");
-            assertThat(result.fieldErrors())
-                    .as("the ordered evaluation fires once and its send ends the turn")
-                    .hasSize(1);
-            assertThat(result.fieldErrors().get(0).state())
-                    .isEqualTo(ValidationException.FieldState.MISSING);
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(result.startDate()).as(description).isEqualTo(expectedStart),
+                    () -> assertThat(result.endDate()).as(description).isEqualTo(expectedEnd),
+                    () -> assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.MONTHLY),
+                    () -> assertThat(result.reportName()).isEqualTo(REPORT_NAME_MONTHLY),
+                    () -> assertThat(cards)
+                            .containsExactlyElementsOf(expectedCards(expectedStart, expectedEnd)));
+        }
+
+        @ParameterizedTest(name = "{0} derives {1} to {2}")
+        @CsvSource({
+            "2023-02-15T08:00:00Z, 2023-01-01, 2023-12-31",
+            "2024-02-10T08:00:00Z, 2024-01-01, 2024-12-31",
+            "2022-12-31T23:59:59Z, 2022-01-01, 2022-12-31",
+        })
+        @DisplayName("yearToDatePeriod: the window is the whole of the clock's own year, so it is "
+                + "derived from the injected clock and never from an ambient source")
+        void theYearToDateWindowIsTheClocksOwnYear(final String isoInstant,
+                final String expectedStart, final String expectedEnd) {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    serviceAt(clockAt(isoInstant)).processReportRequest(yearlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(result.startDate()).isEqualTo(expectedStart),
+                    () -> assertThat(result.endDate()).isEqualTo(expectedEnd),
+                    () -> assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.YEARLY),
+                    () -> assertThat(result.reportName()).isEqualTo(REPORT_NAME_YEARLY),
+                    () -> assertThat(cards)
+                            .containsExactlyElementsOf(expectedCards(expectedStart, expectedEnd)));
         }
 
         @Test
-        @DisplayName("nothing after the first emptiness failure runs: no normalisation, no date "
-                + "assembly, no report name and no period")
-        void nothingAfterTheFirstEmptinessFailureRuns() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput(null, "1", "22", "13", "99", "abcd", CONFIRM_YES));
+        @DisplayName("monthToDatePeriod: the pinned clock derives its own thirty-day window and asks "
+                + "the date-validation subprogram nothing, because a derived window is not validated")
+        void theDerivedMonthlyWindowIsNotValidated() {
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.message()).isEqualTo("Start Date - Month can NOT be empty...");
-            assertThat(result.screen().startDay())
-                    .as("the numeric normalisation at lines 305 to 327 is never reached, so the "
-                            + "echoed day is still the transmitted value padded to its field width "
-                            + "rather than zero-filled")
-                    .isEqualTo("1 ");
-            assertThat(result.screen().endYear())
-                    .as("and the non-numeric end year is echoed exactly as transmitted")
-                    .isEqualTo("abcd");
-            assertThat(result.startDate())
-                    .as("the dates at lines 381 to 386 are never assembled")
-                    .isEmpty();
-            assertThat(result.endDate()).isEmpty();
-            assertThat(result.reportName())
-                    .as("MOVE 'Custom' TO WS-REPORT-NAME at line 433 is never reached")
-                    .isEmpty();
-            assertThat(result.reportPeriod())
-                    .as("and neither is the period assignment that precedes it")
-                    .isNull();
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.startDate()).isEqualTo(PINNED_MONTHLY_START),
+                    () -> assertThat(result.endDate()).isEqualTo(PINNED_MONTHLY_END),
+                    () -> assertThat(result.submissionAccepted()).isTrue());
+            verifyNoInteractions(dateValidationService);
         }
 
         @Test
-        @DisplayName("the first failing range test is the only one reported, and the five that follow "
-                + "it do not run")
-        void theFirstFailingRangeTestIsTheOnlyOneReported() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("13", "45", "2022", "99", "99", "2022", CONFIRM_YES));
+        @DisplayName("yearToDatePeriod: the pinned clock derives its own year and likewise validates "
+                + "nothing")
+        void theDerivedYearlyWindowIsNotValidated() {
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo("Start Date - Not a valid Month...");
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.fieldErrors().get(0).state())
-                    .isEqualTo(ValidationException.FieldState.INVALID);
-            assertThat(result.startDate())
-                    .as("a faulted part ends the turn before either date is assembled")
-                    .isEmpty();
-            assertThat(result.reportPeriod()).isNull();
-            assertThat(result.cardsPublished()).isZero();
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(yearlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.startDate()).isEqualTo(PINNED_YEARLY_START),
+                    () -> assertThat(result.endDate()).isEqualTo(PINNED_YEARLY_END),
+                    () -> assertThat(result.submissionAccepted()).isTrue());
+            verifyNoInteractions(dateValidationService);
         }
 
         @Test
-        @DisplayName("a rejected start date stops the turn before the end date is validated, so the "
-                + "subprogram is never called a second time")
-        void aRejectedStartDateStopsTheTurnBeforeTheEndDate() {
-            // Both parts are inside their declared ranges, so the range stage passes and the two
-            // subprogram calls are reached; 31 February is what only a calendar check rejects.
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("02", "31", "2022", "02", "31", "2022", CONFIRM_YES));
+        @DisplayName("processEnterKey: the ordered evaluation stops at the first marked period, so a "
+                + "turn marking both month-to-date and year-to-date resolves to month-to-date")
+        void theOrderedEvaluationStopsAtTheFirstMarkedPeriod() {
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo("Start Date - Not a valid date...");
-            assertThat(result.fieldErrors())
-                    .as("the end date is never handed to the subprogram, so it reports nothing")
-                    .hasSize(1);
-            assertThat(result.reportName())
-                    .as("the report name is assigned after both calls and is never reached")
-                    .isEmpty();
-            assertThat(result.reportPeriod()).isNull();
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    turn(SELECTED, SELECTED, SELECTED, null, null, null, null, null, null,
+                            CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.MONTHLY),
+                    () -> assertThat(result.startDate()).isEqualTo(PINNED_MONTHLY_START),
+                    () -> assertThat(result.endDate()).isEqualTo(PINNED_MONTHLY_END));
+            verifyNoInteractions(dateValidationService);
         }
 
         @Test
-        @DisplayName("a valid start date with an invalid end date reports the end date, proving the "
-                + "second call is genuinely reached when the first succeeds")
-        void aValidStartDateWithAnInvalidEndDateReportsTheEndDate() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("01", "01", "2022", "02", "31", "2022", CONFIRM_YES));
+        @DisplayName("operatorSuppliedPeriod: an operator-supplied range reaches the queue with its "
+                + "own window in all four slots")
+        void anOperatorSuppliedRangeCarriesItsOwnWindow() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.message()).isEqualTo("End Date - Not a valid date...");
-            assertThat(result.fieldErrors()).hasSize(1);
-            assertThat(result.cardsPublished()).isZero();
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.CUSTOM),
+                    () -> assertThat(result.reportName()).isEqualTo(REPORT_NAME_CUSTOM),
+                    () -> assertThat(result.startDate()).isEqualTo(CUSTOM_START),
+                    () -> assertThat(result.endDate()).isEqualTo(CUSTOM_END),
+                    () -> assertThat(cards)
+                            .containsExactlyElementsOf(expectedCards(CUSTOM_START, CUSTOM_END)));
         }
 
         @Test
-        @DisplayName("a blank confirmation ends the turn before any card is built, so the prompt is "
-                + "the whole of the outcome")
-        void aBlankConfirmationEndsTheTurnBeforeAnyCardIsBuilt() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("01", "01", "2022", "12", "31", "2022", null));
+        @DisplayName("processEnterKey: marking no period at all reports the selection message "
+                + "verbatim, faults the report-type field and publishes nothing")
+        void markingNoPeriodReportsTheSelectionMessage() {
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    turn(null, null, null, null, null, null, null, null, null, CONFIRM_YES));
 
-            assertThat(result.confirmationBlocked()).isTrue();
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            assertThat(result.reportPeriod())
-                    .as("the period and report name are assigned before the submission attempt, so "
-                            + "they survive - the confirmation gate is inside the submission")
-                    .isEqualTo(ReportPeriod.CUSTOM);
+            assertAll(() -> assertThat(result.message()).isEqualTo(MSG_SELECT_REPORT_TYPE),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.reportPeriod()).isNull(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field())
+                            .isEqualTo(PROPERTY_REPORT_TYPE),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
         }
 
         @Test
-        @DisplayName("a declined confirmation ends the turn silently and publishes nothing")
-        void aDeclinedConfirmationEndsTheTurnSilently() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("01", "01", "2022", "12", "31", "2022", "N"));
+        @DisplayName("processEnterKey: a successful submission composes the acknowledgement from the "
+                + "space-delimited report name and recolours the message field")
+        void aSuccessfulSubmissionComposesTheAcknowledgement() {
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.confirmationBlocked()).isTrue();
-            assertThat(result.errorFlag()).isTrue();
-            assertThat(result.cardsPublished()).isZero();
-            assertThat(result.submissionAccepted()).isFalse();
-            assertThat(result.message())
-                    .as("the declined arm writes no text, matching the legacy's silent rejection")
-                    .isEmpty();
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message())
+                            .isEqualTo(REPORT_NAME_MONTHLY + FRAGMENT_SUBMITTED_SUFFIX),
+                    () -> assertThat(result.messageHighlightedGreen()).isTrue(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.confirmationBlocked()).isFalse(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY));
         }
 
         @Test
-        @DisplayName("a valid, confirmed range still publishes every card, so the terminal marker "
-                + "does not suppress the success path")
-        void aValidConfirmedRangeStillPublishesEveryCard() {
-            final ReportRequestService.ReportRequestResult result =
-                    serviceWith(publishingEveryCard()).processReportRequest(
-                            customInput("01", "01", "2022", "07", "06", "2022", CONFIRM_YES));
+        @DisplayName("initializeAllFields: a successful submission returns a cleared screen, because "
+                + "the reset paragraph blanks all ten input fields")
+        void aSuccessfulSubmissionReturnsAClearedScreen() {
+            bridgeAcceptsEveryCard();
 
-            assertThat(result.errorFlag()).isFalse();
-            assertThat(result.fieldErrors()).isEmpty();
-            assertThat(result.reportPeriod()).isEqualTo(ReportPeriod.CUSTOM);
-            assertThat(result.cardsPublished()).isEqualTo(EXPECTED_CARD_COUNT);
-            assertThat(result.submissionAccepted()).isTrue();
-            assertThat(result.messageHighlightedGreen())
-                    .as("the acknowledgement send is itself terminal and must still happen")
-                    .isTrue();
-            assertThat(result.message()).contains("submitted");
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final ReportRequestService.ScreenFields screen = result.screen();
+            assertAll(() -> assertThat(screen.monthlySelection()).isEqualTo(" "),
+                    () -> assertThat(screen.yearlySelection()).isEqualTo(" "),
+                    () -> assertThat(screen.customSelection()).isEqualTo(" "),
+                    () -> assertThat(screen.startMonth()).isEqualTo(" ".repeat(2)),
+                    () -> assertThat(screen.startDay()).isEqualTo(" ".repeat(2)),
+                    () -> assertThat(screen.startYear()).isEqualTo(" ".repeat(4)),
+                    () -> assertThat(screen.endMonth()).isEqualTo(" ".repeat(2)),
+                    () -> assertThat(screen.endDay()).isEqualTo(" ".repeat(2)),
+                    () -> assertThat(screen.endYear()).isEqualTo(" ".repeat(4)),
+                    () -> assertThat(screen.confirm()).isEqualTo(" "));
+        }
+    }
+
+    // ==============================================================================================
+    // The two-field date-acceptance test - the decisive assertions of this suite
+    // ==============================================================================================
+
+    /**
+     * Covers the acceptance test the source applies to the subprogram's result block.
+     *
+     * <p>The block carries a four-character severity and a four-character message number. The source
+     * accepts the zero severity outright and otherwise accepts anyway when the message number is the
+     * one tolerated value, refusing only when it is something else. Both halves are asserted
+     * independently, and the two non-zero outcomes are compared with each other: a translation that
+     * reduced the pair to one boolean would satisfy either half alone but not that comparison.
+     */
+    @Nested
+    @DisplayName("editSuppliedDates - the severity and message-number pair")
+    class DateAcceptance {
+
+        @Test
+        @DisplayName("a non-zero severity carrying the tolerated message number is accepted, so the "
+                + "turn proceeds all the way to the queue")
+        void aNonZeroSeverityCarryingTheToleratedMessageNumberIsAccepted() {
+            validatorToleratesEveryDate();
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            assertAll(() -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.message())
+                            .isEqualTo(REPORT_NAME_CUSTOM + FRAGMENT_SUBMITTED_SUFFIX),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(result.submissionAccepted()).isTrue(),
+                    () -> assertThat(result.fieldErrors()).isEmpty());
+            verify(dateValidationService, times(2)).validateDate(any(), any(DateFormat.class));
+        }
+
+        @Test
+        @DisplayName("the same non-zero severity carrying any other message number is refused, and "
+                + "the refusal text is reported byte for byte")
+        void theSameNonZeroSeverityCarryingAnotherMessageNumberIsRefused() {
+            validatorRefusesEveryDate();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(MSG_START_DATE_INVALID),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_START_MONTH),
+                    () -> assertThat(result.cardsPublished()).isZero(),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field())
+                            .isEqualTo(PROPERTY_START_DATE),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.INVALID));
+            verify(dateValidationService, times(1)).validateDate(any(), any(DateFormat.class));
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("the accepted severity passes outright, whatever message number accompanies it")
+        void theAcceptedSeverityPassesOutright() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            assertAll(() -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(result.submissionAccepted()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the two non-zero outcomes differ although their severities are identical, which "
+                + "is the comparison a collapsed single-field test cannot survive")
+        void theTwoNonZeroOutcomesDifferAlthoughTheirSeveritiesAreIdentical() {
+            when(dateValidationService.validateDate(any(), any(DateFormat.class)))
+                    .thenReturn(toleratedBlock(), toleratedBlock(), refusedBlock());
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult tolerated =
+                    subject.processReportRequest(confirmedCustomTurn());
+            final ReportRequestService.ReportRequestResult refused =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            assertAll(() -> assertThat(toleratedBlock().severityCode())
+                            .as("both outcomes carry the same non-zero severity")
+                            .isEqualTo(refusedBlock().severityCode())
+                            .isNotEqualTo(SEVERITY_ACCEPTED),
+                    () -> assertThat(toleratedBlock().messageNumber())
+                            .as("they differ only in the message number")
+                            .isEqualTo(MESSAGE_NUMBER_TOLERATED)
+                            .isNotEqualTo(refusedBlock().messageNumber()),
+                    () -> assertThat(tolerated.errorFlag()).isFalse(),
+                    () -> assertThat(refused.errorFlag()).isTrue(),
+                    () -> assertThat(refused.errorFlag()).isNotEqualTo(tolerated.errorFlag()),
+                    () -> assertThat(refused.message()).isNotEqualTo(tolerated.message()),
+                    () -> assertThat(refused.cardsPublished())
+                            .isNotEqualTo(tolerated.cardsPublished()),
+                    () -> assertThat(tolerated.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(refused.cardsPublished()).isZero());
+            verify(jobSubmissionService, times(1)).submitCanonicalJobImage(any(), any());
+        }
+
+        @Test
+        @DisplayName("editSuppliedDates: the format selector transmitted to the subprogram is the "
+                + "hyphenated ten-character mask, on both invocations")
+        void theTransmittedFormatSelectorIsTheHyphenatedMask() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(confirmedCustomTurn());
+
+            verify(dateValidationService, times(2)).validateDate(validatedDateCaptor.capture(),
+                    dateFormatCaptor.capture());
+            assertAll(() -> assertThat(dateFormatCaptor.getAllValues())
+                            .containsExactly(DateFormat.YYYY_MM_DD, DateFormat.YYYY_MM_DD),
+                    () -> assertThat(DateFormat.YYYY_MM_DD.getValue())
+                            .isEqualTo(MASK_HYPHENATED),
+                    () -> assertThat(encodedWidth(DateFormat.YYYY_MM_DD.getValue()))
+                            .isEqualTo(DATE_SLOT_WIDTH),
+                    () -> assertThat(validatedDateCaptor.getAllValues())
+                            .containsExactly(CUSTOM_START, CUSTOM_END));
+        }
+
+        @Test
+        @DisplayName("editSuppliedDates: the end date is offered to the subprogram only after the "
+                + "start date has been accepted, in that order")
+        void theEndDateIsOfferedOnlyAfterTheStartDateIsAccepted() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(confirmedCustomTurn());
+
+            final InOrder order = inOrder(dateValidationService);
+            order.verify(dateValidationService).validateDate(CUSTOM_START, DateFormat.YYYY_MM_DD);
+            order.verify(dateValidationService).validateDate(CUSTOM_END, DateFormat.YYYY_MM_DD);
+            order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("editSuppliedDates: a refused end date reports the end-date text once the start "
+                + "date has been accepted, and publishes nothing")
+        void aRefusedEndDateReportsTheEndDateText() {
+            when(dateValidationService.validateDate(any(), any(DateFormat.class)))
+                    .thenReturn(acceptedBlock(), refusedBlock());
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(confirmedCustomTurn());
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(MSG_END_DATE_INVALID),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_END_MONTH),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field())
+                            .isEqualTo(PROPERTY_END_DATE),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verify(dateValidationService, times(2)).validateDate(any(), any(DateFormat.class));
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("editSuppliedDates: a subprogram that breaks its own non-null contract fails the "
+                + "turn at that boundary and publishes nothing")
+        void aSubprogramReturningNothingPublishesNothing() {
+            when(dateValidationService.validateDate(any(), any(DateFormat.class))).thenReturn(null);
+
+            assertThatExceptionOfType(NullPointerException.class)
+                    .isThrownBy(() -> subject.processReportRequest(confirmedCustomTurn()));
+
+            verifyNoInteractions(jobSubmissionService);
+        }
+    }
+
+    // ==============================================================================================
+    // The confirmation gate: three arms, in the source's own clause order
+    // ==============================================================================================
+
+    /**
+     * Covers the job-submission paragraph's confirmation gate.
+     *
+     * <p>The three arms are asserted in the order the source declares them, and they are deliberately
+     * not symmetrical: a blank confirmation publishes nothing at all, a declined one raises the error
+     * flag with no message text whatsoever, and an unrecognised one quotes the entry back.
+     */
+    @Nested
+    @DisplayName("submitJobToIntrdr - the confirmation gate")
+    class ConfirmationGate {
+
+        @ParameterizedTest(name = "a confirmation field holding [{0}] publishes nothing")
+        @ValueSource(strings = {"", " "})
+        @DisplayName("a blank confirmation publishes nothing at all and prompts for confirmation "
+                + "verbatim")
+        void aBlankConfirmationPublishesNothingAtAll(final String blankConfirmation) {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(blankConfirmation));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(FRAGMENT_CONFIRM_PREFIX
+                            + REPORT_NAME_MONTHLY + FRAGMENT_CONFIRM_SUFFIX),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.confirmationBlocked()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_CONFIRM),
+                    () -> assertThat(result.cardsPublished()).isZero(),
+                    () -> assertThat(result.submissionAccepted()).isFalse());
+            verify(jobSubmissionService, never()).submitCanonicalJobImage(any(), any());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("a confirmation field the client omitted altogether is blank in the same sense "
+                + "and publishes nothing")
+        void anOmittedConfirmationFieldIsBlankInTheSameSense() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(null));
+
+            assertAll(() -> assertThat(result.confirmationBlocked()).isTrue(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("a confirmation field the terminal did not transmit arrives as a low value and "
+                + "counts as blank exactly as spaces do")
+        void aLowValueConfirmationFieldCountsAsBlank() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(String.valueOf(LOW_VALUE)));
+
+            assertAll(() -> assertThat(result.confirmationBlocked()).isTrue(),
+                    () -> assertThat(result.message()).isEqualTo(FRAGMENT_CONFIRM_PREFIX
+                            + REPORT_NAME_MONTHLY + FRAGMENT_CONFIRM_SUFFIX),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @ParameterizedTest(name = "a confirmation field holding [{0}] declines silently")
+        @ValueSource(strings = {CONFIRM_NO, CONFIRM_NO_LOWER})
+        @DisplayName("a declined confirmation raises the error flag with an empty message text, and "
+                + "publishes nothing")
+        void aDeclinedConfirmationRaisesTheErrorFlagWithAnEmptyMessage(final String declined) {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(declined));
+
+            assertAll(() -> assertThat(result.errorFlag())
+                            .as("the flag is raised even though nothing is said").isTrue(),
+                    () -> assertThat(result.message())
+                            .as("the source sets no text at all on this arm").isNotNull().isEmpty(),
+                    () -> assertThat(result.messageHighlightedGreen()).isFalse(),
+                    () -> assertThat(result.confirmationBlocked()).isTrue(),
+                    () -> assertThat(result.cardsPublished()).isZero(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
+                    () -> assertThat(result.screen().confirm()).isEqualTo(" "));
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("an unrecognised confirmation entry is quoted back inside the unrecognised-value "
+                + "text and publishes nothing")
+        void anUnrecognisedConfirmationEntryIsQuotedBack() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_INADMISSIBLE));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo("\"" + CONFIRM_INADMISSIBLE
+                            + FRAGMENT_INVALID_CONFIRM_SUFFIX),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.confirmationBlocked()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_CONFIRM),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService);
+        }
+
+        @ParameterizedTest(name = "a confirmation field holding [{0}] proceeds to the queue")
+        @ValueSource(strings = {CONFIRM_YES, CONFIRM_YES_LOWER})
+        @DisplayName("only an affirmative confirmation reaches the queue, in either letter case")
+        void onlyAnAffirmativeConfirmationReachesTheQueue(final String affirmative) {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(affirmative));
+
+            assertAll(() -> assertThat(result.confirmationBlocked()).isFalse(),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(result.submissionAccepted()).isTrue());
+            verify(jobSubmissionService, times(1)).submitCanonicalJobImage(any(), any());
+        }
+    }
+
+    // ==============================================================================================
+    // The job image: seventeen eighty-column cards, four slots, one transmitted sentinel
+    // ==============================================================================================
+
+    /**
+     * Covers the card stream a complete submission hands the queue bridge.
+     *
+     * <p>Every expectation here is a literal declared at the top of this file. The card builder is
+     * never asked what it would produce, because comparing a producer with itself proves nothing.
+     */
+    @Nested
+    @DisplayName("submitJobToIntrdr - the eighty-column job image")
+    class JobImage {
+
+        @Test
+        @DisplayName("a confirmed submission hands the bridge exactly seventeen cards in one call, in "
+                + "the order the source declares them")
+        void aConfirmedSubmissionHandsTheBridgeSeventeenOrderedCards() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(cards).hasSize(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(cards).containsExactlyElementsOf(
+                            expectedCards(PINNED_MONTHLY_START, PINNED_MONTHLY_END)),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT));
+            verify(jobSubmissionService, times(1)).submitCanonicalJobImage(any(), any());
+        }
+
+        @Test
+        @DisplayName("every published card occupies its full eighty-column frame, measured on encoded "
+                + "bytes and never trimmed")
+        void everyPublishedCardOccupiesItsFullEightyColumnFrame() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertThat(cards).allSatisfy(cardImage ->
+                    assertThat(encodedWidth(cardImage)).isEqualTo(CARD_IMAGE_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the four substitution slots carry the window at their declared byte offsets, and "
+                + "each carrying card still measures eighty bytes after substitution")
+        void theFourSubstitutionSlotsCarryTheWindowAtTheirDeclaredOffsets() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            final String startSortSymbol = cards.get(START_SORT_SYMBOL_CARD_INDEX);
+            final String endSortSymbol = cards.get(END_SORT_SYMBOL_CARD_INDEX);
+            final String parameterCard = cards.get(PARAMETER_CARD_INDEX);
+            assertAll(
+                    () -> assertThat(slotAt(startSortSymbol, START_SORT_SYMBOL_SLOT_OFFSET,
+                            DATE_SLOT_WIDTH)).isEqualTo(PINNED_MONTHLY_START),
+                    () -> assertThat(slotAt(endSortSymbol, END_SORT_SYMBOL_SLOT_OFFSET,
+                            DATE_SLOT_WIDTH)).isEqualTo(PINNED_MONTHLY_END),
+                    () -> assertThat(slotAt(parameterCard, PARAMETER_START_SLOT_OFFSET,
+                            DATE_SLOT_WIDTH)).isEqualTo(PINNED_MONTHLY_START),
+                    () -> assertThat(slotAt(parameterCard, PARAMETER_SEPARATOR_OFFSET, 1))
+                            .isEqualTo(" "),
+                    () -> assertThat(slotAt(parameterCard, PARAMETER_END_SLOT_OFFSET,
+                            DATE_SLOT_WIDTH)).isEqualTo(PINNED_MONTHLY_END),
+                    () -> assertThat(encodedWidth(startSortSymbol)).isEqualTo(CARD_IMAGE_WIDTH),
+                    () -> assertThat(encodedWidth(endSortSymbol)).isEqualTo(CARD_IMAGE_WIDTH),
+                    () -> assertThat(encodedWidth(parameterCard)).isEqualTo(CARD_IMAGE_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the terminal sentinel is transmitted rather than held back, which is why a "
+                + "complete submission is seventeen cards and not sixteen")
+        void theTerminalSentinelIsTransmitted() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(cards).contains(CARD_17_SENTINEL),
+                    () -> assertThat(cards.get(cards.size() - 1)).isEqualTo(CARD_17_SENTINEL),
+                    () -> assertThat(cards).hasSize(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(encodedWidth(cards.get(cards.size() - 1)))
+                            .isEqualTo(CARD_IMAGE_WIDTH));
+        }
+
+        @Test
+        @DisplayName("the published stream concatenates to exactly one thousand three hundred and "
+                + "sixty encoded bytes, with nothing inserted between the frames")
+        void thePublishedStreamConcatenatesToTheDeclaredImageWidth() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final StringBuilder image = new StringBuilder(CONCATENATED_IMAGE_WIDTH);
+            for (final String cardImage : capturedPublishedCards()) {
+                image.append(cardImage);
+            }
+            assertThat(encodedWidth(image.toString())).isEqualTo(CONCATENATED_IMAGE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the two fixed cards that repeat are byte-identical wherever they appear, so the "
+                + "comment card and the in-stream terminator are not respaced")
+        void theRepeatedFixedCardsAreByteIdentical() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(cards.get(2)).isEqualTo(CARD_COMMENT),
+                    () -> assertThat(cards.get(4)).isEqualTo(CARD_COMMENT),
+                    () -> assertThat(cards.get(6)).isEqualTo(CARD_COMMENT),
+                    () -> assertThat(cards.get(12)).isEqualTo(CARD_IN_STREAM_TERMINATOR),
+                    () -> assertThat(cards.get(15)).isEqualTo(CARD_IN_STREAM_TERMINATOR));
+        }
+
+        @Test
+        @DisplayName("the submission identity the bridge receives is whitespace-free and names both "
+                + "bounds of the window, because a deduplication identifier may hold no whitespace")
+        void theSubmissionIdentityIsWhitespaceFreeAndNamesBothBounds() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            capturedPublishedCards();
+            final String identity = submissionIdentityCaptor.getValue();
+            assertAll(() -> assertThat(identity).isNotBlank().doesNotContainAnyWhitespaces(),
+                    () -> assertThat(identity).contains(PINNED_MONTHLY_START),
+                    () -> assertThat(identity).contains(PINNED_MONTHLY_END));
+        }
+    }
+
+    // ==============================================================================================
+    // The publish boundary: ignore-on-error, one submission, no retry
+    // ==============================================================================================
+
+    /**
+     * Covers the queue-write paragraph, whose legacy name is misspelled in the source and spelled
+     * correctly in the translation.
+     *
+     * <p><strong>On the attempt count.</strong> The legacy wrote one queue record per card and the
+     * translation hands the bridge the whole stream in one call, because a per-card call from a
+     * singleton service lets two concurrent turns interleave their sends into one unparseable job
+     * stream. The per-card attempt count is therefore reported by the bridge's outcome rather than
+     * counted at this boundary: a submission that stopped at the fifth card is one call reporting four
+     * cards published, and that is the count asserted below. The number of calls is asserted too,
+     * because a translation that re-called the bridge would be retrying, and there is no retry.
+     */
+    @Nested
+    @DisplayName("writeJobSubmissionTdq - a failed publish is not fatal")
+    class PublishFailure {
+
+        @ParameterizedTest(name = "a queue refusing at card {0} reports {0} cards published")
+        @ValueSource(ints = {0, 1, 8, 16})
+        @DisplayName("a queue that refuses part way through reports exactly the cards it accepted, "
+                + "abandons the rest and returns normally")
+        void aQueueThatRefusesPartWayThroughReportsExactlyTheCardsItAccepted(
+                final int cardsAccepted) {
+            when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
+                    .thenReturn(refusedAfter(SUBMISSION_CARD_COUNT, cardsAccepted));
+
+            final ReportRequestService.ReportRequestResult result = assertDoesNotThrow(
+                    () -> subject.processReportRequest(monthlyTurn(CONFIRM_YES)));
+
+            assertAll(() -> assertThat(result.cardsPublished()).isEqualTo(cardsAccepted),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.submissionAccepted()).isFalse(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_MONTHLY),
+                    () -> assertThat(result.reArmedTransactionId())
+                            .isEqualTo(RE_ARMED_TRANSACTION_ID));
+            verify(jobSubmissionService, times(1)).submitCanonicalJobImage(any(), any());
+            verifyNoMoreInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("a refused publish is recorded as a diagnostic naming both the accepted count and "
+                + "the requested count")
+        void aRefusedPublishIsRecordedAsADiagnostic() {
+            final int cardsAccepted = 5;
+            when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
+                    .thenReturn(refusedAfter(SUBMISSION_CARD_COUNT, cardsAccepted));
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            final List<ILoggingEvent> errors = capturedErrorEvents();
+            assertAll(() -> assertThat(errors).isNotEmpty(),
+                    () -> assertThat(errors.get(0).getFormattedMessage())
+                            .contains(String.valueOf(cardsAccepted))
+                            .contains(String.valueOf(SUBMISSION_CARD_COUNT)));
+        }
+
+        @Test
+        @DisplayName("a bridge that raises instead of reporting is caught, logged and treated as a "
+                + "refusal, so no exception escapes to the caller")
+        void aBridgeThatRaisesIsCaughtAndTreatedAsARefusal() {
+            final JobSubmissionException publishFailure = new JobSubmissionException(
+                    JobSubmissionException.DEFAULT_QUEUE_NAME, "ServiceUnavailable", "",
+                    SUBMISSION_CARD_COUNT, null);
+            when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
+                    .thenThrow(publishFailure);
+
+            final ReportRequestService.ReportRequestResult result = assertDoesNotThrow(
+                    () -> subject.processReportRequest(monthlyTurn(CONFIRM_YES)));
+
+            final List<ILoggingEvent> errors = capturedErrorEvents();
+            assertAll(() -> assertThat(result.cardsPublished()).isZero(),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.submissionAccepted()).isFalse(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ),
+                    () -> assertThat(errors).isNotEmpty(),
+                    () -> assertThat(errors.get(0).getFormattedMessage())
+                            .contains(JobSubmissionException.DEFAULT_QUEUE_NAME)
+                            .contains(String.valueOf(SUBMISSION_CARD_COUNT)));
+            verify(jobSubmissionService, times(1)).submitCanonicalJobImage(any(), any());
+            verifyNoMoreInteractions(jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("the queue-write failure text carries exactly three trailing dots, and neither "
+                + "two, nor four, nor a single ellipsis character")
+        void theQueueWriteFailureTextCarriesExactlyThreeTrailingDots() {
+            when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
+                    .thenReturn(refusedAfter(SUBMISSION_CARD_COUNT, 0));
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ),
+                    () -> assertThat(result.message()).endsWith("..."),
+                    () -> assertThat(result.message())
+                            .as("three dots, so it cannot also end in four").doesNotEndWith("...."),
+                    () -> assertThat(countOf(result.message(), '.'))
+                            .as("exactly three full stops in the whole text, so a two-dot or"
+                                    + " four-dot spelling fails here")
+                            .isEqualTo(3),
+                    () -> assertThat(result.message()).doesNotContain("\u2026"),
+                    () -> assertThat(result.message())
+                            .isEqualTo(JobSubmissionException.DEFAULT_MESSAGE));
+        }
+
+        @Test
+        @DisplayName("a successful publish records no error diagnostic at all, which is what makes the "
+                + "failure diagnostic meaningful")
+        void aSuccessfulPublishRecordsNoErrorDiagnostic() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertThat(capturedErrorEvents()).isEmpty();
+        }
+    }
+
+    // ==============================================================================================
+    // The message contract: byte for byte, untrimmed, unrespaced
+    // ==============================================================================================
+
+    /**
+     * Covers every text this screen emits.
+     *
+     * <p>Two spacing artefacts are load bearing and both are reproduced rather than tidied: the six
+     * emptiness texts capitalise {@code NOT} against surrounding mixed case, and the acknowledgement
+     * suffix carries a space before its three trailing dots. Nothing is trimmed anywhere below.
+     */
+    @Nested
+    @DisplayName("The message contract")
+    class MessageContract {
+
+        @ParameterizedTest(name = "{6}")
+        @MethodSource("com.carddemo.service.ReportRequestServiceTest#emptyDatePartCases")
+        @DisplayName("each emptiness text is reported byte for byte, capital NOT included, and reports "
+                + "its own field as not supplied")
+        void eachEmptinessTextIsReportedByteForByte(final String startMonth, final String startDay,
+                final String startYear, final String endMonth, final String endDay,
+                final String endYear, final String expectedMessage, final String expectedProperty,
+                final String expectedFieldId) {
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    customTurn(startMonth, startDay, startYear, endMonth, endDay, endYear,
+                            CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(expectedMessage),
+                    () -> assertThat(result.message()).contains("NOT"),
+                    () -> assertThat(result.message()).doesNotContain(" not be empty"),
+                    () -> assertThat(result.message()).endsWith("..."),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(expectedFieldId),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field()).isEqualTo(expectedProperty),
+                    () -> assertThat(result.fieldErrors().get(0).bmsFieldId())
+                            .isEqualTo(expectedFieldId),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(result.fieldErrors().get(0).message())
+                            .isEqualTo(expectedMessage),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService, dateValidationService);
+        }
+
+        @ParameterizedTest(name = "{6}")
+        @MethodSource("com.carddemo.service.ReportRequestServiceTest#outOfRangeDatePartCases")
+        @DisplayName("each range text is reported byte for byte and reports its own field as supplied "
+                + "wrongly rather than as not supplied")
+        void eachRangeTextIsReportedByteForByte(final String startMonth, final String startDay,
+                final String startYear, final String endMonth, final String endDay,
+                final String endYear, final String expectedMessage, final String expectedProperty,
+                final String expectedFieldId) {
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    customTurn(startMonth, startDay, startYear, endMonth, endDay, endYear,
+                            CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(expectedMessage),
+                    () -> assertThat(result.message()).contains("Not a valid"),
+                    () -> assertThat(result.message()).endsWith("..."),
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.focusField()).isEqualTo(expectedFieldId),
+                    () -> assertThat(result.fieldErrors()).hasSize(1),
+                    () -> assertThat(result.fieldErrors().get(0).field()).isEqualTo(expectedProperty),
+                    () -> assertThat(result.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(jobSubmissionService, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("the acknowledgement carries a space before its three trailing dots, which every "
+                + "other text in this contract does not")
+        void theAcknowledgementCarriesASpaceBeforeItsThreeTrailingDots() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message())
+                            .isEqualTo(REPORT_NAME_MONTHLY + FRAGMENT_SUBMITTED_SUFFIX),
+                    () -> assertThat(result.message()).endsWith(" ..."),
+                    () -> assertThat(result.message()).doesNotContain("\u2026"),
+                    () -> assertThat(result.message())
+                            .isEqualTo("Monthly report submitted for printing ..."));
+        }
+
+        @Test
+        @DisplayName("the confirmation prompt is composed from the space-delimited report name, so the "
+                + "ten-character field's padding never reaches the operator")
+        void theConfirmationPromptUsesTheSpaceDelimitedReportName() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(yearlyTurn(null));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(FRAGMENT_CONFIRM_PREFIX
+                            + REPORT_NAME_YEARLY + FRAGMENT_CONFIRM_SUFFIX),
+                    () -> assertThat(result.message())
+                            .isEqualTo("Please confirm to print the Yearly report..."),
+                    () -> assertThat(result.reportName()).isEqualTo(REPORT_NAME_YEARLY));
+        }
+
+        @Test
+        @DisplayName("the outbound message field carries the summary text at its own narrower width, "
+                + "space filled and never trimmed")
+        void theOutboundMessageFieldCarriesTheSummaryAtItsOwnWidth() {
+            catalogueSuppliesTitles();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(turn(null, null, null, null, null, null, null, null,
+                            null, CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.header().errorMessage())
+                            .isEqualTo(padded(MSG_SELECT_REPORT_TYPE, OUTBOUND_MESSAGE_WIDTH)),
+                    () -> assertThat(encodedWidth(result.header().errorMessage()))
+                            .isEqualTo(OUTBOUND_MESSAGE_WIDTH),
+                    () -> assertThat(result.header().errorMessage())
+                            .startsWith(MSG_SELECT_REPORT_TYPE));
+        }
+
+        @Test
+        @DisplayName("the two padded common messages are fifty encoded bytes each, trailing spaces "
+                + "intact, and neither is trimmed on its way through this screen")
+        void theTwoPaddedCommonMessagesAreFiftyEncodedBytesEach() {
+            when(messageCatalogService.invalidKeyMessage()).thenReturn(PADDED_INVALID_KEY_MESSAGE);
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES,
+                            KeyAction.CLEAR, reEntry()));
+
+            assertAll(
+                    () -> assertThat(encodedWidth(PADDED_INVALID_KEY_MESSAGE))
+                            .isEqualTo(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(encodedWidth(PADDED_THANK_YOU_MESSAGE))
+                            .isEqualTo(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(MessageCatalogService.CCDA_MSG_INVALID_KEY)
+                            .isEqualTo(PADDED_INVALID_KEY_MESSAGE),
+                    () -> assertThat(MessageCatalogService.CCDA_MSG_THANK_YOU)
+                            .isEqualTo(PADDED_THANK_YOU_MESSAGE),
+                    () -> assertThat(result.message()).isEqualTo(PADDED_INVALID_KEY_MESSAGE),
+                    () -> assertThat(encodedWidth(result.message()))
+                            .isEqualTo(COMMON_MESSAGE_WIDTH),
+                    () -> assertThat(result.message()).endsWith(" ".repeat(10)));
+        }
+
+        @Test
+        @DisplayName("the two padded screen titles are forty encoded bytes each, so their centring "
+                + "spaces survive the header assembly")
+        void theTwoPaddedScreenTitlesAreFortyEncodedBytesEach() {
+            assertAll(() -> assertThat(encodedWidth(PADDED_TITLE_01)).isEqualTo(SCREEN_TITLE_WIDTH),
+                    () -> assertThat(encodedWidth(PADDED_TITLE_02)).isEqualTo(SCREEN_TITLE_WIDTH),
+                    () -> assertThat(MessageCatalogService.CCDA_TITLE01).isEqualTo(PADDED_TITLE_01),
+                    () -> assertThat(MessageCatalogService.CCDA_TITLE02).isEqualTo(PADDED_TITLE_02));
+        }
+    }
+
+    // ==============================================================================================
+    // The two-state field contract and the route contract
+    // ==============================================================================================
+
+    /** Covers the per-field error contract and the destination contract. */
+    @Nested
+    @DisplayName("The field-error and route contracts")
+    class FieldAndRouteContracts {
+
+        @Test
+        @DisplayName("the field state has exactly two constants, so a field is either not supplied or "
+                + "supplied wrongly and there is no third state to report")
+        void theFieldStateHasExactlyTwoConstants() {
+            assertAll(() -> assertThat(EnumSet.allOf(ValidationException.FieldState.class))
+                            .containsExactly(ValidationException.FieldState.MISSING,
+                                    ValidationException.FieldState.INVALID),
+                    () -> assertThat(ValidationException.FieldState.values()).hasSize(2));
+        }
+
+        @Test
+        @DisplayName("a blank required part is reported as not supplied while a badly formed one is "
+                + "reported as supplied wrongly, which is the whole of the two-state distinction")
+        void aBlankPartIsMissingWhileABadlyFormedOneIsInvalid() {
+            final ReportRequestService.ReportRequestResult missing = subject.processReportRequest(
+                    customTurn(null, "15", "2022", "12", "31", "2022", CONFIRM_YES));
+            final ReportRequestService.ReportRequestResult invalid = subject.processReportRequest(
+                    customTurn("13", "15", "2022", "12", "31", "2022", CONFIRM_YES));
+
+            assertAll(() -> assertThat(missing.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.MISSING),
+                    () -> assertThat(invalid.fieldErrors().get(0).state())
+                            .isEqualTo(ValidationException.FieldState.INVALID),
+                    () -> assertThat(missing.fieldErrors().get(0).state())
+                            .isNotEqualTo(invalid.fieldErrors().get(0).state()),
+                    () -> assertThat(missing.message()).isNotEqualTo(invalid.message()));
+        }
+
+        @Test
+        @DisplayName("the per-field detail is never absent and never modifiable, so a consumer cannot "
+                + "alter what the turn reported")
+        void thePerFieldDetailIsNeitherAbsentNorModifiable() {
+            final ReportRequestService.ReportRequestResult faulted = subject.processReportRequest(
+                    customTurn(null, "15", "2022", "12", "31", "2022", CONFIRM_YES));
+            final List<ValidationException.FieldError> reported = faulted.fieldErrors();
+
+            assertAll(() -> assertThat(reported).isNotNull().hasSize(1),
+                    () -> assertThatExceptionOfType(UnsupportedOperationException.class)
+                            .isThrownBy(() -> reported.add(new ValidationException.FieldError(
+                                    PROPERTY_START_MONTH, FIELD_START_MONTH,
+                                    ValidationException.FieldState.INVALID, MSG_START_MONTH_EMPTY))),
+                    () -> assertThatExceptionOfType(UnsupportedOperationException.class)
+                            .isThrownBy(reported::clear));
+        }
+
+        @Test
+        @DisplayName("a turn that re-presents its own screen reports the screen's own route, and a "
+                + "first entry carries no per-field detail at all")
+        void aTurnThatRePresentsItsOwnScreenReportsItsOwnRoute() {
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(null));
+
+            assertAll(() -> assertThat(result.route())
+                            .isEqualTo(NavigationService.Route.REPORT_REQUEST),
+                    () -> assertThat(result.route().getRouteValue()).isEqualTo("report-request"),
+                    () -> assertThat(result.route().getLegacyTransactionId())
+                            .isEqualTo(RE_ARMED_TRANSACTION_ID),
+                    () -> assertThat(result.route().getLegacyProgramName())
+                            .isEqualTo(HEADER_PROGRAM_NAME));
+        }
+
+        @Test
+        @DisplayName("no route names the dangling CICS program definition that has no source member, "
+                + "so nothing in this screen's dispatch can reach it")
+        void noRouteNamesTheDanglingProgramDefinition() {
+            final List<String> programNames = new ArrayList<>();
+            for (final NavigationService.Route route : NavigationService.Route.values()) {
+                programNames.add(route.getLegacyProgramName());
+            }
+
+            assertAll(() -> assertThat(programNames).doesNotContain(DANGLING_PROGRAM_DEFINITION),
+                    () -> assertThat(programNames).contains(HEADER_PROGRAM_NAME));
+        }
+
+        @Test
+        @DisplayName("the destination on a transfer comes from the navigation rules rather than from a "
+                + "literal, so the rules are consulted on every transfer")
+        void theTransferDestinationComesFromTheNavigationRules() {
+            navigationResolves(NavigationService.Route.ADMIN_MENU);
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(new ReportRequestService.ReportScreenInput(SELECTED,
+                            null, null, null, null, null, null, null, null, CONFIRM_YES,
+                            KeyAction.PFK03, reEntry()));
+
+            assertAll(() -> assertThat(result.route())
+                            .as("the route is whatever the rules resolved, not a hardcoded screen")
+                            .isEqualTo(NavigationService.Route.ADMIN_MENU),
+                    () -> assertThat(result.reArmedTransactionId())
+                            .as("a transfer re-arms nothing").isEmpty());
+            verify(navigationService).resolveNominatedDestination(any(),
+                    eq(NavigationService.Route.SIGN_ON));
+        }
+    }
+
+    // ==============================================================================================
+    // The turn's outcome, the logical-request token, and the terminal send
+    // ==============================================================================================
+
+    /** Covers both entry points, the outcome record, and the send that ends the turn. */
+    @Nested
+    @DisplayName("The turn outcome and the logical-request token")
+    class TurnOutcome {
+
+        @Test
+        @DisplayName("sendTrnrptScreen: the first failure ends the turn, so no later part is "
+                + "normalised, no later bound is compared and no submission is attempted")
+        void theFirstFailureEndsTheTurn() {
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    customTurn(null, "9", "20X2", null, null, null, CONFIRM_YES));
+
+            assertAll(() -> assertThat(result.message()).isEqualTo(MSG_START_MONTH_EMPTY),
+                    () -> assertThat(result.message()).isNotEqualTo(MSG_START_YEAR_INVALID),
+                    () -> assertThat(result.fieldErrors())
+                            .as("the legacy screen can carry one failure per turn").hasSize(1),
+                    () -> assertThat(result.screen().startDay())
+                            .as("nothing after the first failure is normalised").isEqualTo("9 "),
+                    () -> assertThat(result.screen().startYear()).isEqualTo("20X2"),
+                    () -> assertThat(result.startDate())
+                            .as("neither date is assembled at all").isEmpty(),
+                    () -> assertThat(result.endDate()).isEmpty(),
+                    () -> assertThat(result.reportPeriod())
+                            .as("the report name and period are set after the cascade").isNull(),
+                    () -> assertThat(result.cardsPublished()).isZero());
+            verifyNoInteractions(dateValidationService, jobSubmissionService);
+        }
+
+        @Test
+        @DisplayName("a supplied logical-request token is carried through unchanged, so a caller can "
+                + "repeat it to retry the same submission")
+        void aSuppliedTokenIsCarriedThroughUnchanged() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+
+            assertThat(result.submissionToken()).isEqualTo(RETRY_TOKEN);
+        }
+
+        @Test
+        @DisplayName("an absent token is minted, and two deliberate requests receive two different "
+                + "tokens")
+        void anAbsentTokenIsMintedAndDistinctPerRequest() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult first =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+            final ReportRequestService.ReportRequestResult second =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES));
+
+            assertAll(() -> assertThat(first.submissionToken()).isNotBlank(),
+                    () -> assertThat(second.submissionToken()).isNotBlank(),
+                    () -> assertThat(second.submissionToken())
+                            .isNotEqualTo(first.submissionToken()));
+        }
+
+        @Test
+        @DisplayName("a blank token is treated as absent and minted, rather than published as a blank "
+                + "identity the queue would refuse")
+        void aBlankTokenIsTreatedAsAbsent() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), "   ");
+
+            assertAll(() -> assertThat(result.submissionToken()).isNotBlank(),
+                    () -> assertThat(result.submissionToken()).isNotEqualTo("   "),
+                    () -> assertThat(capturedSubmissionIdentity()).doesNotContainAnyWhitespaces());
+        }
+
+        @Test
+        @DisplayName("the same token and the same window reproduce the same submission identity, while "
+                + "a different token makes a distinct submission of that same window")
+        void theSameTokenAndWindowReproduceTheSameIdentity() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), OTHER_TOKEN);
+
+            verify(jobSubmissionService, times(3)).submitCanonicalJobImage(
+                    submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
+            final List<String> identities = submissionIdentityCaptor.getAllValues();
+            assertAll(() -> assertThat(identities.get(1))
+                            .as("a retry of one logical request repeats its identity")
+                            .isEqualTo(identities.get(0)),
+                    () -> assertThat(identities.get(2))
+                            .as("a deliberate new request of the same window is distinct")
+                            .isNotEqualTo(identities.get(0)),
+                    () -> assertThat(publishedCardsCaptor.getAllValues())
+                            .allSatisfy(cards -> assertThat(cards)
+                                    .hasSize(SUBMISSION_CARD_COUNT)));
+        }
+
+        @Test
+        @DisplayName("a window whose end precedes its start is submitted as entered, because the legacy "
+                + "compares the two bounds nowhere at all")
+        void aWindowWhoseEndPrecedesItsStartIsSubmittedAsEntered() {
+            validatorAcceptsEveryDate();
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result = subject.processReportRequest(
+                    customTurn("12", "31", "2022", "01", "01", "2022", CONFIRM_YES));
+
+            final List<String> cards = capturedPublishedCards();
+            assertAll(() -> assertThat(result.startDate()).isEqualTo("2022-12-31"),
+                    () -> assertThat(result.endDate()).isEqualTo("2022-01-01"),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(cards).containsExactlyElementsOf(
+                            expectedCards("2022-12-31", "2022-01-01")));
+        }
+
+        @Test
+        @DisplayName("the outcome reports a submission accepted only when no error was raised and every "
+                + "card of the canonical image reached the queue")
+        void theOutcomeReportsAcceptanceOnlyOnACompleteUnfaultedSubmission() {
+            final ReportRequestService.ScreenHeader header = new ReportRequestService.ScreenHeader(
+                    PADDED_TITLE_01, PADDED_TITLE_02, RE_ARMED_TRANSACTION_ID, HEADER_PROGRAM_NAME,
+                    PINNED_HEADER_DATE, PINNED_HEADER_TIME, " ".repeat(OUTBOUND_MESSAGE_WIDTH));
+            final ReportRequestService.ScreenFields screen = new ReportRequestService.ScreenFields(
+                    " ", " ", " ", " ".repeat(2), " ".repeat(2), " ".repeat(4), " ".repeat(2),
+                    " ".repeat(2), " ".repeat(4), " ");
+
+            final ReportRequestService.ReportRequestResult complete =
+                    new ReportRequestService.ReportRequestResult(
+                            NavigationService.Route.REPORT_REQUEST, ConversationState.empty(),
+                            RE_ARMED_TRANSACTION_ID, ReportPeriod.MONTHLY, REPORT_NAME_MONTHLY,
+                            PINNED_MONTHLY_START, PINNED_MONTHLY_END, SUBMISSION_CARD_COUNT, false,
+                            "", false, FIELD_MONTHLY, false, List.of(), header, screen);
+            final ReportRequestService.ReportRequestResult faulted =
+                    new ReportRequestService.ReportRequestResult(
+                            NavigationService.Route.REPORT_REQUEST, ConversationState.empty(),
+                            RE_ARMED_TRANSACTION_ID, ReportPeriod.MONTHLY, REPORT_NAME_MONTHLY,
+                            PINNED_MONTHLY_START, PINNED_MONTHLY_END, SUBMISSION_CARD_COUNT, false,
+                            MSG_UNABLE_TO_WRITE_TDQ, false, FIELD_MONTHLY, true, List.of(), header,
+                            screen);
+            final ReportRequestService.ReportRequestResult partial =
+                    new ReportRequestService.ReportRequestResult(
+                            NavigationService.Route.REPORT_REQUEST, ConversationState.empty(),
+                            RE_ARMED_TRANSACTION_ID, ReportPeriod.MONTHLY, REPORT_NAME_MONTHLY,
+                            PINNED_MONTHLY_START, PINNED_MONTHLY_END, SUBMISSION_CARD_COUNT - 1,
+                            false, MSG_UNABLE_TO_WRITE_TDQ, false, FIELD_MONTHLY, true, List.of(),
+                            header, screen);
+
+            assertAll(() -> assertThat(complete.submissionAccepted()).isTrue(),
+                    () -> assertThat(faulted.submissionAccepted()).isFalse(),
+                    () -> assertThat(partial.submissionAccepted()).isFalse(),
+                    () -> assertThat(complete.submissionToken())
+                            .as("the compatibility form carries no token, and says so rather than"
+                                    + " manufacturing one")
+                            .isNull(),
+                    () -> assertThat(complete.header()).isEqualTo(header),
+                    () -> assertThat(complete.screen()).isEqualTo(screen));
+        }
+
+        @Test
+        @DisplayName("the outcome of a real successful turn carries the same acceptance verdict as the "
+                + "manually assembled one, so the two forms agree")
+        void theOutcomeOfARealSuccessfulTurnAgreesWithTheAssembledForm() {
+            bridgeAcceptsEveryCard();
+
+            final ReportRequestService.ReportRequestResult result =
+                    subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN);
+
+            assertAll(() -> assertThat(result.submissionAccepted()).isTrue(),
+                    () -> assertThat(result.cardsPublished()).isEqualTo(SUBMISSION_CARD_COUNT),
+                    () -> assertThat(result.errorFlag()).isFalse(),
+                    () -> assertThat(result.submissionToken()).isEqualTo(RETRY_TOKEN),
+                    () -> assertThat(result.navigationContext()).isNotNull(),
+                    () -> assertThat(result.fieldErrors()).isEmpty(),
+                    () -> assertThat(result.reArmedTransactionId())
+                            .isEqualTo(RE_ARMED_TRANSACTION_ID));
         }
     }
 }
