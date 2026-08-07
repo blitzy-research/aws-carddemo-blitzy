@@ -100,11 +100,20 @@ import org.springframework.core.io.FileSystemResource;
  * </ul>
  *
  * <h2>Record separation</h2>
- * The fixtures use one line feed per record, which is how a fixed-block dataset is carried in a text
- * file; the reject writer emits no separator at all, because separation belongs to the dataset
- * definition rather than to the record. Both facts are asserted, and the comparison is made record by
- * record on the fixture's own stride and then again over the whole concatenation, so neither a lost
- * terminator nor a spurious one can pass.
+ * <strong>The fixtures carry no separator at all.</strong> Every dataset these three golden files stand
+ * for is declared fixed-length in the member that allocates it - the reject dataset at
+ * {@code RECFM=F,LRECL=430}, the report at {@code LRECL=133,RECFM=FB}, the statement at
+ * {@code LRECL=80} - so the record width alone establishes the boundary and a line feed would be a
+ * thirty-first, hundred-and-thirty-fourth or eighty-first byte the dataset has no room for. The writers
+ * emit none, and these oracles must not either, or the comparison would be made against a framing the
+ * production side cannot produce. The absence is asserted twice for every fixture: once as an exact
+ * multiple of the record width, and once as the total absence of a line feed or a carriage return
+ * anywhere in the file. See {@code docs/decision-log.md} entries DL-213 and DL-219.
+ *
+ * <p>The <em>input</em> fixture is the exception and is deliberately unchanged: {@code dailytran.txt} is
+ * the estate's own newline-delimited sample rendering rather than a dataset image, so the helper that
+ * walks it steps by width plus one. That asymmetry is the point - an input rendering and an output
+ * dataset are framed by different authorities.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The emitting programs are
@@ -301,29 +310,33 @@ final class ExpectedOutputFixtureContractTest {
     }
 
     /**
-     * Splits a fixture into records on a fixed stride, asserting the terminator of every one.
+     * Splits a fixture into records on its record width, asserting that no separator exists at all.
      *
      * @param  resource    the classpath location
-     * @param  recordWidth the record width in encoded bytes, excluding the terminator
-     * @return the records, each exactly {@code recordWidth} bytes and terminator-free
+     * @param  recordWidth the record width in encoded bytes, which is the whole stride
+     * @return the records, each exactly {@code recordWidth} bytes
      * @throws IOException if the fixture cannot be read
      */
     private static List<byte[]> records(final String resource, final int recordWidth)
             throws IOException {
         final byte[] content = fixtureBytes(resource);
-        final int stride = recordWidth + 1;
 
-        assertThat(content.length % stride)
-                .as("%s must be an exact multiple of its %d-byte stride, or no record boundary is "
-                        + "recoverable", resource, stride)
+        assertThat(content.length % recordWidth)
+                .as("%s must be an exact multiple of its %d-byte record width, or no record boundary "
+                        + "is recoverable", resource, recordWidth)
                 .isZero();
 
+        final String whole = new String(content, StandardCharsets.US_ASCII);
+        assertThat(whole)
+                .as("%s must carry no line feed: the record width alone establishes the boundary, as "
+                        + "the fixed unblocked dataset definition does", resource)
+                .doesNotContain(String.valueOf(LINE_FEED));
+        assertThat(whole)
+                .as("%s must carry no carriage return either", resource)
+                .doesNotContain(String.valueOf(CARRIAGE_RETURN));
+
         final List<byte[]> records = new ArrayList<>();
-        for (int start = 0; start < content.length; start += stride) {
-            assertThat((char) content[start + recordWidth])
-                    .as("%s: the record beginning at byte %d must be closed by one line feed",
-                            resource, start)
-                    .isEqualTo(LINE_FEED);
+        for (int start = 0; start < content.length; start += recordWidth) {
             final byte[] record = new byte[recordWidth];
             System.arraycopy(content, start, record, 0, recordWidth);
             records.add(record);
@@ -344,6 +357,43 @@ final class ExpectedOutputFixtureContractTest {
         final List<String> text = new ArrayList<>();
         for (final byte[] record : records(resource, recordWidth)) {
             text.add(new String(record, StandardCharsets.US_ASCII));
+        }
+        return text;
+    }
+
+    /**
+     * Splits a <strong>newline-delimited</strong> input rendering into records and decodes each as
+     * US-ASCII text.
+     *
+     * <p>Separate from {@link #records(String, int)} on purpose, and the asymmetry is the contract: the
+     * estate's ASCII sample data is a delimited <em>rendering</em> of a dataset, so its stride is the
+     * record width plus one terminator, while every golden this class compares against is a dataset
+     * <em>image</em> whose fixed length is its entire stride. One helper that accepted either framing
+     * would let a golden regain a separator without any assertion noticing. See
+     * {@code docs/decision-log.md} entry DL-219.
+     *
+     * @param  resource    the classpath location of a delimited rendering
+     * @param  recordWidth the record width in encoded bytes, excluding the one-byte terminator
+     * @return the records as text, each exactly {@code recordWidth} characters
+     * @throws IOException if the fixture cannot be read
+     */
+    private static List<String> delimitedTextRecords(final String resource, final int recordWidth)
+            throws IOException {
+        final byte[] content = fixtureBytes(resource);
+        final int stride = recordWidth + 1;
+
+        assertThat(content.length % stride)
+                .as("%s is a delimited rendering, so it must be an exact multiple of its %d-byte "
+                        + "stride", resource, stride)
+                .isZero();
+
+        final List<String> text = new ArrayList<>(content.length / stride);
+        for (int start = 0; start < content.length; start += stride) {
+            assertThat((char) content[start + recordWidth])
+                    .as("%s: the rendered record beginning at byte %d must be closed by one line feed",
+                            resource, start)
+                    .isEqualTo(LINE_FEED);
+            text.add(new String(content, start, recordWidth, StandardCharsets.US_ASCII));
         }
         return text;
     }
@@ -636,8 +686,8 @@ final class ExpectedOutputFixtureContractTest {
     final class TheRejectDataset {
 
         @Test
-        @DisplayName("the committed fixture carries 38 records of exactly 430 bytes, each closed by "
-                + "one line feed and by no carriage return")
+        @DisplayName("the committed fixture carries 38 records of exactly 430 bytes, with no record "
+                + "separator of any kind")
         void theCommittedFixtureCarriesThirtyEightRecords() throws IOException {
             final List<byte[]> committed = records(REJECT_FIXTURE, REJECT_RECORD_WIDTH);
 
@@ -645,7 +695,7 @@ final class ExpectedOutputFixtureContractTest {
             assertThat(committed).allSatisfy(record ->
                     assertThat(record).hasSize(REJECT_RECORD_WIDTH));
             assertThat(fixtureBytes(REJECT_FIXTURE))
-                    .hasSize(REJECT_RECORD_COUNT * (REJECT_RECORD_WIDTH + 1));
+                    .hasSize(REJECT_RECORD_COUNT * REJECT_RECORD_WIDTH);
             assertThat(new String(fixtureBytes(REJECT_FIXTURE), StandardCharsets.US_ASCII))
                     .doesNotContain(String.valueOf(CARRIAGE_RETURN));
         }
@@ -682,7 +732,7 @@ final class ExpectedOutputFixtureContractTest {
             final byte[] committed = fixtureBytes(REJECT_FIXTURE);
             final byte[] expected = new byte[REJECT_RECORD_COUNT * REJECT_RECORD_WIDTH];
             for (int index = 0; index < REJECT_RECORD_COUNT; index++) {
-                System.arraycopy(committed, index * (REJECT_RECORD_WIDTH + 1), expected,
+                System.arraycopy(committed, index * REJECT_RECORD_WIDTH, expected,
                         index * REJECT_RECORD_WIDTH, REJECT_RECORD_WIDTH);
             }
 
@@ -694,7 +744,7 @@ final class ExpectedOutputFixtureContractTest {
                 + "the 80-byte trailer, which is what makes the reject dataset re-readable")
         void everyCommittedRecordEchoesItsSourceImageUnchanged() throws IOException {
             final List<String> input =
-                    textRecords(DAILY_TRANSACTION_INPUT, DAILY_TRANSACTION_RECORD_WIDTH);
+                    delimitedTextRecords(DAILY_TRANSACTION_INPUT, DAILY_TRANSACTION_RECORD_WIDTH);
             final List<String> committed = textRecords(REJECT_FIXTURE, REJECT_RECORD_WIDTH);
 
             assertThat(input).hasSize(DAILY_TRANSACTION_RECORD_COUNT);
@@ -766,8 +816,8 @@ final class ExpectedOutputFixtureContractTest {
     final class TheTransactionReport {
 
         @Test
-        @DisplayName("the committed fixture carries 519 records of exactly 133 bytes, each closed by "
-                + "one line feed and by no carriage return")
+        @DisplayName("the committed fixture carries 519 records of exactly 133 bytes, with no record "
+                + "separator of any kind")
         void theCommittedFixtureCarriesFiveHundredAndNineteenRecords() throws IOException {
             final List<byte[]> committed = records(REPORT_FIXTURE, REPORT_RECORD_WIDTH);
 
@@ -775,7 +825,7 @@ final class ExpectedOutputFixtureContractTest {
             assertThat(committed).allSatisfy(record ->
                     assertThat(record).hasSize(REPORT_RECORD_WIDTH));
             assertThat(fixtureBytes(REPORT_FIXTURE))
-                    .hasSize(REPORT_RECORD_COUNT * (REPORT_RECORD_WIDTH + 1));
+                    .hasSize(REPORT_RECORD_COUNT * REPORT_RECORD_WIDTH);
             assertThat(new String(fixtureBytes(REPORT_FIXTURE), StandardCharsets.US_ASCII))
                     .doesNotContain(String.valueOf(CARRIAGE_RETURN));
         }
@@ -931,8 +981,8 @@ final class ExpectedOutputFixtureContractTest {
     final class TheStatement {
 
         @Test
-        @DisplayName("the committed fixture carries 1,262 records of exactly 80 bytes, each closed by "
-                + "one line feed and by no carriage return")
+        @DisplayName("the committed fixture carries 1,262 records of exactly 80 bytes, with no record "
+                + "separator of any kind")
         void theCommittedFixtureCarriesOneThousandTwoHundredAndSixtyTwoRecords() throws IOException {
             final List<byte[]> committed = records(STATEMENT_FIXTURE, STATEMENT_RECORD_WIDTH);
 
@@ -940,7 +990,7 @@ final class ExpectedOutputFixtureContractTest {
             assertThat(committed).allSatisfy(record ->
                     assertThat(record).hasSize(STATEMENT_RECORD_WIDTH));
             assertThat(fixtureBytes(STATEMENT_FIXTURE))
-                    .hasSize(STATEMENT_RECORD_COUNT * (STATEMENT_RECORD_WIDTH + 1));
+                    .hasSize(STATEMENT_RECORD_COUNT * STATEMENT_RECORD_WIDTH);
             assertThat(new String(fixtureBytes(STATEMENT_FIXTURE), StandardCharsets.US_ASCII))
                     .doesNotContain(String.valueOf(CARRIAGE_RETURN));
         }

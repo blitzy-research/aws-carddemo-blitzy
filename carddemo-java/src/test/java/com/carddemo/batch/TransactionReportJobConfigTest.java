@@ -248,14 +248,35 @@ final class TransactionReportJobConfigTest {
     }
 
     /**
-     * Reads a staged generation back as its record images.
+     * Reads a staged generation back as its record images, framing it the way its DD declares.
      *
-     * @param generation the generation to read
+     * <p>Framed by width and never by line. Every generation this job writes is fixed-length with
+     * nothing between two records, so a line-oriented read would return the whole generation as one
+     * enormous string - which is exactly what this helper used to do, and exactly why the framing
+     * regression it hid was invisible here. The byte length is proved to be a whole number of records
+     * before any record is handed back, so a stray separator fails this helper rather than shifting a
+     * later assertion. See {@code docs/decision-log.md} entry DL-213.
+     *
+     * @param  generation   the generation to read
+     * @param  recordLength the declared record length of that generation
      * @return the record images in emission order
      * @throws IOException if the generation cannot be read
      */
-    private static List<String> recordsOf(final Path generation) throws IOException {
-        return Files.readAllLines(generation, StandardCharsets.US_ASCII);
+    private static List<String> recordsOf(final Path generation, final int recordLength)
+            throws IOException {
+        final byte[] image = Files.readAllBytes(generation);
+        assertThat(image.length % recordLength)
+                .as("a fixed-length generation carries no separator, so its length is a whole number"
+                        + " of %s-byte records; it measured %s bytes", recordLength, image.length)
+                .isZero();
+        assertThat(new String(image, StandardCharsets.US_ASCII).indexOf('\n'))
+                .as("no line feed may appear anywhere in a fixed-length generation")
+                .isEqualTo(-1);
+        final List<String> records = new ArrayList<>(image.length / recordLength);
+        for (int offset = 0; offset < image.length; offset += recordLength) {
+            records.add(new String(image, offset, recordLength, StandardCharsets.US_ASCII));
+        }
+        return records;
     }
 
     /**
@@ -291,7 +312,8 @@ final class TransactionReportJobConfigTest {
                 configuration.reportDateWindow(chunkContext(startDate, endDate))).run();
 
         final List<String> cardNumbers = new ArrayList<>();
-        for (final String image : recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID))) {
+        for (final String image : recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.UNLOAD_RECORD_LENGTH)) {
             cardNumbers.add(cardNumberOf(image));
         }
         return cardNumbers;
@@ -419,8 +441,8 @@ final class TransactionReportJobConfigTest {
             assertThat(configuration.transactionReportFilterAndOrderStep().getName())
                     .isEqualTo(TransactionReportJobConfig.FILTER_AND_ORDER_STEP_NAME);
             assertThat(configuration
-                    .transactionReportEmitStep(configuration.transactionReportProcessor(),
-                            mock(BatchStagingArea.class)).getName())
+                    .transactionReportEmitStep(configuration.transactionReportProcessor())
+                    .getName())
                     .isEqualTo(TransactionReportJobConfig.EMIT_STEP_NAME);
         }
 
@@ -523,7 +545,7 @@ final class TransactionReportJobConfigTest {
             final Step unload = configuration.transactionReportUnloadStep();
             final Step filterAndOrder = configuration.transactionReportFilterAndOrderStep();
             final Step emit = configuration.transactionReportEmitStep(
-                    configuration.transactionReportProcessor(), mock(BatchStagingArea.class));
+                    configuration.transactionReportProcessor());
             return configuration.transactionReportJob(unload, filterAndOrder, emit);
         }
     }
@@ -586,7 +608,8 @@ final class TransactionReportJobConfigTest {
                     configuration.reportDateWindow(chunkContext(WINDOW_START, WINDOW_END))).run();
 
             final List<String> identifiers = new ArrayList<>();
-            for (final String image : recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID))) {
+            for (final String image : recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.UNLOAD_RECORD_LENGTH)) {
                 identifiers.add(image.substring(TransactionRecordMapper.TRAN_ID_OFFSET,
                         TransactionRecordMapper.TRAN_ID_OFFSET
                                 + TransactionRecordMapper.TRAN_ID_LENGTH));
@@ -766,7 +789,8 @@ final class TransactionReportJobConfigTest {
 
             assertThat(program.recordsUnloaded()).isEqualTo(2L);
             final List<String> records =
-                    recordsOf(configuration.backupGeneration(JOB_EXECUTION_ID));
+                    recordsOf(configuration.backupGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.UNLOAD_RECORD_LENGTH);
             assertThat(records).hasSize(2);
             assertThat(records).allSatisfy(image ->
                     assertThat(image.getBytes(StandardCharsets.US_ASCII).length)
@@ -788,7 +812,8 @@ final class TransactionReportJobConfigTest {
             program.run();
 
             assertThat(program.recordsUnloaded()).isZero();
-            assertThat(recordsOf(configuration.backupGeneration(JOB_EXECUTION_ID))).isEmpty();
+            assertThat(recordsOf(configuration.backupGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.UNLOAD_RECORD_LENGTH)).isEmpty();
         }
 
         @Test
@@ -839,7 +864,8 @@ final class TransactionReportJobConfigTest {
                     .isEqualTo(RepeatStatus.FINISHED);
 
             final List<String> filtered =
-                    recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID));
+                    recordsOf(configuration.filteredGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.UNLOAD_RECORD_LENGTH);
             assertThat(filtered).hasSize(2);
             assertThat(cardNumberOf(filtered.get(0)))
                     .as("the second tasklet must read the generation the first one wrote, and order it")
@@ -862,7 +888,8 @@ final class TransactionReportJobConfigTest {
                     chunkContext(WINDOW_START, WINDOW_END)))
                     .isEqualTo(RepeatStatus.FINISHED);
 
-            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID)))
+            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.REPORT_RECORD_LENGTH))
                     .hasSize(ReportLineFormatter.HEADER_BLOCK_RECORD_COUNT)
                     .allSatisfy(record -> assertThat(
                             record.getBytes(StandardCharsets.US_ASCII).length)
@@ -962,7 +989,8 @@ final class TransactionReportJobConfigTest {
             program.run();
 
             final List<String> written =
-                    recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID));
+                    recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.REPORT_RECORD_LENGTH);
 
             assertThat(program.recordsWritten()).isEqualTo(emitted.size());
             assertThat(program.result().reportRecordCount()).isEqualTo(emitted.size());
@@ -1016,9 +1044,11 @@ final class TransactionReportJobConfigTest {
             final TransactionReportJobConfig configuration =
                     configuration(mock(TransactionRepository.class), reportService);
             final Path filtered = configuration.filteredGeneration(JOB_EXECUTION_ID);
+            // Written the way the filter step writes it: fixed-length, nothing between two records
+            // (DL-213). A separator here would shift every record after the first.
             Files.writeString(filtered,
-                    TransactionRecordMapper.toRecord(first) + "\n"
-                            + TransactionRecordMapper.toRecord(second) + "\n",
+                    TransactionRecordMapper.toRecord(first)
+                            + TransactionRecordMapper.toRecord(second),
                     StandardCharsets.US_ASCII);
 
             final TransactionReportJobConfig.ReportEmitProgram program = configuration.newEmitProgram(
@@ -1030,14 +1060,16 @@ final class TransactionReportJobConfigTest {
             assertThat(identifiersSeen)
                     .containsExactly(first.getTranId(), second.getTranId());
             final List<String> produced =
-                    recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID));
+                    recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.REPORT_RECORD_LENGTH);
             assertThat(produced)
                     .containsExactly(detailRecordFor(first), detailRecordFor(second));
 
-            Files.writeString(filtered, TransactionRecordMapper.toRecord(replacement) + "\n",
+            Files.writeString(filtered, TransactionRecordMapper.toRecord(replacement),
                     StandardCharsets.US_ASCII);
 
-            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID)))
+            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.REPORT_RECORD_LENGTH))
                     .as("the run has finished; a later change to its input cannot alter what it wrote")
                     .isEqualTo(produced);
         }
@@ -1096,7 +1128,8 @@ final class TransactionReportJobConfigTest {
 
             assertThat(program.result()).isNull();
             assertThat(program.recordsWritten()).isZero();
-            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID))).isEmpty();
+            assertThat(recordsOf(configuration.reportGeneration(JOB_EXECUTION_ID),
+                    TransactionReportJobConfig.REPORT_RECORD_LENGTH)).isEmpty();
         }
 
         @Test

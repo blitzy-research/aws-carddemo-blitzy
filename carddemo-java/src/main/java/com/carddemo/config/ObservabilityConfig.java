@@ -16,7 +16,9 @@
  */
 package com.carddemo.config;
 
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.config.MeterFilter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -162,10 +164,17 @@ import org.springframework.context.annotation.Configuration;
  * working when export is switched off. Application code writing to the diagnostic context is therefore not
  * merely unnecessary here, it is prohibited.
  *
- * <p><strong>No meter filter.</strong> Nothing here denies, renames or re-buckets a meter. A filter that
- * dropped or renamed a series would empty a dashboard panel and silently starve the baseline of the very
- * measurements it is being taken to establish, and a filter that re-bucketed one would smuggle in the
- * expectation the section above prohibits.
+ * <p><strong>Exactly one meter filter, and it exists to stop a meter being dropped.</strong> Nothing here
+ * denies or re-buckets a meter: a filter that dropped a series would empty a dashboard panel and starve
+ * the baseline of the very measurements it is being taken to establish, and one that re-bucketed a series
+ * would smuggle in the expectation the section above prohibits. One filter <em>renames</em>, and it is
+ * the remedy for a drop rather than the cause of one. Two independent mechanisms publish a meter named
+ * {@code spring.batch.job.active} with different tag keys - the framework's own long-task timer, and the
+ * observation registry's automatic active-observation meter - and the Prometheus registry requires one
+ * tag-key set per name, so on every single job launch the second registration failed and its dimension
+ * was lost. The filter gives the observation-derived meter its own name, after which both register. The
+ * name and tag keys the dashboard reads are the framework's and are untouched. See
+ * {@code docs/decision-log.md} entry DL-217.
  *
  * <h2>Thread safety and lifecycle</h2>
  *
@@ -203,6 +212,31 @@ public final class ObservabilityConfig {
     private static final Logger LOG = LoggerFactory.getLogger(ObservabilityConfig.class);
 
     /**
+     * The meter name two independent mechanisms publish under, which is why one must be renamed.
+     *
+     * <p>Stated as a constant because it is a name this module does not own: the framework composes it
+     * from its {@code spring.batch} prefix and its own {@code job.active} timer, and the observation
+     * registry composes the identical string by appending {@code .active} to the
+     * {@code spring.batch.job} observation. Both spellings are outside this module's control, which is
+     * exactly why the collision has to be handled here rather than avoided upstream.
+     */
+    public static final String BATCH_JOB_ACTIVE_METER_NAME = "spring.batch.job.active";
+
+    /** Tag key the framework's own long-task timer carries, and the one the dashboard reads. */
+    public static final String FRAMEWORK_JOB_NAME_TAG_KEY = "spring.batch.job.active.name";
+
+    /** Tag key only the observation-derived meter carries, which is what identifies it for renaming. */
+    public static final String OBSERVATION_JOB_NAME_TAG_KEY = "spring.batch.job.name";
+
+    /**
+     * The name the observation-derived active-job meter is given so that both meters can register.
+     *
+     * <p>Deliberately a sibling of the colliding name rather than a variation of it, so that a dashboard
+     * or an alert cannot match it by accident when it meant the framework's series.
+     */
+    public static final String OBSERVATION_ACTIVE_METER_NAME = "carddemo.batch.job.observed.active";
+
+    /**
      * The configured application name, or an empty string when the deployment configures none. Never
      * {@code null}.
      */
@@ -228,6 +262,46 @@ public final class ObservabilityConfig {
      */
     public ObservabilityConfig(@Value("${spring.application.name:}") final String applicationName) {
         this.applicationName = applicationName == null ? "" : applicationName;
+    }
+
+    /**
+     * Renames the observation-derived active-job meter so that it and the framework's own can coexist.
+     *
+     * <p><strong>The collision.</strong> Spring Batch registers a long-task timer for every running job
+     * under {@value #BATCH_JOB_ACTIVE_METER_NAME}, tagged {@value #FRAMEWORK_JOB_NAME_TAG_KEY}; the
+     * Prometheus registry publishes that as {@code spring_batch_job_active_seconds} with tag key
+     * {@code spring_batch_job_active_name}. Independently, the observation registry's default handler
+     * creates an active-observation meter for the long-running {@code spring.batch.job} observation,
+     * which lands on the <em>same</em> name carrying the observation's own key values
+     * {@value #OBSERVATION_JOB_NAME_TAG_KEY} and {@code spring.batch.job.status}. Prometheus requires
+     * every meter of one name to carry one tag-key set, so the second registration was refused on every
+     * launch and the job-name-and-status dimension never appeared at all.
+     *
+     * <p><strong>Why the observation-derived meter is the one renamed.</strong> The dashboard provisioned
+     * with this module reads {@code spring_batch_job_active_seconds} and
+     * {@code spring_batch_job_active_name}, which are the framework meter's. Renaming that one would
+     * break the panel; renaming the newcomer costs nothing and recovers a dimension that was previously
+     * discarded. The rename is keyed on the presence of the observation's own tag, so the framework's
+     * meter is never touched however many times a job runs.
+     *
+     * <p>Only the identifier is mapped. No meter is denied, no distribution statistic is configured and
+     * no value is transformed, so nothing here can alter a measurement.
+     *
+     * @return the one filter this configuration contributes, never {@code null}
+     */
+    @Bean
+    public MeterFilter batchActiveJobMeterNameFilter() {
+        return new MeterFilter() {
+
+            @Override
+            public Meter.Id map(final Meter.Id id) {
+                if (BATCH_JOB_ACTIVE_METER_NAME.equals(id.getName())
+                        && id.getTag(OBSERVATION_JOB_NAME_TAG_KEY) != null) {
+                    return id.withName(OBSERVATION_ACTIVE_METER_NAME);
+                }
+                return id;
+            }
+        };
     }
 
     /**

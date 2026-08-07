@@ -78,6 +78,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
@@ -420,6 +421,18 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /** The markup document's closing element, the last record of a complete run. */
     private static final String HTML_DOCUMENT_CLOSE = "</html>";
 
+    /** The closing paragraph tag every composed work line carries after its transferred value. */
+    private static final String HTML_PARAGRAPH_CLOSE = "</p>";
+
+    /**
+     * The five character references that must never appear in the produced markup.
+     *
+     * <p>The emitting program encodes nothing, and neither does this translation (DL-209), so any of
+     * these appearing in the artefact means a value was rewritten on its way to a fixed-width record.
+     */
+    private static final List<String> HTML_CHARACTER_REFERENCES =
+            List.of("&amp;", "&lt;", "&gt;", "&quot;", "&#39;");
+
     /**
      * The dispatcher's derived <em>execution</em> order, written out as literals.
      *
@@ -497,8 +510,15 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /** Ten all-digit characters, the shape the interest job's parameter card carried. */
     private static final String INTEREST_PARM_DATE_SUFFIX = "00";
 
-    /** Separator the produced artefacts use between records. */
-    private static final String RECORD_SEPARATOR = "\n";
+    /**
+     * Separator the repository's own newline-delimited sample data carries between records.
+     *
+     * <p>Used only for the posting job's <em>landing file</em>, which is the readable rendering of an
+     * EBCDIC sequential dataset and is read through the line-oriented reader. No artefact this pipeline
+     * <em>produces</em> carries it: every DD in the estate declares a fixed record format, which writes
+     * no byte between two records. See {@code docs/decision-log.md} entry DL-213.
+     */
+    private static final String SAMPLE_DATA_SEPARATOR = "\n";
 
     /** Name of the observation the framework publishes for a step execution. */
     private static final String STEP_METER_NAME = "spring.batch.step";
@@ -797,7 +817,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
         // Line-oriented, because the posting job's reader takes its record boundary from a line
         // terminator. The consolidation job's reader does not - see the unblocked writer below.
         writeArtefact(stagingRoot().resolve(PostTransactionJobConfig.DEFAULT_DALYTRAN_DATASET),
-                records, RECORD_SEPARATOR);
+                records, SAMPLE_DATA_SEPARATOR);
     }
 
     /**
@@ -935,13 +955,22 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                         + " is there; the step that writes it either did not run or wrote elsewhere",
                         declaredWidth, artefact)
                 .isTrue();
-        final long size = Files.size(artefact);
-        final List<String> records = Files.readAllLines(artefact, StandardCharsets.US_ASCII);
-        assertThat(size)
-                .as("%s holds %d byte(s), which is not a whole number of %d-byte records plus their"
-                        + " separators; a partial record would leave every downstream reader of that"
-                        + " artefact reading the wrong field", artefact, size, declaredWidth)
-                .isEqualTo((long) records.size() * (declaredWidth + RECORD_SEPARATOR.length()));
+        final byte[] image = Files.readAllBytes(artefact);
+        assertThat(image.length % declaredWidth)
+                .as("%s holds %d byte(s), which is not a whole number of %d-byte records; every artefact"
+                        + " this pipeline produces is fixed-length with nothing between two records, so a"
+                        + " remainder means either a partial record or a stray separator - and either"
+                        + " would leave every downstream reader of that artefact reading the wrong"
+                        + " field (DL-213)", artefact, Integer.valueOf(image.length),
+                        Integer.valueOf(declaredWidth))
+                .isZero();
+        assertThat(new String(image, StandardCharsets.US_ASCII))
+                .as("%s must carry no record separator at all", artefact)
+                .doesNotContain(SAMPLE_DATA_SEPARATOR);
+        final List<String> records = new ArrayList<>(image.length / declaredWidth);
+        for (int offset = 0; offset < image.length; offset += declaredWidth) {
+            records.add(new String(image, offset, declaredWidth, StandardCharsets.US_ASCII));
+        }
         return records;
     }
 
@@ -1276,6 +1305,15 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                     .as("THIRD GATE, halt direction: nor did the generation step, so no statement was"
                             + " written on a run whose first step failed")
                     .doesNotContain(CreateStatementJobConfig.GENERATE_STATEMENTS_STEP_NAME);
+
+            assertThat(halted.getStatus())
+                    .as("DL-208: the gates bypass the downstream steps AND propagate the abend. A"
+                            + " z/OS job's completion code is the highest code any of its steps"
+                            + " returned, so a run whose first step abended cannot end clean")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(halted.getExitStatus().getExitCode())
+                    .as("and the code the submitter reads says so too, rather than saying zero")
+                    .isEqualTo(ExitStatus.FAILED.getExitCode());
         } finally {
             Files.deleteIfExists(root);
             Files.move(displaced, root);
@@ -1319,6 +1357,15 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                     .as("THIRD GATE, halt direction, driven by a real failure of its own immediate"
                             + " predecessor: the generation step did not run")
                     .doesNotContain(CreateStatementJobConfig.GENERATE_STATEMENTS_STEP_NAME);
+
+            assertThat(halted.getStatus())
+                    .as("DL-208 again, this time with two clean steps ahead of the failed one: the"
+                            + " highest step code still decides, so the run is FAILED and not"
+                            + " COMPLETED-with-a-bypass")
+                    .isEqualTo(BatchStatus.FAILED);
+            assertThat(halted.getExitStatus().getExitCode())
+                    .as("and the submitter reads FAILED rather than a zero it would act on")
+                    .isEqualTo(ExitStatus.FAILED.getExitCode());
         } finally {
             Files.deleteIfExists(obstruction.resolve("occupied"));
             Files.deleteIfExists(obstruction);
@@ -1730,6 +1777,48 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
     // THE DATA-ACCESS COLLABORATOR, AND THE ONE CUSTOMER ENTITY
     // ===============================================================================================
+
+    @Test
+    @Order(20)
+    @DisplayName("a markup-significant byte in seeded data reaches the produced markup artefact "
+            + "verbatim, and no character reference appears anywhere in it (DL-209)")
+    void seededMarkupSignificantBytesReachTheArtefactVerbatim() {
+        // The seeded estate carries apostrophes in customer surnames and transaction descriptions, so
+        // this is not a synthetic probe: it is what the pipeline actually produces from the delivered
+        // reference data. An earlier delivery escaped these positions, which kept the record a hundred
+        // bytes wide while displacing every byte after the substitution and pushing the record tail off
+        // the end - a byte-parity defect against this module's own hundred-byte oracle. Asserted here,
+        // against the artefact a real run wrote through a real server, rather than only at the template
+        // class, because that is where the defect was observable.
+        final List<String> markupBearing = cleanRun.htmlRecords().stream()
+                .filter(record -> record.indexOf('\'') >= 0)
+                .toList();
+
+        assertThat(markupBearing)
+                .as("the seeded reference data carries apostrophes, so a run that produced none would"
+                        + " mean this assertion is matching nothing at all")
+                .isNotEmpty();
+
+        for (final String record : markupBearing) {
+            assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
+                    .as("a record carrying an apostrophe is the same hundred bytes as every other"
+                            + " record - escaping it would have widened the value and cut the tail:"
+                            + " [%s]", record)
+                    .isEqualTo(HTML_RECORD_WIDTH);
+            assertThat(record)
+                    .as("and it still closes with the tag the composition puts there, which a"
+                            + " displaced tail would have lost: [%s]", record)
+                    .contains(HTML_PARAGRAPH_CLOSE);
+        }
+
+        final String whole = String.join("", cleanRun.htmlRecords());
+        for (final String reference : HTML_CHARACTER_REFERENCES) {
+            assertThat(whole)
+                    .as("%s must not appear anywhere in the artefact: the emitting program encodes"
+                            + " nothing and neither does this translation", reference)
+                    .doesNotContain(reference);
+        }
+    }
 
     @Test
     @Order(20)

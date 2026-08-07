@@ -111,9 +111,6 @@ class InterestCalculationJobConfigTest {
     /** A real registry, so the timers the step records are observable rather than swallowed. */
     private MeterRegistry meterRegistry;
 
-    /** The shared object-store staging boundary, mocked so publication remains observable. */
-    private BatchStagingArea stagingArea;
-
     /** The staging area the generation resolves within. */
     @TempDir
     private Path stagingDirectory;
@@ -145,7 +142,6 @@ class InterestCalculationJobConfigTest {
         });
         this.interestCalculationService = mock(InterestCalculationService.class);
         this.meterRegistry = new SimpleMeterRegistry();
-        this.stagingArea = mock(BatchStagingArea.class);
         this.config = configWith(this.stagingDirectory.toString(), "AWS.M2.CARDDEMO.SYSTRAN");
     }
 
@@ -172,7 +168,7 @@ class InterestCalculationJobConfigTest {
         final JobParametersIncrementer incrementer = new RunIdIncrementer();
         final JobExecutionListener boundaryListener = mock(JobExecutionListener.class);
         return this.config.interestCalculationJob(
-                this.config.interestAccrualStep(this.stagingArea),
+                this.config.interestAccrualStep(),
                 incrementer, boundaryListener);
     }
 
@@ -205,7 +201,7 @@ class InterestCalculationJobConfigTest {
             assertThat(InterestCalculationJobConfig.JOB_NAME).isEqualTo("interestCalculationJob");
             assertThat(InterestCalculationJobConfig.STEP_NAME).isEqualTo("interestAccrualStep");
             assertThat(job().getName()).isEqualTo(InterestCalculationJobConfig.JOB_NAME);
-            assertThat(config.interestAccrualStep(stagingArea).getName())
+            assertThat(config.interestAccrualStep().getName())
                     .isEqualTo(InterestCalculationJobConfig.STEP_NAME);
         }
 
@@ -399,7 +395,7 @@ class InterestCalculationJobConfigTest {
             assertThat(config.runAccrualPass(execution).recordsRead()).isZero();
 
             verify(interestCalculationService, never())
-                    .calculateGroupInterest(anyString(), anyString(), any(), anyLong(), any());
+                    .calculateGroupInterest(anyString(), anyString(), any(), anyLong(), any(), any());
 
             final Path generation = config.transactGeneration(11L);
             assertThat(generation).exists();
@@ -426,7 +422,7 @@ class InterestCalculationJobConfigTest {
             // The service writes each record through the writer it is given, at the point the legacy
             // writes it, so the stub must do the same or the wiring under test is never exercised.
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
-                    anyLong(), any())).thenAnswer(invocation -> {
+                    anyLong(), any(), any())).thenAnswer(invocation -> {
                         final InterestCalculationService.GroupInterestResult group = oneGroupResult();
                         final Consumer<Transaction> writer = invocation.getArgument(4);
                         group.interestTransactions().forEach(writer);
@@ -459,7 +455,7 @@ class InterestCalculationJobConfigTest {
                     .thenReturn(List.of(row("0005"), otherAccount));
             final AtomicLong suffix = new AtomicLong();
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
-                    anyLong(), any())).thenAnswer(invocation -> {
+                    anyLong(), any(), any())).thenAnswer(invocation -> {
                         final InterestCalculationService.GroupInterestResult group =
                                 oneGroupResult(invocation.getArgument(1), suffix.incrementAndGet());
                         final Consumer<Transaction> writer = invocation.getArgument(4);
@@ -521,7 +517,7 @@ class InterestCalculationJobConfigTest {
             when(categoryBalances.findAll(any(Sort.class)))
                     .thenReturn(List.of(row("0005"), row("0006")));
             when(interestCalculationService.calculateGroupInterest(anyString(), anyString(), any(),
-                    anyLong(), any())).thenThrow(new AbendException(AbendException.BATCH_ABEND_CODE,
+                    anyLong(), any(), any())).thenThrow(new AbendException(AbendException.BATCH_ABEND_CODE,
                             InterestCalculationJobConfig.LEGACY_PROGRAM_NAME,
                             "FILE STATUS 23 operation=READ resource="
                                     + InterestCalculationJobConfig.DD_DISCGRP,
@@ -547,7 +543,7 @@ class InterestCalculationJobConfigTest {
         void theStepIsASingleInvocation() throws Exception {
             when(categoryBalances.findAll(any(Sort.class))).thenReturn(List.of());
 
-            final Step step = config.interestAccrualStep(stagingArea);
+            final Step step = config.interestAccrualStep();
             final StepExecution execution = stepExecution(15L, RUN_DATE);
             step.execute(execution);
 
@@ -557,7 +553,13 @@ class InterestCalculationJobConfigTest {
                     .timers())
                     .as("the pass is measured, and no threshold is stated for it anywhere")
                     .isNotEmpty();
-            verify(stagingArea).publish(config.transactGeneration(15L));
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution.getJobExecution()))
+                    .as("the step REGISTERS its sealed generation and does not upload it: the shared"
+                            + " job-boundary listener publishes registered artefacts once the whole"
+                            + " submission has completed, which is what keeps one generation to one"
+                            + " canonical key and keeps a failed submission's generation out of the"
+                            + " bucket entirely (DL-212)")
+                    .isEqualTo(1);
         }
     }
 
@@ -699,7 +701,8 @@ class InterestCalculationJobConfigTest {
                         synthesized);
 
         return new InterestCalculationService.GroupInterestResult(accountId, interest,
-                List.of(categoryInterest), List.of(synthesized), updated, false, false, 1, suffix);
+                List.of(categoryInterest), List.of(synthesized), updated, true, false, false, 1,
+                suffix);
     }
 
     /** Left-justifies a value into a field of the given width, space padded as the layout is. */

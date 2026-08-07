@@ -212,12 +212,10 @@ final class CategoryBalanceReportJobConfigTest {
         @DisplayName("each step bean is published under its own name")
         void eachStepIsPublishedUnderItsOwnName() {
             final CategoryBalanceReportJobConfig configuration = configuration();
-            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Step clear = configuration.categoryBalanceReportClearPriorReportStep();
-            final Step unload = configuration.categoryBalanceReportUnloadStep(stagingArea);
-            final Step sort =
-                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea);
+            final Step unload = configuration.categoryBalanceReportUnloadStep();
+            final Step sort = configuration.categoryBalanceReportSortAndReprojectStep();
 
             assertThat(clear.getName())
                     .isEqualTo(CategoryBalanceReportJobConfig.CLEAR_PRIOR_REPORT_STEP_NAME);
@@ -231,12 +229,11 @@ final class CategoryBalanceReportJobConfigTest {
                 + "so it holds no flow and therefore no failure-ending transition at all")
         void theJobIsPlainlySequential() {
             final CategoryBalanceReportJobConfig configuration = configuration();
-            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Job job = configuration.categoryBalanceReportJob(
                     configuration.categoryBalanceReportClearPriorReportStep(),
-                    configuration.categoryBalanceReportUnloadStep(stagingArea),
-                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea));
+                    configuration.categoryBalanceReportUnloadStep(),
+                    configuration.categoryBalanceReportSortAndReprojectStep());
 
             assertThat(job.getName()).isEqualTo(CategoryBalanceReportJobConfig.JOB_NAME);
             assertThat(job)
@@ -254,12 +251,11 @@ final class CategoryBalanceReportJobConfigTest {
                 + "parameters validator that would demand a parameter it never takes")
         void theJobCanBeAdvancedByNameWithoutParameters() {
             final CategoryBalanceReportJobConfig configuration = configuration();
-            final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
             final Job job = configuration.categoryBalanceReportJob(
                     configuration.categoryBalanceReportClearPriorReportStep(),
-                    configuration.categoryBalanceReportUnloadStep(stagingArea),
-                    configuration.categoryBalanceReportSortAndReprojectStep(stagingArea));
+                    configuration.categoryBalanceReportUnloadStep(),
+                    configuration.categoryBalanceReportSortAndReprojectStep());
 
             assertThat(job.getJobParametersIncrementer()).isNotNull();
             assertThat(job.getJobParametersValidator())

@@ -475,6 +475,16 @@ docker build --build-arg APP_VERSION --build-arg SOURCE_REVISION \
 
 ```bash
 cd carddemo-java
+
+# Inspecting, starting the infrastructure, and tearing the stack down need NO exports: every
+# variable in docker-compose.yml carries a default, so `docker compose config`, `ps`, `logs`,
+# `stop` and `down` all work from a clean checkout.
+docker compose config            # interpolates and validates the whole file
+docker compose down              # tears the stack down again, at any time
+
+# BUILDING the module image is the one operation that needs real provenance, and it is refused
+# without it: SOURCE_REVISION defaults to the all-zero sentinel, which the Dockerfile rejects by
+# name. Export the three values and the build stamps the image with the tree it was built from.
 export APP_VERSION="$(./mvnw -q -DforceStdout help:evaluate -Dexpression=project.version)"
 export SOURCE_REVISION="$(git rev-parse HEAD)"
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"

@@ -31,6 +31,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.batch.step.CombineTransactionsProcessor;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
@@ -147,6 +148,13 @@ class CombineTransactionsJobConfigTest {
     /** The shared object-store staging boundary, mocked so publication remains observable. */
     private final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
 
+    /**
+     * The durable generation store, mocked so that current-generation resolution is a lever rather than
+     * a dependency on a bucket. Answering empty is the default: a base that holds no generation is what
+     * every fixture here means by "not in the durable store" (DL-214).
+     */
+    private final StagedGenerationStore generationStore = mock(StagedGenerationStore.class);
+
     /** Local fallback root; file-URI fixtures bypass it while logical-name tests exercise it. */
     private static final String STAGING_DIRECTORY = System.getProperty("java.io.tmpdir");
 
@@ -173,14 +181,26 @@ class CombineTransactionsJobConfigTest {
      * @return the local file that execution's combined generation occupies
      */
     private static Path generationFile(final long jobExecutionId) {
-        return Path.of(STAGING_DIRECTORY).toAbsolutePath().normalize()
-                .resolve(CombineTransactionsJobConfig.JOB_NAME + ".combined." + jobExecutionId
-                        + ".dat");
+        return StagedGenerationStore.generationPath(
+                Path.of(STAGING_DIRECTORY).toAbsolutePath().normalize(),
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, jobExecutionId);
+    }
+
+    /**
+     * A job execution carrying the identifier the generation is named from and the registry the
+     * generation records its publication on.
+     *
+     * @param  jobExecutionId the framework identifier
+     * @return the execution
+     */
+    private static JobExecution execution(final long jobExecutionId) {
+        return new JobExecution(new JobInstance(jobExecutionId + 100,
+                CombineTransactionsJobConfig.JOB_NAME), jobExecutionId, new JobParameters());
     }
 
     /** The configuration under test. */
     private final CombineTransactionsJobConfig config = new CombineTransactionsJobConfig(
-            readerFactory, resourceLoader, stagingArea, transactionRepository,
+            readerFactory, resourceLoader, stagingArea, generationStore, transactionRepository,
             STAGING_DIRECTORY, "backup.txt", "synthesized.txt");
 
     /**
@@ -255,7 +275,7 @@ class CombineTransactionsJobConfigTest {
     private ItemStreamReader<Transaction> orderedReaderOver(
             final String backup, final String synthesized) {
         return new CombineTransactionsJobConfig(readerFactory, resourceLoader, stagingArea,
-                transactionRepository, STAGING_DIRECTORY, backup, synthesized)
+                generationStore, transactionRepository, STAGING_DIRECTORY, backup, synthesized)
                 .combineTransactionsOrderedReader();
     }
 
@@ -332,29 +352,35 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("every collaborator is required, so a half-wired configuration cannot be built")
         void everyCollaboratorIsRequired() {
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(null, resourceLoader,
-                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, null,
-                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    null, transactionRepository, STAGING_DIRECTORY,
+                    null, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    stagingArea, null, STAGING_DIRECTORY, "backup.txt", "synthesized.txt"))
+                    stagingArea, null, transactionRepository, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    stagingArea, transactionRepository, null, "backup.txt", "synthesized.txt"))
+                    stagingArea, generationStore, null, STAGING_DIRECTORY,
+                    "backup.txt", "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    stagingArea, generationStore, transactionRepository, null,
+                    "backup.txt", "synthesized.txt"))
+                    .isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
+                    stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     null, "synthesized.txt"))
                     .isInstanceOf(NullPointerException.class);
             assertThatThrownBy(() -> new CombineTransactionsJobConfig(readerFactory, resourceLoader,
-                    stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", null))
                     .isInstanceOf(NullPointerException.class);
         }
@@ -383,7 +409,7 @@ class CombineTransactionsJobConfigTest {
 
         private Job buildJob() {
             final CombineTransactionsJobConfig.CombinedGeneration combinedGeneration =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             final Step orderStep = config.combineTransactionsOrderStep(jobRepository,
                     transactionManager,
                     orderedReaderOver("classpath:absent-backup.txt",
@@ -670,7 +696,7 @@ class CombineTransactionsJobConfigTest {
         @DisplayName("records are served in the order they were written, once each, then exhaustion")
         void recordsAreServedInWrittenOrderOnceEach() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             final Transaction first = record("0000000000000001", BACKUP_MARKER);
             final Transaction second = record("0000000000000002", SYNTHESIZED_MARKER);
 
@@ -691,7 +717,7 @@ class CombineTransactionsJobConfigTest {
                 + "sequential file is a faithful stand-in for holding the entity")
         void everyFieldSurvivesTheRoundTrip() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             final Transaction written = record("0000000000000042", BACKUP_MARKER);
 
             combined.write(Chunk.of(written));
@@ -705,15 +731,19 @@ class CombineTransactionsJobConfigTest {
                 + "does not grow with the size of the master it combines")
         void theGenerationIsComposedInAFile() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
             combined.close();
 
             final Path generation = generationFile(JOB_EXECUTION_ID);
             assertThat(generation).exists();
             assertThat(Files.readAllBytes(generation))
-                    .as("one record image and one separator byte, and nothing else")
-                    .hasSize(CombineTransactionsProcessor.COMBINED_RECORD_LENGTH + 1);
+                    .as("one record image and nothing else: the combined dataset is fixed-length"
+                            + " blocked, so no byte is written between two records (DL-213)")
+                    .hasSize(CombineTransactionsProcessor.COMBINED_RECORD_LENGTH);
+            assertThat(Files.readString(generation, StandardCharsets.US_ASCII))
+                    .as("and no separator survives anywhere in it")
+                    .doesNotContain("\n");
 
             final String source = Files.readString(
                     Path.of("src", "main", "java", "com", "carddemo", "batch",
@@ -727,7 +757,7 @@ class CombineTransactionsJobConfigTest {
         @Test
         @DisplayName("an empty generation reports exhaustion immediately rather than failing")
         void anEmptyGenerationReportsExhaustion() throws Exception {
-            assertThat(config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID).read())
+            assertThat(config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID)).read())
                     .isNull();
         }
 
@@ -736,10 +766,10 @@ class CombineTransactionsJobConfigTest {
                 + "cannot reach another's")
         void eachExecutionReceivesItsOwnGeneration() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration first =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             first.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
 
-            assertThat(config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID + 1).read())
+            assertThat(config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID + 1)).read())
                     .isNull();
         }
 
@@ -748,35 +778,41 @@ class CombineTransactionsJobConfigTest {
                 + "breached rather than that the group was empty")
         void aGroupIsRequired() {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
 
             assertThatThrownBy(() -> combined.write(null))
                     .isInstanceOf(NullPointerException.class);
         }
 
         @Test
-        @DisplayName("closing publishes the execution generation once through the shared staging area, "
-                + "streaming it from the sealed file rather than from an array")
-        void closingPublishesTheExecutionGenerationOnce() throws Exception {
+        @DisplayName("closing registers the execution generation once for durable publication, under the "
+                + "legacy generation-group base, and uploads nothing itself")
+        void closingRegistersTheExecutionGenerationOnce() throws Exception {
+            final JobExecution jobExecution = execution(JOB_EXECUTION_ID);
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(jobExecution);
             combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
 
             combined.close();
             combined.close();
 
-            verify(stagingArea, times(1)).publish(
-                    eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + JOB_EXECUTION_ID),
-                    eq(generationFile(JOB_EXECUTION_ID)));
-            verify(stagingArea, never()).publish(anyString(), any(byte[].class));
+            // ONE registration for two closes, and no upload from the step at all. The job-boundary
+            // listener publishes what is registered, once the whole submission has completed, so a
+            // submission that fails afterwards leaves nothing in the bucket - and there is exactly one
+            // key family per generation because there is exactly one publisher (DL-212).
+            assertThat(StagedGenerationStore.registeredArtifactCount(jobExecution)).isEqualTo(1);
+            assertThat(generationFile(JOB_EXECUTION_ID))
+                    .as("the registration names the sealed local file, which must therefore still be"
+                            + " there when the publication runs")
+                    .exists();
         }
 
         @Test
-        @DisplayName("the local copy is removed once the load step has served every record, so a "
-                + "submission leaves nothing behind in the staging root")
-        void theLocalCopyIsRemovedAfterItHasBeenServed() throws Exception {
+        @DisplayName("the sealed generation survives being served in full, because the publication that "
+                + "uploads it has not run yet when the load step closes")
+        void theSealedGenerationSurvivesBeingServed() throws Exception {
             final CombineTransactionsJobConfig.CombinedGeneration combined =
-                    config.combineTransactionsCombinedGeneration(JOB_EXECUTION_ID);
+                    config.combineTransactionsCombinedGeneration(execution(JOB_EXECUTION_ID));
             combined.write(Chunk.of(record("0000000000000001", BACKUP_MARKER)));
             combined.close();
             assertThat(generationFile(JOB_EXECUTION_ID)).exists();
@@ -787,11 +823,15 @@ class CombineTransactionsJobConfigTest {
             }
             combined.close();
 
-            assertThat(generationFile(JOB_EXECUTION_ID)).doesNotExist();
+            assertThat(generationFile(JOB_EXECUTION_ID))
+                    .as("removing it here left the registered publication with nothing to upload; a"
+                            + " submission that does not complete has its own generation swept by the"
+                            + " store's abnormal disposition instead (DL-211)")
+                    .exists();
         }
 
         @Test
-        @DisplayName("an absent execution identifier cannot name a staged generation")
+        @DisplayName("an absent job execution cannot name a staged generation")
         void anAbsentExecutionIdentifierIsRefused() {
             assertThatThrownBy(() -> config.combineTransactionsCombinedGeneration(null))
                     .isInstanceOf(NullPointerException.class);
@@ -918,7 +958,7 @@ class CombineTransactionsJobConfigTest {
                     mock(FixedWidthFlatFileReaderFactory.class);
             when(closesBadly.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final CombineTransactionsJobConfig configuration = new CombineTransactionsJobConfig(
-                    closesBadly, resourceLoader, stagingArea, transactionRepository,
+                    closesBadly, resourceLoader, stagingArea, generationStore, transactionRepository,
                     STAGING_DIRECTORY, "backup.txt", "synthesized.txt");
 
             final ItemStreamReader<Transaction> reader =
@@ -939,7 +979,7 @@ class CombineTransactionsJobConfigTest {
             final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
             when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
-                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    resourceLoader, stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
 
             reader.open(new ExecutionContext());
@@ -962,7 +1002,7 @@ class CombineTransactionsJobConfigTest {
             final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
             when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
-                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    resourceLoader, stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
             reader.open(new ExecutionContext());
             reader.close();
@@ -978,7 +1018,7 @@ class CombineTransactionsJobConfigTest {
             final FixedWidthFlatFileReaderFactory empty = mock(FixedWidthFlatFileReaderFactory.class);
             when(empty.fixedTransactionReader(any())).thenReturn(new ClosesBadly());
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(empty,
-                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    resourceLoader, stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
             reader.open(new ExecutionContext());
             final Set<Path> minted = new HashSet<>(orderingWorkAreas());
@@ -1039,7 +1079,7 @@ class CombineTransactionsJobConfigTest {
             when(refuses.fixedTransactionReader(any()))
                     .thenThrow(new IllegalStateException("the input could not be allocated"));
             final ItemStreamReader<Transaction> reader = new CombineTransactionsJobConfig(refuses,
-                    resourceLoader, stagingArea, transactionRepository, STAGING_DIRECTORY,
+                    resourceLoader, stagingArea, generationStore, transactionRepository, STAGING_DIRECTORY,
                     "backup.txt", "synthesized.txt").combineTransactionsOrderedReader();
 
             assertThatThrownBy(() -> reader.open(new ExecutionContext()))

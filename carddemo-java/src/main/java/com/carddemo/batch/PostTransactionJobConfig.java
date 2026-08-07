@@ -23,6 +23,7 @@ import com.carddemo.batch.step.TransactionValidationProcessor;
 import com.carddemo.domain.DailyTransaction;
 import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.service.BatchJobCatalog;
+import com.carddemo.exception.AbendException;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.StagedResourceNames;
@@ -49,6 +50,7 @@ import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.batch.item.ItemStreamWriter;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -706,7 +708,90 @@ public final class PostTransactionJobConfig {
                 stagingArea.holds(this.dalytranDataset)
                         ? stagingArea.stagedInput(this.dalytranDataset)
                         : new PathResource(dalytranInput());
-        return this.readerFactory.dailyTransactionReader(input);
+        // The acquisition is the framework's, but the diagnostic is the program's: an input that cannot
+        // be opened is 0000-DALYTRAN-OPEN's failure arm and must read as that arm does, not as the
+        // reader's own strict-mode message. See docs/decision-log.md entry DL-215.
+        return new DiagnosingDailyTransactionReader(
+                this.readerFactory.dailyTransactionReader(input), this.postingService);
+    }
+
+    /**
+     * Wraps one reader so that a failure to open is reported as the program's own open-failure arm.
+     *
+     * <p>Package-visible rather than private so that a test in this package can drive the decorator
+     * directly against a scripted delegate, instead of leaving the re-throw path as a line nobody can
+     * reach. The bean method above is the only production caller.
+     *
+     * @param  delegate       the reader to read through; must not be {@code null}
+     * @param  postingService the program whose open-failure arm an acquisition failure produces; must not
+     *                        be {@code null}
+     * @return the decorated reader, never {@code null}
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    static ItemStreamReader<DailyTransaction> diagnosingReader(
+            final ItemStreamReader<DailyTransaction> delegate,
+            final TransactionPostingService postingService) {
+        return new DiagnosingDailyTransactionReader(delegate, postingService);
+    }
+
+    /**
+     * A reader whose failure to open is reported as {@code 0000-DALYTRAN-OPEN}'s failure arm.
+     *
+     * <p><strong>Only the open is decorated.</strong> Reading, updating and closing pass straight
+     * through, because the driving loop's own read failure arm already belongs to the translated program
+     * and is raised from there; decorating those too would emit one diagnostic twice. An
+     * {@link AbendException} the delegate itself raises also passes through unchanged, so a failure that
+     * already carries the program's verdict is never re-wrapped in a second one.
+     *
+     * <p>The delegate is a stream, so this decorator is one too: the framework opens and closes it
+     * around the step, which is what keeps the whole pass attributed to the step that performs it.
+     */
+    private static final class DiagnosingDailyTransactionReader
+            implements ItemStreamReader<DailyTransaction> {
+
+        /** The reader that actually reads; the layout and the strictness are entirely its own. */
+        private final ItemStreamReader<DailyTransaction> delegate;
+
+        /** The translated program, which owns the literal, the status image and the abend code. */
+        private final TransactionPostingService postingService;
+
+        /**
+         * @param delegate        the reader to read through; must not be {@code null}
+         * @param postingService  the program whose open-failure arm an acquisition failure produces;
+         *                        must not be {@code null}
+         */
+        DiagnosingDailyTransactionReader(final ItemStreamReader<DailyTransaction> delegate,
+                final TransactionPostingService postingService) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate must not be null");
+            this.postingService = Objects.requireNonNull(postingService,
+                    "postingService must not be null");
+        }
+
+        @Override
+        public void open(final ExecutionContext executionContext) {
+            try {
+                this.delegate.open(executionContext);
+            } catch (final AbendException alreadyDiagnosed) {
+                throw alreadyDiagnosed;
+            } catch (final RuntimeException unopenable) {
+                throw this.postingService.dailyTransactionOpenFailure(unopenable);
+            }
+        }
+
+        @Override
+        public DailyTransaction read() throws Exception {
+            return this.delegate.read();
+        }
+
+        @Override
+        public void update(final ExecutionContext executionContext) {
+            this.delegate.update(executionContext);
+        }
+
+        @Override
+        public void close() {
+            this.delegate.close();
+        }
     }
 
     /**

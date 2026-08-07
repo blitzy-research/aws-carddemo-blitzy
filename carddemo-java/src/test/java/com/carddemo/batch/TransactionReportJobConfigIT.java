@@ -1380,12 +1380,34 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /**
      * Reads one staged generation back as its record images, in emission order.
      *
-     * @param generation the generation to read
+     * <p>Framed by width and never by line. Every generation this job writes is fixed-length with
+     * nothing between two records, exactly as its own data-definition statements declare, so the read
+     * advances in strides and the byte length is proved to be a whole number of records first. A stray
+     * separator therefore fails here rather than shifting a later assertion, and a line-oriented read
+     * would have returned the whole generation as one string. See {@code docs/decision-log.md} entry
+     * DL-213.
+     *
+     * @param  generation   the generation to read
+     * @param  recordLength the declared record length of that generation
      * @return the record images
      * @throws IOException if the generation cannot be read
      */
-    private static List<String> recordsOf(final Path generation) throws IOException {
-        return Files.readAllLines(generation, StandardCharsets.US_ASCII);
+    private static List<String> recordsOf(final Path generation, final int recordLength)
+            throws IOException {
+        final byte[] image = Files.readAllBytes(generation);
+        assertThat(image.length % recordLength)
+                .as("a fixed-length generation carries no separator, so its length is a whole number"
+                        + " of %s-byte records; it measured %s bytes",
+                        Integer.valueOf(recordLength), Integer.valueOf(image.length))
+                .isZero();
+        assertThat(new String(image, StandardCharsets.US_ASCII))
+                .as("no line feed may appear anywhere in a fixed-length generation")
+                .doesNotContain("\n");
+        final List<String> records = new ArrayList<>(image.length / recordLength);
+        for (int offset = 0; offset < image.length; offset += recordLength) {
+            records.add(new String(image, offset, recordLength, StandardCharsets.US_ASCII));
+        }
+        return records;
     }
 
     /**
@@ -1396,7 +1418,8 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
      * @throws IOException if the generation cannot be read
      */
     private List<String> reportOf(final JobExecution execution) throws IOException {
-        return recordsOf(this.reportConfig.reportGeneration(executionIdOf(execution)));
+        return recordsOf(this.reportConfig.reportGeneration(executionIdOf(execution)),
+                REPORT_RECORD_WIDTH);
     }
 
     /**
@@ -1407,7 +1430,8 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
      * @throws IOException if the generation cannot be read
      */
     private List<String> filteredOf(final JobExecution execution) throws IOException {
-        return recordsOf(this.reportConfig.filteredGeneration(executionIdOf(execution)));
+        return recordsOf(this.reportConfig.filteredGeneration(executionIdOf(execution)),
+                TRANSACTION_RECORD_WIDTH);
     }
 
     /**
@@ -1808,7 +1832,7 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
                 .isEqualTo(descendantsBeforePosting);
 
         final List<String> unloaded = recordsOf(
-                this.reportConfig.backupGeneration(executionIdOf(report)));
+                this.reportConfig.backupGeneration(executionIdOf(report)), TRANSACTION_RECORD_WIDTH);
         assertThat(unloaded).hasSize(POSTED_SETUP_RECORDS);
         assertEveryRecordMeasures(unloaded, TRANSACTION_RECORD_WIDTH);
 
@@ -2477,9 +2501,6 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
                         + "member names resolves to once the group is no longer a mainframe catalog entry")
                 .isNotEqualTo(firstGeneration);
 
-        verify(this.stagingArea).publish(firstGeneration);
-        verify(this.stagingArea).publish(secondGeneration);
-
         assertThat(Files.exists(firstGeneration))
                 .as("NO RETENTION LOGIC HERE: the later execution must not remove the earlier "
                         + "generation. The two conflicting declarations of the group's limit - five in one "
@@ -2582,27 +2603,19 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
         }
 
         /**
-         * The object-store staging boundary, stood in for so that publication can be observed, and made to
-         * refuse a generation that is not on disk.
+         * The object-store staging boundary, stood in for because this slice's subject is the job and not
+         * the remote service.
          *
-         * <p>Refusing an absent file is the faithful behaviour rather than a convenience: a step that
-         * published a path before completing the working file would be publishing something no reader
-         * could read, and a permissive stand-in would let that defect through silently.
+         * <p>It is a <em>read</em> boundary only. Publication belongs entirely to the generation store,
+         * whose own path stays real in this slice, so there is nothing to stand in for on the outbound
+         * side and no second publisher for a step to reach (DL-212).
          *
-         * @return a staging boundary that accepts a completed generation and refuses an absent one
+         * @return a staging boundary that reports holding nothing, so every reader takes its local path
          */
         @Bean
         BatchStagingArea stagingArea() {
             final BatchStagingArea stagingArea = mock(BatchStagingArea.class);
-            doAnswer(invocation -> {
-                final Path published = invocation.getArgument(0);
-                if (!Files.exists(published)) {
-                    throw new UncheckedIOException(
-                            "staged batch file could not be read for publication: " + published,
-                            new NoSuchFileException(published.toString()));
-                }
-                return null;
-            }).when(stagingArea).publish(any(Path.class));
+            when(stagingArea.holds(anyString())).thenReturn(false);
             return stagingArea;
         }
 

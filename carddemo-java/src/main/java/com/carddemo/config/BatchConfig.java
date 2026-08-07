@@ -16,6 +16,7 @@
  */
 package com.carddemo.config;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -38,6 +39,7 @@ import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -296,18 +298,29 @@ public final class BatchConfig {
      * The event publisher remains optional so a focused unit context that exercises only condition-code
      * infrastructure does not need application-event or AWS wiring.
      *
+     * <p><strong>A job that does not complete discards what it allocated.</strong> Publication is skipped
+     * for such a job, so the local generations its steps sealed name nothing durable and any working file
+     * they left names nothing at all. Both are removed here, by this execution's own generation token
+     * only, which is the abnormal disposition of the legacy allocation and keeps a failed run from leaving
+     * a dead artefact in the staging root. See {@code docs/decision-log.md} entry DL-211.
+     *
      * @param generationStores optional durable generation store
      * @param completionPublishers optional terminal application-event publisher
+     * @param stagingDirectory the shared local staging root swept after a job that did not complete
      * @return the shared job-boundary listener, never {@code null}
      */
     @Bean
     public JobExecutionListener batchJobBoundaryListener(
             final ObjectProvider<StagedGenerationStore> generationStores,
-            final ObjectProvider<JobCompletionEventPublisher> completionPublishers) {
+            final ObjectProvider<JobCompletionEventPublisher> completionPublishers,
+            @Value("${" + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}") final String stagingDirectory) {
         Objects.requireNonNull(generationStores, "generationStores");
         Objects.requireNonNull(completionPublishers, "completionPublishers");
+        Objects.requireNonNull(stagingDirectory,
+                StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY);
         return new JobBoundaryListener(generationStores.getIfAvailable(),
-                completionPublishers.getIfAvailable());
+                completionPublishers.getIfAvailable(), Path.of(stagingDirectory));
     }
 
     /**
@@ -696,14 +709,20 @@ public final class BatchConfig {
         /** Terminal event publisher, absent only in a focused context without component scanning. */
         private final JobCompletionEventPublisher completionPublisher;
 
+        /** Local staging root swept after a job that did not complete. */
+        private final Path stagingDirectory;
+
         /**
          * @param generationStore durable artifact publisher, or {@code null}
          * @param completionPublisher terminal event publisher, or {@code null}
+         * @param stagingDirectory local staging root, never {@code null}
          */
         private JobBoundaryListener(final StagedGenerationStore generationStore,
-                final JobCompletionEventPublisher completionPublisher) {
+                final JobCompletionEventPublisher completionPublisher,
+                final Path stagingDirectory) {
             this.generationStore = generationStore;
             this.completionPublisher = completionPublisher;
+            this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
         }
 
         /**
@@ -784,6 +803,9 @@ public final class BatchConfig {
          */
         private void publishDurableArtifacts(final JobExecution jobExecution) {
             if (jobExecution.getStatus() != BatchStatus.COMPLETED) {
+                // Nothing was published, so nothing local names anything durable. Discard this
+                // execution's own allocations rather than leaving one dead artefact per failed run.
+                StagedGenerationStore.discardLocalArtifactsOf(jobExecution, this.stagingDirectory);
                 return;
             }
             final int artifactCount =

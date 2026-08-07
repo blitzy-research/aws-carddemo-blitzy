@@ -112,8 +112,14 @@ import com.carddemo.util.ZonedDecimalCodec;
  *   <li><strong>The default-group fallback retries exactly once and then abends.</strong> Its probe
  *       key is the ten-character padded form of the literal, because the receiving field at line 437
  *       is ten characters wide.</li>
- *   <li><strong>The account control break zeroes both cycle accumulators</strong>, not one, and it
- *       fires for the final group as well as on a key change.</li>
+ *   <li><strong>The account control break zeroes both cycle accumulators</strong>, not one, when it
+ *       fires.</li>
+ *   <li><strong>The account control break never fires for the run's final group.</strong> Its second
+ *       invocation site is the {@code ELSE} arm at lines 219 to 221, inside a test-before
+ *       {@code PERFORM UNTIL}, so the loop ends before the arm can run. The last account keeps its
+ *       balance and keeps both accumulators, while its interest records are still written - because
+ *       lines 215 and 468 run per row, inside the loop. See {@link AccountControlBreak} and
+ *       {@code docs/decision-log.md} entry DL-207.</li>
  * </ol>
  *
  * <h2>What replaced what</h2>
@@ -490,7 +496,11 @@ public class InterestCalculationService {
      *                             rows were presented
      * @param interestTransactions the transactions this group synthesized, in the order written
      * @param updatedAccount       the account as the control break rewrote it, with both cycle
-     *                             accumulators zeroed
+     *                             accumulators zeroed - or, when the end-of-file arm withheld the
+     *                             rewrite, the account exactly as the group read it
+     * @param accountRewritten     {@code true} when paragraph {@code 1050-UPDATE-ACCOUNT} ran for this
+     *                             group, {@code false} for the run's final group, whose control break
+     *                             the loop's own termination makes unreachable
      * @param rateGateSkipped      {@code true} when at least one row of the group had a zero rate
      * @param defaultGroupUsed     {@code true} when at least one row of the group fell back to the
      *                             padded default group literal
@@ -503,6 +513,7 @@ public class InterestCalculationService {
                                       List<CategoryInterest> categoryInterests,
                                       List<Transaction> interestTransactions,
                                       Account updatedAccount,
+                                      boolean accountRewritten,
                                       boolean rateGateSkipped,
                                       boolean defaultGroupUsed,
                                       int recordCount,
@@ -515,6 +526,47 @@ public class InterestCalculationService {
         public GroupInterestResult {
             categoryInterests = List.copyOf(categoryInterests);
             interestTransactions = List.copyOf(interestTransactions);
+        }
+    }
+
+    /**
+     * Whether a closing account group reaches paragraph {@code 1050-UPDATE-ACCOUNT} at all.
+     *
+     * <p>The source invokes that paragraph from exactly two places and only one of them can be reached.
+     * The reachable one is the key-change control break at {@code app/cbl/CBACT04C.cbl:L196}. The other
+     * is the {@code ELSE} arm at lines 219 to 221, which sits inside a {@code PERFORM UNTIL
+     * END-OF-FILE = 'Y'} whose condition is evaluated <strong>before</strong> each iteration; the read
+     * paragraph raises the flag itself at line 340, so the loop ends and the arm never runs. The last
+     * account of a run therefore never has its balance posted and never has its cycle accumulators
+     * closed, while every interest record of that account has already been written - because
+     * {@code 1300-COMPUTE-INTEREST} and {@code 1300-B-WRITE-TX} run per row at lines 215 and 468,
+     * inside the loop, long before any control break.
+     *
+     * <p>Both facts are reproduced rather than reconciled. See {@code docs/decision-log.md} entry
+     * DL-207.
+     */
+    public enum AccountControlBreak {
+
+        /**
+         * The key-change control break at line 196: the running total reaches the balance, both cycle
+         * accumulators are zeroed, and the account is rewritten.
+         */
+        REWRITE,
+
+        /**
+         * The end-of-file arm at lines 219 to 221, which the loop's own termination makes unreachable:
+         * the group is still accrued and every record it synthesizes is still written, but no balance
+         * is posted, no accumulator is zeroed and no account is rewritten.
+         */
+        WITHHELD_AT_END_OF_FILE;
+
+        /**
+         * Whether this control break performs paragraph {@code 1050-UPDATE-ACCOUNT}.
+         *
+         * @return {@code true} for the reachable key-change break, {@code false} for the end-of-file arm
+         */
+        public boolean rewritesAccount() {
+            return this == REWRITE;
         }
     }
 
@@ -605,13 +657,16 @@ public class InterestCalculationService {
      * that are not adjacent would be treated as separate groups - each closing its own control break
      * and each rewriting the account - which would post the same account's interest more than once.
      *
-     * <p><strong>The final group is flushed.</strong> The source expresses the end-of-file control
-     * break as the {@code ELSE} arm at lines 219 to 221 of a test-before {@code PERFORM UNTIL}, and a
-     * literal reading of that loop leaves the arm unreachable, because the read paragraph raises the
-     * end-of-file flag and the loop's own condition then ends the loop before the arm can run.
-     * Reproducing that unreachability would silently drop the last account's accrued interest, so the
-     * arm is honoured here: the last group is closed after the read loop ends. The divergence is
-     * recorded in the decision log rather than left implicit.
+     * <p><strong>The final group is accrued, and its account is deliberately NOT rewritten.</strong>
+     * The source expresses the end-of-file control break as the {@code ELSE} arm at lines 219 to 221 of
+     * a test-before {@code PERFORM UNTIL}, and that arm is unreachable: the read paragraph raises the
+     * end-of-file flag at line 340 and the loop's own condition then ends the loop before the arm can
+     * run. The last account of a run therefore keeps its balance and keeps its cycle accumulators, while
+     * every interest record of that account has already been written - because lines 215 and 468 run
+     * per row, inside the loop, before any control break. Both halves are reproduced here: the final
+     * group is closed with {@link AccountControlBreak#WITHHELD_AT_END_OF_FILE}, so its rows accrue, its
+     * records are written and its total is reported, and paragraph {@code 1050-UPDATE-ACCOUNT} is not
+     * performed. See {@code docs/decision-log.md} entry DL-207.
      *
      * <p><strong>Nothing accumulates across groups.</strong> The rows of the group currently filling
      * are the only rows the run holds, and each closed group and each synthesized transaction is offered
@@ -664,8 +719,8 @@ public class InterestCalculationService {
             // Line 190. The paragraph raises the end-of-file flag itself, exactly as line 340 does.
             final Optional<TransactionCategoryBalance> read = tcatbalfGetNext(cursor, run);
             if (read.isEmpty()) {
-                // The loop's own condition now ends it; the final group is closed below, which is the
-                // end-of-file control break the ELSE arm at lines 219 to 221 stands for.
+                // The loop's own condition now ends it, which is exactly why the ELSE arm at lines 219
+                // to 221 cannot run. The final group is still accrued below, without its rewrite.
                 continue;
             }
             final TransactionCategoryBalance row = read.get();
@@ -682,8 +737,8 @@ public class InterestCalculationService {
                 } else {
                     // Line 196. Closing the preceding group resets its running total by construction,
                     // which is what line 200 does for the group about to start.
-                    groupSink.accept(
-                            closeGroup(validatedDate, currentGroup, run, countedTransactions));
+                    groupSink.accept(closeGroup(validatedDate, currentGroup, run, countedTransactions,
+                            AccountControlBreak.REWRITE));
                     groupsClosed++;
                     currentGroup = new ArrayList<>();
                 }
@@ -693,9 +748,11 @@ public class InterestCalculationService {
             currentGroup.add(row);
         }
 
-        // Lines 219 to 221, honoured for the final group. See the note in this method's contract.
+        // Lines 219 to 221. The arm is unreachable, so the final group accrues and writes its records
+        // but its account is NOT rewritten. See the note in this method's contract.
         if (!currentGroup.isEmpty()) {
-            groupSink.accept(closeGroup(validatedDate, currentGroup, run, countedTransactions));
+            groupSink.accept(closeGroup(validatedDate, currentGroup, run, countedTransactions,
+                    AccountControlBreak.WITHHELD_AT_END_OF_FILE));
             groupsClosed++;
         }
 
@@ -811,12 +868,51 @@ public class InterestCalculationService {
             final List<TransactionCategoryBalance> groupCategoryBalances,
             final long initialTranIdSuffix,
             final Consumer<Transaction> synthesizedWriter) {
+        return calculateGroupInterest(parameterDate, accountId, groupCategoryBalances,
+                initialTranIdSuffix, synthesizedWriter, AccountControlBreak.REWRITE);
+    }
+
+    /**
+     * Accrues interest for one account group and closes it at the control break the caller names.
+     *
+     * <p>Identical to {@link #calculateGroupInterest(String, String, List, long, Consumer)} in every
+     * respect except one: the caller states which of the source's two invocations of paragraph
+     * {@code 1050-UPDATE-ACCOUNT} this group's close stands for. The key-change break at
+     * {@code app/cbl/CBACT04C.cbl:L196} performs it; the end-of-file arm at lines 219 to 221 cannot be
+     * reached and therefore does not. Every other act of the close - the per-row rate resolution, the
+     * interest computation, the fee invocation, the record writes and the running total - happens either
+     * way, because all of them are inside the read loop in the source and none of them depends on the
+     * control break.
+     *
+     * @param parameterDate            the ten-character date from the linkage area at line 178
+     * @param accountId                the eleven-digit account identifier every row of the group keys on
+     * @param groupCategoryBalances    the group's rows, in record-key order; must not be empty
+     * @param initialTranIdSuffix      the six-digit identifier suffix to continue from
+     * @param synthesizedWriter        invoked once per synthesized transaction, in synthesis order
+     * @param controlBreak             which of the two invocation sites this close stands for; must not
+     *                                 be {@code null}
+     * @return what the group produced, including the suffix the next group must continue from
+     * @throws IllegalArgumentException  when the parameter date is not exactly ten characters, when the
+     *                                   group is empty, when the suffix is negative, or when a row does
+     *                                   not belong to the named account
+     * @throws com.carddemo.exception.AbendException when the account or the cross-reference cannot be
+     *                                   read, when the rate cannot be resolved even from the default
+     *                                   group, or when a write fails
+     */
+    public GroupInterestResult calculateGroupInterest(final String parameterDate,
+            final String accountId,
+            final List<TransactionCategoryBalance> groupCategoryBalances,
+            final long initialTranIdSuffix,
+            final Consumer<Transaction> synthesizedWriter,
+            final AccountControlBreak controlBreak) {
         Objects.requireNonNull(synthesizedWriter, "synthesizedWriter must not be null: the legacy"
                 + " program writes every transaction record before it rewrites the account, so there"
                 + " is no group path that synthesizes a record with nowhere to write it");
+        Objects.requireNonNull(controlBreak, "controlBreak must not be null: a group closes at one of"
+                + " the two invocation sites of 1050-UPDATE-ACCOUNT and never at neither");
         return this.groupTransactionBoundary.execute(() -> calculateGroupInterestWithinBoundary(
                 parameterDate, accountId, groupCategoryBalances, initialTranIdSuffix,
-                synthesizedWriter));
+                synthesizedWriter, controlBreak));
     }
 
     /**
@@ -832,13 +928,15 @@ public class InterestCalculationService {
      * @param groupCategoryBalances the rows belonging to the group
      * @param initialTranIdSuffix   the run suffix entering the group
      * @param synthesizedWriter     the writer invoked at each line-500 write, inside this boundary
+     * @param controlBreak          which invocation site of {@code 1050-UPDATE-ACCOUNT} closes the group
      * @return the completed account-group result
      */
     private GroupInterestResult calculateGroupInterestWithinBoundary(final String parameterDate,
             final String accountId,
             final List<TransactionCategoryBalance> groupCategoryBalances,
             final long initialTranIdSuffix,
-            final Consumer<Transaction> synthesizedWriter) {
+            final Consumer<Transaction> synthesizedWriter,
+            final AccountControlBreak controlBreak) {
         final String validatedDate = validatedParameterDate(parameterDate);
         Objects.requireNonNull(accountId, "accountId must not be null");
         Objects.requireNonNull(groupCategoryBalances, "groupCategoryBalances must not be null");
@@ -881,16 +979,21 @@ public class InterestCalculationService {
             categoryInterests.add(accrueCategoryRow(row, context, group, interestTransactions));
         }
 
-        // Lines 350 to 370, and for the run's final group also lines 219 to 221. Every record of this
+        // Lines 350 to 370, reached only from the key-change break at line 196. Every record of this
         // group has already been handed to the writer by now, exactly as the legacy had already written
-        // every one of them to SYSTRAN before it reached the control break.
-        final Account updatedAccount = updateAccount(account, group.totalInterest());
+        // every one of them to SYSTRAN before it reached the control break. For the run's final group
+        // the break is the unreachable ELSE arm at lines 219 to 221, so nothing is posted and nothing
+        // is zeroed: the account travels back exactly as it was read.
+        final Account closedAccount = controlBreak.rewritesAccount()
+                ? updateAccount(account, group.totalInterest())
+                : withholdAccountRewrite(account, group.totalInterest());
 
         return new GroupInterestResult(accountId,
                 group.totalInterest(),
                 categoryInterests,
                 interestTransactions,
-                updatedAccount,
+                closedAccount,
+                controlBreak.rewritesAccount(),
                 group.isRateGateSkipped(),
                 group.isDefaultGroupUsed(),
                 groupCategoryBalances.size(),
@@ -1074,6 +1177,33 @@ public class InterestCalculationService {
             displayIoStatus(rawFileStatus, OPERATION_REWRITE, RESOURCE_ACCTFILE);   // Lines 366-367.
             throw abendProgram(rawFileStatus, OPERATION_REWRITE, RESOURCE_ACCTFILE); // Line 368.
         }
+    }
+
+    /**
+     * The end-of-file arm at lines 219 to 221, which the loop at line 188 makes unreachable: the group
+     * closes without paragraph {@code 1050-UPDATE-ACCOUNT} running at all.
+     *
+     * <p>Nothing is computed here and nothing is written. The account is returned exactly as line 203
+     * read it, so its current balance still excludes the interest this group accrued and both of its
+     * cycle accumulators still hold the values the posting run left in them. The group's records were
+     * already written at line 468 and its running total is still reported, because neither depends on
+     * the control break.
+     *
+     * <p>The withheld amount is logged rather than discarded silently, because a balance that does not
+     * move while records exist for it is exactly the kind of outcome an operator has to be able to
+     * explain. See {@code docs/decision-log.md} entry DL-207.
+     *
+     * @param  account       the account the group read at line 203, returned unmodified
+     * @param  totalInterest the group's running total, which no balance receives
+     * @return the account exactly as it was read
+     */
+    private static Account withholdAccountRewrite(final Account account,
+            final BigDecimal totalInterest) {
+        LOG.info("END OF FILE CONTROL BREAK IS UNREACHABLE, SO 1050-UPDATE-ACCOUNT IS NOT PERFORMED"
+                + " FOR THE FINAL ACCOUNT GROUP - accountRef={} withheldInterest={} balance and both"
+                + " cycle accumulators are left as read",
+                SensitiveLogRedactor.redact(account.getAcctId()), totalInterest);
+        return account;
     }
 
     /**
@@ -1610,13 +1740,16 @@ public class InterestCalculationService {
      * @param group             the buffered rows of one account, in record-key order and never empty
      * @param run               the run's per-invocation state
      * @param synthesizedWriter where each line-500 write goes
+     * @param controlBreak      which invocation site of {@code 1050-UPDATE-ACCOUNT} closes this group
      * @return what the group produced
      */
     private GroupInterestResult closeGroup(final String parameterDate,
             final List<TransactionCategoryBalance> group, final RunState run,
-            final Consumer<Transaction> synthesizedWriter) {
+            final Consumer<Transaction> synthesizedWriter,
+            final AccountControlBreak controlBreak) {
         final GroupInterestResult closed = calculateGroupInterest(parameterDate,
-                group.get(0).getTrancatAcctId(), group, run.tranIdSuffix(), synthesizedWriter);
+                group.get(0).getTrancatAcctId(), group, run.tranIdSuffix(), synthesizedWriter,
+                controlBreak);
         run.rememberTranIdSuffix(closed.lastTranIdSuffix());
         run.mergeGroupFlags(closed.rateGateSkipped(), closed.defaultGroupUsed());
         return closed;

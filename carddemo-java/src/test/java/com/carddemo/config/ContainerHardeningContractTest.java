@@ -255,14 +255,67 @@ final class ContainerHardeningContractTest {
                 .isEqualTo("35s");
     }
 
+    /**
+     * The all-zero revision the Dockerfile refuses by name, and Compose's default for an unsupplied one.
+     *
+     * <p>Restated here rather than imported, so this expectation cannot be satisfied by the same literal
+     * it is checking.
+     */
+    private static final String ALL_ZERO_REVISION_SENTINEL =
+            "0000000000000000000000000000000000000000";
+
     @Test
-    @DisplayName("Compose requires the source revision and Maven version for every application build")
-    void composeRequiresVerifiedBuildIdentity() throws IOException {
+    @DisplayName("Compose defaults both identity arguments so a teardown needs no exports, and the "
+            + "default revision is the sentinel the image build refuses")
+    void composeDefaultsBuildIdentityWithoutWeakeningTheGuard() throws IOException {
         final JsonNode arguments = service(compose(), "app").path("build").path("args");
-        assertThat(arguments.path("APP_VERSION").asText()).startsWith("${APP_VERSION:?");
-        assertThat(arguments.path("SOURCE_REVISION").asText()).startsWith("${SOURCE_REVISION:?");
+
+        // Neither may be a required-variable reference. Compose interpolates the whole file for EVERY
+        // subcommand, so a required-but-unset variable makes `config`, `ps`, `logs` and `down` fail -
+        // and a teardown cannot need the build provenance of the image it is removing.
+        assertThat(arguments.path("APP_VERSION").asText())
+                .as("a required-variable reference here breaks every read-only subcommand")
+                .doesNotStartWith("${APP_VERSION:?")
+                .isEqualTo("${APP_VERSION:-" + mavenProjectVersion() + "}");
+        assertThat(arguments.path("SOURCE_REVISION").asText())
+                .as("the default must be the sentinel the Dockerfile refuses, so an unlabelled image "
+                        + "still cannot be built - the refusal simply moves to the build, where it can "
+                        + "say what a correct value looks like")
+                .doesNotStartWith("${SOURCE_REVISION:?")
+                .isEqualTo("${SOURCE_REVISION:-" + ALL_ZERO_REVISION_SENTINEL + "}");
         assertThat(arguments.path("SOURCE_DATE_EPOCH").asText())
                 .isEqualTo("${SOURCE_DATE_EPOCH:-1658188800}");
+
+        // And the guard the compose reference used to express is still enforced, in the one place a
+        // build can check it.
+        final String dockerfile = Files.readString(DOCKERFILE_PATH, StandardCharsets.UTF_8);
+        assertThat(dockerfile)
+                .as("the image build refuses the sentinel by name")
+                .contains("[ \"$SOURCE_REVISION\" != '" + ALL_ZERO_REVISION_SENTINEL + "' ]")
+                .as("and refuses any revision that is not forty characters")
+                .contains("[ \"${#SOURCE_REVISION}\" -eq 40 ]")
+                .as("and refuses a version outside the Maven grammar")
+                .contains("FATAL: APP_VERSION must be the exact Maven project version");
+    }
+
+    /**
+     * Reads this module's own Maven version out of its build file.
+     *
+     * <p>Read rather than restated, because the assertion above is precisely that the Compose default
+     * and the Maven version do not drift apart; a literal here would let both move together silently.
+     *
+     * @return the project version
+     * @throws IOException if the build file cannot be read
+     */
+    private static String mavenProjectVersion() throws IOException {
+        final String build = Files.readString(Path.of("pom.xml"), StandardCharsets.UTF_8);
+        final java.util.regex.Matcher coordinate = java.util.regex.Pattern.compile(
+                "<artifactId>carddemo-java</artifactId>\\s*<version>([^<]+)</version>")
+                .matcher(build);
+        assertThat(coordinate.find())
+                .as("pom.xml must declare this module's own version beside its artefact identifier")
+                .isTrue();
+        return coordinate.group(1);
     }
 
     @Test

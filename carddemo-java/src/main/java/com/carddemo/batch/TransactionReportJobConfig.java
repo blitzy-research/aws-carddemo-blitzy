@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Comparator;
@@ -438,13 +437,6 @@ public final class TransactionReportJobConfig {
     // -----------------------------------------------------------------------------------------------
 
     /**
-     * Separator written after each fixed-length record of a staged generation. A literal rather than
-     * the platform line separator, so a staged generation is byte-identical on every host and is
-     * readable by the shared fixed-width reader, which is what the estate's own sample data assumes.
-     */
-    private static final String RECORD_SEPARATOR = "\n";
-
-    /**
      * Scale the card-number sort key is decoded at. The field is a whole-number identifier, so it
      * carries no implied decimal position; the codec still owns the decode and the sign convention.
      */
@@ -716,22 +708,22 @@ public final class TransactionReportJobConfig {
      * block and the page-to-grand-total chain - belongs to the report generator and its stage. This
      * step composes them and proves the width of every record that reaches the generation.
      *
+     * <p>The step seals and registers the report generation; the shared job-boundary listener uploads it
+     * once the submission has completed. That is what keeps one generation to one key and keeps a failed
+     * submission's report out of the bucket entirely. See {@code docs/decision-log.md} entry DL-212.
+     *
      * @param reportProcessor the report stage; must not be {@code null}
-     * @param stagingArea the shared object-store staging boundary
      * @return the step, registered under {@link #EMIT_STEP_NAME}, never {@code null}
      */
     @Bean
     public Step transactionReportEmitStep(
-            @Qualifier("transactionReportProcessor") final TransactionReportProcessor reportProcessor,
-            final BatchStagingArea stagingArea) {
+            @Qualifier("transactionReportProcessor")
+            final TransactionReportProcessor reportProcessor) {
 
         Objects.requireNonNull(reportProcessor, "reportProcessor");
         return new StepBuilder(EMIT_STEP_NAME, this.jobRepository)
-                .tasklet((contribution, chunkContext) -> {
-                    final RepeatStatus result = emitReport(reportProcessor, chunkContext);
-                    stagingArea.publish(reportGeneration(jobExecutionIdOf(chunkContext)));
-                    return result;
-                }, this.transactionManager)
+                .tasklet((contribution, chunkContext) -> emitReport(reportProcessor, chunkContext),
+                        this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -1351,7 +1343,6 @@ public final class TransactionReportJobConfig {
                 final String image = TransactionRecordMapper.toRecord(record);
                 requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_UNLOAD_OUTPUT);
                 this.writer.write(image);
-                this.writer.write(RECORD_SEPARATOR);
                 this.recordsUnloaded++;
                 return FileStatus.SUCCESS.getCode();
             });
@@ -1449,7 +1440,7 @@ public final class TransactionReportJobConfig {
             Objects.requireNonNull(backupGeneration, "backupGeneration");
             // The reader, and with it every offset of the record layout, comes from the shared factory;
             // this step composes it rather than tokenising the record itself.
-            this.reader = readerFactory.transactionReader(new PathResource(backupGeneration));
+            this.reader = readerFactory.fixedTransactionReader(new PathResource(backupGeneration));
             this.filteredGeneration = Objects.requireNonNull(filteredGeneration,
                     "filteredGeneration");
             this.window = Objects.requireNonNull(window, "window");
@@ -1532,7 +1523,6 @@ public final class TransactionReportJobConfig {
             writeRecord(DD_SORT_OUTPUT, () -> {
                 requireEncodedWidth(ordered, UNLOAD_RECORD_LENGTH, DD_SORT_OUTPUT);
                 this.writer.write(ordered);
-                this.writer.write(RECORD_SEPARATOR);
                 return FileStatus.SUCCESS.getCode();
             });
         }
@@ -1549,8 +1539,8 @@ public final class TransactionReportJobConfig {
          */
         void forEachOrderedRecord(final Consumer<String> consumer) {
             Objects.requireNonNull(consumer, "consumer");
-            try (BufferedReader ordered = Files.newBufferedReader(this.filteredGeneration,
-                    StandardCharsets.US_ASCII)) {
+            try (BufferedReader ordered = FixedWidthFlatFileReaderFactory
+                    .fixedWidthReader(this.filteredGeneration, UNLOAD_RECORD_LENGTH)) {
                 String image = ordered.readLine();
                 while (image != null) {
                     consumer.accept(image);
@@ -1642,7 +1632,7 @@ public final class TransactionReportJobConfig {
             Objects.requireNonNull(readerFactory, "readerFactory");
             this.reportProcessor = Objects.requireNonNull(reportProcessor, "reportProcessor");
             this.dateParameterCard = dateParameterCard;
-            this.transactionReader = readerFactory.transactionReader(
+            this.transactionReader = readerFactory.fixedTransactionReader(
                     new PathResource(Objects.requireNonNull(filteredGeneration,
                             "filteredGeneration")));
             this.reportGeneration = Objects.requireNonNull(reportGeneration, "reportGeneration");
@@ -1701,7 +1691,6 @@ public final class TransactionReportJobConfig {
                 requireEncodedWidth(reportRecord, REPORT_RECORD_LENGTH,
                         TransactionReportProcessor.LEGACY_DD_TRANREPT);
                 this.writer.write(reportRecord);
-                this.writer.write(RECORD_SEPARATOR);
                 this.recordsWritten++;
                 return FileStatus.SUCCESS.getCode();
             });

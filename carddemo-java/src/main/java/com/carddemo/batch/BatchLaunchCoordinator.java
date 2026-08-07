@@ -24,6 +24,8 @@ import java.sql.SQLException;
 import java.util.Map;
 import java.util.Objects;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
@@ -37,6 +39,7 @@ import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteExcep
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.stereotype.Component;
@@ -67,6 +70,18 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway {
     /** Parameterized PostgreSQL lock acquisition; no caller value is concatenated into SQL. */
     static final String TRY_LOCK_SQL =
             "SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))";
+
+    /**
+     * How many times one reservation is attempted before the launch is refused.
+     *
+     * <p>Two: the first attempt, and one retry for a store conflict the store itself reports as worth
+     * retrying. A third attempt would only lengthen the window in which a caller waits for an answer that
+     * a second conflict has already made clear.
+     */
+    static final int RESERVATION_ATTEMPTS = 2;
+
+    /** Logger for reservation conflicts, which are operational events rather than caller errors. */
+    private static final Logger LOG = LoggerFactory.getLogger(BatchLaunchCoordinator.class);
 
     private final JobRepository jobRepository;
 
@@ -114,19 +129,55 @@ public final class BatchLaunchCoordinator implements BatchLaunchGateway {
                 reserved.getId(), "job repository returned an execution without an identifier");
     }
 
+    /**
+     * Reserves one execution behind the database lock, retrying once if the store reports a transient
+     * concurrency failure and refusing the launch as an active execution if it reports one again.
+     *
+     * <p><strong>Why a retry belongs here.</strong> The framework creates its instance and execution rows
+     * in its own transaction at serializable isolation. Two launches that arrive together can therefore
+     * be cancelled by the store as a serialization pivot even though neither did anything wrong, and the
+     * store says so itself - PostgreSQL's own hint on that error is that the transaction might succeed if
+     * retried. One retry is enough: the reservation is short, the advisory lock is released by the
+     * rollback before the retry begins, and the competing reservation has finished by then.
+     *
+     * <p><strong>Why the second failure is a refusal and not an internal error.</strong> A second
+     * serialization failure on a reservation this short means another launch of the same job is genuinely
+     * in flight, which is precisely {@link RejectionReason#ACTIVE_EXECUTION} - the same outcome the
+     * caller receives when the advisory lock is busy or the framework reports an execution already
+     * running. Surfacing the JDBC exception instead published a driver-level message as if the service
+     * had malfunctioned, when the correct answer to the caller is "not now". A failure that is not
+     * transient is still an internal error and is still reported as one. See
+     * {@code docs/decision-log.md} entry DL-218.
+     *
+     * @param  job              the registered job to reserve an execution for
+     * @param  callerParameters the allow-listed caller parameters
+     * @return the reserved execution, never {@code null}
+     * @throws LaunchRejectedException if the launch is refused, including a repeated transient conflict
+     * @throws IllegalStateException   if the guard fails for a reason retrying cannot resolve
+     */
     private JobExecution reserveWithDatabaseLock(
             final Job job, final Map<String, String> callerParameters) {
         final String jobName = Objects.requireNonNull(job.getName(), "job name must not be null");
-        try {
-            final JobExecution reserved = this.jdbcOperations.execute(
-                    (ConnectionCallback<JobExecution>) connection ->
-                            reserveOnConnection(
-                                    connection, job, callerParameters, jobName));
-            return Objects.requireNonNull(reserved, "JDBC callback returned no reserved execution");
-        } catch (final DataAccessException failure) {
-            throw new IllegalStateException(
-                    "the database-backed batch launch guard could not be completed", failure);
+        TransientDataAccessException lastTransientFailure = null;
+        for (int attempt = 1; attempt <= RESERVATION_ATTEMPTS; attempt++) {
+            try {
+                final JobExecution reserved = this.jdbcOperations.execute(
+                        (ConnectionCallback<JobExecution>) connection ->
+                                reserveOnConnection(
+                                        connection, job, callerParameters, jobName));
+                return Objects.requireNonNull(reserved,
+                        "JDBC callback returned no reserved execution");
+            } catch (final TransientDataAccessException conflict) {
+                lastTransientFailure = conflict;
+                LOG.info("Launch reservation for job {} met a transient store conflict on attempt {} of"
+                                + " {}; conflict={}", jobName, Integer.valueOf(attempt),
+                        Integer.valueOf(RESERVATION_ATTEMPTS), conflict.getClass().getSimpleName());
+            } catch (final DataAccessException failure) {
+                throw new IllegalStateException(
+                        "the database-backed batch launch guard could not be completed", failure);
+            }
         }
+        throw new LaunchRejectedException(RejectionReason.ACTIVE_EXECUTION, lastTransientFailure);
     }
 
     private JobExecution reserveOnConnection(

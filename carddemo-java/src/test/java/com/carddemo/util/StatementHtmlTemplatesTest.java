@@ -51,24 +51,22 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * engine for the same reason (decision D-27), and no record carries a line terminator or tab
  * byte (decision D-30).</p>
  *
- * <p><strong>Which path escapes, and which does not.</strong> The three work-line composers
- * &mdash; {@link StatementHtmlTemplates#addressWorkLine(String)},
+ * <p><strong>Nothing on any path encodes a byte.</strong> The three work-line composers &mdash;
+ * {@link StatementHtmlTemplates#addressWorkLine(String)},
  * {@link StatementHtmlTemplates#basicDetailsWorkLine(String, String)} and
- * {@link StatementHtmlTemplates#transactionWorkLine(String)} &mdash; escape caller-supplied data
- * before they compose it, so a value carrying markup cannot form a tag in an emitted record. The
- * free-form fitter {@link StatementHtmlTemplates#workLine(String)} does <strong>not</strong>
- * escape, and it still exists. It is a <em>guarded</em> fitter rather than an unchecked sink: it
- * refuses anything outside printable US-ASCII and enforces the exact hundred-byte width, but it
- * moves markup characters through untouched by design, because it receives content that has
- * already been composed and cannot distinguish a legitimate paragraph literal from an injected
- * one. An unescaped-data path is therefore <em>documented and unused</em> rather than absent, and
- * saying otherwise would rest an assurance on a method that is still published. What keeps it
- * unused is the source census in {@code StatementHtmlWorkLineExposureTest}, which fails if any
- * production source ever routes caller-supplied field data through it. The contrast itself is
- * pinned below, so a future change that made the fitter escape, or made a composer stop
- * escaping, breaks a test rather than passing quietly. Every fixed literal the legacy generator
- * emits is still emitted byte for byte, because a fixed literal is not caller-supplied data
- * (decision D-49).</p>
+ * {@link StatementHtmlTemplates#transactionWorkLine(String)} &mdash; wrap a value in the paragraph
+ * tags the legacy program wrapped it in and move the value itself through untouched, and the
+ * free-form fitter {@link StatementHtmlTemplates#workLine(String)} wraps nothing and likewise moves
+ * its content through untouched. The legacy generator emitted every value with a plain {@code MOVE}
+ * and encoded nothing, so escaping any position would change a byte the batch stream is required to
+ * reproduce; per DL-209 no position is escaped, encoded, masked or repaired. What every path does
+ * enforce is a refusal rather than an alteration: anything outside printable US-ASCII, and any width
+ * other than the exact hundred bytes, is rejected instead of being silently mended, so an
+ * illegitimate value never reaches a record and a legitimate one reaches it verbatim. The
+ * composers and the fitter differ only in structure &mdash; the fitter adds no tag of its own
+ * &mdash; which is why the source census in {@code StatementHtmlWorkLineExposureTest} keeps the
+ * fitter out of the record-composing path. Every fixed literal the legacy generator emits is
+ * emitted byte for byte for the same reason the data is.</p>
  *
  * <p>This is a direct end-to-end byte-parity surface. The migrated batch stream has to be
  * byte-identical to the stream the legacy generator produced, so every assertion below
@@ -1440,19 +1438,18 @@ class StatementHtmlTemplatesTest {
     @Test
     @DisplayName("the work-line helper moves markup characters in raw, with no entity encoding and no quote rewriting")
     void workLineMovesMarkupCharactersInRaw() {
-        // This is deliberately a round-trip rather than an escaping assertion, and it is NOT the
-        // approved path for caller-supplied field data. The approved path for the three work-line
-        // record types is the escaping composers, which neutralise markup before composing; the
-        // contrast between them and this fitter is asserted in
-        // theEscapingComposersNeutraliseWhatTheRawFitterPassesThrough below.
+        // This is a round-trip assertion, and after DL-209 it is the same guarantee every published
+        // path gives: no byte on any path is encoded. This fitter is still not the path for a bare
+        // field value, but the reason is structural rather than defensive - it adds no paragraph
+        // tags, so a value handed to it directly would reach a record without the structure that
+        // record is defined to carry. The three composers add those tags and move the value itself
+        // through exactly as this method does.
         //
-        // This fitter exists for content that is already composed, where the migrated stream is
-        // compared byte for byte against the legacy stream and entity encoding would corrupt those
-        // bytes: the legacy composes these lines from paragraph literals wrapped around display
-        // fields, so markup characters are legitimate content once composition has happened. That
-        // is why passing data through here unescaped is a caller defect rather than something this
-        // method can detect, and why the census in StatementHtmlWorkLineExposureTest, not this
-        // test, is what establishes that no production caller does it. The control this method does
+        // The migrated stream is compared byte for byte against the legacy stream and entity
+        // encoding would corrupt those bytes: the legacy composes these lines from paragraph
+        // literals wrapped around display fields, so markup characters are legitimate content. The
+        // census in StatementHtmlWorkLineExposureTest, not this test, is what establishes that no
+        // production caller reaches this fitter with a bare field value. The control every path does
         // apply is refusal of anything outside printable US-ASCII, asserted by the character-set
         // rejection tests further down, together with the narrower digits-and-spaces rule that
         // keeps markup out of the account-number slot entirely.
@@ -1537,7 +1534,7 @@ class StatementHtmlTemplatesTest {
 
     /*
      * ========================================================================================
-     * Character-set rejection. This is the control that stands in place of escaping.
+     * Character-set rejection. This is the whole of the class's hardening: refusal, never rewriting.
      *
      * No substituted byte may be rewritten, because the migrated stream is compared byte for
      * byte against the legacy stream, so the class refuses what it cannot safely carry instead
@@ -1659,8 +1656,8 @@ class StatementHtmlTemplatesTest {
      *
      * <p>The legacy moves a numeric display item into this slot, so digits and the pad space are
      * the whole permitted set. The markup characters listed here are the injection vectors that
-     * the narrowing removes: the slot is substituted into an active heading element and nothing
-     * about it is escaped.</p>
+     * the narrowing removes: the slot is substituted into an active heading element, and because no
+     * path encodes anything (DL-209) refusing them is the only control there is.</p>
      *
      * @return one argument pair per rejected value
      */
@@ -1738,185 +1735,135 @@ class StatementHtmlTemplatesTest {
     }
 
     /*
+    /*
      * ========================================================================================
-     * The escaping composers set against the raw fitter.
+     * The three composers set against the raw fitter.
      *
      * The behaviour of each side in isolation is pinned elsewhere: this file pins the raw
      * fitter's byte image, and StatementHtmlTemplatesSecurityTest pins each composer's legacy
-     * composition, its truncation, its refusal of a null, and the blanking of a character
-     * reference cut by the hundred-byte boundary. Neither file asserted the two sides against
-     * each other, and that gap is exactly what let this suite's own header claim that the raw
-     * composer "no longer exists" while it remained published: with no assertion tying the two
-     * paths together, nothing failed when the claim stopped being true.
+     * composition, its truncation and its refusal of a null. Neither file asserted the two sides
+     * against each other, and the tests below close that gap.
      *
-     * The two tests below close that. Both expectations are written out by hand as literals; no
-     * escaped form is obtained by calling the escaping method, because a test that asked the
-     * class under test what it produces and then asserted it produces that would prove nothing.
+     * Escaping was applied here once and has been removed: the legacy program moves a field's
+     * bytes into a hundred-byte line and writes the line, so substituting character references
+     * kept the width while displacing every byte after the substitution - a byte-parity defect
+     * against the expected-output fixture. See docs/decision-log.md entry DL-209. Every
+     * expectation below is written out by hand as a literal.
      * ========================================================================================
      */
 
     @Test
-    @DisplayName("the three work-line composers neutralise the markup that the raw fitter moves "
-            + "through untouched, and all four still occupy exactly one record")
-    void theEscapingComposersNeutraliseWhatTheRawFitterPassesThrough() {
-        // One hostile value, sent through all four published paths. Every expected image below is
-        // hand-written: the escaped form is spelled out character by character rather than
-        // obtained from escapeText.
-        final String hostile = "<script>alert('x')&\"y\"</script>";
-        final String escapedHostile =
-                "&lt;script&gt;alert(&#39;x&#39;)&amp;&quot;y&quot;&lt;/script&gt;";
+    @DisplayName("all four published paths move markup-significant bytes through untouched, and all "
+            + "four still occupy exactly one record")
+    void everyPublishedPathMovesMarkupSignificantBytesThroughUntouched() {
+        // One value carrying all five characters an escaping implementation would have rewritten,
+        // sent through all four published paths. Every expected image is hand-written.
+        final String markupBearing = "<script>alert('x')&\"y\"</script>";
         final String paragraphOpen = "<p>";
         final String paragraphClose = "</p>";
         final String addressTrailingSpaces = "  ";
 
         // ---- The raw fitter: markup arrives, and leaves, untouched. ----
-        final String raw = StatementHtmlTemplates.workLine(hostile);
+        final String raw = StatementHtmlTemplates.workLine(markupBearing);
 
         assertThat(asciiBytes(raw))
-                .as("the raw fitter must move the hostile value through byte for byte")
-                .isEqualTo(expectedRecord(hostile));
-        assertCarriesBytes(raw, "<script>");
-        assertLacksBytes(raw, "&lt;");
+                .as("the raw fitter must move the value through byte for byte")
+                .isEqualTo(expectedRecord(markupBearing));
 
-        // ---- The transaction composer: the same value cannot form a tag. ----
-        final String transaction = StatementHtmlTemplates.transactionWorkLine(hostile);
+        // ---- The transaction composer: the same value, inside its element, unchanged. ----
+        final String transaction = StatementHtmlTemplates.transactionWorkLine(markupBearing);
 
         assertThat(asciiBytes(transaction))
-                .as("the transaction composer must emit the escaped value inside its element")
-                .isEqualTo(expectedRecord(paragraphOpen + escapedHostile + paragraphClose));
+                .as("the transaction composer must emit the value verbatim inside its element")
+                .isEqualTo(expectedRecord(paragraphOpen + markupBearing + paragraphClose));
 
-        // ---- The address composer: escaped, plus its two literal spaces. ----
+        // ---- The address composer: verbatim, plus its two literal spaces. ----
         // The two-space delimiter is absent from this value, so the whole field transfers.
-        assertThat(hostile)
+        assertThat(markupBearing)
                 .as("the fixture must carry no two-space run, or the field would be cut instead")
                 .doesNotContain(addressTrailingSpaces);
 
-        final String address = StatementHtmlTemplates.addressWorkLine(hostile);
+        final String address = StatementHtmlTemplates.addressWorkLine(markupBearing);
 
         assertThat(asciiBytes(address))
-                .as("the address composer must emit the escaped value, then its two literal spaces")
+                .as("the address composer must emit the value, then its two literal spaces")
                 .isEqualTo(expectedRecord(
-                        paragraphOpen + escapedHostile + addressTrailingSpaces + paragraphClose));
+                        paragraphOpen + markupBearing + addressTrailingSpaces + paragraphClose));
 
-        // ---- The basic-details composer: the label is a second data position, so it escapes too. ----
-        final String hostileLabel = "L<x>: ";
-        final String escapedLabel = "L&lt;x&gt;: ";
+        // ---- The basic-details composer: label and value are both moved as they arrive. ----
+        final String label = "L<x>: ";
         final String basicDetails =
-                StatementHtmlTemplates.basicDetailsWorkLine(hostileLabel, hostile);
+                StatementHtmlTemplates.basicDetailsWorkLine(label, markupBearing);
 
         assertThat(asciiBytes(basicDetails))
-                .as("the basic-details composer must escape its label as well as its value")
-                .isEqualTo(expectedRecord(
-                        paragraphOpen + escapedLabel + escapedHostile + paragraphClose));
+                .as("the basic-details composer must move its label as it moves its value")
+                .isEqualTo(expectedRecord(paragraphOpen + label + markupBearing + paragraphClose));
 
-        // The contrast, stated once over all three composers: the opening script tag that reached
-        // the raw record cannot appear in any composed record, and the escaped form must.
-        for (final String composed : List.of(transaction, address, basicDetails)) {
+        // The contrast, stated once over all four paths: no character reference is introduced
+        // anywhere, and every record is exactly one record wide.
+        for (final String composed : List.of(raw, transaction, address, basicDetails)) {
             assertThat(asciiWidth(composed))
-                    .as("every composed record must still be exactly one record wide")
+                    .as("every record must be exactly one record wide")
                     .isEqualTo(EXPECTED_RECORD_LENGTH);
-            assertLacksBytes(composed, "<script>");
-            assertLacksBytes(composed, "</script>");
-            assertCarriesBytes(composed, "&lt;script&gt;");
+            assertCarriesBytes(composed, "<script>");
+            assertLacksBytes(composed, "&lt;");
+            assertLacksBytes(composed, "&amp;");
+            assertLacksBytes(composed, "&#39;");
+            assertLacksBytes(composed, "&quot;");
         }
     }
 
     @Test
-    @DisplayName("escaping widens a value, so content that fits the record raw can be cut from "
-            + "the composed record that the raw fitter would have carried whole")
-    void escapingInflatesWidthSoContentThatFitRawCanBeCutFromTheComposedRecord() {
-        // Both values below are ninety-three characters, which is exactly what fits between the
-        // opening and closing tags of a hundred-byte record. The first holds nothing escapable and
-        // survives whole. The second replaces four of them with ampersands, each of which widens
-        // from one byte to five, so the composed line overruns and loses content the raw fitter
-        // would have kept. This is the byte-level cost of the escaping divergence, and it is a
-        // property of composition rather than of the fitter.
+    @DisplayName("no value is widened, so a value that fits the raw record fits the composed record "
+            + "too, and the record is cut only at its own byte boundary")
+    void noValueIsWidenedSoTheCutIsOnlyEverAtTheRecordBoundary() {
+        // Ninety-three characters is exactly what fits between the opening and closing tags of a
+        // hundred-byte record. Both fixtures are that length; the second is made entirely of the
+        // characters an escaping implementation would have widened. Both must survive whole.
         final int fittingLength = 93;
         final String plainValue = "B".repeat(fittingLength);
-        final String ampersandValue = "B".repeat(fittingLength - 4) + "&&&&";
+        final String markupValue = "B".repeat(fittingLength - 4) + "&&&&";
 
-        assertThat(ampersandValue.length())
-                .as("both fixtures must be the same length, or the comparison is not about escaping")
+        assertThat(markupValue.length())
+                .as("both fixtures must be the same length, or the comparison is not about width")
                 .isEqualTo(plainValue.length());
 
-        // The plain value composes to exactly one record with its closing tag intact.
         assertThat(asciiBytes(StatementHtmlTemplates.transactionWorkLine(plainValue)))
                 .as("ninety-three plain characters must compose to a full record with both tags")
-                .isEqualTo(asciiBytes("<p>" + plainValue + "</p>"));
+                .isEqualTo(asciiBytes(paragraphWrapped(plainValue)));
 
-        // The same length of value, once escaped, no longer fits: one ampersand survives as a
-        // whole reference, the remaining three are gone, and so is the closing tag. The trailing
-        // bytes are the ASCII space, so the record keeps its exact width.
-        final String inflated = StatementHtmlTemplates.transactionWorkLine(ampersandValue);
+        assertThat(asciiBytes(StatementHtmlTemplates.transactionWorkLine(markupValue)))
+                .as("and so must ninety-three characters ending in four ampersands: nothing is "
+                        + "widened, so nothing is displaced and the closing tag survives")
+                .isEqualTo(asciiBytes(paragraphWrapped(markupValue)));
 
-        assertThat(asciiBytes(inflated))
-                .as("the escaped value must be cut to one record, losing the tail and the closing tag")
-                .isEqualTo(expectedRecord("<p>" + "B".repeat(fittingLength - 4) + "&amp;"));
-
-        assertThat(asciiWidth(inflated))
-                .as("a cut record must still be exactly one record wide")
-                .isEqualTo(EXPECTED_RECORD_LENGTH);
-        assertLacksBytes(inflated, "</p>");
-
-        // The raw fitter, given the identical value, keeps all four ampersands: it does not widen
-        // anything, so nothing is displaced. That is the whole difference between the two paths.
-        assertThat(asciiBytes(StatementHtmlTemplates.workLine(ampersandValue)))
+        // The raw fitter, given the identical value, produces the identical content bytes.
+        assertThat(asciiBytes(StatementHtmlTemplates.workLine(markupValue)))
                 .as("the raw fitter must carry the same value whole, ampersands and all")
-                .isEqualTo(expectedRecord(ampersandValue));
+                .isEqualTo(expectedRecord(markupValue));
+
+        // A value one byte too long loses exactly its last byte and nothing more: the cut is at
+        // the record boundary and no byte behind it is reconsidered, which is what a COBOL move
+        // into a shorter alphanumeric field does.
+        final String overlongValue = "&".repeat(fittingLength + 1);
+        final String overlong = StatementHtmlTemplates.transactionWorkLine(overlongValue);
+
+        assertThat(asciiWidth(overlong)).isEqualTo(EXPECTED_RECORD_LENGTH);
+        assertThat(asciiBytes(overlong))
+                .as("the record keeps the first ninety-seven bytes of the composed line and loses "
+                        + "only its tail; no ampersand is blanked back to")
+                .isEqualTo(asciiBytes(paragraphWrapped(overlongValue)
+                        .substring(0, EXPECTED_RECORD_LENGTH)));
     }
 
-    @Test
-    @DisplayName("escaping widens each markup character by a fixed, known number of encoded bytes, "
-            + "which is the arithmetic the hundred-byte budget is spent against")
-    void escapingWidensEachMarkupCharacterByAKnownNumberOfBytes() {
-        // The substitutions themselves are asserted as string equalities in
-        // StatementHtmlTemplatesSecurityTest. What matters to this file is the width consequence:
-        // this class emits fixed hundred-byte records, so how many bytes each substitution costs is
-        // what decides whether a composed line still fits. Each expected reference is written out
-        // as a literal, and each expected width is stated as a number rather than measured from the
-        // result, so neither side of the comparison is taken from the class under test.
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText("&")))
-                .as("an ampersand must widen from one byte to the five of its reference")
-                .isEqualTo(asciiBytes("&amp;"));
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText("&"))).isEqualTo(5);
-
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText("<")))
-                .as("a less-than sign must widen from one byte to four")
-                .isEqualTo(asciiBytes("&lt;"));
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText("<"))).isEqualTo(4);
-
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText(">")))
-                .as("a greater-than sign must widen from one byte to four")
-                .isEqualTo(asciiBytes("&gt;"));
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText(">"))).isEqualTo(4);
-
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText("\"")))
-                .as("a quotation mark must widen from one byte to six")
-                .isEqualTo(asciiBytes("&quot;"));
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText("\""))).isEqualTo(6);
-
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText("'")))
-                .as("an apostrophe must widen from one byte to the five of its numeric reference")
-                .isEqualTo(asciiBytes("&#39;"));
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText("'"))).isEqualTo(5);
-
-        // Escaping never narrows a value, so a legitimate field can only ever keep or lose room in
-        // the record, never gain it. Asserted over the whole printable range in one pass.
-        final String printableRange = IntStream.rangeClosed(0x20, 0x7E)
-                .mapToObj(codePoint -> String.valueOf((char) codePoint))
-                .reduce("", String::concat);
-
-        assertThat(asciiWidth(StatementHtmlTemplates.escapeText(printableRange)))
-                .as("escaping must never shorten a value")
-                .isGreaterThanOrEqualTo(asciiWidth(printableRange));
-
-        // And it is the identity on a value holding none of the five, so an ordinary field spends
-        // exactly the bytes it looks like it spends.
-        final String legitimate = "MARY ANN O CONNOR 1918 EIGHTH AVENUE SUITE 100";
-
-        assertThat(asciiBytes(StatementHtmlTemplates.escapeText(legitimate)))
-                .as("a value carrying none of the five characters must pass through byte for byte")
-                .isEqualTo(asciiBytes(legitimate));
+    /**
+     * Wraps content in the paragraph tags the three work lines carry, for a hand-written expectation.
+     *
+     * @param  content the content to wrap
+     * @return the wrapped content, unpadded
+     */
+    private static String paragraphWrapped(final String content) {
+        return "<p>" + content + "</p>";
     }
 
 }

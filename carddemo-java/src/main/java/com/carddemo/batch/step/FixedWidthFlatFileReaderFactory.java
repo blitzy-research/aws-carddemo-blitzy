@@ -43,6 +43,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.function.UnaryOperator;
 import org.springframework.batch.item.file.BufferedReaderFactory;
@@ -302,6 +304,16 @@ public final class FixedWidthFlatFileReaderFactory {
      */
     public static final String FIXED_TRANSACTION_READER_NAME =
             "fixedUnblockedTransactionItemReader";
+
+    /**
+     * Stable restart name of the fixed-unblocked category balance reader.
+     *
+     * <p>Named separately from {@link #TRANSACTION_CATEGORY_BALANCE_READER_NAME} for the same reason the
+     * transaction pair is named separately: the logical layout is identical and only the physical record
+     * boundary differs, so restart metadata must never cross between them.
+     */
+    public static final String FIXED_TRANSACTION_CATEGORY_BALANCE_READER_NAME =
+            "fixedUnblockedTransactionCategoryBalanceItemReader";
 
     /**
      * Name of the reader over the 350-byte daily transaction layout, the posting job's input.
@@ -567,6 +579,27 @@ public final class FixedWidthFlatFileReaderFactory {
     }
 
     /**
+     * Builds a reader over a fixed-unblocked category balance generation.
+     *
+     * <p>Unlike {@link #transactionCategoryBalanceReader(Resource)}, this reader does not look for a
+     * line terminator. It reads exactly {@link TranCatBalRecordMapper#RECORD_LENGTH} US-ASCII bytes per
+     * record and reports an incomplete trailing stride as an input failure. It is the reader for a
+     * generation this module produced, whose declared record format carries no separator; the
+     * line-oriented sibling remains the reader for the repository's newline-delimited sample data.
+     *
+     * @param  resource the fixed-unblocked generation; must not be {@code null}
+     * @return a new reader, never {@code null}, named
+     *         {@value #FIXED_TRANSACTION_CATEGORY_BALANCE_READER_NAME}
+     * @throws NullPointerException if {@code resource} is {@code null}
+     */
+    public FlatFileItemReader<TransactionCategoryBalance> fixedTransactionCategoryBalanceReader(
+            final Resource resource) {
+        return newFixedStrideReader(FIXED_TRANSACTION_CATEGORY_BALANCE_READER_NAME, resource,
+                TranCatBalRecordMapper.RECORD_LENGTH,
+                (line, lineNumber) -> TranCatBalRecordMapper.fromRecord(line));
+    }
+
+    /**
      * Builds a reader over the disclosure group layout, whose record is 50 encoded bytes.
      *
      * <p>The layout's authority is the disclosure group copybook {@code CVTRA02Y}: a three-part key of
@@ -746,6 +779,38 @@ public final class FixedWidthFlatFileReaderFactory {
                 .strict(true)
                 .lineMapper(lineMapper)
                 .build();
+    }
+
+    /**
+     * Opens a fixed-unblocked resource as a reader whose {@code readLine()} returns exactly one record.
+     *
+     * <p>This is the primitive behind {@link #newFixedStrideReader}, exposed so that a step which reads a
+     * generation through its own {@link BufferedReader} rather than through a
+     * {@link FlatFileItemReader} frames that generation the same way. Every producer in this module
+     * writes a fixed-length dataset without a separator, because every DD in the estate declares
+     * {@code RECFM=F} or {@code RECFM=FB} and neither carries one; a consumer must therefore frame by
+     * width and never by line. Framing such an object by line would return the whole object as one
+     * enormous record, and framing a separator-bearing object by width would return the first record
+     * correctly and every later one shifted by its ordinal - see {@code docs/decision-log.md} entry
+     * DL-213.
+     *
+     * <p>The returned reader never reports a partial record: a stride that ends early raises
+     * {@link IOException} rather than handing back a short image that a mapper would then misparse.
+     *
+     * @param  source       the fixed-unblocked resource, read as US-ASCII; must not be {@code null}
+     * @param  recordLength the declared record length in bytes; must be at least one
+     * @return a reader whose {@code readLine()} yields exactly {@code recordLength} characters, or
+     *         {@code null} at end of file
+     * @throws NullPointerException     if {@code source} is {@code null}
+     * @throws IllegalArgumentException if {@code recordLength} is less than one
+     * @throws IOException              if the resource cannot be opened
+     */
+    public static BufferedReader fixedWidthReader(final Path source, final int recordLength)
+            throws IOException {
+        Objects.requireNonNull(source, RESOURCE_REQUIRED);
+        return new FixedStrideBufferedReader(
+                new InputStreamReader(Files.newInputStream(source), StandardCharsets.US_ASCII),
+                recordLength);
     }
 
     /**

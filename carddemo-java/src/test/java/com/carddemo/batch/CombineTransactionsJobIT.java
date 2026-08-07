@@ -19,12 +19,12 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.Transaction;
@@ -32,6 +32,8 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.DateValidationService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.util.TransactionRecordMapper;
+
+import io.awspring.cloud.s3.S3Operations;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -210,10 +212,6 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     @Autowired
     private Job combineTransactionsJob;
 
-    /** The shared staging boundary, mocked so the completed combined generation is observable. */
-    @Autowired
-    private BatchStagingArea stagingArea;
-
     /**
      * Builds a record whose every field already sits at its contractual width.
      *
@@ -367,18 +365,27 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
                     .as("%s was loaded through the repository, not through a utility", reserved)
                     .isPresent();
         }
-        // Published from the sealed local file and not from an array: the generation is a sequential
-        // file, so its size is bounded by the volume it is written to rather than by the heap.
-        final Path publishedGeneration = STAGING_DIRECTORY
-                .resolve(CombineTransactionsJobConfig.JOB_NAME + ".combined." + execution.getId()
-                        + ".dat");
-        verify(stagingArea).publish(
-                eq(CombineTransactionsJobConfig.JOB_NAME + "/combined/" + execution.getId()),
-                eq(publishedGeneration));
-        verify(stagingArea, never()).publish(anyString(), any(byte[].class));
-        assertThat(publishedGeneration)
-                .as("the local copy is removed once the load step has served every record")
-                .doesNotExist();
+        // Sealed as a local file and not held as an array: the generation is a sequential file, so its
+        // size is bounded by the volume it is written to rather than by the heap. It is named beneath the
+        // legacy generation-group base the measured member declares, in the legacy generation form, which
+        // is what puts it under one canonical object key and inside the generation retention pass
+        // (DL-212).
+        final Path combinedGeneration = StagedGenerationStore.generationPath(STAGING_DIRECTORY,
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, execution.getId());
+        assertThat(combinedGeneration)
+                .as("the sealed generation survives the step that wrote it, because the job-boundary"
+                        + " listener publishes it after the whole submission completed and not the"
+                        + " ordering step itself")
+                .exists();
+        assertThat(Files.size(combinedGeneration))
+                .as("and it carries every record of both inputs at the declared record width with"
+                        + " NOTHING between two records, because the legacy DD declares this dataset"
+                        + " record-format blocked and a consumer frames it by width (DL-213)")
+                .isEqualTo(RECORD_COUNT * (long) TransactionRecordMapper.RECORD_LENGTH);
+        assertThat(Files.readString(combinedGeneration, StandardCharsets.US_ASCII))
+                .as("and no separator survives anywhere in it")
+                .doesNotContain("\n");
+        Files.deleteIfExists(combinedGeneration);
     }
 
     /**
@@ -445,7 +452,8 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({CombineTransactionsJobConfig.class, BatchConfig.class,
             FixedWidthFlatFileReaderFactory.class, JobParameterValidators.class,
-            DateValidationService.class})
+            DateValidationService.class, StagedGenerationStore.class,
+            AdvisoryGenerationPublicationLock.class})
     @EnableConfigurationProperties(AwsProperties.class)
     @EnableJpaRepositories(basePackageClasses = TransactionRepository.class)
     @EntityScan(basePackageClasses = Transaction.class)
@@ -460,6 +468,25 @@ class CombineTransactionsJobIT extends AbstractPostgresIT {
         @Bean
         BatchStagingArea batchStagingArea() {
             return mock(BatchStagingArea.class);
+        }
+
+        /**
+         * Keeps the durable-publication path real up to the external object-store boundary.
+         *
+         * <p>The generation store is imported rather than stood in for, because the ordering step
+         * registers its combined generation with it and the job-boundary listener publishes what is
+         * registered; a context without the store would fail this job at its boundary for want of a
+         * publisher rather than for anything this specification is about (DL-212). Only the remote
+         * service is replaced, and it reports an empty base so the generation allocation has a defined
+         * starting point (DL-210).
+         *
+         * @return an object-store edge that accepts uploads and reports no existing generation
+         */
+        @Bean
+        S3Operations objectStore() {
+            final S3Operations objectStore = mock(S3Operations.class);
+            when(objectStore.listObjects(anyString(), anyString())).thenReturn(List.of());
+            return objectStore;
         }
     }
 }

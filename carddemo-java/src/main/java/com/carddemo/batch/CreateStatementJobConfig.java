@@ -58,6 +58,7 @@ import org.springframework.data.domain.Limit;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import com.carddemo.batch.step.AbstractCobolStep;
+import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.StatementProcessor;
 import com.carddemo.domain.Transaction;
@@ -363,17 +364,27 @@ public final class CreateStatementJobConfig {
     public static final int STEP_COUNT = LEGACY_STEP_COUNT - ABSORBED_LEGACY_STEP_COUNT;
 
     /**
-     * Failure-ending transitions this job wires, one guarding each gated step.
+     * Condition-code gates this job wires, one guarding each gated step.
      *
      * <p>Three, because the measured member gates its second, third and fourth steps and no other.
+     *
+     * <p>Each gate is a failure-<em>propagating</em> transition rather than a failure-ending one: it
+     * bypasses every later step and carries the abend out to the job's own status. See DL-208.
      */
     public static final int CONDITION_CODE_GATE_COUNT = 3;
 
     /**
-     * The outcome a gate routes to the end of the flow.
+     * The outcome a gate refuses to continue past.
      *
      * <p>Taken from the framework's own status rather than written as a literal, so a rename on that
      * side cannot leave a transition matching a pattern nothing produces.
+     *
+     * <p><strong>This outcome ends the flow as a failure, not as a completion.</strong> The measured
+     * gates bypass every later step, and on the job entry system they replace the submission's own
+     * completion code is the <em>highest</em> step code it reached - so a step that abended produced an
+     * abended submission and never a clean one. Routing this outcome to a plain end would have reported
+     * a job whose first step abended as COMPLETED, which is invisible to an operator, to the batch
+     * metadata and to the completion notification alike. See {@code docs/decision-log.md} entry DL-208.
      */
     public static final String GATE_FAILURE_OUTCOME = ExitStatus.FAILED.getExitCode();
 
@@ -503,9 +514,6 @@ public final class CreateStatementJobConfig {
 
     /** Diagnostic label of the reprojection's third segment. */
     private static final String FIELD_TIMESTAMP_SEGMENT = "TRAN-ORIG-TS-THROUGH-TRAN-PROC-TS";
-
-    /** Line terminator written after each fixed-width record of a staged sequential resource. */
-    private static final String RECORD_SEPARATOR = "\n";
 
     /** Output data definitions the third step allocates and scratches, in declaration order. */
     private static final int STATEMENT_OUTPUT_COUNT = 2;
@@ -719,10 +727,12 @@ public final class CreateStatementJobConfig {
      * The job: four steps in strict sequence, the last three behind a gate, and nothing else.
      *
      * <p>Each of the {@value #CONDITION_CODE_GATE_COUNT} gates is a pair of transitions out of the step
-     * it follows: the failure outcome ends the flow, and every other outcome proceeds to the guarded
-     * step. That reproduces the measured semantics - the guarded step runs only when everything before
-     * it completed cleanly, and when it does not run the submission simply ends rather than running the
-     * remaining steps against a work resource that was never built.
+     * it follows: the failure outcome <strong>ends the flow as a failure</strong>, and every other
+     * outcome proceeds to the guarded step. That reproduces the measured semantics on both axes at once -
+     * the guarded step runs only when everything before it completed cleanly, and a submission whose step
+     * abended is reported as having failed, because the job entry system's completion code is the highest
+     * step code the submission reached. Ending the flow as a <em>completion</em> would have satisfied the
+     * bypass half and inverted the reporting half. See {@code docs/decision-log.md} entry DL-208.
      *
      * <p>Two collaborators the batch infrastructure publishes are attached, which is what they exist
      * for. The run incrementer makes a resubmission of the same logical work a new instance rather than
@@ -760,15 +770,15 @@ public final class CreateStatementJobConfig {
                 .incrementer(this.jobRunIncrementer)
                 .listener(this.jobBoundaryListener)
                 .start(orderAndReprojectStep)
-                    .on(GATE_FAILURE_OUTCOME).end()
+                    .on(GATE_FAILURE_OUTCOME).fail()
                 .from(orderAndReprojectStep)
                     .on(GATE_ONWARD_OUTCOME).to(loadWorkResourceStep)
                 .from(loadWorkResourceStep)
-                    .on(GATE_FAILURE_OUTCOME).end()
+                    .on(GATE_FAILURE_OUTCOME).fail()
                 .from(loadWorkResourceStep)
                     .on(GATE_ONWARD_OUTCOME).to(clearStatementOutputsStep)
                 .from(clearStatementOutputsStep)
-                    .on(GATE_FAILURE_OUTCOME).end()
+                    .on(GATE_FAILURE_OUTCOME).fail()
                 .from(clearStatementOutputsStep)
                     .on(GATE_ONWARD_OUTCOME).to(generateStatementsStep)
                 .end()
@@ -1365,7 +1375,10 @@ public final class CreateStatementJobConfig {
      */
     private static BufferedReader openForReading(final Path source) throws IOException {
         Objects.requireNonNull(source, "source");
-        return Files.newBufferedReader(source, StandardCharsets.US_ASCII);
+        // Framed by width and never by line: every resource this method opens carries fixed-length
+        // records with nothing written between them, exactly as the job stream's own DDs declare.
+        // See docs/decision-log.md entry DL-213.
+        return FixedWidthFlatFileReaderFactory.fixedWidthReader(source, WORK_RECORD_LENGTH);
     }
 
     /**
@@ -1585,8 +1598,9 @@ public final class CreateStatementJobConfig {
                 if (this.composer == null) {
                     beginLoad();
                 }
+                // Nothing is written between two records: the resource is fixed-length and its
+                // consumers frame it by width - see docs/decision-log.md entry DL-213.
                 this.composer.write(projectedRecord);
-                this.composer.write(RECORD_SEPARATOR);
             } catch (final IOException failure) {
                 throw new UncheckedIOException("unable to write a record to the "
                         + TRANSIENT_WORK_RESOURCE_NAME + " work resource", failure);
@@ -1969,7 +1983,6 @@ public final class CreateStatementJobConfig {
                 final String projected = reproject(ordered);
                 requireEncodedWidth(projected, WORK_RECORD_LENGTH, DD_SORT_OUTPUT);
                 this.writer.write(projected);
-                this.writer.write(RECORD_SEPARATOR);
                 this.recordsProjected++;
                 return FileStatus.SUCCESS.getCode();
             });
@@ -2376,7 +2389,6 @@ public final class CreateStatementJobConfig {
                     requireEncodedWidth(statementRecord, STATEMENT_RECORD_LENGTH,
                             StatementProcessor.OUTPUT_DD_STMTFILE);
                     this.statementWriter.write(statementRecord);
-                    this.statementWriter.write(RECORD_SEPARATOR);
                     this.statementRecordsWritten++;
                     return FileStatus.SUCCESS.getCode();
                 });
@@ -2388,7 +2400,6 @@ public final class CreateStatementJobConfig {
                     requireEncodedWidth(htmlRecord, HTML_RECORD_LENGTH,
                             StatementProcessor.OUTPUT_DD_HTMLFILE);
                     this.htmlWriter.write(htmlRecord);
-                    this.htmlWriter.write(RECORD_SEPARATOR);
                     this.htmlRecordsWritten++;
                     return FileStatus.SUCCESS.getCode();
                 });

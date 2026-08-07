@@ -2804,7 +2804,7 @@
         "type": "prometheus",
         "uid": "carddemo-prometheus"
       },
-      "description": "Point-in-time count of Spring Batch job executions that are currently active, one series per job name. Jobs are launched on demand, so every series reads zero until an execution is running. The series is the _count of the spring_batch_job_active_seconds summary, which for a long-task timer is the number of ACTIVE tasks rather than a completion count - the exporter publishes no _active_count suffix at all, and a panel written against one returns nothing under any condition. GrafanaDashboardMetricsContractTest asserts every name on this dashboard against a real registry exposition, and MonitoringQueriesIT executes this expression against a real Prometheus server, for exactly that reason. See docs/decision-log.md DL-152.",
+      "description": "Point-in-time count of Spring Batch job executions that are currently active, one series per job name. Jobs are launched on demand, so every series reads zero until an execution is running. The series is the _count of the spring_batch_job_active_seconds summary, which for a long-task timer is the number of ACTIVE tasks rather than a completion count - the exporter publishes no _active_count suffix at all, and a panel written against one returns nothing under any condition. GrafanaDashboardMetricsContractTest asserts every name on this dashboard against a real registry exposition, and MonitoringQueriesIT executes this expression against a real Prometheus server, for exactly that reason. See docs/decision-log.md DL-242.",
       "fieldConfig": {
         "defaults": {
           "color": {

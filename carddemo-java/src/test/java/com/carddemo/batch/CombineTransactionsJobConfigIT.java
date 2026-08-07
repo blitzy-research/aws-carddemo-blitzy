@@ -179,8 +179,15 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     /** Encoded width of one transaction record image. */
     private static final int RECORD_BYTES = 350;
 
-    /** One logical record plus the local file's explicit separator. */
-    private static final int LOCAL_RECORD_BYTES = RECORD_BYTES + 1;
+    /**
+     * The stride one record occupies in the sealed generation, which is the record width itself.
+     *
+     * <p>Nothing is written between two records: the legacy DD declares the combined dataset
+     * record-format blocked, so the boundary is the declared width and no separator exists. Kept as its
+     * own name because the stride is the thing this class walks the generation on. See
+     * {@code docs/decision-log.md} entry DL-213.
+     */
+    private static final int LOCAL_RECORD_BYTES = RECORD_BYTES;
 
     /** Scale of every persisted monetary amount. */
     private static final int MONETARY_SCALE = 2;
@@ -315,12 +322,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     /** Setup configuration used only to locate the interest generation it produced. */
     private final InterestCalculationJobConfig interestConfiguration;
 
-    /** Synchronous capture of the combined file before the load reader removes its local copy. */
-    private final ArtifactCapture artifactCapture;
-
-    /** Mocked storage boundary retained for publication-shape verification. */
-    private final BatchStagingArea stagingArea;
-
     /** Registry carrying the framework's batch-step timing observations. */
     private final MeterRegistry meterRegistry;
 
@@ -336,8 +337,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
      * @param runIncrementer shared run-identity incrementer
      * @param transactionRepository transaction master
      * @param interestConfiguration setup interest configuration
-     * @param artifactCapture synchronous combined-artifact capture
-     * @param stagingArea observable staging boundary
      * @param meterRegistry application meter registry
      * @param environment effective test environment
      */
@@ -349,8 +348,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
             @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer runIncrementer,
             final TransactionRepository transactionRepository,
             final InterestCalculationJobConfig interestConfiguration,
-            final ArtifactCapture artifactCapture,
-            final BatchStagingArea stagingArea,
             final MeterRegistry meterRegistry,
             final Environment environment) {
         this.jobRegistry = jobRegistry;
@@ -359,8 +356,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
         this.runIncrementer = runIncrementer;
         this.transactionRepository = transactionRepository;
         this.interestConfiguration = interestConfiguration;
-        this.artifactCapture = artifactCapture;
-        this.stagingArea = stagingArea;
         this.meterRegistry = meterRegistry;
         this.environment = environment;
     }
@@ -467,18 +462,26 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
                 .as("the archived master is empty before the reload begins")
                 .isZero();
 
-        this.artifactCapture.clear();
         final JobExecution execution = launchByName(
                 CombineTransactionsJobConfig.JOB_NAME, new JobParameters());
         assertCompletedCombineExecution(execution, expectedRows);
         assertNoCallerDateParameter(execution);
 
-        final CapturedArtifact captured = this.artifactCapture.requireFor(execution);
-        assertThat(captured.objectKey()).isEqualTo(
-                CombineTransactionsJobConfig.JOB_NAME + "/combined/" + execution.getId());
+        // Read from the sealed local generation, named in the legacy generation form beneath the legacy
+        // base the measured member declares - not from an intercepted publication and not from a
+        // job-scoped key of this translation's invention. A completed submission leaves the local
+        // generation in place, which is what lets it be read here (DL-212).
+        final Path combinedGeneration = StagedGenerationStore.generationPath(stagingDirectory(),
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, execution.getId());
+        assertThat(combinedGeneration)
+                .as("the combined generation is named for the legacy generation group, so it falls under"
+                        + " the same one canonical key shape and the same retention pass as every other"
+                        + " artefact this package publishes")
+                .exists();
 
-        final List<String> actualImages =
-                combinedRecordImages(captured.content(), Math.toIntExact(expectedRows));
+        final List<String> actualImages = combinedRecordImages(
+                Files.readString(combinedGeneration, StandardCharsets.US_ASCII),
+                Math.toIntExact(expectedRows));
         final List<String> expectedImages = inputs.inConcatenationOrder();
         expectedImages.sort(Comparator.comparing(image -> slice(image, IDENTIFIER)));
 
@@ -525,7 +528,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
             assertStoredAmountContract(transaction.getTranAmt());
         }
         assertBatchStepTimersPresent();
-        verify(this.stagingArea, never()).publish(anyString(), any(byte[].class));
     }
 
     @Test
@@ -542,7 +544,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
 
         writeFixedUnblockedDataset(BACKUP_DATASET, List.of(backupImage));
         writeFixedUnblockedDataset(SYNTHESIZED_DATASET, List.of(synthesizedImage));
-        this.artifactCapture.clear();
 
         final JobExecution execution = launchByName(
                 CombineTransactionsJobConfig.JOB_NAME, new JobParameters());
@@ -559,15 +560,16 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
                                 CombineTransactionsJobConfig.LOAD_STEP_NAME,
                                 BatchStatus.FAILED));
 
-        final CapturedArtifact captured = this.artifactCapture.requireFor(execution);
-        final List<String> ordered = combinedRecordImages(captured.content(), 2);
-        assertThat(ordered)
-                .as("stable ordering retains the backup record before its equal-key synthesized peer")
-                .containsExactly(backupImage, synthesizedImage);
-        assertThat(ordered)
-                .extracting(image -> slice(image, IDENTIFIER))
-                .containsExactly(SHARED_TRANSACTION_ID, SHARED_TRANSACTION_ID);
-        assertImagePayloadIsARecordMultiple(ordered);
+        // The submission did not complete, so its local generation is the abnormal disposition of an
+        // allocation the stream did not end normally with and is discarded rather than left behind
+        // (DL-211). What the ordering step wrote is therefore asserted through the one row the load step
+        // did commit before the duplicate was refused: backup-first stable ordering means the BACKUP
+        // image is the survivor, which the retained record below is.
+        assertThat(StagedGenerationStore.generationPath(stagingDirectory(),
+                CombineTransactionsJobConfig.COMBINED_DATASET_BASE, execution.getId()))
+                .as("a failed submission leaves no local generation for anything to read, publish or"
+                        + " prune")
+                .doesNotExist();
 
         assertThat(this.transactionRepository.count())
                 .as("record-at-a-time loading commits the first key before the duplicate is refused")
@@ -874,15 +876,15 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
                 content.getBytes(StandardCharsets.US_ASCII), StandardCharsets.US_ASCII))
                 .as("the combined local file contains US-ASCII only")
                 .isEqualTo(content);
+        assertThat(content)
+                .as("and it carries no record separator at all, so a consumer frames it by width")
+                .doesNotContain("\n");
 
         final List<String> records = new ArrayList<>(expectedRecords);
         for (int index = 0; index < expectedRecords; index++) {
             final int start = index * LOCAL_RECORD_BYTES;
             final String image = content.substring(start, start + RECORD_BYTES);
             assertAsciiWidth(image, RECORD_BYTES, "combined record " + index);
-            assertThat(content.charAt(start + RECORD_BYTES))
-                    .as("combined record %s has one explicit local separator", index)
-                    .isEqualTo('\n');
             records.add(image);
         }
         return List.copyOf(records);
@@ -1282,53 +1284,6 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * Immutable snapshot of the combined local artifact at publication time.
-     *
-     * @param objectKey execution-scoped destination key
-     * @param content complete local file content
-     */
-    private record CapturedArtifact(String objectKey, String content) {
-    }
-
-    /** Thread-safe synchronous capture used by the mocked staging boundary. */
-    static final class ArtifactCapture {
-
-        /** Most recently published combined artifact. */
-        private final AtomicReference<CapturedArtifact> captured = new AtomicReference<>();
-
-        /**
-         * Reads the file while it still exists and stores an immutable character snapshot.
-         *
-         * @param objectKey destination key
-         * @param path completed local file
-         * @throws IOException if the completed file cannot be read
-         */
-        void capture(final String objectKey, final Path path) throws IOException {
-            this.captured.set(new CapturedArtifact(
-                    objectKey, Files.readString(path, StandardCharsets.US_ASCII)));
-        }
-
-        /** Clears the prior execution's snapshot. */
-        void clear() {
-            this.captured.set(null);
-        }
-
-        /**
-         * Returns the snapshot belonging to the supplied execution.
-         *
-         * @param execution execution whose ordering step published
-         * @return captured artifact
-         */
-        CapturedArtifact requireFor(final JobExecution execution) {
-            final CapturedArtifact artifact = Objects.requireNonNull(
-                    this.captured.get(),
-                    "the ordering step published no combined artifact before the load began");
-            assertThat(artifact.objectKey()).endsWith("/" + execution.getId());
-            return artifact;
-        }
-    }
-
-    /**
      * Narrow context containing the three jobs, their real persistence collaborators and deterministic
      * external boundaries.
      */
@@ -1366,32 +1321,18 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
         }
 
         /**
-         * Stores captured combined artifacts synchronously.
+         * Supplies a local-fallback staging boundary.
          *
-         * @return empty capture
-         */
-        @Bean
-        ArtifactCapture artifactCapture() {
-            return new ArtifactCapture();
-        }
-
-        /**
-         * Supplies a local-fallback staging boundary and captures each combined generation before its
-         * load-side reader removes the local file.
+         * <p>A read boundary only. The combined generation is registered rather than uploaded by the
+         * ordering step, so the local sealed file survives the step that wrote it and can be read
+         * directly by this specification; nothing here needs to intercept a publication (DL-212).
          *
-         * @param capture artifact capture
          * @return observable staging boundary
          */
         @Bean
-        BatchStagingArea batchStagingArea(final ArtifactCapture capture) {
+        BatchStagingArea batchStagingArea() {
             final BatchStagingArea staging = mock(BatchStagingArea.class);
             when(staging.holds(anyString())).thenReturn(false);
-            doAnswer(invocation -> {
-                capture.capture(
-                        invocation.getArgument(0, String.class),
-                        invocation.getArgument(1, Path.class));
-                return null;
-            }).when(staging).publish(anyString(), any(Path.class));
             return staging;
         }
 

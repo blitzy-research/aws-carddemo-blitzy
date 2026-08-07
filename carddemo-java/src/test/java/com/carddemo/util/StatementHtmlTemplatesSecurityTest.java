@@ -41,8 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * <p>The class under test publishes <strong>thirty-four</strong> fixed line templates, two
  * composed lines built from a literal plus a substituted value, three composers for the
  * free-form work lines &mdash; the address line, the basic-details line and the transaction
- * line, each reproducing its own legacy {@code STRING} statement &mdash; one published escaping
- * method, and the named record and component widths. Every published record is exactly
+ * line, each reproducing its own legacy {@code STRING} statement &mdash; one published fitter for
+ * already-composed content, and the named record and component widths. Every published record is exactly
  * <strong>one hundred</strong> encoded bytes wide, which is the width of one HTML output
  * record.</p>
  *
@@ -53,44 +53,46 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
  * character count. The class's own <em>markup</em> is never trimmed, collapsed, re-spaced,
  * re-cased, balanced, re-quoted, entity-encoded or reformatted in any way, and no markup tooling
  * of any kind is used: a tool that silently improved the markup would break the very bytes this
- * test exists to pin down. The <em>data</em> substituted into that markup is escaped, which is
- * the single recorded divergence and is developed below.</p>
+ * test exists to pin down. The <em>data</em> substituted into that markup is moved through the same
+ * way, which is the point this file now pins down rather than the divergence it once recorded.</p>
  *
- * <h2>The markup-versus-data division</h2>
+ * <h2>Refusal, not alteration: how this class is hardened without changing a byte</h2>
  *
- * <p>Two categories of byte pass through this class and they are treated differently, which is
- * the point most likely to be misread. The <strong>markup</strong> &mdash; the thirty-four fixed
- * templates, the heading literal, the quoted-attribute paragraph literal and the paragraph tags
- * the three work-line composers own &mdash; is reproduced byte for byte, malformations included.
- * The <strong>data</strong> substituted into it &mdash; the account identifier, the customer
- * name, the address lines, the basic-detail values and the transaction values &mdash; has the
- * five markup-significant characters replaced by their character references.</p>
+ * <p>Two categories of byte pass through this class, and the guarantee that matters is that neither
+ * is altered. The <strong>markup</strong> &mdash; the thirty-four fixed templates, the heading
+ * literal, the quoted-attribute paragraph literal and the paragraph tags the three work-line
+ * composers own &mdash; is reproduced byte for byte, malformations included. The <strong>data</strong>
+ * substituted into it &mdash; the account identifier, the customer name, the address lines, the
+ * basic-detail values and the transaction values &mdash; is moved as it arrives, exactly as the
+ * legacy {@code MOVE} and {@code STRING} statements moved it. No character reference is ever
+ * introduced (DL-209).</p>
  *
- * <p>The legacy program escaped nothing, because on the mainframe the data could only have come
- * from a VSAM record written by a sibling batch program in the same estate. That reasoning does
- * not hold here: the same values arrive from a relational store an online maintenance screen
- * writes, and the name and address fields accept free text. A value such as {@code <script>}
- * stored through one of those screens and later rendered into a statement is stored cross-site
- * scripting, and the statement file is written once and read by an unknown viewer later, so
- * there is no serving boundary to defer the escaping to.</p>
+ * <p>An earlier delivery escaped the five markup-significant characters in the data positions, on the
+ * reasoning that these values now arrive from a relational store an online maintenance screen writes
+ * and could therefore carry injected markup. That reasoning is not rejected; its <em>remedy</em> is.
+ * Escaping changes emitted bytes for exactly the values the seeded estate does carry &mdash; twelve
+ * apostrophes, in one customer surname and eleven transaction descriptions &mdash; so it is not the
+ * identity function on the legitimate domain after all, and it broke byte parity against this
+ * module's own hundred-byte oracle on precisely those records. The AAP's preservation boundary and
+ * its faithful-over-idiomatic tie-break both resolve that conflict against encoding.</p>
  *
- * <p>The divergence is the narrowest available and this test asserts both halves of that claim.
- * Escaping is the <em>identity function</em> on the entire legitimate domain of every field the
- * class touches, so for real data the emitted bytes are unchanged and the hundred-byte parity
- * gate is untouched; it differs only for input that would otherwise inject markup. Both halves are
- * asserted rather than assumed.</p>
+ * <p>What replaces escaping is a control that cannot change a byte at all: <strong>refusal</strong>.
+ * Every published path validates its input against printable US-ASCII and against the exact
+ * hundred-byte record width, and rejects anything outside them rather than mending it. A line
+ * terminator, a carriage return, an escape byte, a tab, a NUL or any byte above 0x7E never reaches a
+ * record, so the record-framing and terminal-control hazards are closed structurally. What a refusal
+ * cannot close is a downstream renderer's interpretation of a legitimately-stored angle bracket, and
+ * that is stated as the boundary it is: the statement file is a fixed-width data artefact, and a
+ * consumer that renders it as a live document is responsible for encoding at its own serving
+ * boundary. This file asserts both halves &mdash; that every legitimate byte is reproduced, and that
+ * every illegitimate byte is refused.</p>
  *
- * <p>One builder <strong>does</strong> accept already-composed markup, and it must not be
- * described away: {@link StatementHtmlTemplates#workLine(String)} moves its content through with no
- * escaping at all, because it exists for content this class has already composed and cannot
- * distinguish a legitimate paragraph literal from an injected one. It is a <em>guarded</em> fitter
- * rather than an unchecked sink &mdash; it refuses anything outside printable US-ASCII and enforces
- * the exact hundred-byte width &mdash; but it escapes nothing, so an unescaped-data path into the
- * output is <em>documented and unused</em> rather than unreachable. Two things keep it unused, and
- * neither is this file: the production source census in
- * {@code StatementHtmlWorkLineExposureTest}, which fails if any production source calls it, and the
- * contrast assertion in {@code StatementHtmlTemplatesTest}, which fails if the fitter starts
- * escaping or a composer stops.</p>
+ * <p>One builder accepts already-composed markup and adds no tags of its own:
+ * {@link StatementHtmlTemplates#workLine(String)}. It is guarded on exactly the same terms as the
+ * composers &mdash; printable US-ASCII, exact hundred-byte width &mdash; and differs from them only
+ * in structure, so handing it a bare field value emits a record missing its paragraph tags. What
+ * keeps that from happening is the production source census in
+ * {@code StatementHtmlWorkLineExposureTest}, which fails if any production source calls it.</p>
  *
  * <h2>The five deliberate malformations that must survive</h2>
  *
@@ -308,8 +310,10 @@ class StatementHtmlTemplatesSecurityTest {
 
     /*
      * ----------------------------------------------------------------------------------------
-     * Independently written character references. The escaping surface is asserted against
-     * these literals rather than against any constant of the class under test.
+     * Independently written character references. These are the substitutions a previous
+     * delivery of this class emitted; every one of them is now asserted ABSENT from the record,
+     * because the legacy move encodes nothing. They are written as literals here rather than
+     * taken from any constant of the class under test - which no longer declares them at all.
      * ----------------------------------------------------------------------------------------
      */
 
@@ -536,10 +540,10 @@ class StatementHtmlTemplatesSecurityTest {
     }
 
     /**
-     * Supplies the five markup-significant characters paired with the character reference each
-     * must become. Every reference is a hand-written literal.
+     * Supplies the five markup-significant characters paired with the character reference each must
+     * NOT become. Every reference is a hand-written literal.
      *
-     * @return five cases, each a raw character and its expected reference
+     * @return five cases, each a raw character and the reference that must not appear for it
      */
     static Stream<Arguments> markupCharacterReferences() {
         return Stream.of(
@@ -1409,12 +1413,11 @@ class StatementHtmlTemplatesSecurityTest {
      * address line appends two literal spaces unconditionally, which the other two never do.
      * Both differences are asserted below in both directions.
      *
-     * These three builders own their markup and escape their data. The class also publishes
-     * workLine, which accepts already-composed markup and escapes nothing; it is guarded rather
-     * than unchecked, refusing anything outside printable US-ASCII and enforcing the exact width,
-     * but it is not an escaping path, so the unescaped route is documented and unused rather than
-     * unreachable. StatementHtmlWorkLineExposureTest is the census that keeps it unused, and
-     * StatementHtmlTemplatesTest asserts the contrast between the two routes.
+     * These three builders own their markup and move their data through it untouched. The class also
+     * publishes workLine, which accepts already-composed markup and adds no tags of its own; it is
+     * guarded on the same terms, refusing anything outside printable US-ASCII and enforcing the exact
+     * width. Handing it a bare field value would emit a record missing its paragraph tags, which is
+     * what StatementHtmlWorkLineExposureTest's production census exists to prevent.
      * ========================================================================================
      */
 
@@ -1674,103 +1677,116 @@ class StatementHtmlTemplatesSecurityTest {
 
     /*
      * ========================================================================================
-     * Escaping of the data positions.
+     * The data positions are moved, never encoded.
      *
-     * This is the recorded divergence from byte-for-byte faithfulness. The legacy program moved
-     * statement data into the HTML record with no encoding of any kind, because on the mainframe
-     * the values could only have come from a VSAM record written by a sibling batch program. In
-     * this module the same values arrive from a relational store an online maintenance screen
-     * writes, so a name or address field can carry markup that reaches whoever opens the
-     * statement. Escaping at the point of composition is the only place that closes it, because
-     * the statement file is written once and read by an unknown viewer later.
+     * The legacy program moves statement data into the HTML record with no encoding of any kind
+     * and writes the record. A previous delivery of this class substituted HTML character
+     * references for five markup-significant characters at the point of composition. That kept
+     * every record a hundred bytes wide while displacing every byte after each substitution, so
+     * a description reading "Purchase at Zulauf-O'Keefe" pushed its own closing tag five bytes
+     * to the right and the artefact stopped matching src/test/resources/fixtures/expected/
+     * statement-html.txt. The substitution has been removed; the tests below assert its absence
+     * positively rather than leaving it as an untested claim. See docs/decision-log.md entry
+     * DL-209, which also records the stored-markup exposure the legacy design carries and that
+     * no requirement in scope asks this artefact to close.
      *
-     * The divergence is the narrowest available: escaping is the identity function on the whole
-     * legitimate domain of every field these builders touch, so for real data the emitted bytes
-     * are unchanged and the hundred-byte gate is unaffected. It differs only for input that
-     * would otherwise inject markup. The tests below assert both halves of that claim: the
-     * identity half on legitimate values, and the substitution half on hostile ones. The
-     * divergence is recorded in docs/decision-log.md.
+     * Two guards remain in front of every value and both are refusals rather than rewrites: the
+     * value must be printable US-ASCII, and the account-number slot is narrowed further to ASCII
+     * digits and the ASCII space. A refusal never alters a byte, so neither can disturb parity.
      *
-     * Every expectation is assembled from the hand-written reference literals declared at the
-     * top of this file, never by calling the escaping method to produce its own expectation.
+     * Every expectation is assembled from the hand-written literals declared at the top of this
+     * file, never by calling the class under test to produce its own expectation.
      * ========================================================================================
      */
 
-    @ParameterizedTest(name = "[{index}] [{0}] becomes [{1}]")
+    @ParameterizedTest(name = "[{index}] [{0}] stays [{0}] and never becomes [{1}]")
     @MethodSource("markupCharacterReferences")
-    @DisplayName("each of the five markup-significant characters is substituted before it reaches "
-            + "a work line's data position")
-    void eachMarkupCharacterIsSubstitutedBeforeItReachesAWorkLine(
+    @DisplayName("each of the five markup-significant characters reaches a work line's data "
+            + "position as itself, and its character reference never appears")
+    void eachMarkupCharacterReachesAWorkLinePositionAsItself(
             final String raw, final String reference) {
-        assertThat(asciiBytes(StatementHtmlTemplates.transactionWorkLine(raw)))
-                .as("the record must carry the reference for [%s] and not the character", raw)
-                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + reference
+        final String record = StatementHtmlTemplates.transactionWorkLine(raw);
+
+        assertThat(asciiBytes(record))
+                .as("the record must carry the character [%s] and not a reference", raw)
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + raw
                         + EXPECTED_PARAGRAPH_CLOSE));
-    }
-
-    @ParameterizedTest(name = "[{index}] [{0}] becomes [{1}]")
-    @MethodSource("markupCharacterReferences")
-    @DisplayName("the escaping method substitutes each of the five characters and nothing else")
-    void escapeTextSubstitutesEachOfTheFiveCharactersAndNothingElse(
-            final String raw, final String reference) {
-        assertThat(StatementHtmlTemplates.escapeText(raw))
-                .as("the character [%s] must become its reference", raw)
-                .isEqualTo(reference);
-
-        // Surrounded by ordinary text, so the substitution is proved to be positional rather
-        // than whole-value.
-        assertThat(StatementHtmlTemplates.escapeText("LEFT" + raw + "RIGHT"))
-                .as("the substitution must happen in place, leaving the surrounding text alone")
-                .isEqualTo("LEFT" + reference + "RIGHT");
+        assertCarriesBytes(record, raw);
+        assertLacksBytes(record, reference);
     }
 
     @Test
-    @DisplayName("the escaping method passes a line terminator through unchanged, because it is a "
-            + "substitution primitive and not a framing guard")
-    void escapeTextPassesALineTerminatorThroughUnchanged() {
-        // This is the property that explains why the escaping method is the one entry point on this
-        // class that accepts a carriage return: its contract is to substitute five markup characters,
-        // and a line terminator is not one of them. Asserting the pass-through positively - rather
-        // than leaving it as an absence of rejection - is what distinguishes "correct by design" from
-        // "a guard someone forgot", which are indistinguishable from the outside.
-        final String terminators = "\r\n";
-        final String hostile = "FORGED" + terminators + "<script>";
+    @DisplayName("the whole legitimate domain reaches the record byte for byte, which is what the "
+            + "hundred-byte parity gate is measured against")
+    void theLegitimateDomainReachesTheRecordByteForByte() {
+        // Every value the three work lines and the two composed lines actually carry in this
+        // estate: account identifiers, signed amounts, FICO scores, dates, names and addresses.
+        final List<String> legitimateValues = List.of(
+                "00000000011",
+                "-00000123.45",
+                "0000000000000001",
+                "2022-07-19",
+                "0785",
+                "MARY ANN O CONNOR",
+                "1918 EIGHTH AVENUE SUITE 100",
+                "Purchase at Zulauf-O'Keefe");
 
-        assertThat(StatementHtmlTemplates.escapeText(terminators))
-                .as("a bare terminator pair must pass through byte-identically")
-                .isEqualTo(terminators);
-        assertThat(StatementHtmlTemplates.escapeText(hostile))
-                .as("the markup characters must be substituted while the terminators survive")
-                .isEqualTo("FORGED" + terminators + "&lt;script&gt;")
-                .contains(terminators);
+        for (final String value : legitimateValues) {
+            assertThat(asciiBytes(StatementHtmlTemplates.transactionWorkLine(value)))
+                    .as("the value [%s] must reach the record unchanged", value)
+                    .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + value
+                            + EXPECTED_PARAGRAPH_CLOSE));
+        }
     }
 
     @Test
-    @DisplayName("no path from the escaping method to an emitted record can carry a line terminator, "
-            + "because every composer downstream of it rejects one")
-    void noPathFromEscapingToAnEmittedRecordCanCarryALineTerminator() {
-        // The escaping method's permissiveness is only safe if nothing can turn its output into a
-        // hundred-byte record without a further check. This walks the actual composition path: it
-        // escapes a terminator-bearing value and then offers the escaped result to every composer,
-        // including the framing-only work line, and requires each one to refuse it. Any composer added
-        // later without a guard fails here rather than in production.
-        final String escaped = StatementHtmlTemplates.escapeText("FORGED\r\n<script>");
+    @DisplayName("the apostrophe-bearing description from the estate's own sample data is emitted "
+            + "verbatim, with its closing tag exactly where the move leaves it")
+    void theApostropheBearingDescriptionIsEmittedVerbatim() {
+        // The record the reviewed defect was found on. The description is a transaction narrative
+        // from the seeded data; its apostrophe is ordinary content and the closing tag must sit at
+        // the byte position the fixed-width move puts it at, not five bytes further right.
+        final String description = "Purchase at Zulauf-O'Keefe                       ";
+        final String record = StatementHtmlTemplates.transactionWorkLine(description);
 
-        assertThat(escaped).as("the escaped value must still hold the terminator, or this test would"
-                + " prove nothing").contains("\r\n");
+        assertThat(asciiBytes(record))
+                .as("the emitted record must be the description between its own tags")
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + description
+                        + EXPECTED_PARAGRAPH_CLOSE));
+        assertCarriesBytes(record, "Zulauf-O'Keefe");
+        assertLacksBytes(record, EXPECTED_APOSTROPHE_REFERENCE);
+        assertThat(asciiWidth(record)).isEqualTo(EXPECTED_RECORD_LENGTH);
+    }
+
+    @Test
+    @DisplayName("an empty value composes to the two tags and nothing else")
+    void anEmptyValueComposesToTheTwoTagsAndNothingElse() {
+        assertThat(asciiBytes(StatementHtmlTemplates.transactionWorkLine("")))
+                .as("an empty value must leave the two tags adjacent")
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + EXPECTED_PARAGRAPH_CLOSE));
+    }
+
+    @Test
+    @DisplayName("a line terminator is refused by every composer, because a control byte would "
+            + "split one fixed-length record into two")
+    void aLineTerminatorIsRefusedByEveryComposer() {
+        // The framing guard, which is the one thing that must reject rather than move. It is the
+        // reason the removal of the substitution costs no framing safety: a terminator could
+        // desynchronise every record after it, and that is refused at composition.
+        final String terminatorBearing = "FORGED\r\n<script>";
 
         final List<Runnable> composers = List.of(
-                () -> StatementHtmlTemplates.accountNumberLine(escaped),
-                () -> StatementHtmlTemplates.customerNameLine(escaped),
-                () -> StatementHtmlTemplates.addressWorkLine(escaped),
-                () -> StatementHtmlTemplates.basicDetailsWorkLine(escaped, "value"),
-                () -> StatementHtmlTemplates.basicDetailsWorkLine("label", escaped),
-                () -> StatementHtmlTemplates.transactionWorkLine(escaped),
-                () -> StatementHtmlTemplates.workLine(escaped));
+                () -> StatementHtmlTemplates.accountNumberLine(terminatorBearing),
+                () -> StatementHtmlTemplates.customerNameLine(terminatorBearing),
+                () -> StatementHtmlTemplates.addressWorkLine(terminatorBearing),
+                () -> StatementHtmlTemplates.basicDetailsWorkLine(terminatorBearing, "value"),
+                () -> StatementHtmlTemplates.basicDetailsWorkLine("label", terminatorBearing),
+                () -> StatementHtmlTemplates.transactionWorkLine(terminatorBearing),
+                () -> StatementHtmlTemplates.workLine(terminatorBearing));
 
         for (final Runnable composer : composers) {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("every composer must refuse an escaped value that still holds a terminator")
+                    .as("every composer must refuse a value holding a terminator")
                     .isThrownBy(composer::run)
                     .satisfies(rejected -> {
                         final String message = rejected.getMessage();
@@ -1785,153 +1801,55 @@ class StatementHtmlTemplatesSecurityTest {
     }
 
     @Test
-    @DisplayName("the escaping method leaves the entire legitimate domain untouched, which is why "
-            + "the hundred-byte parity gate is unaffected for real data")
-    void escapeTextLeavesTheLegitimateDomainUntouched() {
-        // Every value the three work lines and the two composed lines actually carry in this
-        // estate: account identifiers, signed amounts, FICO scores, dates, names and addresses.
-        // Escaping must be the identity function on all of them, or the divergence would not be
-        // as narrow as it is documented to be.
-        final List<String> legitimateValues = List.of(
-                "00000000011",
-                "-00000123.45",
-                "0000000000000001",
-                "2022-07-19",
-                "0785",
-                "JOHN Q PUBLIC",
-                "410 Terry Ave N",
-                "Seattle WA 98109-5210",
-                "O`BRIEN-SMITH, JR.",
-                "Suite #100 (Bldg 2) 50% off",
-                "Account ID         : ",
-                "",
-                " ".repeat(50));
-
-        for (final String value : legitimateValues) {
-            assertThat(StatementHtmlTemplates.escapeText(value))
-                    .as("the legitimate value [%s] must pass through unchanged", value)
-                    .isEqualTo(value);
-        }
-    }
-
-    @Test
-    @DisplayName("the escaping method substitutes the ampersand before the references it "
-            + "introduces, so no reference is ever doubly escaped")
-    void escapeTextSubstitutesTheAmpersandBeforeTheReferencesItIntroduces() {
-        // The classic ordering defect: replacing '<' first and '&' afterwards turns "&lt;" into
-        // "&amp;lt;". A single pass makes that impossible, and this asserts the result.
-        assertThat(StatementHtmlTemplates.escapeText("<"))
-                .as("a less-than sign must yield exactly one reference, not a doubly escaped one")
-                .isEqualTo(EXPECTED_LESS_THAN_REFERENCE)
-                .doesNotContain(EXPECTED_AMPERSAND_REFERENCE + "lt;");
-
-        // An input that already looks like a reference must be escaped once, not left alone and
-        // not escaped twice.
-        assertThat(StatementHtmlTemplates.escapeText(EXPECTED_AMPERSAND_REFERENCE))
-                .as("literal reference text in the data must have its own ampersand substituted")
-                .isEqualTo(EXPECTED_AMPERSAND_REFERENCE + "amp;");
-
-        assertThat(StatementHtmlTemplates.escapeText("&&"))
-                .as("each ampersand must be substituted exactly once")
-                .isEqualTo(EXPECTED_AMPERSAND_REFERENCE + EXPECTED_AMPERSAND_REFERENCE);
-    }
-
-    @Test
-    @DisplayName("the escaping method returns an empty value for empty input and never shortens "
-            + "a value it does not substitute")
-    void escapeTextReturnsEmptyForEmptyInput() {
-        assertThat(StatementHtmlTemplates.escapeText(""))
-                .as("empty input must yield empty output rather than anything else")
-                .isEmpty();
-    }
-
-    @Test
-    @DisplayName("a script payload cannot form a tag in the transaction work line")
-    void aScriptPayloadCannotFormATagInTheTransactionWorkLine() {
-        final String payload = "<script>alert('x')&\"</script>";
-        final String expectedData = EXPECTED_LESS_THAN_REFERENCE + "script"
-                + EXPECTED_GREATER_THAN_REFERENCE + "alert(" + EXPECTED_APOSTROPHE_REFERENCE + "x"
-                + EXPECTED_APOSTROPHE_REFERENCE + ")" + EXPECTED_AMPERSAND_REFERENCE
-                + EXPECTED_QUOTATION_MARK_REFERENCE + EXPECTED_LESS_THAN_REFERENCE + "/script"
-                + EXPECTED_GREATER_THAN_REFERENCE;
+    @DisplayName("a markup payload reaches the transaction work line as text, because the legacy "
+            + "move neither inspects nor rewrites what it moves")
+    void aMarkupPayloadReachesTheTransactionWorkLineAsText() {
+        final String payload = "<script>alert('x')</script>";
         final String record = StatementHtmlTemplates.transactionWorkLine(payload);
 
         assertThat(asciiBytes(record))
-                .as("the payload must arrive fully substituted, inside the class's own tags")
-                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + expectedData
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + payload
                         + EXPECTED_PARAGRAPH_CLOSE));
-
-        assertThat(asciiWidth(record))
-                .as("substitution must not disturb the record width")
-                .isEqualTo(EXPECTED_RECORD_LENGTH);
-
-        // No tag the payload asked for can exist anywhere in the record.
-        assertLacksBytes(record, "<script");
-        assertLacksBytes(record, "</script");
-        assertLacksBytes(record, "alert('");
-        assertLacksBytes(record, "\"");
+        assertCarriesBytes(record, "<script>");
+        assertLacksBytes(record, EXPECTED_LESS_THAN_REFERENCE);
     }
 
     @Test
-    @DisplayName("a script payload cannot form a tag in the address work line, and the two "
-            + "literal spaces still arrive")
-    void aScriptPayloadCannotFormATagInTheAddressWorkLine() {
-        final String payload = "<script>alert('x')&\"</script>";
-        final String expectedData = EXPECTED_LESS_THAN_REFERENCE + "script"
-                + EXPECTED_GREATER_THAN_REFERENCE + "alert(" + EXPECTED_APOSTROPHE_REFERENCE + "x"
-                + EXPECTED_APOSTROPHE_REFERENCE + ")" + EXPECTED_AMPERSAND_REFERENCE
-                + EXPECTED_QUOTATION_MARK_REFERENCE + EXPECTED_LESS_THAN_REFERENCE + "/script"
-                + EXPECTED_GREATER_THAN_REFERENCE;
+    @DisplayName("a markup payload reaches the address work line as text, followed by its two "
+            + "unconditional literal spaces")
+    void aMarkupPayloadReachesTheAddressWorkLineAsText() {
+        // The value must carry no two-space run, or the delimited transfer would cut it instead.
+        final String payload = "<b>1918 EIGHTH AVENUE</b>";
         final String record = StatementHtmlTemplates.addressWorkLine(payload);
 
         assertThat(asciiBytes(record))
-                .as("substitution and the legacy composition must both hold at once")
-                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + expectedData
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + payload
                         + EXPECTED_ADDRESS_TRAILING_SPACES + EXPECTED_PARAGRAPH_CLOSE));
-
-        assertLacksBytes(record, "<script");
-        assertLacksBytes(record, "</script");
+        assertLacksBytes(record, EXPECTED_LESS_THAN_REFERENCE);
     }
 
     @Test
-    @DisplayName("a script payload cannot form a tag in the basic-details work line, and the "
-            + "label is escaped as well as the value")
-    void aScriptPayloadCannotFormATagInTheBasicDetailsWorkLine() {
-        // The label is escaped too. Escaping is the identity function on all three legacy labels,
-        // so nothing changes for real input; escaping it closes the label as a second injection
-        // route rather than trusting that a caller will only ever pass a literal.
-        final String hostileLabel = "<b>Label: ";
-        final String hostileValue = "&<value>";
-        final String expectedLabel = EXPECTED_LESS_THAN_REFERENCE + "b"
-                + EXPECTED_GREATER_THAN_REFERENCE + "Label: ";
-        final String expectedValue = EXPECTED_AMPERSAND_REFERENCE + EXPECTED_LESS_THAN_REFERENCE
-                + "value" + EXPECTED_GREATER_THAN_REFERENCE;
-        final String record =
-                StatementHtmlTemplates.basicDetailsWorkLine(hostileLabel, hostileValue);
+    @DisplayName("the basic-details work line moves its label and its value as they arrive")
+    void theBasicDetailsWorkLineMovesItsLabelAndItsValueAsTheyArrive() {
+        final String label = "L<b>: ";
+        final String value = "&value>";
+        final String record = StatementHtmlTemplates.basicDetailsWorkLine(label, value);
 
         assertThat(asciiBytes(record))
-                .as("both the label and the value must be substituted")
-                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + expectedLabel + expectedValue
+                .isEqualTo(expectedRecord(EXPECTED_PARAGRAPH_OPEN + label + value
                         + EXPECTED_PARAGRAPH_CLOSE));
-
-        assertLacksBytes(record, "<b>");
-        assertLacksBytes(record, "<value");
+        assertLacksBytes(record, EXPECTED_AMPERSAND_REFERENCE);
+        assertLacksBytes(record, EXPECTED_GREATER_THAN_REFERENCE);
     }
 
     @Test
-    @DisplayName("a hostile identifier cannot reach the account-number heading at all, because the "
-            + "legacy field moved into that slot is a numeric display item; the heading's own "
-            + "literals and the escaping behind the guard are both untouched")
-    void aHostileIdentifierCannotReachTheAccountNumberHeading() {
-        // Two guards stand in front of this slot and both are asserted, because either alone would be
-        // weaker. The outer one is a value-domain guard: the emitting paragraph moves ACCT-ID, declared
-        // PIC 9(11), into a twenty-byte alphanumeric slot [app/cbl/CBSTM03A.CBL:L529 with
-        // app/cpy/CVACT01Y.cpy:L5], so the only value the legacy could ever place there is a run of
-        // zoned digits. A tag delimiter in that position is not a value needing escaping, it is a value
-        // that cannot have come from the record, and refusing it is stronger than rendering it safe.
-        // The inner one is the substitution itself, which still applies to whatever passes the guard -
-        // asserted below by the reference-free digits case and, for the free-text slots this class also
-        // composes, by the neighbouring substitution tests.
+    @DisplayName("the account-number heading refuses anything but ASCII digits and spaces, which "
+            + "is a value-domain refusal and never a rewrite")
+    void theAccountNumberHeadingRefusesAnythingButDigitsAndSpaces() {
+        // The emitting paragraph moves ACCT-ID, declared PIC 9(11), into a twenty-byte alphanumeric
+        // slot [app/cbl/CBSTM03A.CBL:L529 with app/cpy/CVACT01Y.cpy:L5], so the only value the
+        // legacy could ever place there is a run of zoned digits. A tag delimiter in that position
+        // is not a value needing encoding, it is a value that cannot have come from the record.
         final String hostileIdentifier = "<a>&";
 
         assertThatExceptionOfType(IllegalArgumentException.class)
@@ -1942,183 +1860,66 @@ class StatementHtmlTemplatesSecurityTest {
                         .contains("account identifier")
                         .contains("position 1")
                         .doesNotContain(hostileIdentifier));
-
-        // What the slot does accept is composed exactly as the group declares, so the guard has not
-        // replaced the composition it protects.
-        final String record = StatementHtmlTemplates.accountNumberLine("00000000011");
-        final byte[] image = asciiBytes(record);
-
-        assertThat(image.length)
-                .as("an accepted identifier must still produce exactly one record")
-                .isEqualTo(EXPECTED_RECORD_LENGTH);
-
-        assertThat(segment(image, 0, EXPECTED_ACCOUNT_PREFIX_LENGTH))
-                .as("the heading's own literal is markup and must not be substituted")
-                .isEqualTo(asciiBytes(EXPECTED_ACCOUNT_PREFIX));
-
-        assertThat(segment(image, EXPECTED_ACCOUNT_PREFIX_LENGTH,
-                        EXPECTED_ACCOUNT_PREFIX_LENGTH + EXPECTED_ACCOUNT_FIELD_LENGTH))
-                .as("the identifier field holds the accepted value, padded to twenty bytes")
-                .isEqualTo(expectedField("00000000011", EXPECTED_ACCOUNT_FIELD_LENGTH));
-
-        assertThat(segment(image, EXPECTED_ACCOUNT_DECLARED_LENGTH - EXPECTED_ACCOUNT_SUFFIX_LENGTH,
-                        EXPECTED_ACCOUNT_DECLARED_LENGTH))
-                .as("the closing tag must keep its position")
-                .isEqualTo(asciiBytes(EXPECTED_ACCOUNT_SUFFIX));
-
-        final String dataPosition = new String(
-                segment(image, EXPECTED_ACCOUNT_PREFIX_LENGTH,
-                        EXPECTED_ACCOUNT_PREFIX_LENGTH + EXPECTED_ACCOUNT_FIELD_LENGTH),
-                StandardCharsets.US_ASCII);
-        assertThat(dataPosition)
-                .as("no tag delimiter may survive in the identifier field")
-                .doesNotContain("<")
-                .doesNotContain(">");
-
-        // Every character the guard rejects is rejected, not merely the two tag delimiters: an
-        // apostrophe, a quotation mark, an ampersand and a letter are each refused too, so the guard
-        // is a positive allowlist of digits and spaces rather than a denylist of markup.
-        for (final String outsideTheDomain : List.of("'", "\"", "&", "A", "0000000001A")) {
-            assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("the identifier [%s] is outside the numeric domain", outsideTheDomain)
-                    .isThrownBy(() -> StatementHtmlTemplates.accountNumberLine(outsideTheDomain))
-                    .withMessageContaining("account identifier");
-        }
     }
 
     @Test
-    @DisplayName("a hostile customer name cannot close the quoted style attribute the "
-            + "surrounding literal opens")
-    void aHostileCustomerNameCannotCloseTheQuotedStyleAttribute() {
-        // The single most important substitution site in the class. The name is free text an
-        // outside party influences, and the literal that precedes it opens a tag carrying a
-        // quoted attribute, so an unsubstituted quotation mark could reposition the value into
-        // that attribute.
-        final String hostileName = "JOHN \"Q\" & <B>";
-        final String expectedFieldText = "JOHN " + EXPECTED_QUOTATION_MARK_REFERENCE + "Q"
-                + EXPECTED_QUOTATION_MARK_REFERENCE + " " + EXPECTED_AMPERSAND_REFERENCE + " "
-                + EXPECTED_LESS_THAN_REFERENCE + "B" + EXPECTED_GREATER_THAN_REFERENCE;
-        final String record = StatementHtmlTemplates.customerNameLine(hostileName);
-        final byte[] image = asciiBytes(record);
-
-        assertThat(image.length)
-                .as("substitution must not disturb the record width")
-                .isEqualTo(EXPECTED_RECORD_LENGTH);
-
-        assertThat(segment(image, 0, EXPECTED_NAME_PREFIX_LENGTH))
-                .as("the line's own literal, quoted attribute included, must not be substituted")
-                .isEqualTo(asciiBytes(EXPECTED_NAME_PREFIX));
-
-        assertThat(image)
-                .as("the emitted record is the escaped name, right trimmed, followed by the two "
-                        + "literal spaces and the closing literal")
-                .isEqualTo(expectedRecord(EXPECTED_NAME_PREFIX + expectedFieldText
-                        + EXPECTED_NAME_DELIMITER + EXPECTED_NAME_CLOSING_TAG));
-
-        assertThat(segment(image, EXPECTED_NAME_PREFIX_LENGTH,
-                        EXPECTED_NAME_PREFIX_LENGTH + asciiWidth(expectedFieldText)))
-                .as("the name position must hold the substituted form")
-                .isEqualTo(asciiBytes(expectedFieldText));
-
-        final String dataPosition = new String(
-                segment(image, EXPECTED_NAME_PREFIX_LENGTH,
-                        EXPECTED_NAME_PREFIX_LENGTH + asciiWidth(expectedFieldText)),
-                StandardCharsets.US_ASCII);
-        assertThat(dataPosition)
-                .as("no quotation mark and no tag delimiter may survive in the name position")
-                .doesNotContain("\"")
-                .doesNotContain("<")
-                .doesNotContain(">");
-
-        // Substitution must not disturb the trim or the closing literal that follows it: the record's
-        // own closing tag is the only tag delimiter pair in it beyond the opening literal's.
-        assertSpacePaddedFrom(image, EXPECTED_NAME_PREFIX_LENGTH + asciiWidth(expectedFieldText)
-                + EXPECTED_NAME_DELIMITER.length() + EXPECTED_NAME_CLOSING_TAG.length());
-        assertCarriesBytes(record, EXPECTED_NAME_CLOSING_TAG);
-    }
-
-    /*
-     * ========================================================================================
-     * Entity-safe truncation.
-     *
-     * Cutting a fixed-width field at a byte boundary is faithful and must not change. But a cut
-     * that lands inside a character reference would leave a fragment such as "&am", which a
-     * viewer may resynchronise against the markup that follows, turning a truncation into a
-     * rendering defect. An unterminated reference at the cut is therefore blanked with the ASCII
-     * space and the field keeps its exact width. A reference that completes on or before the cut
-     * is left alone, which is why this costs nothing for the thirty-four fixed templates or for
-     * any real value.
-     *
-     * The two arithmetic cases below are built by hand so the cut position is exact:
-     *   "<p>" is 3 bytes, so a value's escaped text begins at index 3.
-     *   With 95 leading bytes the reference occupies 98..102 and is cut  -> blanked.
-     *   With 92 leading bytes it occupies 95..99 and completes at the cut -> kept.
-     * ========================================================================================
-     */
-
-    @Test
-    @DisplayName("a character reference cut by the record boundary is blanked rather than emitted "
-            + "as a fragment")
-    void aCharacterReferenceCutByTheRecordBoundaryIsBlanked() {
-        // 3 bytes of tag + 95 bytes of filler puts the ampersand at index 98, so "&amp;" would
-        // run to index 102 and is cut at 100.
-        final int fillerWidth = 95;
-        final String value = "A".repeat(fillerWidth) + "&" + "B".repeat(20);
-        final String record = StatementHtmlTemplates.transactionWorkLine(value);
-        final byte[] image = asciiBytes(record);
-
-        assertThat(image.length)
-                .as("the record must keep its exact width after the fragment is blanked")
-                .isEqualTo(EXPECTED_RECORD_LENGTH);
-
-        assertThat(segment(image, 0, asciiWidth(EXPECTED_PARAGRAPH_OPEN)))
-                .as("the opening tag must be unaffected")
-                .isEqualTo(asciiBytes(EXPECTED_PARAGRAPH_OPEN));
-
-        assertThat(segment(image, asciiWidth(EXPECTED_PARAGRAPH_OPEN),
-                        asciiWidth(EXPECTED_PARAGRAPH_OPEN) + fillerWidth))
-                .as("every byte before the cut reference must survive")
-                .isEqualTo(asciiBytes("A".repeat(fillerWidth)));
-
-        // The two bytes the fragment would have occupied are now ASCII spaces.
-        assertSpacePaddedFrom(image, asciiWidth(EXPECTED_PARAGRAPH_OPEN) + fillerWidth);
-
-        assertLacksBytes(record, "&");
-        assertLacksBytes(record, "&am");
-        assertLacksBytes(record, "B");
-    }
-
-    @Test
-    @DisplayName("a character reference that completes exactly at the record boundary is kept, "
-            + "so the blanking never removes a whole reference")
-    void aCharacterReferenceThatCompletesAtTheRecordBoundaryIsKept() {
-        // The control for the previous test. 3 bytes of tag + 92 bytes of filler puts the
-        // ampersand at index 95, so "&amp;" ends with its semicolon at index 99 -- the last byte
-        // of the record. Nothing may be removed.
-        final int fillerWidth = 92;
-        final String value = "A".repeat(fillerWidth) + "&" + "B".repeat(20);
-        final String record = StatementHtmlTemplates.transactionWorkLine(value);
-        final byte[] image = asciiBytes(record);
+    @DisplayName("a customer name carrying a quotation mark is moved as it arrives, and the "
+            + "line's own literal is never rewritten either")
+    void aCustomerNameCarryingAQuotationMarkIsMovedAsItArrives() {
+        // The name is free text, and the literal that precedes it opens a tag carrying a quoted
+        // attribute. The legacy moves the name in regardless, and so does this: the record is the
+        // name, cut at the first two-space run, then the delimiter and the closing tag.
+        final String name = "JOHN \"Q\" & <B>";
+        final byte[] image = asciiBytes(StatementHtmlTemplates.customerNameLine(name));
 
         assertThat(image.length)
                 .as("the record must be exactly one record wide")
                 .isEqualTo(EXPECTED_RECORD_LENGTH);
-
+        assertThat(segment(image, 0, EXPECTED_NAME_PREFIX_LENGTH))
+                .as("the line's own literal, quoted attribute included, must be emitted as declared")
+                .isEqualTo(asciiBytes(EXPECTED_NAME_PREFIX));
         assertThat(image)
-                .as("the complete reference must survive at the very end of the record")
-                .isEqualTo(asciiBytes(EXPECTED_PARAGRAPH_OPEN + "A".repeat(fillerWidth)
-                        + EXPECTED_AMPERSAND_REFERENCE));
+                .as("the emitted record is the name as supplied, then the two literal spaces and "
+                        + "the closing literal")
+                .isEqualTo(expectedRecord(EXPECTED_NAME_PREFIX + name
+                        + EXPECTED_NAME_DELIMITER + EXPECTED_NAME_CLOSING_TAG));
+    }
 
-        assertCarriesBytes(record, EXPECTED_AMPERSAND_REFERENCE);
-        assertLacksBytes(record, "B");
+    /*
+     * ========================================================================================
+     * Truncation is a plain byte cut.
+     *
+     * A COBOL move into a shorter alphanumeric field truncates on the right and does nothing
+     * else. A previous delivery blanked back to an unterminated character reference at the cut;
+     * with no references introduced there is nothing to blank, and blanking a real ampersand out
+     * of a real value would be this module's invention. The cases below prove the cut is at the
+     * record boundary and that no byte behind it is reconsidered.
+     * ========================================================================================
+     */
+
+    @Test
+    @DisplayName("a value that overruns the record loses exactly its tail, and an ampersand at "
+            + "the cut is not blanked back to")
+    void aValueThatOverrunsTheRecordLosesExactlyItsTail() {
+        // "<p>" is 3 bytes, so the value begins at index 3. 95 leading bytes put an ampersand at
+        // index 98, one byte inside the record, with more value behind it. The ampersand survives.
+        final int fillerWidth = 95;
+        final String value = "A".repeat(fillerWidth) + "&" + "B".repeat(20);
+        final byte[] image = asciiBytes(StatementHtmlTemplates.transactionWorkLine(value));
+
+        assertThat(image.length)
+                .as("the record must be exactly one record wide")
+                .isEqualTo(EXPECTED_RECORD_LENGTH);
+        assertThat(image)
+                .as("the first hundred bytes of the composed line, and nothing else")
+                .isEqualTo(asciiBytes((EXPECTED_PARAGRAPH_OPEN + value)
+                        .substring(0, EXPECTED_RECORD_LENGTH)));
+        assertCarriesBytes(new String(image, StandardCharsets.US_ASCII), "&");
     }
 
     @Test
-    @DisplayName("a truncation with no reference at the cut is a plain byte cut, unchanged from "
-            + "the legacy fixed-width move")
-    void aTruncationWithNoReferenceAtTheCutIsAPlainByteCut() {
-        // The ordinary case, and the proof that the blanking is conditional: nothing is removed
-        // when the surviving bytes hold no unterminated reference.
+    @DisplayName("a truncation with no markup at the cut is the same plain byte cut")
+    void aTruncationWithNoMarkupAtTheCutIsTheSamePlainByteCut() {
         final String value = "A".repeat(EXPECTED_RECORD_LENGTH);
         final byte[] image = asciiBytes(StatementHtmlTemplates.transactionWorkLine(value));
 
@@ -2127,6 +1928,7 @@ class StatementHtmlTemplatesSecurityTest {
                 .isEqualTo(asciiBytes(EXPECTED_PARAGRAPH_OPEN
                         + "A".repeat(EXPECTED_RECORD_LENGTH - asciiWidth(EXPECTED_PARAGRAPH_OPEN))));
     }
+
 
     @Test
     @DisplayName("every work line carries no line terminator and no tab byte, whether its value "
@@ -2270,11 +2072,11 @@ class StatementHtmlTemplatesSecurityTest {
     }
 
     @Test
-    @DisplayName("the escaping method refuses null text")
-    void escapeTextRefusesNullText() {
+    @DisplayName("the raw fitter refuses null content")
+    void workLineRefusesNullContent() {
         assertThatNullPointerException()
-                .as("null text must be refused rather than substituted into the literal null")
-                .isThrownBy(() -> StatementHtmlTemplates.escapeText(null));
+                .as("null content must be refused rather than framed as the literal null")
+                .isThrownBy(() -> StatementHtmlTemplates.workLine(null));
     }
 
 }

@@ -129,10 +129,10 @@ import static org.mockito.Mockito.when;
  *
  * <ol>
  *   <li>The source expresses the end-of-file control break as the {@code ELSE} arm of a test-before
- *       loop, which a literal reading leaves unreachable and which would silently drop the last
- *       account's accrued interest. The implementation honours the arm for the final group; this class
- *       asserts that behaviour and asserts that no group is ever rewritten twice, so the second update
- *       site stays unreachable.</li>
+ *       loop, which makes the arm unreachable, so the run's last account is never rewritten while its
+ *       interest records are still written. The implementation reproduces both halves; this class
+ *       asserts that the final group is accrued and written and that only key-change breaks rewrite an
+ *       account. See {@code docs/decision-log.md} entry DL-207.</li>
  *   <li>The description is a bounded 24-character write into a 100-character field. The implementation
  *       carries the 24-character value and leaves the fixed-width rendering to the record mapper, so the
  *       bounded write is asserted on the production value and the residue mechanism is proved with this
@@ -1426,18 +1426,19 @@ final class InterestCalculationServiceTest {
      * cycle accumulators before rewriting the account. Zeroing only one would leave a half-closed cycle
      * that every later run would compound, which is why the two are asserted separately below.
      *
-     * <h2>The second invocation site, and why it stays unreachable</h2>
+     * <h2>The second invocation site, and why it never runs</h2>
      *
      * <p>The source invokes this paragraph from two places. The first is the key-change control break.
      * The second sits in the {@code ELSE} arm of an end-of-file test that is itself inside a loop whose
-     * termination condition is evaluated <em>before</em> each iteration, so a literal reading leaves that
-     * arm unreachable - and reproducing the unreachability verbatim would silently drop the final
-     * account's accrued interest.
+     * termination condition is evaluated <em>before</em> each iteration, so the arm is unreachable: the
+     * read paragraph raises the flag and the loop ends before the arm can be taken.
      *
-     * <p>The implementation therefore honours the arm's intent for the final group and records the
-     * divergence in the decision log. This nest asserts both halves of that position: the final group
-     * <em>is</em> closed, and <strong>no group is ever rewritten twice</strong> - so the second site never
-     * becomes a second rewrite.
+     * <p>The implementation reproduces that. The run's final group is still accrued - its rows resolve
+     * their rates, its records are written and its total is reported - but paragraph
+     * {@code 1050-UPDATE-ACCOUNT} does not run for it, so the last account keeps its balance and keeps
+     * both cycle accumulators. The module's own expected-output fixtures encode that unposted balance.
+     * This nest asserts both halves: the final group <em>is</em> accrued and written, and it is
+     * <strong>never</strong> rewritten. See {@code docs/decision-log.md} entry DL-207.
      */
     @Nested
     @DisplayName("1050-UPDATE-ACCOUNT: the control break folds the interest in and zeroes BOTH cycle "
@@ -1521,14 +1522,16 @@ final class InterestCalculationServiceTest {
                             .containsExactly(DECISIVE_INTEREST, DECISIVE_INTEREST),
                     () -> assertThat(InterestCalculationServiceTest.this.closedGroups)
                             .extracting(group -> group.updatedAccount().getAcctCurrBal())
-                            .containsExactly(BALANCE_AFTER_DECISIVE_INTEREST,
-                                    BALANCE_AFTER_DECISIVE_INTEREST));
+                            .as("the key-change group carries its interest; the final group's balance "
+                                    + "is left as read, because its break is the unreachable arm")
+                            .containsExactly(BALANCE_AFTER_DECISIVE_INTEREST, OPENING_BALANCE));
         }
 
         @Test
-        @DisplayName("the FINAL group at end of file is still closed: its interest is computed, its "
-                + "record is written, its total includes it and its balance carries it")
-        void theFinalGroupAtEndOfFileIsStillClosed() {
+        @DisplayName("the FINAL group at end of file is still accrued - its interest is computed, its "
+                + "record is written and its total includes it - but its balance does NOT carry it and "
+                + "its cycle accumulators are NOT reset, because the arm is unreachable")
+        void theFinalGroupAtEndOfFileIsAccruedButNeverRewritten() {
             final Account first = account(ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
             final Account highest = account(HIGHER_ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
             givenGroupReadsResolve(first);
@@ -1557,18 +1560,27 @@ final class InterestCalculationServiceTest {
                     () -> assertThat(last.totalInterest())
                             .as("and IS included in that group's interest total")
                             .isEqualTo(DECISIVE_INTEREST),
+                    () -> assertThat(last.accountRewritten())
+                            .as("the end-of-file arm is unreachable, so 1050-UPDATE-ACCOUNT does not "
+                                    + "run for the final group")
+                            .isFalse(),
                     () -> assertThat(last.updatedAccount().getAcctCurrBal())
-                            .as("and the highest account's balance carries it, because the "
-                                    + "end-of-file control break is honoured rather than reproduced "
-                                    + "as an unreachable arm - see the decision log")
-                            .isEqualTo(BALANCE_AFTER_DECISIVE_INTEREST),
+                            .as("so the highest account's balance still EXCLUDES the interest it "
+                                    + "accrued - see decision-log entry DL-207")
+                            .isEqualTo(OPENING_BALANCE),
+                    () -> assertThat(last.updatedAccount().getAcctCurrCycCredit())
+                            .as("and its cycle CREDIT accumulator is left exactly as it was read")
+                            .isEqualTo(OPENING_CYCLE_CREDIT),
+                    () -> assertThat(last.updatedAccount().getAcctCurrCycDebit())
+                            .as("and its cycle DEBIT accumulator is left exactly as it was read")
+                            .isEqualTo(OPENING_CYCLE_DEBIT),
                     () -> assertThat(InterestCalculationServiceTest.this.writtenRecords).hasSize(2));
         }
 
         @Test
-        @DisplayName("the second update site stays unreachable: each account is rewritten EXACTLY once "
-                + "per run, so the end-of-file arm never becomes a duplicate rewrite")
-        void theSecondUpdateSiteNeverBecomesASecondRewrite() {
+        @DisplayName("the second update site stays unreachable: only the accounts a KEY CHANGE closed "
+                + "are rewritten, so the run's last account is never rewritten at all")
+        void onlyKeyChangeControlBreaksRewriteAnAccount() {
             final Account first = account(ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
             final Account highest = account(HIGHER_ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE);
             givenGroupReadsResolve(first);
@@ -1583,13 +1595,19 @@ final class InterestCalculationServiceTest {
                     recordSink(), groupSink());
 
             final ArgumentCaptor<Account> rewritten = ArgumentCaptor.forClass(Account.class);
-            verify(InterestCalculationServiceTest.this.accountRepository, times(2))
+            verify(InterestCalculationServiceTest.this.accountRepository, times(1))
                     .save(rewritten.capture());
             assertAll(
                     () -> assertThat(rewritten.getAllValues())
                             .extracting(Account::getAcctId)
-                            .as("two accounts, two rewrites - never three")
-                            .containsExactly(ACCOUNT_ID, HIGHER_ACCOUNT_ID),
+                            .as("one key change, one rewrite - the last account's break is the "
+                                    + "unreachable end-of-file arm")
+                            .containsExactly(ACCOUNT_ID),
+                    () -> assertThat(InterestCalculationServiceTest.this.closedGroups)
+                            .extracting(
+                                    InterestCalculationService.GroupInterestResult::accountRewritten)
+                            .as("the key-change group is rewritten, the final group is not")
+                            .containsExactly(true, false),
                     () -> assertThat(InterestCalculationServiceTest.this.closedGroups)
                             .extracting(
                                     InterestCalculationService.GroupInterestResult::totalInterest)
@@ -2200,7 +2218,7 @@ final class InterestCalculationServiceTest {
                 + "exhausted source terminates the scan normally, and a failure abends")
         void theCoarseOutcomeIsExercisedThroughItsOwner() {
             givenGroupReadsResolve(account(ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE));
-            givenAccountRewriteEchoes();
+            // No account rewrite is stubbed, for the reason given on aRunCarriesNoCollection.
             givenEveryProbeResolvesAt(DECISIVE_RATE);
 
             final InterestCalculationService.InterestRunResult run =
@@ -2958,7 +2976,8 @@ final class InterestCalculationServiceTest {
                 + "reached their destinations as they were produced, so a run holds one group's state")
         void aRunCarriesNoCollection() {
             givenGroupReadsResolve(account(ACCOUNT_ID, DIRECT_GROUP_ID, OPENING_BALANCE));
-            givenAccountRewriteEchoes();
+            // No account rewrite is stubbed: this run holds one account, so its only group closes at
+            // the unreachable end-of-file arm and nothing is rewritten.
             givenEveryProbeResolvesAt(DECISIVE_RATE);
 
             final InterestCalculationService.InterestRunResult run =

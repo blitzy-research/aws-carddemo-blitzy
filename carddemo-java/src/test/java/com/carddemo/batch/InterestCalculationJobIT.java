@@ -55,7 +55,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -63,6 +62,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
@@ -366,9 +366,30 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
 
     /** The balance the fixture found on one account. */
     private BigDecimal displacedBalanceOf(final String accountId) {
+        return snapshotOf(accountId).balance();
+    }
+
+    /**
+     * The two cycle accumulators of one seeded account, added together as they stood before the run.
+     *
+     * <p>Their sum is what a control break zeroes, so a sum that is unchanged is the observable form of
+     * "this account was never rewritten" (DL-207).
+     *
+     * @param  accountId the account whose accumulators are wanted
+     * @return the sum of the credit and debit accumulators before this run displaced anything
+     */
+    private BigDecimal displacedCycleTotalOf(final String accountId) {
+        final Balances snapshot = snapshotOf(accountId);
+        return snapshot.cycleCredit().add(snapshot.cycleDebit());
+    }
+
+    /**
+     * @param  accountId the account whose pre-run snapshot is wanted
+     * @return the snapshot this specification took before it displaced anything
+     */
+    private Balances snapshotOf(final String accountId) {
         return this.displacedBalances.stream()
                 .filter(candidate -> candidate.acctId().equals(accountId))
-                .map(Balances::balance)
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException(
                         "the reference seed must carry account " + accountId));
@@ -408,11 +429,12 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
 
     @Test
     @Order(3)
-    @DisplayName("a completing run closes both groups, truncates the accrual, skips the zero-rate row "
-            + "and writes an exact multiple of the record width")
+    @DisplayName("a completing run accrues both groups, rewrites only the key-change one, truncates "
+            + "the accrual, skips the zero-rate row and writes an exact multiple of the record width")
     void aCompletingRunWritesTheGeneration() throws Exception {
         final BigDecimal firstBalanceBefore = displacedBalanceOf(FIRST_ACCOUNT);
         final BigDecimal secondBalanceBefore = displacedBalanceOf(SECOND_ACCOUNT);
+        final BigDecimal secondCycleTotalBefore = displacedCycleTotalOf(SECOND_ACCOUNT);
 
         final JobExecution execution = this.jobLauncher.run(this.interestCalculationJob,
                 new JobParametersBuilder()
@@ -462,12 +484,19 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
                 .isZero();
         assertThat(artefact.length)
                 .isEqualTo(synthesized * InterestCalculationJobConfig.TRANSACT_RECORD_LENGTH);
-        final String durableKey = "AWS.M2.CARDDEMO.SYSTRAN/"
-                + String.format(Locale.ROOT, "G%010dV00", execution.getId().longValue());
+        // The generation number is the store's own, allocated against what the base already holds when
+        // the publication runs, so the key is asserted by SHAPE and not predicted from this execution's
+        // identifier - see docs/decision-log.md entry DL-210. The base is still exactly the legacy one.
+        final ArgumentCaptor<String> publishedKey = ArgumentCaptor.forClass(String.class);
         verify(this.objectStore).upload(
                 eq("carddemo-batch-staging"),
-                eq(durableKey),
+                publishedKey.capture(),
                 any(InputStream.class));
+        assertThat(publishedKey.getValue())
+                .as("ONE upload, under the legacy generation base and a ten-digit absolute generation."
+                        + " A second upload under a second key shape is what the removed in-step publish"
+                        + " produced (DL-212)")
+                .matches("\\QAWS.M2.CARDDEMO.SYSTRAN/\\EG\\d{10}V00");
         assertThat(StagedGenerationStore.registeredArtifactCount(execution))
                 .as("a successful terminal publication removes the serializable registry so a "
                         + "repeated callback cannot upload the same generation twice")
@@ -521,20 +550,32 @@ class InterestCalculationJobIT extends AbstractPostgresIT {
         }
 
         assertThat(this.accountRepository.findById(FIRST_ACCOUNT).orElseThrow().getAcctCurrBal())
-                .as("the control break adds the group's accrued total to the current balance")
+                .as("the KEY-CHANGE control break adds the group's accrued total to the current balance")
                 .isEqualByComparingTo(firstBalanceBefore.add(TRUNCATED_INTEREST));
-        assertThat(this.accountRepository.findById(SECOND_ACCOUNT).orElseThrow().getAcctCurrBal())
-                .as("the final group is posted too, which is what the end-of-file break is for")
-                .isEqualByComparingTo(secondBalanceBefore.add(TRUNCATED_INTEREST));
 
-        for (final String posted : List.of(FIRST_ACCOUNT, SECOND_ACCOUNT)) {
-            final Account account = this.accountRepository.findById(posted).orElseThrow();
-            assertThat(account.getAcctCurrCycCredit())
-                    .as("a control break resets both cycle accumulators, not one")
-                    .isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(account.getAcctCurrCycDebit())
-                    .isEqualByComparingTo(BigDecimal.ZERO);
-        }
+        // The final group in key order is the asymmetric one, and reproducing that asymmetry is the
+        // whole point. The legacy program invokes 1050-UPDATE-ACCOUNT from two places, and the one that
+        // would have served the last account sits in the ELSE arm of a test-BEFORE loop whose flag the
+        // read paragraph raises itself - so it is unreachable, and the last account's balance is never
+        // posted. The interest IS still computed and its record IS still written, because both happen per
+        // row inside the loop. See docs/decision-log.md entry DL-207.
+        final Account finalGroup = this.accountRepository.findById(SECOND_ACCOUNT).orElseThrow();
+        assertThat(finalGroup.getAcctCurrBal())
+                .as("the final group's balance is left exactly as it was read, because the end-of-file"
+                        + " control break is unreachable in the source")
+                .isEqualByComparingTo(secondBalanceBefore);
+
+        final Account keyChangeGroup = this.accountRepository.findById(FIRST_ACCOUNT).orElseThrow();
+        assertThat(keyChangeGroup.getAcctCurrCycCredit())
+                .as("a reachable control break resets both cycle accumulators, not one")
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(keyChangeGroup.getAcctCurrCycDebit())
+                .isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(finalGroup.getAcctCurrCycCredit().add(finalGroup.getAcctCurrCycDebit()))
+                .as("and the final group's accumulators are not reset either, because the paragraph that"
+                        + " would have reset them never runs - resetting them while leaving the balance"
+                        + " unposted would be a third behaviour belonging to neither system")
+                .isEqualByComparingTo(secondCycleTotalBefore);
 
         assertThat(this.transactionRepository.count())
                 .as("INTCALC writes SYSTRAN only; COMBTRAN is the later master-load boundary")

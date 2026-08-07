@@ -19,44 +19,41 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.config.AwsProperties;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
-import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
+import java.lang.reflect.Method;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.springframework.batch.item.Chunk;
-import org.springframework.batch.item.ExecutionContext;
-import org.springframework.batch.item.ItemStreamWriter;
 
 /**
- * Verifies the one S3-backed staging boundary shared by every dataset-producing batch job.
+ * Verifies the S3-backed staging boundary batch datasets are <strong>read</strong> through.
  *
- * <p>The adapter deliberately keeps Spring Batch writers on local files because their execution
- * state requires {@link java.io.File} access. These tests therefore pin both sides of the boundary:
- * staged reads resolve through {@link S3Operations}, while local or in-memory outputs are uploaded
- * only after their producing writer has closed successfully.
+ * <p>The adapter deliberately keeps Spring Batch readers on local resources because their execution
+ * state requires {@link java.io.File} access, so a staged read resolves through {@link S3Operations}
+ * and a job's own fallback covers absence. Both are pinned here, together with the bucket the
+ * component is configured with, because substituting a hardcoded destination is the failure this
+ * boundary exists to make impossible.
+ *
+ * <p><strong>There is no publication surface to test.</strong> Three publication forms and a
+ * publishing-writer decorator were removed from this component: four job steps used them, and each of
+ * those steps put its generation in the bucket a second time under a second key shape the generation
+ * retention scan could not see. Publication now belongs entirely to
+ * {@code batch/step/StagedGenerationStore}, whose own suite covers it, and the census below asserts
+ * that nothing here uploads at all - which is what makes the single-publisher invariant structural
+ * rather than conventional. See {@code docs/decision-log.md} entry DL-212.
  */
-@DisplayName("BatchStagingArea - the single S3 boundary for staged batch datasets")
+@DisplayName("BatchStagingArea - the S3 boundary staged batch datasets are read through")
 final class BatchStagingAreaTest {
 
     /** Configured bucket used to prove that no operation substitutes a hardcoded destination. */
@@ -64,12 +61,6 @@ final class BatchStagingAreaTest {
 
     /** Explicit key used by read and write assertions. */
     private static final String OBJECT_KEY = "jobs/42/output.dat";
-
-    /** Content written through each publication form. */
-    private static final byte[] CONTENT = "fixed-width-content".getBytes(StandardCharsets.US_ASCII);
-
-    @TempDir
-    private Path temporaryDirectory;
 
     /**
      * Builds valid settings with a nominated bucket.
@@ -92,26 +83,6 @@ final class BatchStagingAreaTest {
      */
     private static BatchStagingArea stagingArea(final S3Operations objectStore) {
         return new BatchStagingArea(objectStore, properties(BUCKET));
-    }
-
-    /**
-     * Captures an upload body while the stream is open.
-     *
-     * @param objectStore object-store mock to prepare
-     * @param objectKey expected destination key
-     * @return holder populated when an upload occurs
-     * @throws IOException if the invocation body cannot be read
-     */
-    private static AtomicReference<byte[]> captureUpload(final S3Operations objectStore,
-            final String objectKey) throws IOException {
-        final AtomicReference<byte[]> uploaded = new AtomicReference<>();
-        when(objectStore.upload(eq(BUCKET), eq(objectKey), any(InputStream.class)))
-                .thenAnswer(invocation -> {
-                    final InputStream body = invocation.getArgument(2, InputStream.class);
-                    uploaded.set(body.readAllBytes());
-                    return mock(S3Resource.class);
-                });
-        return uploaded;
     }
 
     @Nested
@@ -140,114 +111,6 @@ final class BatchStagingAreaTest {
 
             verify(objectStore).objectExists(BUCKET, OBJECT_KEY);
             verify(objectStore).download(BUCKET, OBJECT_KEY);
-        }
-    }
-
-    @Nested
-    @DisplayName("Publication forms")
-    final class PublicationForms {
-
-        @Test
-        @DisplayName("a path-only publication uses the local file name as its object key")
-        void pathOnlyPublicationUsesTheFileName() throws IOException {
-            final Path source = temporaryDirectory.resolve("generation.dat");
-            Files.write(source, CONTENT);
-            final S3Operations objectStore = mock(S3Operations.class);
-            final AtomicReference<byte[]> uploaded = captureUpload(objectStore, "generation.dat");
-
-            stagingArea(objectStore).publish(source);
-
-            assertThat(uploaded.get()).containsExactly(CONTENT);
-            verify(objectStore).upload(eq(BUCKET), eq("generation.dat"), any(InputStream.class));
-        }
-
-        @Test
-        @DisplayName("an explicit-key publication streams the complete local file")
-        void explicitKeyPublicationStreamsTheCompleteLocalFile() throws IOException {
-            final Path source = temporaryDirectory.resolve("local-buffer.dat");
-            Files.write(source, CONTENT);
-            final S3Operations objectStore = mock(S3Operations.class);
-            final AtomicReference<byte[]> uploaded = captureUpload(objectStore, OBJECT_KEY);
-
-            stagingArea(objectStore).publish(OBJECT_KEY, source);
-
-            assertThat(uploaded.get()).containsExactly(CONTENT);
-            verify(objectStore).upload(eq(BUCKET), eq(OBJECT_KEY), any(InputStream.class));
-        }
-
-        @Test
-        @DisplayName("an in-memory publication uploads the complete byte generation")
-        void inMemoryPublicationUploadsTheCompleteGeneration() throws IOException {
-            final S3Operations objectStore = mock(S3Operations.class);
-            final AtomicReference<byte[]> uploaded = captureUpload(objectStore, OBJECT_KEY);
-
-            stagingArea(objectStore).publish(OBJECT_KEY, CONTENT);
-
-            assertThat(uploaded.get()).containsExactly(CONTENT);
-            verify(objectStore).upload(eq(BUCKET), eq(OBJECT_KEY), any(InputStream.class));
-        }
-
-        @Test
-        @DisplayName("a local read failure retains the source path and cause")
-        void localReadFailureRetainsItsContext() {
-            final Path absent = temporaryDirectory.resolve("absent.dat");
-
-            assertThatThrownBy(() -> stagingArea(mock(S3Operations.class))
-                    .publish(OBJECT_KEY, absent))
-                    .isInstanceOf(UncheckedIOException.class)
-                    .hasMessageContaining(absent.toString())
-                    .hasCauseInstanceOf(IOException.class);
-        }
-    }
-
-    @Nested
-    @DisplayName("Publishing writer lifecycle")
-    final class PublishingWriterLifecycle {
-
-        @Test
-        @DisplayName("open, update and write pass through before one publication follows close")
-        void delegateLifecycleCompletesBeforeOnePublication() throws Exception {
-            final Path source = temporaryDirectory.resolve("writer-output.dat");
-            Files.write(source, CONTENT);
-            final List<String> events = new ArrayList<>();
-            final RecordingWriter delegate = new RecordingWriter(events, null);
-            final S3Operations objectStore = mock(S3Operations.class);
-            when(objectStore.upload(eq(BUCKET), eq("writer-output.dat"), any(InputStream.class)))
-                    .thenAnswer(invocation -> {
-                        events.add("publish");
-                        return mock(S3Resource.class);
-                    });
-            final ItemStreamWriter<String> writer = stagingArea(objectStore)
-                    .publishingWriter(delegate, source);
-            final ExecutionContext context = new ExecutionContext();
-            final Chunk<String> chunk = Chunk.of("first", "second");
-
-            writer.open(context);
-            writer.update(context);
-            writer.write(chunk);
-            writer.close();
-
-            assertThat(delegate.openContext()).isSameAs(context);
-            assertThat(delegate.updateContext()).isSameAs(context);
-            assertThat(delegate.written()).isSameAs(chunk);
-            assertThat(events).containsExactly("open", "update", "write", "close", "publish");
-            verify(objectStore, times(1))
-                    .upload(eq(BUCKET), eq("writer-output.dat"), any(InputStream.class));
-        }
-
-        @Test
-        @DisplayName("a delegate close failure prevents publication")
-        void delegateCloseFailurePreventsPublication() {
-            final Path source = temporaryDirectory.resolve("writer-output.dat");
-            final RuntimeException failure = new IllegalStateException("delegate close failed");
-            final RecordingWriter delegate = new RecordingWriter(new ArrayList<>(), failure);
-            final S3Operations objectStore = mock(S3Operations.class);
-            final ItemStreamWriter<String> writer = stagingArea(objectStore)
-                    .publishingWriter(delegate, source);
-
-            assertThatThrownBy(writer::close).isSameAs(failure);
-            verify(objectStore, never())
-                    .upload(any(String.class), any(String.class), any(InputStream.class));
         }
     }
 
@@ -293,122 +156,49 @@ final class BatchStagingAreaTest {
                     .withMessage("object key must not be null");
             assertThatIllegalArgumentException().isThrownBy(() -> staging.stagedInput("\n"))
                     .withMessage("object key must not be blank");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publish(null, temporaryDirectory.resolve("file")))
-                    .withMessage("object key must not be null");
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> staging.publish("\t", temporaryDirectory.resolve("file")))
-                    .withMessage("object key must not be blank");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publish(null, CONTENT))
-                    .withMessage("object key must not be null");
         }
 
         @Test
-        @DisplayName("publication forms and writer creation refuse missing sources or content")
-        void publicationRefusesMissingSourcesContentAndDelegate() {
-            final BatchStagingArea staging = stagingArea(mock(S3Operations.class));
-            final RecordingWriter delegate = new RecordingWriter(new ArrayList<>(), null);
+        @DisplayName("reading is the whole of the published surface: nothing here can upload, so a "
+                + "second key shape cannot be reintroduced by a caller")
+        void nothingOnThisBoundaryCanUpload() {
+            final S3Operations objectStore = mock(S3Operations.class);
+            when(objectStore.objectExists(BUCKET, OBJECT_KEY)).thenReturn(true);
+            when(objectStore.download(BUCKET, OBJECT_KEY)).thenReturn(mock(S3Resource.class));
+            final BatchStagingArea staging = stagingArea(objectStore);
 
-            assertThatNullPointerException().isThrownBy(() -> staging.publish((Path) null))
-                    .withMessage("source must not be null");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publish(OBJECT_KEY, (Path) null))
-                    .withMessage("source must not be null");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publish(OBJECT_KEY, (byte[]) null))
-                    .withMessage("content must not be null");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publishingWriter(null, temporaryDirectory))
-                    .withMessage("delegate must not be null");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> staging.publishingWriter(delegate, null))
-                    .withMessage("source must not be null");
-        }
-    }
+            // Every published method of the component, exercised. Stated as a census over the declared
+            // methods rather than as an absence of named methods, so a publication form added under any
+            // name at all fails this rather than slipping past a list of spellings.
+            staging.bucket();
+            staging.holds(OBJECT_KEY);
+            staging.stagedInput(OBJECT_KEY);
 
-    /**
-     * Test writer that records the lifecycle without unchecked generic mocks.
-     */
-    private static final class RecordingWriter implements ItemStreamWriter<String> {
+            // Members the author did not write are excluded before the census is taken. Coverage
+            // instrumentation adds a probe accessor to every class it rewrites, and this class is
+            // rewritten whenever the build measures coverage, so a census over the raw reflection result
+            // reports a method that no source line declares. Both exclusions are needed: the compiler
+            // flags what it generates as synthetic, while the probe accessor is a bootstrap method that
+            // is not flagged and is recognisable only by the dollar prefix reserved for generated names.
+            // Neither exclusion can hide a real publication method, because an author-written method is
+            // never synthetic and never carries that prefix.
+            final List<String> declaredByTheAuthor = Stream.of(BatchStagingArea.class.getDeclaredMethods())
+                    .filter(method -> !method.isSynthetic())
+                    .map(Method::getName)
+                    .filter(name -> !name.startsWith("$"))
+                    .toList();
 
-        /** Ordered lifecycle events shared with the object-store answer. */
-        private final List<String> events;
+            assertThat(declaredByTheAuthor)
+                    .as("the census must see the real surface, not an empty list, or it proves nothing")
+                    .isNotEmpty();
+            assertThat(declaredByTheAuthor)
+                    .as("the declared surface is the three read-side operations and the key guard, and"
+                            + " nothing more: publication belongs to StagedGenerationStore (DL-212)")
+                    .allSatisfy(name -> assertThat(name)
+                            .isIn("bucket", "holds", "stagedInput", "requireObjectKey"));
 
-        /** Optional failure raised by close. */
-        private final RuntimeException closeFailure;
-
-        /** Context received by open. */
-        private ExecutionContext openContext;
-
-        /** Context received by update. */
-        private ExecutionContext updateContext;
-
-        /** Chunk received by write. */
-        private Chunk<? extends String> written;
-
-        /**
-         * Creates a recording writer.
-         *
-         * @param events ordered event sink
-         * @param closeFailure optional close failure
-         */
-        RecordingWriter(final List<String> events, final RuntimeException closeFailure) {
-            this.events = events;
-            this.closeFailure = closeFailure;
-        }
-
-        @Override
-        public void open(final ExecutionContext executionContext) {
-            this.openContext = executionContext;
-            this.events.add("open");
-        }
-
-        @Override
-        public void update(final ExecutionContext executionContext) {
-            this.updateContext = executionContext;
-            this.events.add("update");
-        }
-
-        @Override
-        public void write(final Chunk<? extends String> chunk) {
-            this.written = chunk;
-            this.events.add("write");
-        }
-
-        @Override
-        public void close() {
-            this.events.add("close");
-            if (this.closeFailure != null) {
-                throw this.closeFailure;
-            }
-        }
-
-        /**
-         * Returns the open context.
-         *
-         * @return received context
-         */
-        ExecutionContext openContext() {
-            return this.openContext;
-        }
-
-        /**
-         * Returns the update context.
-         *
-         * @return received context
-         */
-        ExecutionContext updateContext() {
-            return this.updateContext;
-        }
-
-        /**
-         * Returns the written chunk.
-         *
-         * @return received chunk
-         */
-        Chunk<? extends String> written() {
-            return this.written;
+            verify(objectStore, never()).upload(any(), any(), any(InputStream.class));
+            verify(objectStore, never()).upload(any(), any(), any(InputStream.class), any());
         }
     }
 }

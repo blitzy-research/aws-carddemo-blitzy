@@ -482,8 +482,32 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "${APP_VERSION:?APP_VERSION must equal the Maven project version}"
-        SOURCE_REVISION: "${SOURCE_REVISION:?SOURCE_REVISION must be the current 40-character Git SHA}"
+        # BOTH IDENTITY ARGUMENTS CARRY A DEFAULT, AND NEITHER GUARD IS WEAKENED BY THAT.
+        #
+        # They were written as ${VARIABLE:?message}. Compose interpolates the WHOLE file for every
+        # subcommand, so a required-but-unset variable made `docker compose config`, `ps`, `logs` and
+        # even `down` fail - a teardown cannot need the build provenance of an image it is removing,
+        # and a stack that cannot be torn down without three exports is not the documented local
+        # validation stack. The refusal also arrived as a compose interpolation error, which names the
+        # variable but not what a correct value would be.
+        #
+        # The guards themselves live in the Dockerfile, where a build can actually check them, and are
+        # untouched: APP_VERSION is rejected unless it matches the Maven version grammar AND equals the
+        # build.version the packaged artefact carries, and SOURCE_REVISION is rejected unless it is
+        # forty lowercase hexadecimal characters AND is not the all-zero sentinel. So:
+        #
+        #   APP_VERSION defaults to this module's own Maven version. A drift between the two is caught
+        #   by ContainerHardeningContractTest, which compares this default with pom.xml.
+        #
+        #   SOURCE_REVISION defaults to the ALL-ZERO SENTINEL the Dockerfile explicitly refuses. Every
+        #   read-only subcommand therefore works from a clean checkout, while `up --build` still stops -
+        #   at the build, with the Dockerfile's own message naming the forty-character requirement -
+        #   rather than stamping an image with a revision nobody supplied. An unlabelled image cannot
+        #   be produced by accident here.
+        #
+        # Export either variable to displace its default, exactly as the README shows.
+        APP_VERSION: "${APP_VERSION:-1.0.0}"
+        SOURCE_REVISION: "${SOURCE_REVISION:-0000000000000000000000000000000000000000}"
         SOURCE_DATE_EPOCH: "${SOURCE_DATE_EPOCH:-1658188800}"
     image: ${COMPOSE_PROJECT_NAME:-carddemo}-app:local
     container_name: ${COMPOSE_PROJECT_NAME:-carddemo}-app

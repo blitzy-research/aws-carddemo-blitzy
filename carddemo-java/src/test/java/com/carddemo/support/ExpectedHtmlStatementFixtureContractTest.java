@@ -59,7 +59,7 @@ import org.junit.jupiter.api.Test;
  * <h2>What is proved, and how far it goes</h2>
  * <ul>
  *   <li><strong>The record contract.</strong> Every record is exactly one hundred encoded bytes, closed
- *       by one line feed and by no carriage return, with no header, comment or metadata prefix byte;
+ *       by nothing at all - the width is the whole stride - with no header, comment or metadata prefix;
  *       every trailing space is contractual and is compared.</li>
  *   <li><strong>The document structure.</strong> Each of the fifty documents is reassembled from the
  *       production templates plus the fixture's own composed lines and compared record by record, so a
@@ -79,14 +79,14 @@ import org.junit.jupiter.api.Test;
  *       statement oracle, including the one place the two are REQUIRED to differ.</li>
  * </ul>
  *
- * <h2>The one divergence, pinned rather than smoothed</h2>
+ * <h2>Markup-significant bytes, pinned rather than smoothed</h2>
  * The legacy program encoded nothing, so the committed oracle carries markup-significant characters
  * raw - twelve apostrophes, in one customer surname and eleven transaction descriptions - and carries
- * no character reference at all. The production emitter deliberately escapes those characters, which is
- * a security decision documented on {@link StatementHtmlTemplates#escapeText(String)} and not a parity
- * defect. Both facts are asserted here: the fixture stays raw, and for exactly those records the
- * emitter's output is required to equal the fixture record with the value replaced by its reference
- * form. Nothing is relaxed on either side, and a change to either behaviour fails this class.
+ * no character reference at all. The production emitter encodes nothing either, per DL-209, so those
+ * records re-emit byte for byte like every other record: there is no divergence to allow for and none
+ * is allowed. Both facts are asserted here - the fixture stays raw, and the emitter reproduces it
+ * exactly - so a formatter that started escaping, masking or normalising a byte would fail this class
+ * on the very records that make byte parity observable.
  *
  * <p>Provenance: checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The emitting program is
@@ -111,7 +111,11 @@ final class ExpectedHtmlStatementFixtureContractTest {
     /** Encoded width of one plain-text statement record. */
     private static final int TEXT_WIDTH = 80;
 
-    /** Record separator: one line feed per record, as a fixed-block dataset is carried in a file. */
+    /**
+     * The byte that must never appear. A fixed-length dataset carries no separator, so a line feed here
+     * would be a hundred-and-first byte the record has no room for. See {@code docs/decision-log.md}
+     * entries DL-213 and DL-219.
+     */
     private static final byte LINE_FEED = 0x0A;
 
     /** Carriage return, which must never appear. */
@@ -209,13 +213,12 @@ final class ExpectedHtmlStatementFixtureContractTest {
     private static final int BLOCK_AMOUNT_AT = 8;
 
     /**
-     * Composed records whose recovered value carries a markup-significant character, so the emitter
-     * escapes it while the committed oracle - faithful to a program that encoded nothing - does not.
-     * One customer surname and eleven transaction descriptions carry an apostrophe.
+     * Markup-significant bytes the seeded data itself carries, which both oracles must therefore carry
+     * raw: one customer surname and eleven transaction descriptions hold an apostrophe.
      */
-    private static final int ESCAPED_DIVERGENCES = 12;
+    private static final int RAW_APOSTROPHES = 12;
 
-    /** The five character references the emitter can introduce and the legacy program never emitted. */
+    /** The five character references neither the legacy program nor the emitter ever produces. */
     private static final List<String> CHARACTER_REFERENCES =
             List.of("&amp;", "&lt;", "&gt;", "&quot;", "&#39;");
 
@@ -256,25 +259,30 @@ final class ExpectedHtmlStatementFixtureContractTest {
     }
 
     /**
-     * Splits a line-feed separated fixed-width fixture into records, asserting the stride as it goes so
-     * that a lost or spurious terminator cannot pass.
+     * Splits a separator-free fixed-width fixture into records on its record width, asserting as it goes
+     * that no separator exists anywhere - which is what a fixed-length dataset image looks like.
      *
      * @param  resource the classpath location
-     * @param  width    the record width in encoded bytes
+     * @param  width    the record width in encoded bytes, which is the whole stride
      * @return the records, each decoded as US-ASCII and exactly {@code width} characters long
      * @throws IOException if the fixture cannot be read
      */
     private static List<String> records(final String resource, final int width) throws IOException {
         final byte[] all = fixtureBytes(resource);
-        final int stride = width + 1;
-        assertThat(all.length % stride)
-                .as("%s must hold whole %d-byte records each closed by one line feed", resource, width)
+        assertThat(all.length % width)
+                .as("%s must hold whole %d-byte records, with the width as the entire stride",
+                        resource, width)
                 .isZero();
-        final List<String> out = new ArrayList<>(all.length / stride);
-        for (int start = 0; start < all.length; start += stride) {
-            assertThat(all[start + width])
-                    .as("record at byte %d of %s must be closed by one line feed", start, resource)
-                    .isEqualTo(LINE_FEED);
+        final String whole = new String(all, StandardCharsets.US_ASCII);
+        assertThat(whole.indexOf(LINE_FEED))
+                .as("%s must carry no line feed: the dataset is fixed-length, so a terminator would be "
+                        + "an extra byte the record has no room for", resource)
+                .isEqualTo(-1);
+        assertThat(whole.indexOf(CARRIAGE_RETURN))
+                .as("%s must carry no carriage return either", resource)
+                .isEqualTo(-1);
+        final List<String> out = new ArrayList<>(all.length / width);
+        for (int start = 0; start < all.length; start += width) {
             out.add(new String(all, start, width, StandardCharsets.US_ASCII));
         }
         return out;
@@ -479,40 +487,32 @@ final class ExpectedHtmlStatementFixtureContractTest {
 
     /**
      * Asserts one composed record against the production emitter's output for the value the record
-     * carries, allowing for - and requiring - the documented escaping divergence.
+     * carries. There is no divergence to allow for: the emitter encodes nothing, so the two must be
+     * byte-identical for every value including one carrying an apostrophe.
      *
-     * @param  committed the committed record
-     * @param  value     the value recovered from that record
-     * @param  emitted   what the production emitter produced for that value
-     * @param  prefix    everything the record holds before the value
-     * @param  suffix    everything the record holds after the value
-     * @return {@code true} when the value forced the escaping divergence
+     * @param committed the committed record
+     * @param value     the value recovered from that record
+     * @param emitted   what the production emitter produced for that value
+     * @param prefix    everything the record holds before the value
+     * @param suffix    everything the record holds after the value
      */
-    private static boolean assertReemitted(final String committed, final String value,
+    private static void assertReemitted(final String committed, final String value,
             final String emitted, final String prefix, final String suffix) {
-        final String escaped = StatementHtmlTemplates.escapeText(value);
-        if (escaped.equals(value)) {
-            assertThat(emitted)
-                    .as("the emitter must reproduce the committed record exactly: |%s|", committed)
-                    .isEqualTo(committed);
-            return false;
-        }
         assertThat(committed)
                 .as("the committed oracle carries the value raw, as the legacy program wrote it")
                 .isEqualTo(fit(prefix + value + suffix));
         assertThat(emitted)
-                .as("the emitter escapes the value and changes nothing else: |%s|", committed)
-                .isEqualTo(fit(prefix + escaped + suffix));
-        return true;
+                .as("the emitter must reproduce the committed record exactly: |%s|", committed)
+                .isEqualTo(committed);
     }
 
     @Nested
-    @DisplayName("the record contract: one hundred bytes, one line feed, no prefix byte")
+    @DisplayName("the record contract: one hundred bytes, no separator, no prefix byte")
     final class TheRecordContract {
 
         @Test
-        @DisplayName("every record is exactly 100 bytes, closed by one line feed and no carriage "
-                + "return, with no trailing blank record")
+        @DisplayName("every record is exactly 100 bytes, separated by nothing at all, with no "
+                + "trailing blank record")
         void everyRecordIsExactlyOneHundredBytes() throws IOException {
             final byte[] all = fixtureBytes(HTML_FIXTURE);
             final List<String> committed = records(HTML_FIXTURE, HTML_WIDTH);
@@ -525,16 +525,18 @@ final class ExpectedHtmlStatementFixtureContractTest {
                     .hasSize(DOCUMENTS * FIXED_RECORDS_PER_DOCUMENT
                             + TRANSACTION_BLOCKS * TRANSACTION_RECORDS);
             assertThat(all)
-                    .as("the byte count is the record count times the record stride")
-                    .hasSize(committed.size() * (HTML_WIDTH + 1));
+                    .as("the byte count is the record count times the record width, because the width "
+                            + "is the whole stride")
+                    .hasSize(committed.size() * HTML_WIDTH);
             assertThat(committed).allSatisfy(record -> assertThat(record.getBytes(
                     StandardCharsets.US_ASCII)).hasSize(HTML_WIDTH));
             assertThat(new String(all, StandardCharsets.US_ASCII).indexOf(CARRIAGE_RETURN))
-                    .as("the oracle is line-feed only; a carriage return would widen every record")
+                    .as("a carriage return would widen every record")
                     .isEqualTo(-1);
             assertThat(all[all.length - 1])
-                    .as("the last record is closed, and no blank record follows")
-                    .isEqualTo(LINE_FEED);
+                    .as("the file ends on a record byte rather than on a separator, so no blank record "
+                            + "follows and nothing was appended after the last document")
+                    .isNotEqualTo(LINE_FEED);
             assertThat(committed.get(committed.size() - 1))
                     .as("the fixture ends on the closing document-type record")
                     .isEqualTo(StatementHtmlTemplates.HTML_L80);
@@ -806,13 +808,13 @@ final class ExpectedHtmlStatementFixtureContractTest {
 
             for (final String reference : CHARACTER_REFERENCES) {
                 assertThat(whole)
-                        .as("%s must not appear: escaping is the emitter's hardening, not the "
-                                + "legacy contract", reference)
+                        .as("%s must not appear: neither the legacy program nor the emitter encodes "
+                                + "anything, per DL-209", reference)
                         .doesNotContain(reference);
             }
             assertThat(whole.chars().filter(character -> character == '\'').count())
                     .as("the markup-significant characters the data does carry, carried raw")
-                    .isEqualTo(ESCAPED_DIVERGENCES);
+                    .isEqualTo(RAW_APOSTROPHES);
         }
     }
 
@@ -846,7 +848,6 @@ final class ExpectedHtmlStatementFixtureContractTest {
                 + "stops at the first pair of adjacent spaces")
         void theNameAndAddressLinesAreReemitted() throws IOException {
             final List<List<String>> all = documents(records(HTML_FIXTURE, HTML_WIDTH));
-            int divergences = 0;
 
             for (final List<String> document : all) {
                 final String nameRecord = document.get(NAME_AT);
@@ -855,26 +856,19 @@ final class ExpectedHtmlStatementFixtureContractTest {
                         .as("the transferred name stops before any pair of adjacent spaces")
                         .doesNotContain(TRANSFER_DELIMITER)
                         .hasSizeLessThanOrEqualTo(StatementHtmlTemplates.NAME_LINE_NAME_LENGTH);
-                if (assertReemitted(nameRecord, name,
+                assertReemitted(nameRecord, name,
                         StatementHtmlTemplates.customerNameLine(name),
-                        "<p style=\"font-size:16px\">", TRANSFER_DELIMITER + PARAGRAPH_CLOSE)) {
-                    divergences++;
-                }
+                        "<p style=\"font-size:16px\">", TRANSFER_DELIMITER + PARAGRAPH_CLOSE);
 
                 for (int address = 0; address < ADDRESS_RECORDS; address++) {
                     final String record = document.get(FIRST_ADDRESS_AT + address);
                     final String value = delimitedValue(record, PARAGRAPH_OPEN.length());
                     assertThat(value).doesNotContain(TRANSFER_DELIMITER);
-                    if (assertReemitted(record, value,
+                    assertReemitted(record, value,
                             StatementHtmlTemplates.addressWorkLine(value),
-                            PARAGRAPH_OPEN, TRANSFER_DELIMITER + PARAGRAPH_CLOSE)) {
-                        divergences++;
-                    }
+                            PARAGRAPH_OPEN, TRANSFER_DELIMITER + PARAGRAPH_CLOSE);
                 }
             }
-            assertThat(divergences)
-                    .as("one customer surname carries an apostrophe; no address line does")
-                    .isEqualTo(1);
         }
 
         @Test
@@ -911,11 +905,10 @@ final class ExpectedHtmlStatementFixtureContractTest {
         }
 
         @Test
-        @DisplayName("the three lines of every transaction block are re-emitted, and only the "
-                + "descriptions that carry an apostrophe diverge, by escaping alone")
+        @DisplayName("the three lines of every transaction block are re-emitted byte for byte, "
+                + "including the descriptions that carry an apostrophe")
         void theTransactionLinesAreReemitted() throws IOException {
             final List<List<String>> all = documents(records(HTML_FIXTURE, HTML_WIDTH));
-            int divergences = 0;
             int blocks = 0;
 
             for (final List<String> document : all) {
@@ -923,24 +916,19 @@ final class ExpectedHtmlStatementFixtureContractTest {
                 for (int block = 0; block < count; block++) {
                     final int base = FIRST_TRANSACTION_AT + block * TRANSACTION_RECORDS;
                     blocks++;
-                    divergences += reemitBlock(document, base);
+                    reemitBlock(document, base);
                 }
             }
             assertThat(blocks).isEqualTo(TRANSACTION_BLOCKS);
-            assertThat(divergences)
-                    .as("eleven transaction descriptions carry an apostrophe")
-                    .isEqualTo(ESCAPED_DIVERGENCES - 1);
         }
 
         /**
          * Re-emits the three composed records of one transaction block.
          *
-         * @param  document the committed document
-         * @param  base     zero-based position of the block inside the document
-         * @return how many of the three records forced the escaping divergence
+         * @param document the committed document
+         * @param base     zero-based position of the block inside the document
          */
-        private int reemitBlock(final List<String> document, final int base) {
-            int divergences = 0;
+        private void reemitBlock(final List<String> document, final int base) {
             final int valueAt = PARAGRAPH_OPEN.length();
             final String idRecord = document.get(base + BLOCK_ID_AT);
             final String descriptionRecord = document.get(base + BLOCK_DESCRIPTION_AT);
@@ -958,16 +946,15 @@ final class ExpectedHtmlStatementFixtureContractTest {
                             + "it is zero - and the two decimals always print, because no "
                             + "blank-when-zero clause exists anywhere in the estate")
                     .matches(" *\\d*\\.\\d{2}[ \\-]");
-            divergences += assertReemitted(idRecord, identifier,
+            assertReemitted(idRecord, identifier,
                     StatementHtmlTemplates.transactionWorkLine(identifier),
-                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE) ? 1 : 0;
-            divergences += assertReemitted(descriptionRecord, description,
+                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE);
+            assertReemitted(descriptionRecord, description,
                     StatementHtmlTemplates.transactionWorkLine(description),
-                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE) ? 1 : 0;
-            divergences += assertReemitted(amountRecord, amount,
+                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE);
+            assertReemitted(amountRecord, amount,
                     StatementHtmlTemplates.transactionWorkLine(amount),
-                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE) ? 1 : 0;
-            return divergences;
+                    PARAGRAPH_OPEN, PARAGRAPH_CLOSE);
         }
     }
 
@@ -1120,7 +1107,7 @@ final class ExpectedHtmlStatementFixtureContractTest {
             assertThat(html.chars().filter(character -> character == '\'').count())
                     .as("the same twelve apostrophes reach both oracles")
                     .isEqualTo(text.chars().filter(character -> character == '\'').count())
-                    .isEqualTo(ESCAPED_DIVERGENCES);
+                    .isEqualTo(RAW_APOSTROPHES);
         }
     }
 }

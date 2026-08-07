@@ -28,6 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
@@ -49,6 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.times;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -166,6 +169,59 @@ final class BatchLaunchCoordinatorTest {
         verifyNoInteractions(this.jobExplorer);
         verifyNoInteractions(this.jobRepository);
         verify(this.connection).rollback();
+    }
+
+    @Test
+    @DisplayName("a transient store conflict on the reservation is retried once and the retry stands")
+    void aTransientConflictIsRetriedOnce() throws Exception {
+        final Job job = launchableJob();
+        final JobExecution reserved = reservedExecution();
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        // The framework creates its rows in its own serializable transaction, so a conflict surfaces from
+        // this call and not from the advisory lock. The first attempt is cancelled as a pivot; the second
+        // succeeds, which is what PostgreSQL's own hint on that error says will happen (DL-218).
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"))
+                .thenReturn(reserved);
+
+        final long executionId = this.coordinator.start(job, Map.of());
+
+        assertThat(executionId).isEqualTo(EXECUTION_ID);
+        verify(this.jobRepository, times(BatchLaunchCoordinator.RESERVATION_ATTEMPTS))
+                .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
+        verify(this.connection).rollback();
+        verify(this.connection).commit();
+        verify(job).execute(reserved);
+    }
+
+    @Test
+    @DisplayName("a repeated transient conflict is the active-execution refusal and never a JDBC error")
+    void aRepeatedTransientConflictIsRefused() throws Exception {
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new CannotAcquireLockException("could not serialize access"));
+
+        assertRejected(RejectionReason.ACTIVE_EXECUTION,
+                () -> this.coordinator.start(launchableJob(), Map.of()));
+
+        verify(this.jobRepository, times(BatchLaunchCoordinator.RESERVATION_ATTEMPTS))
+                .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
+    }
+
+    @Test
+    @DisplayName("a failure retrying cannot resolve is still an internal error, so it is not hidden "
+            + "behind a refusal")
+    void aNonTransientFailureIsStillAnInternalError() throws Exception {
+        when(this.jobExplorer.findRunningJobExecutions(JOB_NAME)).thenReturn(Set.of());
+        when(this.jobRepository.createJobExecution(eq(JOB_NAME), any(JobParameters.class)))
+                .thenThrow(new DataIntegrityViolationException("metadata schema is wrong"));
+
+        assertThatThrownBy(() -> this.coordinator.start(launchableJob(), Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("batch launch guard");
+
+        verify(this.jobRepository, times(1))
+                .createJobExecution(eq(JOB_NAME), any(JobParameters.class));
     }
 
     @Test

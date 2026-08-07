@@ -88,8 +88,8 @@ import org.springframework.batch.item.ItemProcessor;
  *   <li>detect the change of account identifier at {@code L194} and, guarded by the first-time flag at
  *       {@code L195}, close the <em>previous</em> group before opening the new one at {@code L196} to
  *       {@code L201};</li>
- *   <li>close the final group after the last row, which is the end-of-file arm at {@code L219} to
- *       {@code L221};</li>
+ *   <li>close the final group after the last row - accruing it while withholding the account rewrite,
+ *       because the end-of-file arm at {@code L219} to {@code L221} is unreachable;</li>
  *   <li>preserve the service's report that its single fee-paragraph owner was reached at
  *       {@code L216} once per row that the rate gate did not skip;</li>
  *   <li>and confirm, for every transaction the group synthesized, that it still satisfies the
@@ -102,7 +102,7 @@ import org.springframework.batch.item.ItemProcessor;
  * initialised to spaces ({@code L167}) and a first-time flag initialised to {@code Y} ({@code L170}).
  * On the first row the key comparison at {@code L194} therefore succeeds, and the first-time flag is
  * what stops a group that was never opened from being closed: the flag is cleared at {@code L198} and
- * the flush at {@code L196} is skipped exactly once, for exactly that reason. Both items are
+ * the close at {@code L196} is skipped exactly once, for exactly that reason. Both items are
  * reproduced here rather than folded into a single nullable field, because the flag is the mechanism
  * and a reader looking for it in the source will look for it here.
  *
@@ -117,19 +117,27 @@ import org.springframework.batch.item.ItemProcessor;
  * is emitted as part of the group that contains it, when that group closes. A run therefore shows a
  * large filter count and a small write count, and both figures are correct.
  *
- * <h2>The final group is flushed, and omitting it would lose an account</h2>
+ * <h2>The final group is accrued, and its account is deliberately NOT rewritten</h2>
  *
  * <p>The last account has no successor row to trigger its control break, so it is closed from
- * {@link #afterStep(StepExecution)}. That is the end-of-file arm of the legacy loop, and it is the one
- * behaviour whose omission is silent: every figure in the run would look plausible and the last
- * account's accrued interest would simply never reach its balance. The flush runs only when the step
- * did not fail, because an abend is terminal in the legacy - the close family and the end-of-execution
- * announcement are never reached after one - and posting a group after a failed step would write
- * through a control break the legacy would not have run.
+ * {@link #afterStep(StepExecution)} with
+ * {@code InterestCalculationService.AccountControlBreak.WITHHELD_AT_END_OF_FILE}. The legacy's own
+ * end-of-file arm at {@code L219} to {@code L221} sits inside a test-before {@code PERFORM UNTIL} whose
+ * condition the read paragraph satisfies at {@code L340}, so the loop ends and the arm never runs: the
+ * last account of a run keeps its balance and keeps <strong>both</strong> cycle accumulators. Its
+ * interest records are nonetheless written, because {@code L215} and {@code L468} run per row inside the
+ * loop and owe nothing to the control break. Both halves of that are reproduced rather than reconciled,
+ * and the module's own expected-output fixtures encode the unposted balance. See
+ * {@code docs/decision-log.md} entry DL-207.
  *
- * <p>The group's account rewrite is durable as soon as the service returns, because one closed group
- * owns one transaction. Nothing is inserted into the live transaction master: the job's guarded writer
- * is the sole owner of the SYSTRAN generation, and COMBTRAN loads that generation later.
+ * <p>The close runs only when the step did not fail, because an abend is terminal in the legacy - the
+ * close family and the end-of-execution announcement are never reached after one - and accruing a group
+ * after a failed step would do work the legacy would not have reached.
+ *
+ * <p>Where a group's account rewrite happens at all it is durable as soon as the service returns,
+ * because one closed group owns one transaction. Nothing is inserted into the live transaction master:
+ * the job's guarded writer is the sole owner of the SYSTRAN generation, and COMBTRAN loads that
+ * generation later.
  *
  * <p><strong>That writer is bound to this stage and is invoked while the group is still open</strong>,
  * not after it returns. {@code app/cbl/CBACT04C.cbl:L468} writes each transaction record the moment it
@@ -627,7 +635,8 @@ public class InterestCalculationProcessor
                     + " open group is not posted; {} rows had been read", LEGACY_JOB, LEGACY_STEP,
                     stepExecution.getStatus(), LEGACY_PROGRAM, current.recordCount());
         } else if (current.hasOpenGroup()) {
-            current.rememberFinalGroup(closeOpenGroup(current));
+            current.rememberFinalGroup(closeOpenGroup(current,
+                    InterestCalculationService.AccountControlBreak.WITHHELD_AT_END_OF_FILE));
         }
 
         current.markEnded();
@@ -779,7 +788,8 @@ public class InterestCalculationProcessor
             if (current.isFirstTime()) {                              // Line 195.
                 current.clearFirstTime();                             // Line 198.
             } else {
-                closed = closeOpenGroup(current);                     // Line 196.
+                closed = closeOpenGroup(current,
+                        InterestCalculationService.AccountControlBreak.REWRITE); // Line 196.
             }
             current.beginGroup(accountId);                            // Lines 200 and 201.
         }
@@ -795,14 +805,16 @@ public class InterestCalculationProcessor
      * outcome tag rather than disappearing; whole-step timing remains
      * {@link AbstractCobolStep}'s and the parent step's, and this measurement does not stand in for it.
      *
-     * @param  current the open execution state
+     * @param  current      the open execution state
+     * @param  controlBreak which invocation site of {@code 1050-UPDATE-ACCOUNT} closes this group
      * @return what the group produced
      */
-    private AccruedAccountGroup closeOpenGroup(final Accrual current) {
+    private AccruedAccountGroup closeOpenGroup(final Accrual current,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
         final Timer.Sample sample = Timer.start(this.meterRegistry);
         boolean completed = false;
         try {
-            final AccruedAccountGroup group = accrueOpenGroup(current);
+            final AccruedAccountGroup group = accrueOpenGroup(current, controlBreak);
             completed = true;
             return group;
         } finally {
@@ -826,10 +838,12 @@ public class InterestCalculationProcessor
      * record is written at {@code app/cbl/CBACT04C.cbl:L500} - inside the group's unit of work and before
      * its account rewrite - and a write failure abends with the balance still untouched.
      *
-     * @param  current the open execution state
+     * @param  current      the open execution state
+     * @param  controlBreak which invocation site of {@code 1050-UPDATE-ACCOUNT} closes this group
      * @return what the group produced
      */
-    private AccruedAccountGroup accrueOpenGroup(final Accrual current) {
+    private AccruedAccountGroup accrueOpenGroup(final Accrual current,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
         final String accountId = current.lastAccountNumber();
         final List<TransactionCategoryBalance> rows = current.detachOpenGroupRows();
         final long initialSuffix = current.tranIdSuffix();
@@ -837,14 +851,16 @@ public class InterestCalculationProcessor
 
         final InterestCalculationService.GroupInterestResult result = this.interestCalculationService
                 .calculateGroupInterest(parameterDate, accountId, rows, initialSuffix,
-                        this::writeSynthesizedTransaction);
+                        this::writeSynthesizedTransaction, controlBreak);
         requireGroupIdentity(accountId, rows.size(), result);
 
         final String accruedAt = this.batchTimestamps.batchTimestamp();
         final List<AccruedCategoryRow> accruedRows =
                 accrueRows(result, parameterDate, initialSuffix);
         requireRunningTotals(result, accruedRows, initialSuffix);
-        requireClosedCycleAccumulators(result.updatedAccount());
+        if (result.accountRewritten()) {
+            requireClosedCycleAccumulators(result.updatedAccount());
+        }
 
         current.completeGroup(result.lastTranIdSuffix(), result.interestTransactions().size(),
                 result.rateGateSkipped(), result.defaultGroupUsed());
@@ -857,8 +873,9 @@ public class InterestCalculationProcessor
                 result.rateGateSkipped(), accruedAt);
 
         return new AccruedAccountGroup(accountId, parameterDate, result.totalInterest(), accruedRows,
-                result.interestTransactions(), result.updatedAccount(), result.rateGateSkipped(),
-                result.defaultGroupUsed(), result.recordCount(), result.lastTranIdSuffix(), accruedAt);
+                result.interestTransactions(), result.updatedAccount(), result.accountRewritten(),
+                result.rateGateSkipped(), result.defaultGroupUsed(), result.recordCount(),
+                result.lastTranIdSuffix(), accruedAt);
     }
 
     /**
@@ -1515,6 +1532,10 @@ public class InterestCalculationProcessor
      * half-closed cycle that every later run would compound - a defect that grows quietly rather than
      * failing, which is why it is asserted here rather than assumed.
      *
+     * <p><strong>Asserted only for a group whose control break actually ran.</strong> The run's final
+     * group closes through the unreachable end-of-file arm, which zeroes nothing, so applying this
+     * confirmation to it would assert the very divergence the translation refuses to introduce.
+     *
      * @param updatedAccount the account as the control break rewrote it
      */
     private static void requireClosedCycleAccumulators(final Account updatedAccount) {
@@ -1766,19 +1787,24 @@ public class InterestCalculationProcessor
     /**
      * What one closed account group produced: the item this stage hands on when a control break fires.
      *
-     * <p>Every value here is already durable when the group is emitted - the service saved the rewritten
-     * account and every transaction inside its own transaction before returning - so a writer consuming
-     * this record is rendering the legacy fixed-width output, not performing the posting.
+     * <p>Every value here is already durable when the group is emitted - the service saved every
+     * transaction, and the rewritten account where the control break rewrote one, inside its own
+     * transaction before returning - so a writer consuming this record is rendering the legacy
+     * fixed-width output, not performing the posting.
      *
      * @param accountId            the eleven-digit account identifier the group keyed on
      * @param parameterDate        the ten-character run date every identifier in the group begins with
      * @param totalInterest        the running total the control break added to the account's current
-     *                             balance
+     *                             balance, or the total the end-of-file arm withheld from it
      * @param rows                 one entry per category-balance row, in the order the rows were
      *                             presented
      * @param interestTransactions the transactions the group synthesized, in the order written
      * @param updatedAccount       the account as the control break rewrote it, with <strong>both</strong>
-     *                             cycle accumulators zeroed
+     *                             cycle accumulators zeroed - or, for the run's final group, the account
+     *                             exactly as it was read
+     * @param accountRewritten     {@code true} when paragraph {@code 1050-UPDATE-ACCOUNT} ran for this
+     *                             group; {@code false} for the run's final group, whose control break
+     *                             the loop's own termination makes unreachable
      * @param rateGateSkipped      {@code true} when at least one row of the group had a zero rate
      * @param defaultGroupUsed     {@code true} when at least one row of the group fell back to the padded
      *                             default group
@@ -1795,6 +1821,7 @@ public class InterestCalculationProcessor
                                       List<AccruedCategoryRow> rows,
                                       List<Transaction> interestTransactions,
                                       Account updatedAccount,
+                                      boolean accountRewritten,
                                       boolean rateGateSkipped,
                                       boolean defaultGroupUsed,
                                       int recordCount,

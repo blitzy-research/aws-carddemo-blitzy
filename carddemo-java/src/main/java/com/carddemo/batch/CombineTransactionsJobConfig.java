@@ -38,10 +38,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionListener;
 import org.springframework.batch.core.JobParametersIncrementer;
 import org.springframework.batch.core.Step;
@@ -117,6 +119,15 @@ import org.springframework.transaction.PlatformTransactionManager;
  * of synthesized-origin records. Reversing the two definitions would change the output of the whole
  * job without changing its record count, which is exactly the class of defect that compiles cleanly
  * and passes a test written under the same misunderstanding.
+ *
+ * <p><strong>A named base is resolved to its current generation; it is not a path.</strong> Both input
+ * properties default to the two dataset names the legacy member declares on its own data-definition
+ * statements, and each is resolved to whichever generation of that base is newest - in the durable store
+ * first, then on the local staging root, which is where a predecessor link of the chain has just staged
+ * its output. The optional {@value #CURRENT_GENERATION_SUFFIX} suffix the job stream itself writes is
+ * accepted verbatim. A deployment may still name one exact generation, and a base that holds no
+ * generation is still a refusal rather than a silent half-populated result - see
+ * {@link #resolveInput} and {@code docs/decision-log.md} entry DL-214.
  *
  * <p>The three datasets involved are generation groups whose bases are each defined with a limit of
  * five generations and with roll-off scratching the generation that falls out. Retention is
@@ -341,6 +352,21 @@ public final class CombineTransactionsJobConfig {
             RESOURCE_PROPERTY_PREFIX + "transaction-backup";
 
     /**
+     * Default location of the first concatenated input: the transaction backup generation base, named
+     * exactly as the legacy member names it and consumed at its current generation.
+     *
+     * <p>This is not a filesystem path and not a convention invented here. The legacy job stream declares
+     * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)} on its own data-definition statement, so the dataset name
+     * belongs to the job and the relative generation belongs to the catalog. Defaulting the property to
+     * the same base reproduces that division exactly: a deployment that overrides nothing gets the
+     * dataset the legacy member named, resolved at the generation the catalog would have resolved.
+     *
+     * @see BackupTransactionJobConfig#ARCHIVE_DATASET_BASE
+     */
+    public static final String DEFAULT_BACKUP_DATASET_BASE =
+            BackupTransactionJobConfig.ARCHIVE_DATASET_BASE;
+
+    /**
      * Property naming the location of the <strong>second</strong> concatenated input: the
      * synthesized-transaction dataset at its current generation.
      *
@@ -349,6 +375,26 @@ public final class CombineTransactionsJobConfig {
      */
     public static final String SYNTHESIZED_RESOURCE_PROPERTY =
             RESOURCE_PROPERTY_PREFIX + "synthesized-transaction";
+
+    /**
+     * Default location of the second concatenated input: the synthesized-transaction generation base,
+     * named exactly as the legacy member names it and consumed at its current generation.
+     *
+     * @see InterestCalculationJobConfig#DEFAULT_TRANSACT_DATASET_BASE
+     */
+    public static final String DEFAULT_SYNTHESIZED_DATASET_BASE =
+            InterestCalculationJobConfig.DEFAULT_TRANSACT_DATASET_BASE;
+
+    /**
+     * The relative generation the legacy data-definition statements carry, accepted verbatim.
+     *
+     * <p>An operator who writes {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)} - which is character for
+     * character what the job stream declares - is naming the current generation of that base, and this
+     * module accepts that spelling rather than requiring the base to be de-sugared by hand. No other
+     * relative generation is accepted: the legacy member reads {@code (0)} on both inputs and writes
+     * {@code (+1)} on its output, so {@code (-1)} and {@code (+1)} name generations this job never reads.
+     */
+    public static final String CURRENT_GENERATION_SUFFIX = "(0)";
 
 
     /*
@@ -360,25 +406,18 @@ public final class CombineTransactionsJobConfig {
      * value away from a resource loader. The names are therefore absent rather than unused.
      */
 
-    /** Prefix of the per-execution combined object staged for downstream inspection or reuse. */
-    private static final String COMBINED_OBJECT_KEY_PREFIX = JOB_NAME + "/combined/";
-
-    /** Local file-name prefix of the combined generation of one execution. */
-    private static final String COMBINED_GENERATION_NAME_PREFIX = JOB_NAME + ".combined.";
-
-    /** Local file-name suffix of the combined generation of one execution. */
-    private static final String COMBINED_GENERATION_NAME_SUFFIX = ".dat";
-
     /**
-     * The record separator the combined generation writes, stated as a byte rather than taken from the
-     * platform.
+     * Legacy generation-group base of the combined dataset this job mints.
      *
-     * <p>The legacy dataset is record-format blocked, so its records are delimited by the access method
-     * and not by a character at all; a line-oriented local file is the closest local equivalent, and the
-     * delimiter must be the same byte on every platform this module builds on. A writer's own newline
-     * would be two bytes on one of them, which would change the external length of every record.
+     * <p>The measured job stream names it in the data definition of its ordering step's output and again
+     * in the data definition of the step that loads it, so the name is the estate's rather than this
+     * translation's. Naming it here is what puts the combined generation in the same generation group,
+     * under the same one canonical key shape, and inside the same retention pass as every other artefact
+     * this package publishes. An earlier revision staged it under a job-scoped key of its own invention,
+     * which the generation retention scan could not see at all. See {@code docs/decision-log.md} entry
+     * DL-212.
      */
-    private static final char COMBINED_RECORD_SEPARATOR = '\n';
+    public static final String COMBINED_DATASET_BASE = "AWS.M2.CARDDEMO.TRANSACT.COMBINED";
 
     /**
      * Property naming the one directory a supplied location may name a relative name beneath.
@@ -480,6 +519,12 @@ public final class CombineTransactionsJobConfig {
     /** Shared object-store boundary used for staged inputs and the combined output generation. */
     private final BatchStagingArea stagingArea;
 
+    /**
+     * Resolves a generation base to whichever generation is current, which is what the legacy
+     * data-definition statements' relative generation {@code (0)} named.
+     */
+    private final StagedGenerationStore generationStore;
+
     /** Local staging root used when a configured logical name is not present in object storage. */
     private final Path stagingDirectory;
 
@@ -522,30 +567,40 @@ public final class CombineTransactionsJobConfig {
      * @param  resourceLoader        resolves a job parameter's logical location into a readable
      *                               resource; must not be {@code null}
      * @param  stagingArea           shared object-store staging boundary; must not be {@code null}
+     * @param  generationStore       resolves a generation base to its current generation, reproducing
+     *                               the legacy relative generation {@code (0)}; must not be {@code null}
      * @param  transactionRepository the transaction master the load step writes through; must not be
      *                               {@code null}
      * @param  stagingDirectory      local root for deployment-owned logical input names
      * @param  backupLocation        configured location of the transaction backup current generation,
-     *                               blank when the deployment has staged none
+     *                               defaulting to {@value #DEFAULT_BACKUP_DATASET_BASE} - the DSN the
+     *                               legacy member declares - and blank only if a deployment blanks it
      * @param  synthesizedLocation   configured location of the synthesized-transaction current
-     *                               generation, blank when the deployment has staged none
+     *                               generation, defaulting to
+     *                               {@value #DEFAULT_SYNTHESIZED_DATASET_BASE} for the same reason, and
+     *                               blank only if a deployment blanks it
      * @throws NullPointerException  if any argument is {@code null}
      */
     public CombineTransactionsJobConfig(final FixedWidthFlatFileReaderFactory readerFactory,
             final ResourceLoader resourceLoader,
             final BatchStagingArea stagingArea,
+            final StagedGenerationStore generationStore,
             final TransactionRepository transactionRepository,
             @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${"
                     + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
                     + ":${java.io.tmpdir}}}")
                     final String stagingDirectory,
-            @Value("${" + BACKUP_RESOURCE_PROPERTY + ":}") final String backupLocation,
-            @Value("${" + SYNTHESIZED_RESOURCE_PROPERTY + ":}") final String synthesizedLocation) {
+            @Value("${" + BACKUP_RESOURCE_PROPERTY + ":" + DEFAULT_BACKUP_DATASET_BASE + "}")
+                    final String backupLocation,
+            @Value("${" + SYNTHESIZED_RESOURCE_PROPERTY + ":" + DEFAULT_SYNTHESIZED_DATASET_BASE
+                    + "}") final String synthesizedLocation) {
         this.readerFactory = Objects.requireNonNull(readerFactory,
                 "readerFactory must not be null");
         this.resourceLoader = Objects.requireNonNull(resourceLoader,
                 "resourceLoader must not be null");
         this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
+        this.generationStore = Objects.requireNonNull(generationStore,
+                "generationStore must not be null");
         this.transactionRepository = Objects.requireNonNull(transactionRepository,
                 "transactionRepository must not be null");
         this.stagingDirectory = Path.of(requireConfiguredValue(
@@ -632,20 +687,29 @@ public final class CombineTransactionsJobConfig {
      * dataset served both legacy steps. Reading begins at the first record written, so the load step
      * sees the ordering the first step established, in that order, once each.
      *
-     * @param jobExecutionId the execution whose object key must be distinct
+     * <p>The generation is <strong>registered</strong> when the ordering step closes it and is uploaded
+     * by the shared job-boundary listener once the whole submission has completed, under one key beneath
+     * {@value #COMBINED_DATASET_BASE}. It is not uploaded by the step itself: doing so put a third key
+     * shape in the bucket, outside the generation retention scan, and left an object behind for a
+     * submission that then failed - including a zero-byte one, for a submission that failed before
+     * composing anything (DL-212).
+     *
+     * @param jobExecution the execution the generation belongs to, which names its local file and
+     *                     receives its registration
      * @return the per-execution combined generation, never {@code null}
      */
     @Bean
     @JobScope
     public CombinedGeneration combineTransactionsCombinedGeneration(
-            @Value("#{jobExecution.id}") final Long jobExecutionId) {
-        final long identifier = Objects.requireNonNull(jobExecutionId,
+            @Value("#{jobExecution}") final JobExecution jobExecution) {
+        Objects.requireNonNull(jobExecution,
+                "the framework must supply the job execution before creating the generation");
+        final long identifier = Objects.requireNonNull(jobExecution.getId(),
                 "the framework must assign a job execution identifier before creating the generation")
                 .longValue();
-        return new StagedCombinedGeneration(this.stagingArea,
-                COMBINED_OBJECT_KEY_PREFIX + identifier,
-                this.stagingDirectory.resolve(COMBINED_GENERATION_NAME_PREFIX + identifier
-                        + COMBINED_GENERATION_NAME_SUFFIX));
+        return new StagedCombinedGeneration(jobExecution, COMBINED_DATASET_BASE,
+                StagedGenerationStore.generationPath(this.stagingDirectory, COMBINED_DATASET_BASE,
+                        identifier));
     }
 
     /**
@@ -825,17 +889,40 @@ public final class CombineTransactionsJobConfig {
     }
 
     /**
-     * Turns a configured logical location into a readable resource, refusing an unconfigured one.
+     * Turns a configured logical location into a readable resource, resolving a generation base to its
+     * current generation and refusing an unconfigured one.
      *
      * <p>The diagnostic precedes the refusal, which is the ordering the batch tier uses throughout. The
-     * refusal itself is a deployment error rather than a stream failure - this environment has not named
-     * one of the two inputs the job needs - so it is reported as an illegal state and not dressed as an
-     * input/output fault. It is deliberately not a caller error either, because a caller has no say in
-     * these locations and reporting one would misattribute the fault.
+     * refusal itself is a deployment error rather than a stream failure - this environment has explicitly
+     * blanked one of the two inputs the job needs - so it is reported as an illegal state and not dressed
+     * as an input/output fault. It is deliberately not a caller error either, because a caller has no say
+     * in these locations and reporting one would misattribute the fault.
      *
-     * <p>No default is substituted and no location is composed. A job that resolved a missing property to
-     * some conventional path would read whatever happened to be there, and a combine job that read one
-     * input instead of two produces a perfectly well-formed result that is missing half its records.
+     * <p><strong>The resolution order, and why each rung exists.</strong> A configured location may name
+     * either one exact generation or a generation base; the legacy member names a base and a relative
+     * generation, so a base is the normal case and an exact generation is the override:
+     * <ol>
+     *   <li>An optional trailing {@value #CURRENT_GENERATION_SUFFIX} is stripped first, so the spelling
+     *       the job stream itself uses is accepted verbatim.</li>
+     *   <li>An exact durable object key, when the store already holds one under that name.</li>
+     *   <li>The <em>current</em> generation of the named base in the durable store - the highest
+     *       generation it holds, which is what the catalog would have resolved {@code (0)} to.</li>
+     *   <li>An exact local staged name, for a deployment whose predecessor staged its output locally.</li>
+     *   <li>The current local generation of the named base, which is the state the five-link chain is in
+     *       while it runs: each link has staged its generation and the terminal publication has not yet
+     *       run for the link now being consumed.</li>
+     *   <li>The application resource loader, for an explicit resource location such as a {@code file:}
+     *       or {@code classpath:} URI.</li>
+     * </ol>
+     *
+     * <p>No filesystem path is composed and no caller-supplied path is honoured: every rung above
+     * resolves from a whitelisted logical base or from an already-validated simple name, which is the
+     * property that made the previous refusal safe and is preserved here. What has changed is only that
+     * an unnamed input is now the dataset the legacy member itself declares rather than nothing at all -
+     * a default that is faithful precisely because it is the legacy DSN. A base that holds no generation
+     * still refuses: reading one input instead of two produces a perfectly well-formed result that is
+     * missing half its records, and that outcome is exactly what must not be allowed to look like
+     * success. See {@code docs/decision-log.md} entry DL-214.
      *
      * @param  location     the configured location, possibly blank
      * @param  propertyName the property that names it, reported in both the diagnostic and the refusal
@@ -852,19 +939,56 @@ public final class CombineTransactionsJobConfig {
             throw new IllegalStateException("property " + propertyName
                     + " must name the " + streamName + ", and no default may be substituted for it");
         }
-        final String normalized = location.strip();
+        final String normalized = stripCurrentGeneration(location.strip());
         if (this.stagingArea.holds(normalized)) {
             return this.stagingArea.stagedInput(normalized);
         }
         if (isSimpleLocation(normalized)) {
             final String logicalName =
                     StagedResourceNames.requireSimpleName(normalized, propertyName);
+            final Optional<String> currentDurable =
+                    this.generationStore.currentGenerationKey(logicalName);
+            if (currentDurable.isPresent()) {
+                LOGGER.info("{} {}: resolved the {} to durable current generation {} of base {}",
+                        CombineTransactionsProcessor.LEGACY_JOB,
+                        CombineTransactionsProcessor.LEGACY_SORT_STEP, streamName,
+                        currentDurable.get(), logicalName);
+                return this.stagingArea.stagedInput(currentDurable.get());
+            }
             final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
             if (Files.exists(localCandidate)) {
                 return new FileSystemResource(localCandidate);
             }
+            final Optional<Path> currentLocal = StagedGenerationStore
+                    .currentLocalGeneration(this.stagingDirectory, logicalName);
+            if (currentLocal.isPresent()) {
+                LOGGER.info("{} {}: resolved the {} to local current generation {} of base {}",
+                        CombineTransactionsProcessor.LEGACY_JOB,
+                        CombineTransactionsProcessor.LEGACY_SORT_STEP, streamName,
+                        currentLocal.get().getFileName(), logicalName);
+                return new FileSystemResource(currentLocal.get());
+            }
         }
         return resourceLoader.getResource(normalized);
+    }
+
+    /**
+     * Removes the legacy relative-generation suffix from a configured location, if it carries one.
+     *
+     * <p>Only {@value #CURRENT_GENERATION_SUFFIX} is removed. Any other parenthesised suffix is left
+     * exactly as configured, so it reaches the name validation and is refused there rather than being
+     * silently reinterpreted as the current generation.
+     *
+     * @param  location the normalized configured location
+     * @return the location with a trailing current-generation suffix removed
+     */
+    private static String stripCurrentGeneration(final String location) {
+        if (!location.endsWith(CURRENT_GENERATION_SUFFIX)) {
+            return location;
+        }
+        return location
+                .substring(0, location.length() - CURRENT_GENERATION_SUFFIX.length())
+                .strip();
     }
 
     /**
@@ -948,11 +1072,11 @@ public final class CombineTransactionsJobConfig {
      */
     private static final class StagedCombinedGeneration implements CombinedGeneration {
 
-        /** Shared staging boundary that publishes the completed generation. */
-        private final BatchStagingArea stagingArea;
+        /** The execution the generation belongs to, and the registry its publication is recorded on. */
+        private final JobExecution jobExecution;
 
-        /** Per-execution object key under which the generation is published. */
-        private final String objectKey;
+        /** Legacy generation-group base the generation is published beneath. */
+        private final String logicalBase;
 
         /** Per-execution local file the generation occupies once it has been sealed. */
         private final Path completedGeneration;
@@ -966,20 +1090,20 @@ public final class CombineTransactionsJobConfig {
         /** Whether the generation has been sealed, so that the completed file is whole. */
         private boolean sealed;
 
-        /** Whether the ordering step has already published this generation. */
-        private boolean published;
+        /** Whether the ordering step has already registered this generation for publication. */
+        private boolean registered;
 
         /**
          * Creates an empty combined generation.
          *
-         * @param stagingArea         the staging boundary that publishes it
-         * @param objectKey           the durable name of this execution's generation
+         * @param jobExecution        the execution that owns it and receives its registration
+         * @param logicalBase         the legacy generation-group base it is published beneath
          * @param completedGeneration the local file this execution's generation occupies
          */
-        StagedCombinedGeneration(final BatchStagingArea stagingArea, final String objectKey,
+        StagedCombinedGeneration(final JobExecution jobExecution, final String logicalBase,
                 final Path completedGeneration) {
-            this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
-            this.objectKey = Objects.requireNonNull(objectKey, "objectKey must not be null");
+            this.jobExecution = Objects.requireNonNull(jobExecution, "jobExecution must not be null");
+            this.logicalBase = Objects.requireNonNull(logicalBase, "logicalBase must not be null");
             this.completedGeneration =
                     Objects.requireNonNull(completedGeneration, "completedGeneration must not be null");
         }
@@ -1023,8 +1147,11 @@ public final class CombineTransactionsJobConfig {
             }
             try {
                 for (final Transaction record : loaded.getItems()) {
+                    // Nothing is written between two records. The legacy DD declares the combined
+                    // dataset record-format blocked, taking its record boundary from the access method
+                    // and not from a character, so the local generation carries no separator either and
+                    // every consumer frames it by width - see docs/decision-log.md entry DL-213.
                     this.composer.write(TransactionRecordMapper.toRecord(record));
-                    this.composer.write(COMBINED_RECORD_SEPARATOR);
                 }
             } catch (final IOException failure) {
                 throw new ItemStreamException(
@@ -1065,11 +1192,13 @@ public final class CombineTransactionsJobConfig {
         /**
          * Closes whichever role this stream was serving.
          *
-         * <p>The writing step's close seals the generation and publishes it once, which is what
+         * <p>The writing step's close seals the generation and registers it once, which is what
          * cataloguing one new generation of the dataset did. The reading step's close releases the served
-         * position and removes the local copy, because the durable object is the generation from that
-         * point on and a local copy left behind would accumulate one whole combined dataset per
-         * submission.
+         * position and leaves the sealed file in place, because the registration names it and the
+         * job-boundary listener has not run yet: removing it here left the publication with nothing to
+         * upload. A submission that does not complete has its own local generation swept by
+         * {@link StagedGenerationStore#discardLocalArtifactsOf}, so the file cannot accumulate for a run
+         * that failed either.
          *
          * @throws ItemStreamException if the generation cannot be released
          */
@@ -1077,13 +1206,13 @@ public final class CombineTransactionsJobConfig {
         public void close() {
             if (this.server != null) {
                 closeServer();
-                discardLocalGeneration();
                 return;
             }
             seal();
-            if (!this.published) {
-                this.stagingArea.publish(this.objectKey, this.completedGeneration);
-                this.published = true;
+            if (!this.registered) {
+                StagedGenerationStore.register(this.jobExecution, this.logicalBase,
+                        this.completedGeneration, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+                this.registered = true;
             }
         }
 
@@ -1136,7 +1265,8 @@ public final class CombineTransactionsJobConfig {
          */
         private BufferedReader openServer() {
             try {
-                return Files.newBufferedReader(this.completedGeneration, StandardCharsets.US_ASCII);
+                return FixedWidthFlatFileReaderFactory.fixedWidthReader(this.completedGeneration,
+                        CombineTransactionsProcessor.COMBINED_RECORD_LENGTH);
             } catch (final IOException failure) {
                 throw new ItemStreamException(
                         "the combine-transactions combined generation could not be opened for reading",
@@ -1189,20 +1319,6 @@ public final class CombineTransactionsJobConfig {
             }
         }
 
-        /**
-         * Removes the local copy once the generation has been served in full.
-         *
-         * <p>A failure to remove it is reported and not raised: the load step has already read every
-         * record and the durable object already exists, so the run succeeded.
-         */
-        private void discardLocalGeneration() {
-            try {
-                Files.deleteIfExists(this.completedGeneration);
-            } catch (final IOException failure) {
-                LOGGER.warn("The combined generation could not be removed from the local staging root;"
-                        + " failureType={}", failure.getClass().getSimpleName());
-            }
-        }
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1314,8 +1430,8 @@ public final class CombineTransactionsJobConfig {
                             drainInto(sorter, this.synthesizedCurrentGeneration, SYNTHESIZED_STREAM);
                     sorter.writeTo(record -> writeOrderedRecord(orderedWriter, record));
                 }
-                this.orderedReader =
-                        Files.newBufferedReader(this.orderedFile, StandardCharsets.US_ASCII);
+                this.orderedReader = FixedWidthFlatFileReaderFactory.fixedWidthReader(
+                        this.orderedFile, CombineTransactionsProcessor.COMBINED_RECORD_LENGTH);
                 LOGGER.info("{} {}: ordered {} records of {} bytes by transaction identifier"
                                 + " ascending - {} from the {} followed by {} from the {}",
                         CombineTransactionsProcessor.LEGACY_JOB,
@@ -1507,8 +1623,10 @@ public final class CombineTransactionsJobConfig {
         private static void writeOrderedRecord(
                 final BufferedWriter orderedWriter, final String record) {
             try {
+                // Width-framed like every other resource this module writes: the reader below reads a
+                // fixed stride, and a platform newline would additionally have been two bytes on one of
+                // the hosts this module builds on. See docs/decision-log.md entry DL-213.
                 orderedWriter.write(record);
-                orderedWriter.newLine();
             } catch (final IOException failure) {
                 throw new UncheckedIOException(
                         "the combine-transactions ordered work stream could not be written",

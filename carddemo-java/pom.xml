@@ -224,7 +224,7 @@
          the finding, and it is not offered as a reason to stop
          reporting it - it is the measured exposure the suppression rule
          records. Recorded as DL-159, with the suppression rule's own
-         reasoning in the sibling DL-159 entry. -->
+         reasoning in the sibling DL-244 entry. -->
     <tomcat.version>10.1.57</tomcat.version>
 
     <!-- Asynchronous transport used by the AWS SDK object storage

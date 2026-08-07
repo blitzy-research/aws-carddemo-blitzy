@@ -38,6 +38,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -989,6 +990,15 @@ public final class BatchConfigTest {
         /** The listener under test, obtained the way a job configuration obtains it. */
         private JobExecutionListener listener;
 
+        /**
+         * The staging root this nest hands the listener.
+         *
+         * <p>Its own, and empty: the listener sweeps this root after a job that did not complete, and a
+         * unit test must not aim that sweep at a directory it does not own.
+         */
+        @TempDir
+        private Path stagingRoot;
+
         @BeforeEach
         void attachRecorder() {
             listener = listenerWith(null, null);
@@ -1004,11 +1014,16 @@ public final class BatchConfigTest {
 
         /**
          * Builds the listener with exactly the optional collaborators a test needs.
+         *
+         * <p>The staging root is this nest's own temporary directory, because the listener sweeps that
+         * root after a job that did not complete (DL-211) and must never be pointed at a shared one from
+         * a unit test.
          */
         private JobExecutionListener listenerWith(final StagedGenerationStore store,
                 final JobCompletionEventPublisher completionPublisher) {
             return new BatchConfig().batchJobBoundaryListener(
-                    providerOf(store), providerOf(completionPublisher));
+                    providerOf(store), providerOf(completionPublisher),
+                    this.stagingRoot.toString());
         }
 
         /**

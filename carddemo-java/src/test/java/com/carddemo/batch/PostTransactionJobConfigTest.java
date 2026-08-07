@@ -79,9 +79,17 @@ import com.carddemo.batch.step.TransactionValidationProcessor;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.domain.DailyTransaction;
+import com.carddemo.exception.AbendException;
 import com.carddemo.service.TransactionPostingService;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.any;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -438,13 +446,70 @@ final class PostTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("the reader is the one that owns the 350-byte layout, which is what proves the "
-                + "right width and the right offsets were bound")
-        void theReaderOwnsTheThreeHundredAndFiftyByteLayout() {
-            assertThat(reader()).isInstanceOfSatisfying(FlatFileItemReader.class, bound ->
-                    assertThat(bound.getName())
-                            .isEqualTo(FixedWidthFlatFileReaderFactory
-                                    .DAILY_TRANSACTION_READER_NAME));
+        @DisplayName("the reader is the one that owns the 350-byte layout, wrapped in the decorator that "
+                + "reports this program's own open-failure arm")
+        void theReaderOwnsTheThreeHundredAndFiftyByteLayout() throws Exception {
+            // The bound reader is the factory's, reached through a decorator whose only behaviour is to
+            // report 0000-DALYTRAN-OPEN's failure arm when the framework cannot open the input
+            // (DL-215). The layout is asserted through the decorator, because what must remain true is
+            // that the records reaching the step are the 350-byte ones - which the parse test below
+            // proves end to end - and that no second reader was substituted for the factory's.
+            stageInput();
+            final ItemStreamReader<DailyTransaction> bound = reader();
+            assertThat(bound)
+                    .as("the bound reader is the decorator and not the factory's reader itself")
+                    .isNotInstanceOf(FlatFileItemReader.class);
+
+            // The factory names its reader, and a named stream writes that name into the execution
+            // context when the framework asks it to save its position. Reading the saved keys therefore
+            // identifies the delegate by its own restart name, through the decorator, without reflection.
+            final ExecutionContext saved = new ExecutionContext();
+            bound.open(new ExecutionContext());
+            try {
+                bound.update(saved);
+            } finally {
+                bound.close();
+            }
+            assertThat(saved.entrySet())
+                    .as("the delegate is the factory's named 350-byte reader")
+                    .anyMatch(entry -> entry.getKey().startsWith(
+                            FixedWidthFlatFileReaderFactory.DAILY_TRANSACTION_READER_NAME));
+        }
+
+        @Test
+        @DisplayName("and an input the framework cannot open reports the legacy open-failure arm rather "
+                + "than the framework's own strict-mode message")
+        void anUnopenableInputReportsTheLegacyOpenFailureArm() {
+            final AbendException abend = new AbendException(AbendException.BATCH_ABEND_CODE,
+                    TransactionPostingService.PROGRAM_NAME, "STATUS 31 OPEN INPUT DALYTRAN",
+                    "ERROR OPENING DALYTRAN - FILE STATUS IS: 31");
+            when(postingService.dailyTransactionOpenFailure(any())).thenReturn(abend);
+
+            // Nothing is staged under this name, so the strict reader refuses to open.
+            final ItemStreamReader<DailyTransaction> bound = reader();
+
+            assertThatThrownBy(() -> bound.open(new ExecutionContext()))
+                    .as("the program's verdict reaches the caller, not the reader's own message")
+                    .isSameAs(abend);
+            verify(postingService).dailyTransactionOpenFailure(any(RuntimeException.class));
+        }
+
+        @Test
+        @DisplayName("an abend the delegate itself raises is not wrapped a second time")
+        void anAbendFromTheDelegateIsNotRewrapped() {
+            @SuppressWarnings("unchecked")
+            final ItemStreamReader<DailyTransaction> delegate = mock(ItemStreamReader.class);
+            final AbendException alreadyDiagnosed = new AbendException(AbendException.BATCH_ABEND_CODE,
+                    TransactionPostingService.PROGRAM_NAME, "STATUS 31 OPEN INPUT DALYTRAN",
+                    "ERROR OPENING DALYTRAN - FILE STATUS IS: 31");
+            doThrow(alreadyDiagnosed).when(delegate).open(any(ExecutionContext.class));
+
+            final ItemStreamReader<DailyTransaction> bound =
+                    PostTransactionJobConfig.diagnosingReader(delegate, postingService);
+
+            assertThatThrownBy(() -> bound.open(new ExecutionContext()))
+                    .isSameAs(alreadyDiagnosed);
+            verifyNoInteractions(postingService);
         }
 
         @Test

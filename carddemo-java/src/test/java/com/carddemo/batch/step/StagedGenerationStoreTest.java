@@ -150,32 +150,43 @@ class StagedGenerationStoreTest {
     class GenerationIdentity {
 
         @Test
-        @DisplayName("uses a ten-digit minimum width and never wraps at the former four-digit boundary")
+        @DisplayName("uses a ten-digit minimum width for the local file and never wraps at the former "
+                + "four-digit boundary")
         void executionIdentifiersNeverWrap() {
-            assertThat(StagedGenerationStore.objectKey(BASE, 7))
-                    .isEqualTo(BASE + "/G0000000007V00");
-            assertThat(StagedGenerationStore.objectKey(BASE, 10_000))
-                    .isEqualTo(BASE + "/G0000010000V00");
-            assertThat(StagedGenerationStore.objectKey(BASE, 10_007))
-                    .isEqualTo(BASE + "/G0000010007V00")
-                    .isNotEqualTo(StagedGenerationStore.objectKey(BASE, 7));
+            assertThat(localName(7)).isEqualTo(BASE + ".G0000000007V00");
+            assertThat(localName(10_000)).isEqualTo(BASE + ".G0000010000V00");
+            assertThat(localName(10_007))
+                    .isEqualTo(BASE + ".G0000010007V00")
+                    .isNotEqualTo(localName(7));
         }
 
         @Test
-        @DisplayName("uses the same generation token for the local completed file")
-        void localAndDurableNamesShareOneGenerationToken() {
-            assertThat(StagedGenerationStore.generationPath(
-                    stagingDirectory, BASE, 42).getFileName().toString())
-                    .isEqualTo(BASE + ".G0000000042V00");
+        @DisplayName("names the local file from the execution identifier, so two concurrent executions "
+                + "cannot compose over each other")
+        void theLocalNameCarriesTheExecutionIdentifier() {
+            assertThat(localName(42)).isEqualTo(BASE + ".G0000000042V00");
         }
 
         @Test
-        @DisplayName("refuses path separators and negative identifiers before composing a key")
+        @DisplayName("refuses path separators and negative identifiers before composing a name")
         void hostileIdentityPartsAreRefused() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> StagedGenerationStore.objectKey("../outside", 1));
+                    .isThrownBy(() -> StagedGenerationStore.generationPath(
+                            stagingDirectory, "../outside", 1));
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> StagedGenerationStore.objectKey(BASE, -1));
+                    .isThrownBy(() -> StagedGenerationStore.generationPath(
+                            stagingDirectory, BASE, -1));
+        }
+
+        /**
+         * The local file name one execution's generation occupies.
+         *
+         * @param  executionId the framework execution identifier
+         * @return the file name, without its directory
+         */
+        private String localName(final long executionId) {
+            return StagedGenerationStore.generationPath(stagingDirectory, BASE, executionId)
+                    .getFileName().toString();
         }
     }
 
@@ -291,13 +302,16 @@ class StagedGenerationStoreTest {
             final List<StagedGenerationStore.PublishedGeneration> result =
                     store.publishRegistered(execution);
 
+            // Generation ONE, although the execution identifier is eleven: the durable generation number
+            // is allocated against what the bucket already holds - nothing, here - and not against the
+            // framework's identifier, which a re-created metadata store would restart (DL-210).
             assertThat(result).singleElement().satisfies(generation -> {
                 assertThat(generation.bucket()).isEqualTo(BUCKET);
-                assertThat(generation.objectKey()).isEqualTo(BASE + "/G0000000011V00");
+                assertThat(generation.objectKey()).isEqualTo(BASE + "/G0000000001V00");
                 assertThat(generation.contentLength()).isEqualTo("new generation".length());
             });
-            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000011V00");
-            assertThat(uploaded.get(BASE + "/G0000000011V00"))
+            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000001V00");
+            assertThat(uploaded.get(BASE + "/G0000000001V00"))
                     .isEqualTo("new generation".getBytes(StandardCharsets.US_ASCII));
             assertThat(alias).hasContent("new generation");
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
@@ -361,12 +375,12 @@ class StagedGenerationStoreTest {
                     StagedGenerationStore.REPORT_RETENTION_LIMIT);
             doThrow(new IllegalStateException("second upload failed"))
                     .when(objectStore).upload(eq(BUCKET),
-                            eq(OTHER_BASE + "/G0000000014V00"), any(InputStream.class));
+                            eq(OTHER_BASE + "/G0000000001V00"), any(InputStream.class));
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> store.publishRegistered(execution));
 
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000014V00");
+            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000001V00");
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
         }
     }
@@ -409,8 +423,8 @@ class StagedGenerationStoreTest {
                     .isThrownBy(() -> store.publishRegistered(execution));
 
             // Both uploads had already succeeded when the alias failed, so both must be scratched.
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000021V00");
-            verify(objectStore).deleteObject(BUCKET, OTHER_BASE + "/G0000000021V00");
+            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000001V00");
+            verify(objectStore).deleteObject(BUCKET, OTHER_BASE + "/G0000000001V00");
             // And the registry is intact, so the failure is visible as an unpublished job rather than as
             // a published one.
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
@@ -498,9 +512,17 @@ class StagedGenerationStoreTest {
             Files.writeString(completed, "published bytes", StandardCharsets.US_ASCII);
             StagedGenerationStore.register(step, BASE, completed,
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
-            // The retention pass is the only caller of listObjects, so failing it fails retention alone.
-            when(objectStore.listObjects(any(String.class), any(String.class)))
-                    .thenThrow(new IllegalStateException("the object store could not be listed"));
+            // Six generations already present, so the retention pass has one to scratch - and scratching
+            // is what fails. The lever is the DELETE rather than the listing, because the listing is now
+            // read before the upload too, to allocate the generation number (DL-210); failing that would
+            // fail the publication itself, which is a different property and has its own test below.
+            final List<S3Resource> present = List.of(
+                    resource(BASE + "/G0000000001V00"), resource(BASE + "/G0000000002V00"),
+                    resource(BASE + "/G0000000003V00"), resource(BASE + "/G0000000004V00"),
+                    resource(BASE + "/G0000000005V00"), resource(BASE + "/G0000000006V00"));
+            when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
+            doThrow(new IllegalStateException("the rolled-off object could not be scratched"))
+                    .when(objectStore).deleteObject(any(String.class), any(String.class));
 
             final List<StagedGenerationStore.PublishedGeneration> result =
                     store.publishRegistered(execution);
@@ -509,10 +531,9 @@ class StagedGenerationStoreTest {
             // over depth is corrected by the next publication and is not a reason to fail a job whose
             // output is durable and visible.
             assertThat(result).singleElement().satisfies(generation ->
-                    assertThat(generation.objectKey()).isEqualTo(BASE + "/G0000000025V00"));
-            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000025V00");
+                    assertThat(generation.objectKey()).isEqualTo(BASE + "/G0000000007V00"));
+            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000007V00");
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
-            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
         }
     }
 
@@ -585,7 +606,7 @@ class StagedGenerationStoreTest {
             final Path completed =
                     completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
 
-            store.publishFile(BASE, 33, completed,
+            store.publishFile(BASE, completed,
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
             assertThat(publicationLock.onlyRequest()).containsExactly(BASE);
@@ -604,7 +625,7 @@ class StagedGenerationStoreTest {
                     new StagedGenerationStore(objectStore, BUCKET, refusingLock);
 
             assertThatExceptionOfType(IllegalStateException.class)
-                    .isThrownBy(() -> refusedStore.publishFile(BASE, 33, completed,
+                    .isThrownBy(() -> refusedStore.publishFile(BASE, completed,
                             StagedGenerationStore.STANDARD_RETENTION_LIMIT));
 
             verify(objectStore, never())
@@ -616,14 +637,36 @@ class StagedGenerationStoreTest {
         void immediatePublicationSurvivesARetentionFailure() {
             final Path completed =
                     completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
+            final List<S3Resource> present = List.of(
+                    resource(BASE + "/G0000000001V00"), resource(BASE + "/G0000000002V00"),
+                    resource(BASE + "/G0000000003V00"), resource(BASE + "/G0000000004V00"),
+                    resource(BASE + "/G0000000005V00"), resource(BASE + "/G0000000006V00"));
+            when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
+            doThrow(new IllegalStateException("the rolled-off object could not be scratched"))
+                    .when(objectStore).deleteObject(any(String.class), any(String.class));
+
+            final StagedGenerationStore.PublishedGeneration published = store.publishFile(
+                    BASE, completed, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000007V00");
+            assertThat(published.contentLength()).isEqualTo("bytes".length());
+        }
+
+        @Test
+        @DisplayName("a publication that cannot measure the base uploads nothing, because it cannot "
+                + "name a generation without overwriting one")
+        void aPublicationThatCannotMeasureTheBaseUploadsNothing() {
+            final Path completed =
+                    completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
             when(objectStore.listObjects(any(String.class), any(String.class)))
                     .thenThrow(new IllegalStateException("the object store could not be listed"));
 
-            final StagedGenerationStore.PublishedGeneration published = store.publishFile(
-                    BASE, 34, completed, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> store.publishFile(BASE, completed,
+                            StagedGenerationStore.STANDARD_RETENTION_LIMIT));
 
-            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000034V00");
-            assertThat(published.contentLength()).isEqualTo("bytes".length());
+            verify(objectStore, never())
+                    .upload(any(String.class), any(String.class), any(InputStream.class));
         }
     }
 
@@ -654,12 +697,12 @@ class StagedGenerationStoreTest {
             final byte[] content = "0123456789".getBytes(StandardCharsets.US_ASCII);
 
             final StagedGenerationStore.PublishedGeneration published =
-                    store.publishFile(BASE, 7, completedFileHolding(content),
+                    store.publishFile(BASE, completedFileHolding(content),
                             StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
-            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000007V00");
+            assertThat(published.objectKey()).isEqualTo(BASE + "/G0000000001V00");
             assertThat(published.contentLength()).isEqualTo(content.length);
-            verify(objectStore).upload(eq(BUCKET), eq(BASE + "/G0000000007V00"),
+            verify(objectStore).upload(eq(BUCKET), eq(BASE + "/G0000000001V00"),
                     any(InputStream.class));
         }
 
@@ -670,7 +713,7 @@ class StagedGenerationStoreTest {
                     completedFileHolding(new byte[] {1}));
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .isThrownBy(() -> store.publishFile(BASE, 7, working,
+                    .isThrownBy(() -> store.publishFile(BASE, working,
                             StagedGenerationStore.STANDARD_RETENTION_LIMIT))
                     .withMessageContaining("working");
         }
@@ -694,7 +737,7 @@ class StagedGenerationStoreTest {
                     resource(BASE + "/not-a-generation"));
             when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(generations);
 
-            store.publishFile(BASE, 11, completedFileHolding(new byte[] {1}),
+            store.publishFile(BASE, completedFileHolding(new byte[] {1}),
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
             verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000002V00");
@@ -708,6 +751,185 @@ class StagedGenerationStoreTest {
         void theTwoMeasuredDepthsAreDistinct() {
             assertThat(StagedGenerationStore.STANDARD_RETENTION_LIMIT).isEqualTo(5);
             assertThat(StagedGenerationStore.REPORT_RETENTION_LIMIT).isEqualTo(10);
+        }
+    }
+
+    /**
+     * The durable generation number: allocated against the store, never against the framework.
+     *
+     * <p>These are the tests of the property a key derived from the execution identifier did not have.
+     * Execution identifiers restart at one when the batch metadata store is re-created while the bucket
+     * keeps every object, so such a key silently replaced a generation an earlier run had published -
+     * observed as a hundred-thousand-byte archive becoming a zero-byte latest version. See
+     * {@code docs/decision-log.md} entry DL-210.
+     */
+    @Nested
+    @DisplayName("the durable generation number is the store's own")
+    class TheDurableGenerationNumber {
+
+        @Test
+        @DisplayName("a first publication is generation one, whatever the execution identifier is")
+        void aFirstPublicationIsGenerationOne() throws Exception {
+            assertThat(publishOneRegisteredArtifact(9_999L))
+                    .isEqualTo(BASE + "/G0000000001V00");
+        }
+
+        @Test
+        @DisplayName("a publication onto a base that already holds generations takes the next one, so a "
+                + "re-created metadata store cannot overwrite what an earlier run published")
+        void aLaterPublicationTakesTheNextGeneration() throws Exception {
+            final List<S3Resource> present = List.of(
+                    resource(BASE + "/G0000000001V00"),
+                    resource(BASE + "/G0000000003V00"),
+                    resource(BASE + "/G0000000002V00"),
+                    resource(BASE + "/not-a-generation"));
+            when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
+
+            // Execution identifier ONE, as a re-created metadata store would hand out, against a base that
+            // already holds three generations. The former key shape would have named G0000000001V00 and
+            // replaced the first run's object.
+            assertThat(publishOneRegisteredArtifact(1L))
+                    .isEqualTo(BASE + "/G0000000004V00");
+            assertThat(uploaded).doesNotContainKey(BASE + "/G0000000001V00");
+        }
+
+        @Test
+        @DisplayName("two artifacts registered under one base in one publication take two generations "
+                + "rather than one key twice")
+        void twoArtifactsUnderOneBaseTakeTwoGenerations() throws Exception {
+            final JobExecution execution = completedJob(5);
+            final StepExecution step = stepOf(execution);
+            final Path first = StagedGenerationStore.generationPath(stagingDirectory, BASE, 5);
+            final Path second = stagingDirectory.resolve(BASE + ".second");
+            Files.writeString(first, "first", StandardCharsets.US_ASCII);
+            Files.writeString(second, "second", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, first,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            StagedGenerationStore.register(step, BASE, second,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            store.publishRegistered(execution);
+
+            assertThat(uploaded).containsOnlyKeys(BASE + "/G0000000001V00",
+                    BASE + "/G0000000002V00");
+        }
+
+        @Test
+        @DisplayName("a non-generation object beneath the base does not influence the allocation")
+        void aNonGenerationObjectDoesNotInfluenceTheAllocation() throws Exception {
+            final List<S3Resource> present = List.of(
+                    resource(BASE + "/latest"), resource(BASE + "/G000000000XV00"),
+                    resource(BASE + "/G0000000002V00"));
+            when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
+
+            assertThat(publishOneRegisteredArtifact(77L))
+                    .isEqualTo(BASE + "/G0000000003V00");
+        }
+
+        /**
+         * Registers and publishes one artifact for the given execution identifier.
+         *
+         * @param  executionId the framework identifier the execution carries
+         * @return the key the publication allocated
+         * @throws IOException if the local generation cannot be written
+         */
+        private String publishOneRegisteredArtifact(final long executionId) throws IOException {
+            final JobExecution execution = completedJob(executionId);
+            final StepExecution step = stepOf(execution);
+            final Path completed =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, executionId);
+            Files.writeString(completed, "generation bytes", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            return store.publishRegistered(execution).getFirst().objectKey();
+        }
+    }
+
+    /**
+     * The abnormal disposition: an execution that did not complete discards what it allocated.
+     *
+     * <p>Publication is skipped for such an execution, so its sealed generations name nothing durable and
+     * its working files name nothing at all. See {@code docs/decision-log.md} entry DL-211.
+     */
+    @Nested
+    @DisplayName("an execution that did not complete discards its own local artifacts")
+    class TheAbnormalDisposition {
+
+        @Test
+        @DisplayName("removes this execution's sealed generations and working files, and nothing else")
+        void removesOnlyThisExecutionsOwnArtifacts() throws Exception {
+            final JobExecution failed = failedJob(4);
+            final Path ownGeneration =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 4);
+            final Path ownWorking = StagedGenerationStore.workingPath(
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 4));
+            final Path anotherExecutionsGeneration =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 5);
+            final Path unrelatedInput = stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS");
+            Files.writeString(ownGeneration, "sealed", StandardCharsets.US_ASCII);
+            Files.writeString(ownWorking, "half composed", StandardCharsets.US_ASCII);
+            Files.writeString(anotherExecutionsGeneration, "not mine", StandardCharsets.US_ASCII);
+            Files.writeString(unrelatedInput, "an input", StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failed, stagingDirectory))
+                    .isEqualTo(2);
+
+            assertThat(ownGeneration).doesNotExist();
+            assertThat(ownWorking).doesNotExist();
+            assertThat(anotherExecutionsGeneration)
+                    .as("a concurrently running execution's generation carries a different token and"
+                            + " must survive")
+                    .exists();
+            assertThat(unrelatedInput)
+                    .as("a staged input carries no generation token at all and is not this sweep's"
+                            + " business")
+                    .exists();
+        }
+
+        @Test
+        @DisplayName("an execution with nothing of its own to discard removes nothing and reports so")
+        void anExecutionWithNothingToDiscardRemovesNothing() throws Exception {
+            Files.writeString(stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS"), "input",
+                    StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failedJob(88),
+                    stagingDirectory)).isZero();
+            assertThat(stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS")).exists();
+        }
+
+        @Test
+        @DisplayName("a directory carrying the token is left alone, because a directory is not an "
+                + "artifact this store hands out")
+        void aDirectoryCarryingTheTokenIsLeftAlone() throws Exception {
+            final Path directory = stagingDirectory.resolve(BASE + ".G0000000006V00");
+            Files.createDirectory(directory);
+            Files.writeString(directory.resolve("occupant"), "x", StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failedJob(6), stagingDirectory))
+                    .isZero();
+            assertThat(directory).exists();
+        }
+
+        @Test
+        @DisplayName("an unreadable staging root is reported rather than raised, because the execution "
+                + "has already failed for its own reason")
+        void anUnreadableStagingRootIsReportedRatherThanRaised() {
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failedJob(7),
+                    stagingDirectory.resolve("no-such-directory"))).isZero();
+        }
+
+        /**
+         * A job execution that ended without completing.
+         *
+         * @param  executionId the framework identifier it carries
+         * @return the failed execution
+         */
+        private JobExecution failedJob(final long executionId) {
+            final JobExecution execution = new JobExecution(
+                    new JobInstance(executionId + 500, "testJob"), executionId,
+                    new JobParameters());
+            execution.setStatus(BatchStatus.FAILED);
+            return execution;
         }
     }
 }

@@ -218,6 +218,36 @@ class CreateStatementJobConfigTest {
     }
 
     /**
+     * Reads one fixed-length artefact back as its record images, framing it the way its DD declares.
+     *
+     * <p>Framed by width and never by line: every resource this job writes is fixed-length with nothing
+     * between two records, so a line-oriented read would return the whole artefact as one string. The
+     * byte length is proved to be a whole number of records first, so a stray separator fails here
+     * rather than shifting a later assertion. See {@code docs/decision-log.md} entry DL-213.
+     *
+     * @param  artefact     the artefact to read
+     * @param  recordLength the declared record length
+     * @return the record images in emission order
+     * @throws IOException if the artefact cannot be read
+     */
+    private static List<String> fixedWidthRecordsOf(final Path artefact, final int recordLength)
+            throws IOException {
+        final byte[] image = Files.readAllBytes(artefact);
+        assertThat(image.length % recordLength)
+                .as("a fixed-length artefact carries no separator, so its length is a whole number of"
+                        + " %s-byte records; it measured %s bytes", recordLength, image.length)
+                .isZero();
+        assertThat(new String(image, StandardCharsets.US_ASCII))
+                .as("no line feed may appear anywhere in a fixed-length artefact")
+                .doesNotContain("\n");
+        final List<String> records = new ArrayList<>(image.length / recordLength);
+        for (int offset = 0; offset < image.length; offset += recordLength) {
+            records.add(new String(image, offset, recordLength, StandardCharsets.US_ASCII));
+        }
+        return records;
+    }
+
+    /**
      * Measures a record the way the record length declares it: in encoded bytes.
      *
      * @param  value the record
@@ -466,7 +496,8 @@ class CreateStatementJobConfigTest {
             final Path written = config.transactionWorkSequentialResource();
             config.newOrderAndReprojectProgram(written).run();
 
-            final List<String> lines = Files.readAllLines(written, StandardCharsets.US_ASCII);
+            final List<String> lines =
+                    fixedWidthRecordsOf(written, CreateStatementJobConfig.WORK_RECORD_LENGTH);
             assertThat(lines).hasSize(2);
             assertThat(lines).allSatisfy(line -> assertThat(encoded(line)).isEqualTo(350));
             assertThat(lines.get(0).substring(16, 32)).isEqualTo("TRAN000000000001");
@@ -487,7 +518,8 @@ class CreateStatementJobConfigTest {
             final List<String> projected = new ArrayList<>();
             program.forEachOrderedRecord(projected::add);
             assertThat(projected).isEmpty();
-            assertThat(Files.readAllLines(written, StandardCharsets.US_ASCII)).isEmpty();
+            assertThat(fixedWidthRecordsOf(written, CreateStatementJobConfig.WORK_RECORD_LENGTH))
+                    .isEmpty();
         }
     }
 
@@ -549,7 +581,9 @@ class CreateStatementJobConfigTest {
                 final List<Path> held = minted.toList();
                 assertThat(held).hasSize(1);
                 assertThat(Files.size(held.get(0)))
-                        .isEqualTo(CreateStatementJobConfig.WORK_RECORD_LENGTH + 1L);
+                        .as("one record image and nothing else: the resource is fixed-length and its"
+                                + " reader advances by width (DL-213)")
+                        .isEqualTo((long) CreateStatementJobConfig.WORK_RECORD_LENGTH);
             }
 
             final String source = Files.readString(CONFIGURATION_SOURCE, StandardCharsets.UTF_8);
@@ -799,10 +833,10 @@ class CreateStatementJobConfigTest {
                     .extracting(StatementLineSummary::transactionId)
                     .containsExactly("TRAN000000000001", "TRAN000000000002", "TRAN000000000003");
 
-            final List<String> statements = Files.readAllLines(config.statementOutputResource(),
-                    StandardCharsets.US_ASCII);
-            final List<String> html = Files.readAllLines(config.htmlStatementOutputResource(),
-                    StandardCharsets.US_ASCII);
+            final List<String> statements = fixedWidthRecordsOf(config.statementOutputResource(),
+                    CreateStatementJobConfig.STATEMENT_RECORD_LENGTH);
+            final List<String> html = fixedWidthRecordsOf(config.htmlStatementOutputResource(),
+                    CreateStatementJobConfig.HTML_RECORD_LENGTH);
             assertThat(statements).hasSize(2).allSatisfy(
                     line -> assertThat(encoded(line))
                             .isEqualTo(CreateStatementJobConfig.STATEMENT_RECORD_LENGTH));
@@ -837,10 +871,10 @@ class CreateStatementJobConfigTest {
 
             assertThat(program.statementRecordsWritten()).isZero();
             assertThat(program.htmlRecordsWritten()).isZero();
-            assertThat(Files.readAllLines(config.statementOutputResource(),
-                    StandardCharsets.US_ASCII)).isEmpty();
-            assertThat(Files.readAllLines(config.htmlStatementOutputResource(),
-                    StandardCharsets.US_ASCII)).isEmpty();
+            assertThat(fixedWidthRecordsOf(config.statementOutputResource(),
+                    CreateStatementJobConfig.STATEMENT_RECORD_LENGTH)).isEmpty();
+            assertThat(fixedWidthRecordsOf(config.htmlStatementOutputResource(),
+                    CreateStatementJobConfig.HTML_RECORD_LENGTH)).isEmpty();
         }
     }
 
@@ -941,13 +975,18 @@ class CreateStatementJobConfigTest {
         }
 
         @Test
-        @DisplayName("the configuration declares exactly three failure-ending transitions")
-        void exactlyThreeFailureEndingTransitionsAreDeclared() throws IOException {
+        @DisplayName("the configuration declares exactly three failure-propagating transitions and "
+                + "no failure-ending one, so an abend reaches the submitter (DL-208)")
+        void exactlyThreeFailurePropagatingTransitionsAreDeclared() throws IOException {
             final String source = Files.readString(CONFIGURATION_SOURCE, StandardCharsets.UTF_8);
-            assertThat(source.split("\\.on\\(GATE_FAILURE_OUTCOME\\)\\.end\\(\\)", -1).length - 1)
+            assertThat(source.split("\\.on\\(GATE_FAILURE_OUTCOME\\)\\.fail\\(\\)", -1).length - 1)
                     .isEqualTo(CreateStatementJobConfig.CONDITION_CODE_GATE_COUNT);
             assertThat(source.split("\\.on\\(GATE_ONWARD_OUTCOME\\)\\.to\\(", -1).length - 1)
                     .isEqualTo(CreateStatementJobConfig.CONDITION_CODE_GATE_COUNT);
+            assertThat(source)
+                    .as("a gate that ended the job would report a completion code of zero for a run "
+                            + "whose step abended, which no z/OS submission ever does")
+                    .doesNotContain(".on(GATE_FAILURE_OUTCOME).end()");
         }
 
         @Test

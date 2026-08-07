@@ -424,13 +424,6 @@ public final class CategoryBalanceReportJobConfig {
     /** The decimal point the edit mask inserts. */
     private static final char DECIMAL_POINT = '.';
 
-    /**
-     * Separator written after each fixed-length record of a staged dataset. Stated as a literal rather
-     * than taken from the platform line separator, so that a staged dataset is byte-identical on every
-     * host and matches the estate's own sample data files, which the fixed-width reader also expects.
-     */
-    private static final String RECORD_SEPARATOR = "\n";
-
     // -----------------------------------------------------------------------------------------------
     // Legacy identities carried into the diagnostics. These are step, data-definition and dataset
     // names, which are identifiers rather than statement text.
@@ -659,18 +652,17 @@ public final class CategoryBalanceReportJobConfig {
      * bytes per record, standing in for the legacy second step's cataloged copy wrapper. One ordinary
      * read-and-write step: no shell-out, no process spawn, no external tool.
      *
-     * @param stagingArea the shared object-store staging boundary
+     * <p>The step seals and registers its generation; it does not upload it. Publication belongs to the
+     * shared job-boundary listener, so a submission that fails later leaves nothing durable behind and
+     * every generation reaches the bucket under exactly one key. See {@code docs/decision-log.md} entry
+     * DL-212.
+     *
      * @return the step, registered under {@link #UNLOAD_STEP_NAME}
      */
     @Bean
-    public Step categoryBalanceReportUnloadStep(final BatchStagingArea stagingArea) {
+    public Step categoryBalanceReportUnloadStep() {
         return new StepBuilder(UNLOAD_STEP_NAME, this.jobRepository)
-                .tasklet((contribution, chunkContext) -> {
-                    final RepeatStatus result =
-                            unloadToBackupGeneration(contribution, chunkContext);
-                    stagingArea.publish(backupGeneration(jobExecutionIdOf(chunkContext)));
-                    return result;
-                }, this.transactionManager)
+                .tasklet(this::unloadToBackupGeneration, this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -680,23 +672,16 @@ public final class CategoryBalanceReportJobConfig {
      * report at {@link #REPORT_RECORD_LENGTH} bytes per record, standing in for the legacy third step's
      * external sort.
      *
-     * @param stagingArea the shared object-store staging boundary
+     * <p>Like the unload step, it seals and registers rather than uploading. The alias this generation
+     * carries is advanced by the same publication, which is why the fixed logical name exists only once
+     * the submission has completed (DL-212).
+     *
      * @return the step, registered under {@link #SORT_AND_REPROJECT_STEP_NAME}
      */
     @Bean
-    public Step categoryBalanceReportSortAndReprojectStep(final BatchStagingArea stagingArea) {
+    public Step categoryBalanceReportSortAndReprojectStep() {
         return new StepBuilder(SORT_AND_REPROJECT_STEP_NAME, this.jobRepository)
-                .tasklet((contribution, chunkContext) -> {
-                    final RepeatStatus result = sortAndReproject(contribution, chunkContext);
-                    // The GENERATION this execution just sealed, never the fixed logical alias: the
-                    // alias is replaced only after the durable publication that ends the job, so at
-                    // this point in a first run there is no file under that name at all. Publishing
-                    // the alias therefore read a path that did not exist and failed the step. The
-                    // unload step above, the interest job and the transaction-report job all publish
-                    // the sealed generation for the same reason.
-                    stagingArea.publish(reportGeneration(jobExecutionIdOf(chunkContext)));
-                    return result;
-                }, this.transactionManager)
+                .tasklet(this::sortAndReproject, this.transactionManager)
                 .meterRegistry(this.meterRegistry)
                 .build();
     }
@@ -919,7 +904,7 @@ public final class CategoryBalanceReportJobConfig {
      * the module's <em>other</em> amount masks follow, because their own specifications ask for it - would
      * differ from this one by up to nine bytes per line of a fixed-width external dataset, which is
      * exactly the class of difference only a byte comparison detects. The reasoning is recorded in
-     * {@code docs/decision-log.md} entry DL-159.
+     * {@code docs/decision-log.md} entry DL-243.
      *
      * <p>The specification requests no sign character, so the magnitude is rendered; a negative balance is
      * therefore indistinguishable from its positive counterpart in this report, which is a property of the
@@ -1241,10 +1226,10 @@ public final class CategoryBalanceReportJobConfig {
             writeRecord(DD_COPY_OUTPUT, () -> {
                 final String image = TranCatBalRecordMapper.toRecord(record);
                 requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_COPY_OUTPUT);
+                // Nothing is written between two records. Both DDs of the legacy member declare a
+                // fixed record format, which carries no separator, so a consumer frames this dataset
+                // by width - see docs/decision-log.md entry DL-213.
                 this.writer.write(image);
-                // The record separator is written explicitly rather than through a platform newline, so
-                // the emitted stream is the same on every host and matches the estate's own fixtures.
-                this.writer.write(RECORD_SEPARATOR);
                 this.recordsUnloaded++;
                 return FileStatus.SUCCESS.getCode();
             });
@@ -1312,7 +1297,8 @@ public final class CategoryBalanceReportJobConfig {
             Objects.requireNonNull(generation, "generation");
             // The reader, and with it every offset of the fifty-byte layout, comes from the shared
             // factory; this step composes it rather than slicing the record itself.
-            this.reader = readerFactory.transactionCategoryBalanceReader(new PathResource(generation));
+            this.reader = readerFactory
+                        .fixedTransactionCategoryBalanceReader(new PathResource(generation));
             this.reportResource = Objects.requireNonNull(reportResource, "reportResource");
         }
 
@@ -1381,7 +1367,6 @@ public final class CategoryBalanceReportJobConfig {
                 final String line = reportLine(TranCatBalRecordMapper.fromRecord(recordImage));
                 requireEncodedWidth(line, REPORT_RECORD_LENGTH, DD_SORT_OUTPUT);
                 this.writer.write(line);
-                this.writer.write(RECORD_SEPARATOR);
                 return FileStatus.SUCCESS.getCode();
             });
         }

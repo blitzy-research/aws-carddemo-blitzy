@@ -823,10 +823,13 @@ public final class BackupTransactionJobConfig {
          * Opens the input and then the output, in the order the legacy procedure declares them.
          *
          * <p>Opening the input establishes the sequential read position in business-key order.
-         * Opening the output fixes the name of the generation this execution will write - the legacy
-         * generation base, the batch timestamp the template supplies, and this execution's generation
-         * number - at the moment the generation is allocated, which is exactly when the legacy stream
-         * resolved its relative generation too.
+         * Opening the output creates the working file this execution composes into, named from the
+         * legacy generation base, the batch timestamp the template supplies and this execution's own
+         * identifier, which is what keeps two concurrent executions from composing over each other.
+         *
+         * <p>The <em>durable</em> generation name is not decided here. The catalogue equivalent
+         * allocates it when the generation is catalogued, which is at close, so the key is read back
+         * from the publication that assigns it (DL-210).
          */
         @Override
         protected void openResources() {
@@ -839,8 +842,12 @@ public final class BackupTransactionJobConfig {
                 return FileStatus.SUCCESS.getCode();
             });
             openResource(OUTPUT_DEFINITION_NAME, () -> {
-                this.objectKey =
-                        StagedGenerationStore.objectKey(ARCHIVE_DATASET_BASE, this.generationNumber);
+                // The object key is NOT predicted here. The durable generation number is allocated by
+                // the store at publication time, under the base's own lock, so the only honest key is
+                // the one publication returns - see docs/decision-log.md entry DL-210. Predicting it
+                // from this execution's identifier named an object that a re-created metadata store
+                // could already have published, and reported that name before the upload happened.
+                this.objectKey = null;
                 this.workingGeneration =
                         StagedGenerationStore.workingPath(this.completedGeneration);
                 this.archivedBytes = 0L;
@@ -923,8 +930,9 @@ public final class BackupTransactionJobConfig {
                 StagedGenerationStore.completeWorkingFile(this.workingGeneration,
                         this.completedGeneration);
                 this.workingGeneration = null;
-                this.generationStore.publishFile(ARCHIVE_DATASET_BASE, this.generationNumber,
-                        this.completedGeneration, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+                this.objectKey = this.generationStore.publishFile(ARCHIVE_DATASET_BASE,
+                        this.completedGeneration,
+                        StagedGenerationStore.STANDARD_RETENTION_LIMIT).objectKey();
                 discardLocalGeneration(this.completedGeneration);
                 return FileStatus.SUCCESS.getCode();
             });
@@ -1046,8 +1054,8 @@ public final class BackupTransactionJobConfig {
         }
 
         /**
-         * @return the name of the object this execution wrote, or {@code null} before the output has
-         *         been opened
+         * @return the name of the object this execution published, or {@code null} before the output
+         *         has been closed and published
          */
         String objectKey() {
             return this.objectKey;

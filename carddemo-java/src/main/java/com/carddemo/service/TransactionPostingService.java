@@ -712,9 +712,32 @@ public class TransactionPostingService {
      */
     private void openDailyTransactionInput(final Iterable<DailyTransaction> source) {
         if (source == null) {
-            throw abendAfterIoFailure(OPEN_DALYTRAN_FAILURE, OPEN_INPUT, DALYTRAN_DD, null);
+            throw dailyTransactionOpenFailure(null);
         }
         announceAcquired(OPEN_INPUT, DALYTRAN_DD);
+    }
+
+    /**
+     * Produces this program's own {@code 0000-DALYTRAN-OPEN} failure arm for a record source that could
+     * not be acquired at all.
+     *
+     * <p>Published because the acquisition of the sequential input is delegated: the framework opens the
+     * reader around the step, so the failure surfaces there and not inside the driving loop. The
+     * diagnostic nevertheless belongs to this program, which is why it is produced here and not
+     * reinvented at the call site - {@code DISPLAY 'ERROR OPENING DALYTRAN'}, then
+     * {@code 9910-DISPLAY-IO-STATUS} with the {@code NNNN} image of the raw status, then
+     * {@code 9999-ABEND-PROGRAM} with abend code 999. Without this the caller can only report the
+     * framework's own "reader is in 'strict' mode" message, which names neither the data definition nor
+     * the abend the legacy member ends with. See {@code docs/decision-log.md} entry DL-215.
+     *
+     * <p>Returns rather than throws, so a caller writes {@code throw service.dailyTransactionOpenFailure
+     * (failure)} and keeps its own control flow definite - the same shape the internal arms use.
+     *
+     * @param  cause the underlying acquisition failure, or {@code null} when there is none to attach
+     * @return the abend to raise, never {@code null}; the diagnostics have already been emitted
+     */
+    public AbendException dailyTransactionOpenFailure(final Throwable cause) {
+        return abendAfterIoFailure(OPEN_DALYTRAN_FAILURE, OPEN_INPUT, DALYTRAN_DD, cause);
     }
 
     /**

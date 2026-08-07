@@ -31,33 +31,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Source census over the production tree, guarding the one published path in
- * {@link StatementHtmlTemplates} that does not escape the data it is given.
+ * {@link StatementHtmlTemplates} that wraps the content it is given in no markup at all.
  *
  * <h2>What this test guards, and why a census rather than a behavioural assertion</h2>
  *
  * <p>{@link StatementHtmlTemplates} publishes two kinds of line builder. The three work-line
- * composers escape caller-supplied data before composing it, so markup in a customer name or an
- * address cannot form a tag in an emitted record. {@link StatementHtmlTemplates#workLine(String)}
- * does not escape: it is a guarded fitter for content that has <em>already</em> been composed,
- * refusing anything outside printable US-ASCII and enforcing the exact hundred-byte width, but
- * moving markup characters through untouched because it cannot distinguish a legitimate paragraph
- * literal from an injected one.</p>
+ * composers wrap a field value in the paragraph tags the legacy program wrapped it in, so a value
+ * reaches its record inside the structure that record is defined to carry.
+ * {@link StatementHtmlTemplates#workLine(String)} wraps nothing: it is a guarded fitter for content
+ * that has <em>already</em> been composed, refusing anything outside printable US-ASCII and enforcing
+ * the exact hundred-byte width, but adding no tag of its own. Neither kind encodes a byte - per
+ * DL-209 the emitter reproduces every value verbatim, exactly as the legacy MOVE did - so the
+ * distinction between them is structural and not defensive.</p>
  *
  * <p>That distinction cannot be enforced by any assertion about the fitter's own behaviour, because
- * the fitter behaves correctly: passing unescaped field data into it is a <em>caller</em> defect.
- * The only thing that can establish the absence of such a caller is an inspection of the callers,
- * which is what this file does. It reads the production sources from disk and fails if any of them
- * calls the raw fitter.</p>
+ * the fitter behaves correctly: handing it a bare field value is a <em>caller</em> defect that emits
+ * a record missing its paragraph tags. The only thing that can establish the absence of such a caller
+ * is an inspection of the callers, which is what this file does. It reads the production sources from
+ * disk and fails if any of them calls the bare fitter.</p>
  *
  * <h2>What this evidence does and does not prove</h2>
  *
- * <p>It proves that no source under {@code src/main/java} contains a call to the raw fitter, and it
- * now also proves who does call the escaping composers. When this file was first written the module
- * shipped no statement-generation service, so the raw fitter and the three escaping composers alike
+ * <p>It proves that no source under {@code src/main/java} contains a call to the bare fitter, and it
+ * now also proves who does call the wrapping composers. When this file was first written the module
+ * shipped no statement-generation service, so the bare fitter and the three wrapping composers alike
  * had no production call site of any kind, and the second claim was recorded as an emptiness with a
  * note asking a later change to name the caller rather than delete the expectation. That service has
  * since arrived, so the claim is now the stronger one: the composers are reached from exactly one
- * class, and the raw fitter is still reached from none. The service-owned
+ * class, and the bare fitter is still reached from none. The service-owned
  * {@code StatementLineSummary} carrier is also required to be present in the scanned tree: it carries
  * statement data but owns no formatting, so it must not become a second composing path. A second
  * record-composing caller appearing anywhere in the production tree fails the build, which is what
@@ -75,8 +76,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Legacy estate at checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec, upstream release
  * stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19. The legacy generator composed these records
  * from paragraph literals wrapped around display fields with no encoding of any kind
- * [app/cbl/CBSTM03A.CBL:L221-L223]; escaping the data positions is the recorded divergence
- * (decision D-49), and this census is what keeps the unescaped remnant unused.</p>
+ * [app/cbl/CBSTM03A.CBL:L221-L223], and the target encodes nothing either (DL-209). This census is
+ * what keeps the bare fitter out of the record-composing path.</p>
  */
 @DisplayName("StatementHtmlTemplates :: no production source routes field data through the raw fitter")
 class StatementHtmlWorkLineExposureTest {
@@ -89,7 +90,7 @@ class StatementHtmlWorkLineExposureTest {
 
     /**
      * The one production class that composes statement records, and therefore the one class licensed
-     * to call an escaping composer.
+     * to call a wrapping composer.
      *
      * <p>Named rather than left as an absence, exactly as the earlier form of the composer census
      * asked when it recorded that no such class shipped yet. It composes the account heading, the
@@ -182,7 +183,7 @@ class StatementHtmlWorkLineExposureTest {
      *
      * <p>The name is a suffix of {@code addressWorkLine}, {@code basicDetailsWorkLine} and
      * {@code transactionWorkLine} once case is set aside, so a plain substring search would count
-     * the three escaping composers as though they were the raw one. A match therefore only counts
+     * the three wrapping composers as though they were the bare one. A match therefore only counts
      * when the character before it cannot continue an identifier.
      *
      * @param line  the source line being examined
@@ -282,23 +283,23 @@ class StatementHtmlWorkLineExposureTest {
     }
 
     @Test
-    @DisplayName("no production source calls the raw fitter, so caller-supplied field data has no "
-            + "route to an unescaped record")
+    @DisplayName("no production source calls the bare fitter, so a field value has no route to a "
+            + "record missing its paragraph tags")
     void noProductionSourceCallsTheRawFitter() {
         final List<String> callSites = rawFitterCallSites(productionSources());
 
         // Stated as the full list rather than a count, so a failure names the offending file and
         // line instead of reporting only that the number moved.
         assertThat(callSites)
-                .as("the raw fitter escapes nothing, so any production call site is a potential"
-                        + " unescaped-data path; compose through addressWorkLine,"
-                        + " basicDetailsWorkLine or transactionWorkLine instead, or escape with"
-                        + " escapeText before fitting already-composed content")
+                .as("the bare fitter wraps nothing, so any production call site emits a record"
+                        + " without the structure that record is defined to carry; compose through"
+                        + " addressWorkLine, basicDetailsWorkLine or transactionWorkLine instead,"
+                        + " and reach the fitter only with content already composed")
                 .isEmpty();
     }
 
     @Test
-    @DisplayName("the three escaping composers are reached from exactly one production class, the "
+    @DisplayName("the three wrapping composers are reached from exactly one production class, the "
             + "statement generation service, and from nothing else")
     void theEscapingComposersAreReachedOnlyFromTheStatementService() {
         // Updated rather than deleted when the statement-generation service arrived, exactly as the
@@ -306,8 +307,8 @@ class StatementHtmlWorkLineExposureTest {
         // unchanged in substance and is now stronger than an emptiness claim: the composers may be
         // reached, but only from the one class whose job is to compose statement records, so a second
         // caller appearing anywhere in the production tree still fails the build. The preceding test
-        // continues to hold, because that service reaches for an escaping composer and never for the
-        // raw fitter.
+        // continues to hold, because that service reaches for a wrapping composer and never for the
+        // bare fitter.
         final List<SourceFile> sources = productionSources().stream()
                 .filter(source -> !source.path().getFileName().toString()
                         .equals(TEMPLATE_CLASS_FILE_NAME))
@@ -331,7 +332,7 @@ class StatementHtmlWorkLineExposureTest {
         }
 
         assertThat(composerCallSites)
-                .as("the escaping composers must be reached, or the statement service would have"
+                .as("the wrapping composers must be reached, or the statement service would have"
                         + " composed its records some other way; finding none would mean this census"
                         + " is matching nothing at all")
                 .isNotEmpty();
@@ -344,7 +345,7 @@ class StatementHtmlWorkLineExposureTest {
 
         assertThat(callingFiles)
                 .as("only the statement-generation service composes statement records, so it is the"
-                        + " only class licensed to call an escaping composer; any other caller is a"
+                        + " only class licensed to call a wrapping composer; any other caller is a"
                         + " new record-composing path that has not been reviewed")
                 .containsExactly(STATEMENT_SERVICE_FILE_NAME);
     }

@@ -30,9 +30,13 @@ import java.util.regex.Pattern;
 import io.micrometer.core.aop.CountedAspect;
 import io.micrometer.core.aop.TimedAspect;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
+import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
 import io.micrometer.core.instrument.distribution.HistogramSnapshot;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.ObservationRegistry;
@@ -627,7 +631,7 @@ final class ObservabilityConfigTest {
         @Test
         @DisplayName("contributes no meter filter, proved with no auto-configuration present so that a "
                 + "filter found could only have come from the class under test")
-        void contributesNoMeterFilter() {
+        void contributesExactlyOneMeterFilter() {
             new ApplicationContextRunner()
                     .withUserConfiguration(IsolatedRegistries.class, ObservabilityConfig.class)
                     .withPropertyValues("spring.application.name=" + APPLICATION_NAME)
@@ -637,8 +641,39 @@ final class ObservabilityConfigTest {
                         assertThat(context.getBeansOfType(TimedAspect.class)).isEmpty();
                         assertThat(context.getBeansOfType(ObservedAspect.class)).isEmpty();
                         assertThat(context.getBeansOfType(MeterFilter.class))
-                                .as("a filter here would drop, rename or re-bucket a series")
-                                .isEmpty();
+                                .as("exactly one filter, and it exists because without it one of two"
+                                        + " colliding meters is dropped by the exposition registry"
+                                        + " (DL-217)")
+                                .hasSize(1);
+
+                        final MeterFilter filter = context.getBean(MeterFilter.class);
+                        final Meter.Id observationDerived = new Meter.Id(
+                                ObservabilityConfig.BATCH_JOB_ACTIVE_METER_NAME,
+                                Tags.of(ObservabilityConfig.OBSERVATION_JOB_NAME_TAG_KEY, "anyJob",
+                                        "spring.batch.job.status", "COMPLETED"),
+                                null, null, Meter.Type.LONG_TASK_TIMER);
+                        final Meter.Id framework = new Meter.Id(
+                                ObservabilityConfig.BATCH_JOB_ACTIVE_METER_NAME,
+                                Tags.of(ObservabilityConfig.FRAMEWORK_JOB_NAME_TAG_KEY, "anyJob"),
+                                null, null, Meter.Type.LONG_TASK_TIMER);
+
+                        assertThat(filter.map(observationDerived).getName())
+                                .as("the newcomer is the one renamed, so both register")
+                                .isEqualTo(ObservabilityConfig.OBSERVATION_ACTIVE_METER_NAME);
+                        assertThat(filter.map(observationDerived).getTags())
+                                .as("and only the name is mapped; no tag is added, removed or rewritten")
+                                .isEqualTo(observationDerived.getTags());
+                        assertThat(filter.map(framework))
+                                .as("the meter the provisioned dashboard reads is untouched")
+                                .isSameAs(framework);
+                        assertThat(filter.accept(observationDerived))
+                                .as("nothing is denied: a denied meter is a dropped series")
+                                .isEqualTo(MeterFilterReply.NEUTRAL);
+                        assertThat(filter.configure(observationDerived,
+                                DistributionStatisticConfig.DEFAULT))
+                                .as("and the distribution statistic is handed back exactly as supplied,"
+                                        + " so no value is re-bucketed")
+                                .isSameAs(DistributionStatisticConfig.DEFAULT);
                     });
         }
 
@@ -977,9 +1012,11 @@ final class ObservabilityConfigTest {
                         .as("likewise for observations: the aspect consumes the auto-configured registry "
                                 + "and never supplies one")
                         .containsExactly(HARNESS_OBSERVATION_REGISTRY_BEAN);
-                assertThat(context.getBeansOfType(MeterFilter.class))
-                        .as("and no filter, because a filter is how a bound or a rename would arrive")
-                        .isEmpty();
+                assertThat(contributedBeanNames(context, MeterFilter.class))
+                        .as("exactly one filter, which renames a colliding meter rather than dropping"
+                                + " one; a bound or a denial would arrive the same way and neither does"
+                                + " (DL-217)")
+                        .containsExactly("batchActiveJobMeterNameFilter");
             });
         }
 

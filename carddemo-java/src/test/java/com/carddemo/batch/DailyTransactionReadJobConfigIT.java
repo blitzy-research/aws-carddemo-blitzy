@@ -732,6 +732,12 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
     // =============================================================================================
 
     /**
+     * The local staging root a simple dataset name is resolved against, which is the rung this job
+     * gained so that a dataset name is not interpreted as a class-path resource (DL-216).
+     */
+    private static final String STAGING_ROOT = System.getProperty("java.io.tmpdir");
+
+    /**
      * Builds a second configuration over the same collaborators the context wired, with the six
      * locations supplied.
      *
@@ -753,7 +759,8 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
             final String tranfile) {
         return new DailyTransactionReadJobConfig(this.jobRepository, this.transactionManager,
                 this.readerFactory, this.readService, this.meterRegistry, this.context,
-                this.stagingArea, dalytran, custfile, xreffile, cardfile, acctfile, tranfile);
+                this.stagingArea, STAGING_ROOT, dalytran, custfile, xreffile, cardfile, acctfile,
+                tranfile);
     }
 
     /**

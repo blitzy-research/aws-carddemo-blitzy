@@ -47,7 +47,9 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
@@ -932,6 +934,26 @@ public abstract class AbstractLocalStackIT {
         } catch (final IOException failure) {
             throw new UncheckedIOException("the staged object " + key + " could not be read", failure);
         }
+    }
+
+    /**
+     * Lists every object key beneath one prefix, in the store's own lexicographic order.
+     *
+     * <p>Needed because a durable generation number is allocated by the store at publication time
+     * against what the base already holds (DL-210), so a key cannot be predicted from anything a test
+     * knows beforehand. Asking the store what it holds is the only honest way to name it.
+     *
+     * @param  bucket the bucket to list; must not be {@code null}
+     * @param  prefix the key prefix to list beneath; must not be {@code null}
+     * @return the matching keys, ascending
+     */
+    protected static List<String> objectKeysUnder(final String bucket, final String prefix) {
+        return S3_CLIENT.listObjectsV2(
+                        ListObjectsV2Request.builder().bucket(bucket).prefix(prefix).build())
+                .contents().stream()
+                .map(S3Object::key)
+                .sorted()
+                .toList();
     }
 
     /** Reports whether one object exists without reading its body. */

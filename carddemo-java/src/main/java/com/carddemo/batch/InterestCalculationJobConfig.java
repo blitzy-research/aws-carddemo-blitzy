@@ -297,8 +297,13 @@ public final class InterestCalculationJobConfig {
     /** Bean name of the shared parameter incrementer the same configuration publishes. */
     private static final String RUN_INCREMENTER_BEAN_NAME = "batchJobRunIncrementer";
 
-    /** Logical name of the output generation group, as the legacy stream names it. */
-    private static final String DEFAULT_TRANSACT_DATASET_BASE = "AWS.M2.CARDDEMO.SYSTRAN";
+    /**
+     * Logical name of the output generation group, as the legacy stream names it.
+     *
+     * <p>Published rather than private because the consolidation job reads this dataset at its current
+     * generation and must name the same base this job writes. One constant, one dataset.
+     */
+    public static final String DEFAULT_TRANSACT_DATASET_BASE = "AWS.M2.CARDDEMO.SYSTRAN";
 
     private static final int KEYSET_PAGE_SIZE = BoundedKeysetIterator.DEFAULT_PAGE_SIZE;
 
@@ -479,16 +484,19 @@ public final class InterestCalculationJobConfig {
      * only re-read is the single default-group probe, which the service performs once, and a framework
      * retry here would turn one probe into several.
      *
-     * @param stagingArea the shared object-store staging boundary
+     * <p><strong>The step does not publish.</strong> It seals its generation and registers it, and the
+     * shared job-boundary listener publishes every registered artefact once the whole submission has
+     * completed. An earlier revision also uploaded the sealed file here, which put the same generation
+     * in the bucket twice under two different key shapes and left one of the two outside the retention
+     * pass. See {@code docs/decision-log.md} entry DL-212.
+     *
      * @return the step, registered under {@link #STEP_NAME}
      */
     @Bean(name = STEP_NAME)
-    public Step interestAccrualStep(final BatchStagingArea stagingArea) {
+    public Step interestAccrualStep() {
         return new StepBuilder(STEP_NAME, this.jobRepository)
                 .meterRegistry(this.meterRegistry)
-                .tasklet((contribution, chunkContext) ->
-                        runInterestAccrual(contribution, chunkContext, stagingArea),
-                        this.transactionManager)
+                .tasklet(this::runInterestAccrual, this.transactionManager)
                 .transactionAttribute(NO_ENCOMPASSING_TRANSACTION)
                 .build();
     }
@@ -507,16 +515,13 @@ public final class InterestCalculationJobConfig {
      *                     indivisible invocation with no partial contribution to report
      * @param chunkContext the framework's chunk context, which supplies the step execution; must not be
      *                     {@code null}
-     * @param stagingArea the shared object-store staging boundary
      * @return {@link RepeatStatus#FINISHED} always
      * @throws NullPointerException if the chunk context or its step execution is absent
      */
     private RepeatStatus runInterestAccrual(final StepContribution contribution,
-            final ChunkContext chunkContext, final BatchStagingArea stagingArea) {
+            final ChunkContext chunkContext) {
 
-        final StepExecution stepExecution = stepExecutionOf(chunkContext);
-        runAccrualPass(stepExecution);
-        stagingArea.publish(transactGeneration(jobExecutionIdOf(stepExecution)));
+        runAccrualPass(stepExecutionOf(chunkContext));
         return RepeatStatus.FINISHED;
     }
 

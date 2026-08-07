@@ -29,12 +29,16 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Optional;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,10 +66,29 @@ import org.springframework.stereotype.Component;
  * registered artifact only after all of the job's steps have completed.
  *
  * <p>Publication is one object-store PUT per artifact. The key is
- * {@code <logical-base>/G<execution-id>V00}, where the execution identifier is rendered with at least
- * ten digits and is never reduced modulo a smaller range. The result is stable, sortable and collision
- * free for the lifetime of the batch repository. It also preserves the recognisable absolute-generation
- * vocabulary without reproducing the four-digit wrap that caused the reviewed collision.
+ * {@code <logical-base>/G<generation-number>V00}, rendered with at least ten digits and never reduced
+ * modulo a smaller range, so it preserves the recognisable absolute-generation vocabulary without
+ * reproducing the four-digit wrap that caused the reviewed collision.
+ *
+ * <p><strong>The generation number is the durable store's own, not the framework's.</strong> It is
+ * allocated at publication time as one more than the highest generation already present beneath the
+ * base, which is what a relative {@code (+1)} allocation against a catalogued generation group does.
+ * The framework's execution identifier still names the <em>local</em> per-execution file, because two
+ * concurrent executions must not compose over each other, but it deliberately does not name the durable
+ * object: a re-created batch metadata store restarts execution identifiers at one while the bucket keeps
+ * every object, so a key derived from an execution identifier would silently overwrite a generation
+ * published by an earlier run. Allocation happens with the base held, so two concurrent publications
+ * cannot choose the same number. See {@code docs/decision-log.md} entry DL-210.
+ *
+ * <h2>An abnormal end discards what it allocated</h2>
+ *
+ * <p>{@link #discardLocalArtifactsOf(JobExecution)} removes the local files one non-completing execution
+ * created: its completed generations, whose publication was skipped, and any working file its steps left
+ * half composed. Only files carrying that execution's own generation token are touched, so a concurrently
+ * running job's artifacts cannot be caught by it. This is the abnormal disposition of the legacy
+ * allocation - a dataset the job stream created and did not end normally with was deleted rather than
+ * catalogued - and without it a failed run leaves a local file that nothing will ever publish, read or
+ * prune. See {@code docs/decision-log.md} entry DL-211.
  *
  * <h2>Partial files are never publishable</h2>
  *
@@ -152,8 +175,11 @@ public final class StagedGenerationStore {
     /** Empty persisted alias means the artifact has no fixed-name local view. */
     private static final String NO_ALIAS = "";
 
-    /** The recognisable generation token, widened so execution identifiers never wrap. */
+    /** The recognisable generation token, widened so a generation number never wraps. */
     private static final String GENERATION_TOKEN_FORMAT = "G%010dV00";
+
+    /** Lowest generation number a base can hold, so a first publication is generation one. */
+    private static final long FIRST_GENERATION_NUMBER = 1L;
 
     /** The separator between a logical base and its generation token in object storage. */
     private static final char OBJECT_KEY_SEPARATOR = '/';
@@ -285,6 +311,30 @@ public final class StagedGenerationStore {
     }
 
     /**
+     * Registers one completed generation from a component that holds the job execution rather than a
+     * step execution.
+     *
+     * <p>Used by an artefact whose lifecycle is the job's rather than a step's - a generation written by
+     * one step and read by the next - which reaches this store when its stream closes and therefore has
+     * no step execution in hand.
+     *
+     * @param jobExecution the execution the generation belongs to; must not be {@code null} and must
+     *                     already carry the identifier the framework assigned
+     * @param logicalBase logical dataset or generation-group base
+     * @param completedPath completed local generation
+     * @param retentionLimit measured retained depth
+     */
+    public static void register(final JobExecution jobExecution, final String logicalBase,
+            final Path completedPath, final int retentionLimit) {
+        Objects.requireNonNull(jobExecution, "jobExecution");
+        final Long executionId = Objects.requireNonNull(jobExecution.getId(),
+                "the framework must assign a job execution identifier before a generation is"
+                        + " registered");
+        register(jobExecution, logicalBase, executionId.longValue(), completedPath, retentionLimit,
+                null);
+    }
+
+    /**
      * Wraps an item-stream writer so a successful close seals and registers its output generation.
      *
      * @param delegate writer that composes the working file
@@ -370,9 +420,13 @@ public final class StagedGenerationStore {
             final List<PublishedGeneration> published) {
         final String bucket = this.bucket;
         final List<AliasSnapshot> advancedAliases = new ArrayList<>();
+        // One allocation ledger for the whole pass. A base is measured against the durable store once
+        // and then advances within the pass, so two artifacts registered under one base receive two
+        // generations rather than the same key twice.
+        final Map<String, Long> allocatedByBase = new HashMap<>();
         try {
             for (final ArtifactRegistration registration : registrations) {
-                published.add(upload(bucket, registration));
+                published.add(upload(bucket, registration, allocatedByBase));
             }
             for (final ArtifactRegistration registration : registrations) {
                 final AliasSnapshot snapshot = replaceAlias(registration);
@@ -438,17 +492,15 @@ public final class StagedGenerationStore {
      * replaced a byte-array publication.
      *
      * @param logicalBase logical generation-group base
-     * @param executionId framework execution identifier
      * @param completedPath completed local generation, which must not be a working file
      * @param retentionLimit measured retained depth
-     * @return the published generation
+     * @return the published generation, carrying the key the allocation chose
      * @throws IllegalArgumentException if the path names a working file
      * @throws UncheckedIOException if the file cannot be measured or read
      */
-    public PublishedGeneration publishFile(final String logicalBase, final long executionId,
-            final Path completedPath, final int retentionLimit) {
+    public PublishedGeneration publishFile(final String logicalBase, final Path completedPath,
+            final int retentionLimit) {
         final String base = requireLogicalBase(logicalBase);
-        requireExecutionId(executionId);
         requireRetentionLimit(retentionLimit);
         final Path source = Objects.requireNonNull(completedPath, "completedPath");
         if (source.toString().endsWith(WORKING_SUFFIX)) {
@@ -456,12 +508,14 @@ public final class StagedGenerationStore {
                     + " complete");
         }
         final String bucket = this.bucket;
-        final String key = objectKey(base, executionId);
-        // Held for the whole of upload-then-retention, exactly as the registered path is, and for the
-        // same reason: this base is shared with the transaction-report job's unload step, so a per-job
-        // lock would leave precisely this pair concurrent.
+        // Held for the whole of allocate-upload-then-retention, exactly as the registered path is, and
+        // for the same reason: this base is shared with the transaction-report job's unload step, so a
+        // per-job lock would leave precisely this pair concurrent. Allocation is inside the lock because
+        // it reads the very set the upload is about to add to.
         final AtomicReference<PublishedGeneration> result = new AtomicReference<>();
         this.publicationLock.whileHolding(List.of(base), () -> {
+            final String key = base + OBJECT_KEY_SEPARATOR
+                    + allocateGeneration(bucket, base, new HashMap<>());
             final long size;
             try {
                 size = Files.size(source);
@@ -483,14 +537,173 @@ public final class StagedGenerationStore {
     }
 
     /**
-     * Returns the durable key of one execution's generation.
+     * Allocates the next durable generation token for one base, advancing a per-pass ledger.
      *
-     * @param logicalBase logical generation-group or dataset base
-     * @param executionId framework execution identifier
-     * @return object key
+     * <p>The first allocation for a base measures the durable store; later allocations in the same pass
+     * advance from what this pass has already handed out, so one publication cannot issue one key twice.
+     * The caller must hold the base.
+     *
+     * @param bucket the destination bucket
+     * @param logicalBase the base being published to
+     * @param allocatedByBase the ledger of what this pass has already allocated, mutated in place
+     * @return the generation token, in the recognisable absolute-generation form
      */
-    public static String objectKey(final String logicalBase, final long executionId) {
-        return requireLogicalBase(logicalBase) + OBJECT_KEY_SEPARATOR + generationToken(executionId);
+    private String allocateGeneration(final String bucket, final String logicalBase,
+            final Map<String, Long> allocatedByBase) {
+        final Long alreadyAllocated = allocatedByBase.get(logicalBase);
+        final long next = alreadyAllocated == null
+                ? highestDurableGeneration(bucket, logicalBase) + 1L
+                : alreadyAllocated.longValue() + 1L;
+        allocatedByBase.put(logicalBase, Long.valueOf(next));
+        return generationToken(next);
+    }
+
+    /**
+     * Reads the highest generation number the durable store already holds beneath one base.
+     *
+     * @param bucket the bucket to measure
+     * @param logicalBase the base to measure
+     * @return the highest generation number present, or one less than the first when the base is empty
+     */
+    private long highestDurableGeneration(final String bucket, final String logicalBase) {
+        final String prefix = logicalBase + OBJECT_KEY_SEPARATOR;
+        long highest = FIRST_GENERATION_NUMBER - 1L;
+        final List<S3Resource> resources = Objects.requireNonNull(
+                this.objectStore.listObjects(bucket, prefix),
+                "objectStore.listObjects must not return null");
+        for (final S3Resource resource : resources) {
+            if (resource == null || resource.getLocation() == null) {
+                continue;
+            }
+            final Long generation =
+                    generationNumberFromKey(prefix, resource.getLocation().getObject());
+            if (generation != null && generation.longValue() > highest) {
+                highest = generation.longValue();
+            }
+        }
+        return highest;
+    }
+
+    /**
+     * Resolves one logical base's <em>current</em> durable generation, reproducing the legacy relative
+     * generation {@code (0)}.
+     *
+     * <p>A job stream that names {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)} is asking the catalog for
+     * whichever generation of that base is newest at the moment the job is submitted. There is no
+     * catalog here, so the durable store is the catalog: the highest generation number present beneath
+     * the base is the current one. Only keys this class composed are considered, so an unrelated object
+     * that happens to share the prefix can never be mistaken for a generation.
+     *
+     * <p>Answering with the key rather than the number keeps the caller out of key composition
+     * entirely, which is the whole reason this class exists.
+     *
+     * @param  logicalBase the generation base whose current generation is wanted; must be a valid base
+     * @return the object key of the current generation, or empty when the base holds none
+     * @throws NullPointerException     if {@code logicalBase} is {@code null}
+     * @throws IllegalArgumentException if {@code logicalBase} is not a valid base
+     */
+    public Optional<String> currentGenerationKey(final String logicalBase) {
+        final String base = requireLogicalBase(logicalBase);
+        final long highest = highestDurableGeneration(this.bucket, base);
+        if (highest < FIRST_GENERATION_NUMBER) {
+            return Optional.empty();
+        }
+        return Optional.of(base + OBJECT_KEY_SEPARATOR + generationToken(highest));
+    }
+
+    /**
+     * Resolves one logical base's current generation on the local staging filesystem.
+     *
+     * <p>The local counterpart of {@link #currentGenerationKey(String, String)}, for a deployment whose
+     * predecessor jobs have staged their generations locally and not yet published them - which is
+     * exactly the state the five-link chain is in while it runs. Local names carry the same generation
+     * token after a {@value #LOCAL_NAME_SEPARATOR} separator, so the highest token is the current
+     * generation here too. Working files are excluded by construction: they end in
+     * {@value #WORKING_SUFFIX} and therefore do not parse as a generation name.
+     *
+     * @param  stagingDirectory the local staging root to search; must not be {@code null}
+     * @param  logicalBase      the generation base whose current generation is wanted
+     * @return the path of the current local generation, or empty when the directory holds none
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if {@code logicalBase} is not a valid base
+     */
+    public static Optional<Path> currentLocalGeneration(final Path stagingDirectory,
+            final String logicalBase) {
+        Objects.requireNonNull(stagingDirectory, "stagingDirectory");
+        final String base = requireLogicalBase(logicalBase);
+        final String prefix = base + LOCAL_NAME_SEPARATOR;
+        if (!Files.isDirectory(stagingDirectory)) {
+            return Optional.empty();
+        }
+        Path newest = null;
+        long highest = FIRST_GENERATION_NUMBER - 1L;
+        try (Stream<Path> entries = Files.list(stagingDirectory)) {
+            for (final Path entry : entries.toList()) {
+                final Path name = entry.getFileName();
+                if (name == null || !Files.isRegularFile(entry)) {
+                    continue;
+                }
+                final Long generation = generationNumberFromKey(prefix, name.toString());
+                if (generation != null && generation.longValue() > highest) {
+                    highest = generation.longValue();
+                    newest = entry;
+                }
+            }
+        } catch (final IOException unreadableDirectory) {
+            LOGGER.warn("The local staging root {} could not be searched for the current generation of"
+                            + " base {}; searchFailure={}", stagingDirectory, base,
+                    unreadableDirectory.getClass().getSimpleName());
+            return Optional.empty();
+        }
+        return Optional.ofNullable(newest);
+    }
+
+    /**
+     * Removes the local files one non-completing execution created, and nothing else.
+     *
+     * <p>Called by the job-boundary listener when a job did not complete. Publication is skipped for such
+     * a job, so its completed generations name nothing durable and its working files name nothing at all;
+     * both are the abnormal disposition of an allocation the job stream did not end normally with, and
+     * leaving them behind accumulates one dead artifact per failed run.
+     *
+     * <p>Selection is by this execution's own generation token, which appears in the name of every local
+     * file the store hands out, so a file belonging to a concurrently running execution can never match.
+     * Nothing is raised: the job has already failed for its own reason, and that reason is the one an
+     * operator must read.
+     *
+     * @param jobExecution the execution that ended without completing; must not be {@code null}
+     * @param stagingDirectory the local staging root to sweep; must not be {@code null}
+     * @return the number of local files removed
+     */
+    public static int discardLocalArtifactsOf(final JobExecution jobExecution,
+            final Path stagingDirectory) {
+        Objects.requireNonNull(jobExecution, "jobExecution");
+        Objects.requireNonNull(stagingDirectory, "stagingDirectory");
+        final Long executionId = jobExecution.getId();
+        if (executionId == null || executionId.longValue() < 0L) {
+            return 0;
+        }
+        final String token = generationToken(executionId.longValue());
+        int discarded = 0;
+        try (Stream<Path> entries = Files.list(stagingDirectory)) {
+            for (final Path entry : entries.toList()) {
+                final Path name = entry.getFileName();
+                if (name == null || !name.toString().contains(token)
+                        || !Files.isRegularFile(entry)) {
+                    continue;
+                }
+                if (Files.deleteIfExists(entry)) {
+                    discarded++;
+                    LOGGER.info("Discarded local batch artifact {} allocated by jobExecutionId={},"
+                            + " which did not complete", name, executionId);
+                }
+            }
+        } catch (final IOException failure) {
+            LOGGER.warn("The local staging root {} could not be swept after jobExecutionId={} ended"
+                            + " without completing; failureType={}", stagingDirectory, executionId,
+                    failure.getClass().getSimpleName());
+        }
+        return discarded;
     }
 
     /**
@@ -562,10 +775,11 @@ public final class StagedGenerationStore {
         context.remove(REGISTRY_COUNT);
     }
 
-    /** Uploads one validated local artifact. */
+    /** Uploads one validated local artifact under a newly allocated durable generation. */
     private PublishedGeneration upload(final String bucket,
-            final ArtifactRegistration registration) {
-        final String key = objectKey(registration.logicalBase(), registration.executionId());
+            final ArtifactRegistration registration, final Map<String, Long> allocatedByBase) {
+        final String key = registration.logicalBase() + OBJECT_KEY_SEPARATOR
+                + allocateGeneration(bucket, registration.logicalBase(), allocatedByBase);
         final long size;
         try {
             size = Files.size(registration.completedPath());
@@ -739,12 +953,12 @@ public final class StagedGenerationStore {
                 continue;
             }
             final String key = resource.getLocation().getObject();
-            final Long executionId = executionIdFromKey(prefix, key);
-            if (executionId != null) {
-                generations.add(new RemoteGeneration(key, executionId.longValue()));
+            final Long generationNumber = generationNumberFromKey(prefix, key);
+            if (generationNumber != null) {
+                generations.add(new RemoteGeneration(key, generationNumber.longValue()));
             }
         }
-        generations.sort(Comparator.comparingLong(RemoteGeneration::executionId)
+        generations.sort(Comparator.comparingLong(RemoteGeneration::generationNumber)
                 .reversed()
                 .thenComparing(RemoteGeneration::objectKey));
 
@@ -756,8 +970,8 @@ public final class StagedGenerationStore {
         }
     }
 
-    /** Extracts an execution identifier only from keys produced by this class. */
-    private static Long executionIdFromKey(final String prefix, final String key) {
+    /** Extracts a generation number only from keys produced by this class. */
+    private static Long generationNumberFromKey(final String prefix, final String key) {
         if (key == null || !key.startsWith(prefix)) {
             return null;
         }
@@ -796,10 +1010,13 @@ public final class StagedGenerationStore {
                 + generationToken(executionId);
     }
 
-    /** Creates the generation token shared by local names and durable keys. */
-    private static String generationToken(final long executionId) {
-        requireExecutionId(executionId);
-        return String.format(Locale.ROOT, GENERATION_TOKEN_FORMAT, executionId);
+    /**
+     * Creates the generation token, which names a local file from an execution identifier and a durable
+     * object from an allocated generation number.
+     */
+    private static String generationToken(final long generationNumber) {
+        requireExecutionId(generationNumber);
+        return String.format(Locale.ROOT, GENERATION_TOKEN_FORMAT, generationNumber);
     }
 
     /** Validates a logical base before it is used as a path component and an object-key prefix. */
@@ -889,7 +1106,7 @@ public final class StagedGenerationStore {
     }
 
     /** One generation discovered beneath a durable prefix. */
-    private record RemoteGeneration(String objectKey, long executionId) {
+    private record RemoteGeneration(String objectKey, long generationNumber) {
     }
 
     /**

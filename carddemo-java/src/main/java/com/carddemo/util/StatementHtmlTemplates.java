@@ -76,24 +76,30 @@ import java.util.Objects;
  * not modelled here; their width is this class's business, which is why the hundred-byte figure lives
  * in exactly one place.</p>
  *
- * <p><strong>Escaping is applied to substituted values and never to markup.</strong> Every
- * caller-supplied value is escaped by {@link #escapeText(String)} before it is fitted to its field.
- * Every markup literal &mdash; all {@value #FIXED_TEMPLATE_COUNT} fixed templates, the leading and
- * trailing literals of the two composed lines, and the paragraph tags of the three work lines &mdash;
- * is emitted exactly as declared, with no escaping. Escaping is a deliberate divergence from
- * byte-for-byte faithfulness and it is the narrowest one available: it is the identity function on the
- * entire legitimate domain of every field it touches, so for real data the emitted bytes are unchanged
- * and the hundred-byte parity gate is unaffected. No method here accepts composed markup from a caller
- * as field data; the three free-form lines are built by {@link #addressWorkLine(String)},
- * {@link #basicDetailsWorkLine(String, String)} and {@link #transactionWorkLine(String)}, each owning
- * its own paragraph tags. The raw fitter {@link #workLine(String)} frames a line to the record width
- * without escaping it, so it is reserved for content this class has already composed: no production
- * caller routes a field value through it, and a test enforces that absence across the whole main
- * source tree. Recorded in {@code docs/decision-log.md}.</p>
+ * <p><strong>Two kinds of builder, differing only in structure.</strong> The three work-line composers
+ * &mdash; {@link #addressWorkLine(String)}, {@link #basicDetailsWorkLine(String, String)} and
+ * {@link #transactionWorkLine(String)} &mdash; wrap a field value in the paragraph tags its record is
+ * defined to carry and then fit the result. {@link #workLine(String)} wraps nothing: it is the fitter
+ * for content that has <em>already</em> been composed, so it is the right entry point for a fully
+ * assembled line and the wrong one for a bare field value, which would reach a record without its
+ * tags. Both kinds move the content itself through untouched and both apply the same refusals, so the
+ * distinction is structural and never defensive. A production census asserts that nothing in the
+ * application tree reaches {@link #workLine(String)} with field data.</p>
  *
- * <p>A second independent guard stands in front of escaping: every caller-supplied value must be
- * printable US-ASCII, and the account-number slot is narrowed further to ASCII digits and the ASCII
- * space. Refusal never alters a byte, so the guard cannot disturb parity.</p>
+ * <p><strong>Nothing is escaped, encoded or repaired: every value is emitted byte for byte.</strong>
+ * The legacy program moves the field's bytes into a {@code PIC X(100)} line and writes the line, so a
+ * description reading {@code Purchase at Zulauf-O'Keefe} reaches the file with its apostrophe intact and
+ * the closing tag exactly where the move left it. Substituting character references would keep the
+ * record a hundred bytes wide while shifting every byte after the substitution, which is a byte-parity
+ * defect against the expected-output fixture and against the emitting program alike. Escaping was
+ * applied here once and has been removed; see {@code docs/decision-log.md} entry DL-209, which also
+ * records the stored-markup exposure that the legacy design carries and that no requirement in scope
+ * asks this artefact to close.</p>
+ *
+ * <p>Two guards remain in front of every substituted value, and both are refusals rather than
+ * rewrites: the value must be printable US-ASCII, and the account-number slot is narrowed further to
+ * ASCII digits and the ASCII space. A refusal never alters a byte, so neither guard can disturb parity;
+ * what they stop is a control byte splitting one fixed-length record into two.</p>
  *
  * <p><strong>No templating engine.</strong> A templating engine, and any general-purpose format-string
  * abstraction that could reorder or re-space content, is forbidden for this output: either would
@@ -318,24 +324,6 @@ public final class StatementHtmlTemplates {
 
     private static final String ADDRESS_LINE_DELIMITER = "  ";
 
-    private static final String AMPERSAND_REFERENCE = "&amp;";
-
-    private static final String LESS_THAN_REFERENCE = "&lt;";
-
-    private static final String GREATER_THAN_REFERENCE = "&gt;";
-
-    private static final String QUOTATION_MARK_REFERENCE = "&quot;";
-
-    /**
-     * The numeric form is used rather than the named one because the numeric reference is defined in
-     * every HTML version and a statement file has no controlled viewer.
-     */
-    private static final String APOSTROPHE_REFERENCE = "&#39;";
-
-    private static final char REFERENCE_START = '&';
-
-    private static final char REFERENCE_END = ';';
-
     private static final List<String> FIXED_TEMPLATES = orderedTemplates();
 
     /**
@@ -362,7 +350,7 @@ public final class StatementHtmlTemplates {
         requirePrintableUsAscii(accountId, "account identifier");
         requireDigitsOrSpaces(accountId, "account identifier");
         final String group = ACCOUNT_LINE_PREFIX
-                + fitToWidth(escapeText(accountId), ACCOUNT_LINE_ACCOUNT_LENGTH)
+                + fitToWidth(accountId, ACCOUNT_LINE_ACCOUNT_LENGTH)
                 + ACCOUNT_LINE_SUFFIX;
         requireExactWidth("HTML-L11 composed group", group, ACCOUNT_LINE_DECLARED_LENGTH);
         return requireExactWidth("HTML-L11 record",
@@ -371,8 +359,8 @@ public final class StatementHtmlTemplates {
 
     /**
      * Builds the customer-name heading record as the paragraph emits it, not as the staging group
-     * declares it: the escaped name is moved into its fifty-byte field, the transfer then stops at the
-     * first pair of adjacent spaces, and the delimiter and closing tag follow. A name with no adjacent
+     * declares it: the name is moved into its fifty-byte field as it arrives, the transfer then stops at
+     * the first pair of adjacent spaces, and the delimiter and closing tag follow. A name with no adjacent
      * spaces reaches {@link #NAME_LINE_MAX_SIGNIFICANT_LENGTH}, which is inside the record.
      *
      * @param  customerName the composed customer name; must be printable US-ASCII
@@ -383,8 +371,8 @@ public final class StatementHtmlTemplates {
     public static String customerNameLine(final String customerName) {
         Objects.requireNonNull(customerName, "customerName must not be null");
         requirePrintableUsAscii(customerName, "customer name");
-        // The truncating move into the fifty-byte staging field, over the escaped name.
-        final String nameField = fitToWidth(escapeText(customerName), NAME_LINE_NAME_LENGTH);
+        // The truncating move into the fifty-byte staging field, over the name exactly as supplied.
+        final String nameField = fitToWidth(customerName, NAME_LINE_NAME_LENGTH);
         // The transfer then stops at the first pair of adjacent spaces, so the padding the move
         // introduced is dropped rather than emitted; the right pad below restores the record width.
         final String record = NAME_LINE_PREFIX + nameUpToDelimiter(nameField)
@@ -403,7 +391,7 @@ public final class StatementHtmlTemplates {
     }
 
     /**
-     * Builds the address work line: opening paragraph tag, the escaped address, the two unconditional
+     * Builds the address work line: opening paragraph tag, the address as it arrives, the two unconditional
      * delimiter spaces, then the closing tag, fitted to the record width.
      *
      * @param  addressLine the address text; must be printable US-ASCII
@@ -415,14 +403,14 @@ public final class StatementHtmlTemplates {
         Objects.requireNonNull(addressLine, "addressLine must not be null");
         requirePrintableUsAscii(addressLine, "address line");
         final String transferred = upToFirstDoubleSpace(addressLine);
-        final String composed = PARAGRAPH_OPEN + escapeText(transferred)
+        final String composed = PARAGRAPH_OPEN + transferred
                 + ADDRESS_LINE_TRAILING_SPACES + PARAGRAPH_CLOSE;
         return requireExactWidth("HTML-ADDR-LN record",
                 fitToWidth(composed, ADDRESS_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
     }
 
     /**
-     * Builds the basic-details work line by wrapping the escaped label and value in the paragraph tags
+     * Builds the basic-details work line by wrapping the label and value, as they arrive, in the tags
      * the legacy statement writes, then fitting the result to the record width.
      *
      * @param  label the detail label; must be printable US-ASCII
@@ -436,14 +424,13 @@ public final class StatementHtmlTemplates {
         requirePrintableUsAscii(label, "work-line label");
         Objects.requireNonNull(value, "value must not be null");
         requirePrintableUsAscii(value, "work-line value");
-        final String composed = PARAGRAPH_OPEN + escapeText(label) + escapeText(value)
-                + PARAGRAPH_CLOSE;
+        final String composed = PARAGRAPH_OPEN + label + value + PARAGRAPH_CLOSE;
         return requireExactWidth("HTML-BSIC-LN record",
                 fitToWidth(composed, BASIC_DETAILS_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
     }
 
     /**
-     * Builds the transaction work line by wrapping the escaped transaction text in the paragraph tags
+     * Builds the transaction work line by wrapping the transaction text, as it arrives, in the tags
      * the legacy statement writes, then fitting the result to the record width.
      *
      * @param  transactionText the transaction text; must be printable US-ASCII
@@ -454,52 +441,9 @@ public final class StatementHtmlTemplates {
     public static String transactionWorkLine(final String value) {
         Objects.requireNonNull(value, "value must not be null");
         requirePrintableUsAscii(value, "work-line value");
-        final String composed = PARAGRAPH_OPEN + escapeText(value) + PARAGRAPH_CLOSE;
+        final String composed = PARAGRAPH_OPEN + value + PARAGRAPH_CLOSE;
         return requireExactWidth("HTML-TRAN-LN record",
                 fitToWidth(composed, TRANSACTION_WORK_LINE_LENGTH), HTML_RECORD_LENGTH);
-    }
-
-    /**
-     * Replaces the five markup-significant characters with their HTML character references.
-     *
-     * <p>The legacy program encoded nothing, because its data could only have come from another batch
-     * program in the same estate. Here the same values arrive from a relational store that online
-     * screens write, and those screens accept free text in the name and address fields, so an injected
-     * value stored through one of them and later rendered into a statement is stored cross-site
-     * scripting against whoever opens the statement. The statement file is written once and read by an
-     * unknown viewer later, so composition is the only point that closes it.</p>
-     *
-     * <p>None of the five is optional: the name line opens a tag carrying a quoted attribute, so a
-     * value that escaped its element could otherwise be positioned to close that attribute. Escaping
-     * all five means the record cannot be reinterpreted as markup wherever the value lands.</p>
-     *
-     * <p>Published rather than private because the statement-generation service composes values from
-     * several fields before they reach a line builder and needs this function rather than a second,
-     * possibly divergent one. The line builders here apply it themselves, so a caller passing raw text
-     * is already safe; a caller that pre-composes must apply it.</p>
-     *
-     * @param  text the text to escape; must not be {@code null} and may be empty
-     * @return the text with the five markup-significant characters replaced and all others unchanged
-     * @throws NullPointerException if {@code text} is {@code null}
-     */
-    public static String escapeText(final String text) {
-        Objects.requireNonNull(text, "text must not be null");
-
-        // The ampersand is replaced first, or the ampersands introduced here would themselves be
-        // re-escaped; one pass makes that ordering hazard structurally impossible rather than avoided.
-        final StringBuilder escaped = new StringBuilder(text.length());
-        for (int index = 0; index < text.length(); index++) {
-            final char character = text.charAt(index);
-            switch (character) {
-                case '&' -> escaped.append(AMPERSAND_REFERENCE);
-                case '<' -> escaped.append(LESS_THAN_REFERENCE);
-                case '>' -> escaped.append(GREATER_THAN_REFERENCE);
-                case '"' -> escaped.append(QUOTATION_MARK_REFERENCE);
-                case '\'' -> escaped.append(APOSTROPHE_REFERENCE);
-                default -> escaped.append(character);
-            }
-        }
-        return escaped.toString();
     }
 
     /**
@@ -509,7 +453,7 @@ public final class StatementHtmlTemplates {
      *
      * <p>The semantics are those of a move into a hundred-byte alphanumeric field: shorter content is
      * padded on the right with ASCII spaces, longer content is truncated at the record width in encoded
-     * bytes. Nothing is escaped and no line terminator is added.</p>
+     * bytes. Nothing is encoded and no line terminator is added.</p>
      *
      * <p>This is a guarded fitter rather than an unchecked sink: content is validated to printable
      * US-ASCII first, so the C0 controls, the delete character and everything outside US-ASCII are
@@ -519,10 +463,9 @@ public final class StatementHtmlTemplates {
      * characters are legitimate content here and pass through unchanged, so this method validates the
      * character set and the width and never the markup structure.</p>
      *
-     * <p>That is also why this is a framing primitive and not the sanitisation point: it receives
-     * content already composed, so it cannot tell a legitimate paragraph literal from an injected one.
-     * Caller-supplied field values must be neutralised before composition, which is what
-     * {@link #escapeText(String)} is for and what the three named composers already do.</p>
+     * <p>It is a framing primitive and nothing else: it receives content that is already composed, so it
+     * cannot tell a legitimate paragraph literal from any other text and does not try to. Field values
+     * belong in the three named composers, each of which owns its own paragraph tags.</p>
      *
      * @param  content the composed work-line content; must be printable US-ASCII and may be empty
      * @return one record of exactly {@value #HTML_RECORD_LENGTH} encoded bytes, with no line terminator
@@ -617,12 +560,10 @@ public final class StatementHtmlTemplates {
      * rather than characters is what makes the result exact, because the record is a byte image and a
      * character count cannot describe one.
      *
-     * <p>One refinement follows the truncation: if the surviving bytes end in an unterminated character
-     * reference, that fragment is dropped and the padding takes its place. Cutting at a byte boundary
-     * is faithful, but leaving a half-written reference would let a viewer resynchronise against the
-     * following markup and turn a truncation into a rendering defect. It costs nothing elsewhere,
-     * because a value with no unterminated reference at the cut is returned untouched &mdash; which is
-     * every fixed template and all real data.</p>
+     * <p>The cut is at a byte boundary and nothing follows it. A COBOL {@code MOVE} into a shorter
+     * alphanumeric field truncates on the right and does nothing else, so no fragment is inspected, no
+     * byte behind the cut is reconsidered and no content is blanked back to a delimiter. Any refinement
+     * of the truncation would be this module's invention rather than the legacy's behaviour.</p>
      *
      * @param  value the value to fit; must not be {@code null}
      * @param  width the exact field width in encoded bytes; must not be negative
@@ -632,34 +573,8 @@ public final class StatementHtmlTemplates {
         final byte[] source = value.getBytes(StandardCharsets.US_ASCII);
         final byte[] image = new byte[width];
         Arrays.fill(image, ASCII_SPACE);
-        final int copied = Math.min(source.length, width);
-        System.arraycopy(source, 0, image, 0, copied);
-
-        if (source.length > width) {
-            blankTrailingReferenceFragment(image, copied);
-        }
+        System.arraycopy(source, 0, image, 0, Math.min(source.length, width));
         return new String(image, StandardCharsets.US_ASCII);
-    }
-
-    /**
-     * Blanks a partial character reference left at the end of a truncated field image. Scans back from
-     * the cut for the first delimiter: an unterminated reference start is a fragment, and every byte
-     * from it to the cut is overwritten with the ASCII space so the field keeps its exact width; a
-     * terminator found first means the last reference completed and nothing needs removing.
-     *
-     * @param image the field image, already padded and already carrying the truncated bytes
-     * @param cut   the number of bytes copied into the image before padding begins
-     */
-    private static void blankTrailingReferenceFragment(final byte[] image, final int cut) {
-        for (int index = cut - 1; index >= 0; index--) {
-            if (image[index] == (byte) REFERENCE_END) {
-                return;
-            }
-            if (image[index] == (byte) REFERENCE_START) {
-                Arrays.fill(image, index, cut, ASCII_SPACE);
-                return;
-            }
-        }
     }
 
     /**

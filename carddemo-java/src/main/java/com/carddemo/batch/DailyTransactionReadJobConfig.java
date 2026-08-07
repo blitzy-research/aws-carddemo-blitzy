@@ -17,6 +17,7 @@
 package com.carddemo.batch;
 
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.domain.Account;
 import com.carddemo.domain.Card;
 import com.carddemo.domain.CardCrossReference;
@@ -30,8 +31,11 @@ import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionVerification;
 import com.carddemo.util.BatchCancellation;
+import com.carddemo.util.StagedResourceNames;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -56,6 +60,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -285,6 +290,19 @@ public final class DailyTransactionReadJobConfig {
     /** Property naming the staged {@value #DD_DALYTRAN} dataset; blank when none is staged. */
     public static final String DALYTRAN_RESOURCE_PROPERTY = RESOURCE_PROPERTY_PREFIX + "dalytran";
 
+    /**
+     * Key of the one directory a configured location may name a relative dataset name beneath.
+     *
+     * <p>The local half of the staged-input allow-list, and the same key shape every other
+     * staged-dataset job of this package uses. Without it a location such as
+     * {@code AWS.M2.CARDDEMO.DALYTRAN.PS} - which is a dataset name and not a URI - reached the
+     * application resource loader and was interpreted as a <em>class-path</em> resource, so a name that
+     * resolves correctly for every other job of this package failed here. See
+     * {@code docs/decision-log.md} entry DL-216.
+     */
+    public static final String STAGING_DIRECTORY_PROPERTY =
+            RESOURCE_PROPERTY_PREFIX + "staging-directory";
+
     /** Property naming the staged {@value #DD_CUSTFILE} dataset; blank when none is staged. */
     public static final String CUSTFILE_RESOURCE_PROPERTY = RESOURCE_PROPERTY_PREFIX + "custfile";
 
@@ -363,6 +381,9 @@ public final class DailyTransactionReadJobConfig {
 
     private final BatchStagingArea stagingArea;
 
+    /** Local root a simple dataset name is resolved against before the resource loader is consulted. */
+    private final Path stagingDirectory;
+
     private final String dalytranLocation;
 
     private final String custfileLocation;
@@ -397,6 +418,7 @@ public final class DailyTransactionReadJobConfig {
      * @param custfileLocation location of the staged customer dataset, or blank
      * @param xreffileLocation location of the staged cross-reference dataset, or blank
      * @param cardfileLocation location of the staged card dataset, or blank
+     * @param stagingDirectory local root a simple dataset name is resolved against
      * @param acctfileLocation location of the staged account dataset, or blank
      * @param tranfileLocation location of the staged posted-transaction dataset, or blank
      * @throws NullPointerException if any collaborator or any location is {@code null}
@@ -409,6 +431,9 @@ public final class DailyTransactionReadJobConfig {
             final MeterRegistry meterRegistry,
             final ResourceLoader resourceLoader,
             final BatchStagingArea stagingArea,
+            @Value("${" + STAGING_DIRECTORY_PROPERTY + ":${"
+                    + StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
+                    + ":${java.io.tmpdir}}}") final String stagingDirectory,
             @Value("${" + DALYTRAN_RESOURCE_PROPERTY + ":}") final String dalytranLocation,
             @Value("${" + CUSTFILE_RESOURCE_PROPERTY + ":}") final String custfileLocation,
             @Value("${" + XREFFILE_RESOURCE_PROPERTY + ":}") final String xreffileLocation,
@@ -424,6 +449,8 @@ public final class DailyTransactionReadJobConfig {
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         this.resourceLoader = Objects.requireNonNull(resourceLoader, "resourceLoader must not be null");
         this.stagingArea = Objects.requireNonNull(stagingArea, "stagingArea must not be null");
+        this.stagingDirectory = Path.of(Objects.requireNonNull(stagingDirectory,
+                STAGING_DIRECTORY_PROPERTY + " must not be null")).toAbsolutePath().normalize();
         this.dalytranLocation = requireLocation(dalytranLocation, DD_DALYTRAN);
         this.custfileLocation = requireLocation(custfileLocation, DD_CUSTFILE);
         this.xreffileLocation = requireLocation(xreffileLocation, DD_XREFFILE);
@@ -693,13 +720,29 @@ public final class DailyTransactionReadJobConfig {
     private DailyTransactionReadResult readPass(final BooleanSupplier stopRequested) {
         final Optional<FlatFileItemReader<DailyTransaction>> reader = dalytranReader();
         if (reader.isEmpty()) {
-            LOG.debug("NO SEQUENTIAL DATASET IS STAGED FOR {}; THE ORDERED INPUT IS RESOLVED BY PROGRAM {}"
-                    + " ITSELF, ASCENDING BY RECORD IDENTITY", DD_DALYTRAN, PROGRAM_NAME);
-            return stopRequested == null
+            // Reported at INFO and not at DEBUG. Which input a run read is the first thing an operator
+            // needs from a run that read nothing, and at the default level a DEBUG line said nothing at
+            // all - so an unconfigured run looked like a successful one that simply had no work. The
+            // property that would stage a dataset is named in the line. See docs/decision-log.md DL-216.
+            LOG.info("NO SEQUENTIAL DATASET IS STAGED FOR {}; THE ORDERED INPUT IS RESOLVED BY PROGRAM {}"
+                            + " ITSELF FROM THE RELATIONAL SOURCE, ASCENDING BY RECORD IDENTITY."
+                            + " STAGE ONE WITH {} TO READ A SEQUENTIAL DATASET INSTEAD",
+                    DD_DALYTRAN, PROGRAM_NAME, DALYTRAN_RESOURCE_PROPERTY);
+            final DailyTransactionReadResult relational = stopRequested == null
                     ? this.dailyTransactionReadService.execute(
                             DailyTransactionReadJobConfig::consumeVerification)
                     : this.dailyTransactionReadService.execute(
                             DailyTransactionReadJobConfig::consumeVerification, stopRequested);
+            if (relational.recordsRead() == 0) {
+                // A run that had nothing staged AND found nothing to resolve produced no work of any
+                // kind. That is not a failure - the legacy member reaches end of file immediately on an
+                // empty input and stops cleanly - but it must not be indistinguishable from a run that
+                // did the work, which is exactly how it read before.
+                LOG.warn("PROGRAM {} READ NO RECORD: NO SEQUENTIAL DATASET IS STAGED FOR {} AND THE"
+                                + " RELATIONAL SOURCE HELD NONE EITHER, SO THIS RUN PRODUCED NO"
+                                + " VERIFICATION OF ANY KIND", PROGRAM_NAME, DD_DALYTRAN);
+            }
+            return relational;
         }
 
         final FlatFileItemReader<DailyTransaction> staged = reader.get();
@@ -881,6 +924,18 @@ public final class DailyTransactionReadJobConfig {
     /**
      * Resolves one configured location, treating a blank value as "no dataset is staged".
      *
+     * <p>The order is the one every other staged-dataset job of this package uses: an exact durable
+     * object first, then - for a location that is one logical dataset name rather than a URI or a path -
+     * the local staging root, and only then the application resource loader for an explicit
+     * {@code file:} or {@code classpath:} location. The middle rung is what this method was missing: a
+     * bare dataset name went straight to the loader, which resolves a name with no scheme as a
+     * class-path resource, so a location that every other job resolves correctly failed here with
+     * {@code class path resource [AWS.M2.CARDDEMO.DALYTRAN.PS]}. See {@code docs/decision-log.md} entry
+     * DL-216.
+     *
+     * <p>No path is composed from a caller's value: the local rung accepts only an already-validated
+     * simple name and resolves it beneath the one configured root.
+     *
      * @param location the configured location, possibly blank
      * @return the resource the location names, or empty when the location is blank
      */
@@ -892,7 +947,27 @@ public final class DailyTransactionReadJobConfig {
         if (this.stagingArea.holds(normalized)) {
             return Optional.of(this.stagingArea.stagedInput(normalized));
         }
+        if (isSimpleLocation(normalized)) {
+            final String logicalName = StagedResourceNames.requireSimpleName(normalized,
+                    DALYTRAN_RESOURCE_PROPERTY);
+            final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
+            if (Files.exists(localCandidate)) {
+                return Optional.of(new FileSystemResource(localCandidate));
+            }
+        }
         return Optional.of(this.resourceLoader.getResource(normalized));
+    }
+
+    /**
+     * Reports whether a configured location is one logical dataset name rather than a URI or a path.
+     *
+     * @param  location the normalized configured location
+     * @return {@code true} only for a single path segment carrying no URI scheme
+     */
+    private static boolean isSimpleLocation(final String location) {
+        return location.indexOf(':') < 0
+                && location.indexOf('/') < 0
+                && location.indexOf('\\') < 0;
     }
 
     /**

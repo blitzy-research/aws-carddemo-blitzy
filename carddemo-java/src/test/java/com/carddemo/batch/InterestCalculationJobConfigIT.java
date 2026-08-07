@@ -153,15 +153,14 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *
  * <h2>Divergences recorded rather than reconciled</h2>
  *
- * <p><strong>The end-of-file control break.</strong> The source expresses it as the {@code ELSE} arm of
- * a test-before loop, and a literal reading leaves that arm unreachable: the read paragraph raises the
- * end-of-file flag and the loop's own condition then ends the loop before the arm can run. Read
- * literally, the last account in key order would have its synthesized interest transactions written
- * while its reported current balance excluded them. The delivered translation honours the arm instead
- * and closes the final group after the read loop, because reproducing the unreachability would silently
- * drop the last account's accrued interest - a data-loss defect rather than a fidelity gain. This
- * specification asserts the delivered outcome, including for the last account in explicit ascending key
- * order, and records the divergence here as a decision-log candidate rather than changing anything.
+ * <p><strong>The end-of-file control break is unreachable, and stays unreachable.</strong> The source
+ * expresses it as the {@code ELSE} arm of a test-before loop: the read paragraph raises the end-of-file
+ * flag and the loop's own condition then ends the loop before the arm can run. The last account in key
+ * order therefore has its synthesized interest transactions written while its current balance still
+ * excludes them and both of its cycle accumulators are left as the posting run left them. The delivered
+ * translation reproduces that rather than reconciling it, the module's own expected-output fixtures
+ * encode the unposted balance, and this specification asserts both halves for the last account in
+ * explicit ascending key order. See {@code docs/decision-log.md} entry DL-207.
  *
  * <p><strong>The fee paragraph.</strong> It is empty in the source and genuinely invoked from inside the
  * rate gate. It survives the translation as an invoked method that produces nothing, and this
@@ -1177,13 +1176,21 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * Checks the account control break for every group of the pass, including the final one.
+     * Checks the account control break for every group a KEY CHANGE closed, and checks that the run's
+     * FINAL group was not posted at all.
      *
-     * <p>Three things are asserted per group and each of the three is a distinct silent-defect guard: the
-     * accrued total reaches the current balance; <strong>both</strong> cycle accumulators are reset, since
-     * resetting one and leaving the other is invisible to a balance assertion; and the group that closed
-     * last was posted too, since the end-of-file break has no successor row to trigger it and omitting it
-     * would lose the last account's interest entirely while every other figure still looked right.
+     * <p>Three things are asserted for every key-change group and each is a distinct silent-defect
+     * guard: the accrued total reaches the current balance; <strong>both</strong> cycle accumulators are
+     * reset, since resetting one and leaving the other is invisible to a balance assertion; and the
+     * amounts are read back from the store rather than from the run's own report.
+     *
+     * <p>The final group is asserted the other way round, and deliberately so.
+     * {@code app/cbl/CBACT04C.cbl:L219} to {@code L221} put the second invocation of
+     * {@code 1050-UPDATE-ACCOUNT} in the {@code ELSE} arm of an end-of-file test inside a test-before
+     * {@code PERFORM UNTIL}, so the loop ends before the arm can run. The last account of a run keeps its
+     * balance and keeps both accumulators, while its synthesized records are still written - and the
+     * module's own expected-output fixtures encode exactly that. Asserting the posting here instead
+     * would assert the divergence rather than the source. See {@code docs/decision-log.md} entry DL-207.
      *
      * @param rows the driving input in read order
      * @param before the account amounts as they stood before the pass
@@ -1199,7 +1206,11 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
                 .as("the pass closed one group per distinct account of the driving input")
                 .isNotEmpty();
 
+        final String lastGroup = rows.get(rows.size() - 1).accountId();
         for (final Map.Entry<String, BigDecimal> group : accruedByAccount.entrySet()) {
+            if (group.getKey().equals(lastGroup)) {
+                continue;
+            }
             final AccountAmounts opening = before.get(group.getKey());
             assertThat(opening)
                     .as("account %s was read from the account master before the pass", group.getKey())
@@ -1219,20 +1230,28 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
             assertThat(posted.getAcctCurrCycDebit()).isEqualByComparingTo(BigDecimal.ZERO);
         }
 
-        final String lastGroup = rows.get(rows.size() - 1).accountId();
         assertThat(accruedByAccount).containsKey(lastGroup);
+        final AccountAmounts lastOpening = before.get(lastGroup);
+        assertThat(lastOpening)
+                .as("the last account of the pass was read before it ran")
+                .isNotNull();
+        assertThat(accruedByAccount.get(lastGroup))
+                .as("the final group really did accrue something, so its unposted balance is an"
+                        + " observed withholding rather than an accrual of zero")
+                .isGreaterThan(BigDecimal.ZERO);
         final Account lastPosted = this.accountRepository.findById(lastGroup)
                 .orElseThrow(() -> new IllegalStateException(
                         "the last account of the pass must still exist in the account master"));
         assertThat(lastPosted.getAcctCurrBal())
-                .as("the FINAL group at end of file is posted as well: read literally the source's"
-                        + " end-of-file arm is unreachable, which would have left this account's"
-                        + " synthesized records written while its reported balance excluded them, so the"
-                        + " arm is honoured here and the divergence is a decision-log candidate")
-                .isEqualByComparingTo(
-                        before.get(lastGroup).balance().add(accruedByAccount.get(lastGroup)));
-        assertThat(lastPosted.getAcctCurrCycCredit()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(lastPosted.getAcctCurrCycDebit()).isEqualByComparingTo(BigDecimal.ZERO);
+                .as("the FINAL group's control break is the unreachable end-of-file arm, so account %s"
+                        + " keeps the balance it had - see decision-log entry DL-207", lastGroup)
+                .isEqualByComparingTo(lastOpening.balance());
+        assertThat(lastPosted.getAcctCurrCycCredit())
+                .as("and its cycle CREDIT accumulator is left exactly as the posting run left it")
+                .isEqualByComparingTo(lastOpening.cycleCredit());
+        assertThat(lastPosted.getAcctCurrCycDebit())
+                .as("and its cycle DEBIT accumulator is left exactly as the posting run left it")
+                .isEqualByComparingTo(lastOpening.cycleDebit());
     }
 
     // ===============================================================================================

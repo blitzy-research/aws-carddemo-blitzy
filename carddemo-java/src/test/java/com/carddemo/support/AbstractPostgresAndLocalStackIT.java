@@ -16,6 +16,8 @@
  */
 package com.carddemo.support;
 
+import java.util.List;
+
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -155,5 +157,20 @@ public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT
      */
     protected static void deleteStagedObject(final String bucket, final String key) {
         AbstractLocalStackIT.deleteObject(bucket, key);
+    }
+
+    /**
+     * Lists the staged object keys beneath one prefix.
+     *
+     * <p>A durable generation number is allocated by the store at publication time, against what the
+     * base already holds (DL-210), so a specification names a published generation by asking the store
+     * what it published rather than by predicting a key from an execution identifier.
+     *
+     * @param  bucket the bucket to list; must not be null
+     * @param  prefix the key prefix; must not be null
+     * @return the matching keys, ascending
+     */
+    protected static List<String> stagedObjectKeysUnder(final String bucket, final String prefix) {
+        return AbstractLocalStackIT.objectKeysUnder(bucket, prefix);
     }
 }

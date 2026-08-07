@@ -40,7 +40,9 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.support.OrderedTransactionScan;
+import io.awspring.cloud.s3.Location;
 import io.awspring.cloud.s3.S3Operations;
+import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -182,6 +184,14 @@ final class BackupTransactionJobConfigTest {
      */
     private List<byte[]> uploadedBodies;
 
+    /**
+     * The keys the double has accepted, in upload order, so that a listing can report them.
+     *
+     * <p>Recorded because the generation number is allocated against what the base already holds; a
+     * double whose listing did not grow would make every execution allocate the same generation.
+     */
+    private List<String> uploadedKeys;
+
     @BeforeEach
     void buildConfigurationOverMockedCollaborators() throws IOException {
         this.transactionRepository = mock(TransactionRepository.class);
@@ -189,11 +199,30 @@ final class BackupTransactionJobConfigTest {
                 () -> this.transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId")));
         this.objectStore = mock(S3Operations.class);
         this.uploadedBodies = new ArrayList<>();
+        this.uploadedKeys = new ArrayList<>();
         doAnswer(invocation -> {
+            this.uploadedKeys.add(invocation.getArgument(1, String.class));
             this.uploadedBodies.add(
                     ((InputStream) invocation.getArgument(2)).readAllBytes());
             return null;
         }).when(this.objectStore).upload(anyString(), anyString(), any(InputStream.class));
+        // A listing that reflects what has been uploaded, because the durable generation number is
+        // allocated as one more than the highest generation the base already holds (DL-210). A double
+        // that always reported an empty base would let every execution allocate generation one and would
+        // therefore have hidden the very collision this suite asserts the absence of.
+        when(this.objectStore.listObjects(anyString(), anyString())).thenAnswer(invocation -> {
+            final String bucket = invocation.getArgument(0, String.class);
+            final String prefix = invocation.getArgument(1, String.class);
+            final List<S3Resource> present = new ArrayList<>();
+            for (final String key : this.uploadedKeys) {
+                if (key.startsWith(prefix)) {
+                    final S3Resource resource = mock(S3Resource.class);
+                    when(resource.getLocation()).thenReturn(Location.of(bucket, key));
+                    present.add(resource);
+                }
+            }
+            return present;
+        });
         this.meterRegistry = new SimpleMeterRegistry();
         this.config = configWithBucket(BUCKET);
     }
@@ -463,7 +492,9 @@ final class BackupTransactionJobConfigTest {
             runStep(BackupTransactionJobConfig.ARCHIVE_STEP_NAME);
 
             verify(objectStore, times(1)).upload(eq(BUCKET), anyString(), any(InputStream.class));
-            verify(objectStore).listObjects(BUCKET,
+            // Twice, and both are reads of the same prefix: once to allocate the next generation number
+            // against what the base already holds, and once to measure depth after the upload (DL-210).
+            verify(objectStore, times(2)).listObjects(BUCKET,
                     BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX);
             verifyNoMoreInteractions(objectStore);
         }
@@ -568,24 +599,29 @@ final class BackupTransactionJobConfigTest {
         }
 
         @Test
-        @DisplayName("is distinct per execution even when the clock is not, because the generation "
-                + "number completes it")
-        void isDistinctPerExecutionEvenUnderAFixedClock() throws Exception {
+        @DisplayName("advances the generation for every publication, so an archive can never replace "
+                + "its predecessor - including when the execution identifiers restart")
+        void advancesTheGenerationForEveryPublication() throws Exception {
             when(transactionRepository.findAll(any(Sort.class))).thenReturn(List.of());
 
+            // Two runs, and then a THIRD carrying an execution identifier lower than both. That third is
+            // what a re-created batch metadata store hands out while the bucket keeps every object, and
+            // under a key derived from the execution identifier it silently replaced the first run's
+            // archive - observed as a hundred-thousand-byte object becoming a zero-byte latest version.
             runStepForExecution(BackupTransactionJobConfig.ARCHIVE_STEP_NAME, 41L);
             runStepForExecution(BackupTransactionJobConfig.ARCHIVE_STEP_NAME, 42L);
+            runStepForExecution(BackupTransactionJobConfig.ARCHIVE_STEP_NAME, 1L);
 
             final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
-            verify(objectStore, times(2))
+            verify(objectStore, times(3))
                     .upload(eq(BUCKET), key.capture(), any(InputStream.class));
             assertThat(key.getAllValues())
                     .as("an archive that silently replaces its predecessor is a lost archive")
-                    .doesNotHaveDuplicates();
-            assertThat(key.getAllValues().get(0))
-                    .endsWith("/G0000000041V00");
-            assertThat(key.getAllValues().get(1))
-                    .endsWith("/G0000000042V00");
+                    .doesNotHaveDuplicates()
+                    .containsExactly(
+                            BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX + "G0000000001V00",
+                            BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX + "G0000000002V00",
+                            BackupTransactionJobConfig.ARCHIVE_OBJECT_KEY_PREFIX + "G0000000003V00");
         }
     }
 

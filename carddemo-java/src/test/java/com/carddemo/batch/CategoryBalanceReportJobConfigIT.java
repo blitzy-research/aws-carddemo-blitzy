@@ -26,6 +26,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -341,8 +342,15 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /** Filler character the module re-emits, the copybook having declared no value for the run. */
     private static final char REEMITTED_FILLER_CHARACTER = BLANK;
 
-    /** Separator written after each fixed-length record of a staged dataset. */
-    private static final String RECORD_SEPARATOR = "\n";
+    /**
+     * The separator a fixed-length staged dataset must NOT carry.
+     *
+     * <p>Both data-definition statements of the legacy member declare a fixed record format, which takes
+     * its record boundary from the declared length and writes no byte between two records. Kept as a
+     * named constant because its <em>absence</em> is asserted: this class proves no line feed reaches
+     * either artefact. See {@code docs/decision-log.md} entry DL-213.
+     */
+    private static final String FORBIDDEN_RECORD_SEPARATOR = "\n";
 
     /** Every byte either overpunch table can place in a final position, for a membership test. */
     private static final String SIGN_BYTES = POSITIVE_OVERPUNCH + NEGATIVE_OVERPUNCH;
@@ -730,8 +738,8 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         + "five, not to this job")
                 .hasSize(2);
         final List<String> firstGeneration =
-                Files.readAllLines(generations.get(0), StandardCharsets.US_ASCII);
-        assertThat(Files.readAllLines(generations.get(1), StandardCharsets.US_ASCII))
+                fixedWidthRecordsOf(generations.get(0), UNLOAD_RECORD_WIDTH);
+        assertThat(fixedWidthRecordsOf(generations.get(1), UNLOAD_RECORD_WIDTH))
                 .as("nothing changed between the runs, so the two unloads are byte-identical; a "
                         + "difference here would mean the unload was not a function of the cluster alone")
                 .isEqualTo(firstGeneration);
@@ -741,7 +749,7 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
         this.unloadedRecords.addAll(firstGeneration);
         this.reportArtefactBytes = Files.size(reportDataset());
         this.reportLines.clear();
-        this.reportLines.addAll(Files.readAllLines(reportDataset(), StandardCharsets.US_ASCII));
+        this.reportLines.addAll(fixedWidthRecordsOf(reportDataset(), REPORT_RECORD_WIDTH));
 
         assertThat(this.unloadedRecords).isNotEmpty();
         assertThat(this.reportLines)
@@ -764,11 +772,10 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isZero();
         assertThat(content).isEqualTo((long) this.unloadedRecords.size() * UNLOAD_RECORD_WIDTH);
         assertThat(this.unloadArtefactBytes)
-                .as("the staged dataset carries one separator byte after each fixed-length record, which "
-                        + "the record images themselves do not; stating the accounting keeps the "
-                        + "multiple-of-fifty claim above about the records rather than about the file")
-                .isEqualTo((long) this.unloadedRecords.size()
-                        * (UNLOAD_RECORD_WIDTH + RECORD_SEPARATOR.length()));
+                .as("the staged dataset carries NOTHING between two records, so the file measures exactly"
+                        + " what its records measure - the declared fixed record format has no separator"
+                        + " (DL-213)")
+                .isEqualTo((long) this.unloadedRecords.size() * UNLOAD_RECORD_WIDTH);
 
         for (final String record : this.unloadedRecords) {
             assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
@@ -860,9 +867,8 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isZero();
         assertThat(content).isEqualTo((long) this.reportLines.size() * REPORT_RECORD_WIDTH);
         assertThat(this.reportArtefactBytes)
-                .as("one separator byte per record on the staged dataset, as with the unload")
-                .isEqualTo((long) this.reportLines.size()
-                        * (REPORT_RECORD_WIDTH + RECORD_SEPARATOR.length()));
+                .as("no separator byte on the staged dataset either, as with the unload")
+                .isEqualTo((long) this.reportLines.size() * REPORT_RECORD_WIDTH);
 
         for (final String line : this.reportLines) {
             final int encoded = line.getBytes(StandardCharsets.US_ASCII).length;
@@ -1382,6 +1388,41 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     // from the layout and from a locally declared sign table, so an error copied into the production
     // encoder cannot be copied into the expectation meant to catch it.
     // -----------------------------------------------------------------------------------------------
+
+    /**
+     * Reads one staged artefact back as its record images, framing it the way its DD declares.
+     *
+     * <p>Framed by width and never by line, and the absence of
+     * {@value #FORBIDDEN_RECORD_SEPARATOR} is proved before any record is handed back - so a
+     * separator regression fails here instead of shifting every later assertion by one ordinal.
+     * See {@code docs/decision-log.md} entry DL-213.
+     *
+     * @param  artefact     the artefact to read
+     * @param  recordLength the declared record length
+     * @return the record images in emission order
+     */
+    private static List<String> fixedWidthRecordsOf(final Path artefact, final int recordLength) {
+        final byte[] image;
+        try {
+            image = Files.readAllBytes(artefact);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("the staged artefact " + artefact
+                    + " could not be read", unreadable);
+        }
+        assertThat(image.length % recordLength)
+                .as("a fixed-length artefact carries no separator, so its length is a whole number of"
+                        + " %d-byte records; it measured %d bytes",
+                        Integer.valueOf(recordLength), Integer.valueOf(image.length))
+                .isZero();
+        assertThat(new String(image, StandardCharsets.US_ASCII))
+                .as("no line feed may appear anywhere in a fixed-length artefact")
+                .doesNotContain(FORBIDDEN_RECORD_SEPARATOR);
+        final List<String> records = new ArrayList<>(image.length / recordLength);
+        for (int offset = 0; offset < image.length; offset += recordLength) {
+            records.add(new String(image, offset, recordLength, StandardCharsets.US_ASCII));
+        }
+        return records;
+    }
 
     /**
      * The total encoded length of a list of record images, excluding any separator between them.

@@ -193,7 +193,8 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
                     new JobCompletionNotificationPublisher(event ->
                             service.onApplicationEvent((JobCompletionEvent) event));
             final JobExecutionListener listener = new BatchConfig().batchJobBoundaryListener(
-                    providerOf(null), providerOf(publisher));
+                    providerOf(null), providerOf(publisher),
+                    System.getProperty("java.io.tmpdir"));
             final JobExecution execution = completedJob(22);
             final StepExecution step = execution.createStepExecution("completedStep");
             step.setStatus(BatchStatus.COMPLETED);

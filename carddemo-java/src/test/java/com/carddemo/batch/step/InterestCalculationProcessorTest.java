@@ -218,7 +218,7 @@ final class InterestCalculationProcessorTest {
             fellBack |= each.defaultGroupUsed();
         }
         return new InterestCalculationService.GroupInterestResult(accountId, total, rows, transactions,
-                account, gated, fellBack, rows.size(), lastSuffix);
+                account, true, gated, fellBack, rows.size(), lastSuffix);
     }
 
     /** One account, one row, one transaction: the smallest group that posts interest. */
@@ -253,8 +253,8 @@ final class InterestCalculationProcessorTest {
 
     private void stubGroup(final String accountId,
             final InterestCalculationService.GroupInterestResult result) {
-        when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(), any()))
-                .thenReturn(result);
+        when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(), any(),
+                any())).thenReturn(result);
     }
 
     /**
@@ -262,8 +262,8 @@ final class InterestCalculationProcessorTest {
      * groups repeat or whose suffix advances across several groups needs.
      */
     private void stubGroupsFromArguments() {
-        when(this.service.calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any()))
-                .thenAnswer(invocation -> {
+        when(this.service.calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any(),
+                any())).thenAnswer(invocation -> {
                     final String accountId = invocation.getArgument(1);
                     final List<?> buffered = invocation.getArgument(2);
                     final long initialSuffix = invocation.getArgument(3);
@@ -291,7 +291,7 @@ final class InterestCalculationProcessorTest {
          */
         private void stubGroupThatWrites(final String accountId) {
             when(service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(),
-                    any())).thenAnswer(invocation -> {
+                    any(), any())).thenAnswer(invocation -> {
                         final InterestCalculationService.GroupInterestResult group =
                                 sizedGroup(accountId, 1, invocation.getArgument(3));
                         final Consumer<Transaction> writer = invocation.getArgument(4);
@@ -420,7 +420,7 @@ final class InterestCalculationProcessorTest {
             assertThat(closed.accountId()).isEqualTo(ACCOUNT_A);
             assertThat(closed.parameterDate()).isEqualTo(RUN_DATE);
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
         }
 
         @Test
@@ -435,7 +435,7 @@ final class InterestCalculationProcessorTest {
                     processor.process(row(ACCOUNT_B, "0005"));
 
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"), row(ACCOUNT_A, "0006"))), eq(0L), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"), row(ACCOUNT_A, "0006"))), eq(0L), any(), any());
             assertThat(closed).isNotNull();
             assertThat(closed.rows()).extracting(accrued -> accrued.rowKey().getTrancatCd())
                     .containsExactly("0005", "0006");
@@ -453,7 +453,7 @@ final class InterestCalculationProcessorTest {
             processor.afterStep(stepExecution);
 
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
             assertThat(processor.finalAccruedGroup())
                     .map(InterestCalculationProcessor.AccruedAccountGroup::accountId)
                     .contains(ACCOUNT_A);
@@ -496,9 +496,9 @@ final class InterestCalculationProcessorTest {
             processor.afterStep(stepExecution);
 
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_B),
-                    eq(List.of(row(ACCOUNT_B, "0005"))), eq(1L), any());
+                    eq(List.of(row(ACCOUNT_B, "0005"))), eq(1L), any(), any());
             assertThat(processor.finalAccruedGroup())
                     .map(InterestCalculationProcessor.AccruedAccountGroup::lastTranIdSuffix)
                     .contains(2L);
@@ -517,7 +517,7 @@ final class InterestCalculationProcessorTest {
             processor.afterStep(stepExecution);
 
             verify(service, times(2)).calculateGroupInterest(anyString(), eq(ACCOUNT_A), anyList(),
-                    anyLong(), any());
+                    anyLong(), any(), any());
             assertThat(stepExecution.getExecutionContext()
                     .getInt(InterestCalculationProcessor.CONTEXT_GROUPS_CLOSED)).isEqualTo(3);
         }
@@ -623,7 +623,7 @@ final class InterestCalculationProcessorTest {
             assertThat(second.getExecutionContext()
                     .getLong(InterestCalculationProcessor.CONTEXT_LAST_TRAN_ID_SUFFIX)).isEqualTo(1L);
             verify(service, times(2)).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
         }
 
         @Test
@@ -798,7 +798,7 @@ final class InterestCalculationProcessorTest {
                     MULTIPLY_THEN_DIVIDE,
                     List.of(accruedRow(ACCOUNT_A, "0005", MULTIPLY_THEN_DIVIDE, transaction),
                             accruedRow(ACCOUNT_A, "0006", MULTIPLY_THEN_DIVIDE, transaction)),
-                    List.of(transaction), postedAccount(ACCOUNT_A), false, false, 1, 1L));
+                    List.of(transaction), postedAccount(ACCOUNT_A), true, false, false, 1, 1L));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
@@ -812,7 +812,7 @@ final class InterestCalculationProcessorTest {
         void aFailedAccrualPropagatesUntranslated() {
             final AbendException abend = new AbendException("CBACT04C", "STATUS 23 READING DISCGRP");
             when(service.calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong(), any())).thenThrow(abend);
+                    anyList(), anyLong(), any(), any())).thenThrow(abend);
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
@@ -827,7 +827,7 @@ final class InterestCalculationProcessorTest {
                 + "call per group, and a second miss abends without a third attempt")
         void aSecondMissAbendsWithoutAThirdAttempt() {
             when(service.calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong(), any()))
+                    anyList(), anyLong(), any(), any()))
                     .thenThrow(new AbendException("CBACT04C", "STATUS 23 READING DISCGRP"));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
@@ -836,7 +836,7 @@ final class InterestCalculationProcessorTest {
                     .isThrownBy(() -> processor.afterStep(stepExecution));
 
             verify(service, times(1)).calculateGroupInterest(anyString(), anyString(),
-                    anyList(), anyLong(), any());
+                    anyList(), anyLong(), any(), any());
         }
     }
 
@@ -996,7 +996,8 @@ final class InterestCalculationProcessorTest {
                     .extracting(InterestCalculationProcessor.AccruedCategoryRow
                             ::feeParagraphInvoked)
                     .containsExactly(true, false, true);
-            verify(service).calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any());
+            verify(service).calculateGroupInterest(anyString(), anyString(), anyList(), anyLong(), any(),
+                    any());
         }
 
         @Test
@@ -1009,7 +1010,7 @@ final class InterestCalculationProcessorTest {
                             true, false, interestTransaction(ACCOUNT_A, 1L, BigDecimal.ZERO));
             stubGroup(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
                     new BigDecimal("0.00"), List.of(contradiction), List.of(), postedAccount(ACCOUNT_A),
-                    true, false, 1, 0L));
+                    true, true, false, 1, 0L));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1150,7 +1151,8 @@ final class InterestCalculationProcessorTest {
             stubGroup(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
                     MULTIPLY_THEN_DIVIDE,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE, transaction)),
-                    List.of(transaction, transaction), postedAccount(ACCOUNT_A), false, false, 1, 1L));
+                    List.of(transaction, transaction), postedAccount(ACCOUNT_A), true, false, false, 1,
+                    1L));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1538,16 +1540,16 @@ final class InterestCalculationProcessorTest {
         void everyValueOfAClosedGroupIsRequired() {
             assertThatNullPointerException().isThrownBy(
                     () -> new InterestCalculationProcessor.AccruedAccountGroup(null, RUN_DATE,
-                            BigDecimal.ZERO, List.of(), List.of(), postedAccount(ACCOUNT_A), false,
-                            false, 0, 0L, FIXED_TIMESTAMP));
+                            BigDecimal.ZERO, List.of(), List.of(), postedAccount(ACCOUNT_A), true,
+                            false, false, 0, 0L, FIXED_TIMESTAMP));
             assertThatNullPointerException().isThrownBy(
                     () -> new InterestCalculationProcessor.AccruedAccountGroup(ACCOUNT_A, RUN_DATE,
-                            BigDecimal.ZERO, List.of(), List.of(), null, false, false, 0, 0L,
+                            BigDecimal.ZERO, List.of(), List.of(), null, true, false, false, 0, 0L,
                             FIXED_TIMESTAMP));
             assertThatNullPointerException().isThrownBy(
                     () -> new InterestCalculationProcessor.AccruedAccountGroup(ACCOUNT_A, RUN_DATE,
-                            BigDecimal.ZERO, List.of(), List.of(), postedAccount(ACCOUNT_A), false,
-                            false, 0, 0L, null));
+                            BigDecimal.ZERO, List.of(), List.of(), postedAccount(ACCOUNT_A), true,
+                            false, false, 0, 0L, null));
         }
     }
 

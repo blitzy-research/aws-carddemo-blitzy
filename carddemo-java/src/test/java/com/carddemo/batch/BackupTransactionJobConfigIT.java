@@ -481,8 +481,14 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
     @Autowired
     private Environment environment;
 
-    /** Every object name this specification staged, so each is removed whatever the outcome. */
-    private final List<String> stagedKeys = new ArrayList<>();
+    /**
+     * Whether this test has launched the job, so the archive generations it published are removed.
+     *
+     * <p>A recorded list of predicted keys is no longer possible: the store allocates the generation
+     * number when it publishes (DL-210). The clean-up therefore removes every generation beneath the
+     * canonical base, which is safe because the reference seed publishes none.
+     */
+    private boolean hasPublished;
 
     // ----------------------------------------------------------------------------------------
     // Registration, shape and inertness
@@ -556,10 +562,11 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
                         BackupTransactionJobConfig.RESET_STEP_NAME);
 
         final String bucket = this.awsProperties.s3().batchStagingBucket();
-        final String key = expectedObjectKey(execution.getId().longValue());
+        final String key = newestArchiveKey(bucket);
+        assertGenerationKeyShape(key);
         assertThat(stagedObjectExists(bucket, key))
-                .as("the archive reached the store under the name this execution's generation"
-                        + " number gives it: %s", key)
+                .as("the archive reached the store under the generation the store allocated for it:"
+                        + " %s", key)
                 .isTrue();
 
         final byte[] archived = stagedObjectBytes(bucket, key);
@@ -612,7 +619,8 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
         assertThat(this.transactionRepository.count()).isZero();
 
         final String bucket = this.awsProperties.s3().batchStagingBucket();
-        final String firstKey = expectedObjectKey(first.getId().longValue());
+        final String firstKey = newestArchiveKey(bucket);
+        assertGenerationKeyShape(firstKey);
         final byte[] firstArchive = stagedObjectBytes(bucket, firstKey);
         assertThat(firstArchive).isEqualTo(expectedArchive(master()));
 
@@ -632,11 +640,14 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
                         BackupTransactionJobConfig.RESET_STEP_NAME);
         assertThat(this.transactionRepository.count()).isZero();
 
-        final String secondKey = expectedObjectKey(second.getId().longValue());
+        final String secondKey = newestArchiveKey(bucket);
+        assertGenerationKeyShape(secondKey);
         assertThat(secondKey)
-                .as("the generation number is the framework's own execution identifier, so two"
-                        + " executions never share a name however close together they run")
-                .isNotEqualTo(firstKey);
+                .as("the generation advances against what the base already holds, so two executions"
+                        + " never share a name however close together they run - and a re-created"
+                        + " metadata store cannot make the second run reuse the first's name (DL-210)")
+                .isNotEqualTo(firstKey)
+                .isGreaterThan(firstKey);
         assertThat(stagedObjectBytes(bucket, secondKey))
                 .as("an empty master still produces a generation, and an empty generation is a"
                         + " whole number of records: none")
@@ -804,14 +815,10 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
         assertThat(BackupTransactionJobConfig.ARCHIVE_RECORD_STRIDE).isEqualTo(RECORD_STRIDE);
 
         seed(master());
-        final JobExecution execution = runTheJob();
-        final String key = expectedObjectKey(execution.getId().longValue());
+        runTheJob();
+        final String key = newestArchiveKey(this.awsProperties.s3().batchStagingBucket());
 
-        assertThat(key)
-                .as("the exact name, predicted independently from this execution's own generation"
-                        + " number")
-                .isEqualTo(CANONICAL_ARCHIVE_BASE + "/"
-                        + String.format(Locale.ROOT, GENERATION_TOKEN_FORMAT, execution.getId()));
+        assertGenerationKeyShape(key);
         assertThat(stagedObjectExists(this.awsProperties.s3().batchStagingBucket(), key)).isTrue();
         assertThat(key)
                 .as("the online timestamp form - a space before the hour, colons between the time"
@@ -942,9 +949,12 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
     @AfterEach
     void restoreTheSharedState() {
         RESERVED_IDS.forEach(this.transactionRepository::deleteById);
-        final String bucket = this.awsProperties.s3().batchStagingBucket();
-        this.stagedKeys.forEach(key -> deleteStagedObject(bucket, key));
-        this.stagedKeys.clear();
+        if (this.hasPublished) {
+            final String bucket = this.awsProperties.s3().batchStagingBucket();
+            stagedObjectKeysUnder(bucket, CANONICAL_ARCHIVE_BASE + "/")
+                    .forEach(key -> deleteStagedObject(bucket, key));
+            this.hasPublished = false;
+        }
     }
 
     // ----------------------------------------------------------------------------------------
@@ -967,12 +977,13 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
                 this.jobOperator.startNextInstance(BackupTransactionJobConfig.JOB_NAME);
         assertThat(executionId)
                 .as("a launched job has a persisted execution identifier before its first step runs,"
-                        + " and that identifier is the archive's generation number")
+                        + " which is what names its local working file; the durable generation number"
+                        + " is the store's own and is allocated when it publishes (DL-210)")
                 .isNotNull();
         final JobExecution execution = this.jobExplorer.getJobExecution(executionId);
         assertThat(execution).as("the launched execution is readable back by its identifier")
                 .isNotNull();
-        this.stagedKeys.add(expectedObjectKey(executionId.longValue()));
+        this.hasPublished = true;
         return execution;
     }
 
@@ -1134,19 +1145,40 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
     }
 
     /**
-     * Composes the object name one execution's archive is expected to carry.
+     * Names the newest archive generation the store holds, by asking the store.
      *
-     * <p>The generation base, a separator and the generation number - which is the framework's own
-     * execution identifier, standing in for the relative generation the legacy job stream asked for.
-     * Composed here from this specification's own constants so the expectation is independent of the
-     * code that composes the real name.
+     * <p>The generation number is allocated by the store at publication time, as one more than the
+     * highest generation the base already holds, so it is deliberately not derivable from anything this
+     * specification knows beforehand - see {@code docs/decision-log.md} entry DL-210. What this
+     * specification can and does assert independently is the <em>shape</em> of the name, which
+     * {@link #assertGenerationKeyShape(String)} does from its own constants.
      *
-     * @param  executionId the execution whose archive is being named
-     * @return the expected object name
+     * @param  bucket the bucket to look in
+     * @return the newest generation key beneath the canonical archive base
      */
-    private static String expectedObjectKey(final long executionId) {
-        return CANONICAL_ARCHIVE_BASE + "/"
-                + String.format(Locale.ROOT, GENERATION_TOKEN_FORMAT, executionId);
+    private static String newestArchiveKey(final String bucket) {
+        final List<String> keys =
+                stagedObjectKeysUnder(bucket, CANONICAL_ARCHIVE_BASE + "/");
+        assertThat(keys)
+                .as("the archive step must have published at least one generation beneath %s",
+                        CANONICAL_ARCHIVE_BASE)
+                .isNotEmpty();
+        return keys.getLast();
+    }
+
+    /**
+     * Asserts that a published key has the legacy absolute-generation shape.
+     *
+     * <p>Composed from this specification's own constants, so the expectation is independent of the code
+     * that composed the real name: the canonical base, one separator, and a ten-digit generation token.
+     *
+     * @param key the key the store reported
+     */
+    private static void assertGenerationKeyShape(final String key) {
+        assertThat(key)
+                .as("the legacy generation base, a separator and a ten-digit absolute generation")
+                .startsWith(CANONICAL_ARCHIVE_BASE + "/")
+                .matches(java.util.regex.Pattern.quote(CANONICAL_ARCHIVE_BASE) + "/G\\d{10}V00");
     }
 
     /**

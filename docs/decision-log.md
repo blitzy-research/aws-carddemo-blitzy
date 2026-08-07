@@ -938,6 +938,50 @@ type must deliver that combination to the service intact rather than pattern-mat
 *Also recorded as:* DL-029 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
 
+### DL-207 — The interest run's end-of-file control break is unreachable, so the last account's balance is never posted — PRESERVED DEFECT
+
+`app/cbl/CBACT04C.cbl` invokes `1050-UPDATE-ACCOUNT` from two places. The reachable one is the
+key-change control break at line 196. The other is the `ELSE` arm at lines 219 to 221, which sits
+inside `PERFORM UNTIL END-OF-FILE = 'Y'` — a test-*before* loop whose flag the read paragraph raises
+itself at line 340, so the loop terminates before the arm can be taken. `END-OF-FILE` is declared
+`PIC X(01) VALUE 'N'` at line 137 and is set nowhere else.
+
+The consequence is asymmetric and is the whole point of this entry. `1300-COMPUTE-INTEREST` and
+`1300-B-WRITE-TX` run *per row*, at lines 215 and 468, inside the loop; they owe nothing to the
+control break. So for the run's final account in key order the interest **is** computed, the
+synthesized transaction **is** written to the interest generation and the group's running total
+**does** include it — while the account's `ACCT-CURR-BAL` never receives that total and neither
+`ACCT-CURR-CYC-CREDIT` nor `ACCT-CURR-CYC-DEBIT` is zeroed.
+
+**Decision:** reproduced exactly. The final group closes with
+`InterestCalculationService.AccountControlBreak.WITHHELD_AT_END_OF_FILE`, which accrues the group,
+writes every record it synthesizes, reports its total, and does not perform
+`1050-UPDATE-ACCOUNT`. The withheld amount is logged so that an unmoved balance beside written
+records is explainable rather than mysterious.
+
+**Why this is not "correcting a data-loss defect".** An earlier delivery honoured the unreachable arm
+on the reasoning that reproducing it would silently drop the last account's accrued interest. That
+reasoning is rejected here for four independent reasons. The plan's tie-break (§0.10.5) states that
+where faithful translation and idiomatic Java conflict, faithful wins and the divergence is recorded
+here rather than resolved by taste; it names "preserving a no-op paragraph" as exactly this class of
+case, and §0.7.6 item 14 sets the precedent by requiring the empty fee paragraph to stay empty even
+though it is genuinely invoked. The plan's preservation boundary (§0.8.1) requires zero behavioural
+regressions and forbids feature expansion, and posting a balance the legacy never posted is a
+behavioural change in the money column. The interest is not in fact lost — the record exists in the
+generation, so the accrual is recoverable and observable. And the module's own expected-output
+fixtures already encode the unposted figure: `src/test/resources/fixtures/expected/statement.txt`
+line 10 reads `Current Balance    :000001945.87` for account `00000000050` and the HTML statement
+agrees at record index 36, so honouring the arm made production disagree with its own golden file.
+
+*Embodied in:* `service/InterestCalculationService.java` (`AccountControlBreak`,
+`withholdAccountRewrite`, the driver loop and the group boundary),
+`batch/step/InterestCalculationProcessor.java` (`afterStep` closes the final group with the withheld
+break, and the both-accumulators confirmation applies only to a group that was rewritten).
+*Asserted by:* `service/InterestCalculationServiceTest` (nest
+`1050-UPDATE-ACCOUNT`), `batch/InterestCalculationJobConfigIT`
+(`postingThenOneAccrualPassTruncatesAndSkipsInTheSameRun`, which reads the amounts back from a real
+PostgreSQL after a real posting-then-accrual chain).
+
 ---
 
 ## 5. Data model and schema
@@ -1167,7 +1211,14 @@ The estate has three external contracts — fixed-width file output, the message
 the batch-trigger card image. All three are reproduced; the entries below record where a security
 requirement forced a controlled divergence inside them.
 
-### DL-037 — Variable text in HTML statement output is escaped *(parity exception)*
+### DL-037 — Variable text in HTML statement output is escaped *(parity exception)* — **SUPERSEDED BY DL-209**
+
+> **Superseded.** This parity exception was withdrawn. The claim below that escaping is "the identity
+> function on the entire legitimate domain" is false for this estate: the seeded data carries twelve
+> apostrophes, so escaping changed emitted bytes for real records and broke byte parity against the
+> module's own hundred-byte oracle. The entry is retained unedited so the reversal is visible; the
+> decision now in force is DL-209.
+
 
 The statement generator emits HTML assembled from fixed literal constants at a fixed
 hundred-byte record width. Variable text — names, addresses, descriptions — was interpolated into
@@ -1192,7 +1243,14 @@ numeric form is defined in every HTML version.
 
 *Cited by:* `util/StatementHtmlTemplates.java`, `util/StatementHtmlTemplatesTest.java`.
 
-### DL-038 — The raw-markup line composer was removed, not merely documented
+### DL-038 — The raw-markup line composer was removed, not merely documented — **PARTLY SUPERSEDED BY DL-209**
+
+> **Still in force:** the single anything-goes helper is gone and the three named composers, one per
+> legitimate emission site, are what production uses. **No longer true:** those composers no longer
+> escape anything. Their remaining job is structural — each wraps its value in the paragraph tags its
+> record is defined to carry — and the census that keeps the bare fitter out of the composing path is
+> unchanged. See DL-209.
+
 
 A single helper previously accepted a caller-supplied string and placed it into the output line as
 raw markup. Documenting it as dangerous would have left the hazard in place, because the next
@@ -1204,7 +1262,13 @@ that was the point: an unsafe sink that remains callable is an unsafe sink.
 
 *Cited by:* `util/StatementHtmlTemplates.java`.
 
-### DL-039 — Truncation to the record width never emits a partial character reference
+### DL-039 — Truncation to the record width never emits a partial character reference — **SUPERSEDED BY DL-209**
+
+> **Superseded.** With nothing escaped there is no character reference for a boundary to split, so the
+> rule has nothing to apply to. The blank-the-trailing-fragment refinement was itself a divergence — the
+> legacy `MOVE` cuts at the record boundary and blanks nothing — and has been removed with the escaping
+> it existed to repair. See DL-209.
+
 
 Escaping can lengthen a value, and the record width is fixed at one hundred bytes. A character
 reference cut by that boundary would emit a fragment such as an ampersand followed by two letters,
@@ -1342,7 +1406,14 @@ FIFO and the group identifier is a single stable value.
 *Also recorded as:* DL-044 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
 
-### D-49 — Variable text in statement HTML is escaped, and the raw-markup sink was removed — CORRECTED
+### D-49 — Variable text in statement HTML is escaped, and the raw-markup sink was removed — CORRECTED, then **SUPERSEDED BY DL-209**
+
+> **Superseded.** This entry corrected an earlier reading that recorded statement HTML as emitted
+> unescaped. That earlier reading was right about the bytes, and DL-209 restores it on evidence: the
+> module's own expected-output oracle carries the markup-significant characters raw, so escaping made
+> production disagree with its own golden file. The removal of the raw-markup sink recorded here still
+> stands; the escaping does not.
+
 
 **Correction.** An earlier reading of this entry recorded statement HTML as emitted unescaped, with
 safe rendering left to the consumer as a deliberate parity position. That is no longer true. The
@@ -1829,7 +1900,24 @@ end pairs the entries that record the same decision under both.
 | `util/ZonedDecimalCodec.java` | DL-041, DL-079 |
 | `util/FixedWidthFieldReader.java` | DL-041 |
 | `util/StatementTextTemplates.java` | DL-041 |
-| `util/StatementHtmlTemplates.java` | DL-037, DL-038, DL-039, DL-041 |
+| `util/StatementHtmlTemplates.java` | DL-041, DL-209 (superseding DL-037, DL-039; partly DL-038) |
+| `batch/CreateStatementJobConfig.java` | DL-208, DL-213 |
+| `batch/BatchStagingArea.java` | DL-212 |
+| `batch/step/StagedGenerationStore.java` | DL-210, DL-211, DL-212, DL-214 |
+| `batch/step/FixedWidthFlatFileReaderFactory.java` | DL-213 |
+| `batch/CombineTransactionsJobConfig.java` | DL-212, DL-213, DL-214 |
+| `batch/CategoryBalanceReportJobConfig.java` | DL-212, DL-213 |
+| `batch/TransactionReportJobConfig.java` | DL-212, DL-213 |
+| `batch/InterestCalculationJobConfig.java` | DL-207, DL-212, DL-214 |
+| `batch/PostTransactionJobConfig.java` | DL-215 |
+| `service/TransactionPostingService.java` | DL-215 |
+| `batch/DailyTransactionReadJobConfig.java` | DL-216 |
+| `config/ObservabilityConfig.java` | DL-217 |
+| `batch/BatchLaunchCoordinator.java` | DL-218 |
+| `batch/BackupTransactionJobConfig.java` | DL-210 |
+| `config/BatchConfig.java` | DL-211 |
+| `service/InterestCalculationService.java` | DL-207 |
+| `batch/step/InterestCalculationProcessor.java` | DL-207 |
 | `resources/application.yml` | DL-001, DL-005, DL-008, DL-047, DL-048, DL-088, DL-127 |
 | `resources/application-local.yml` | DL-045, DL-047, DL-088, DL-127, anomaly register (7) |
 | `resources/application-prod.yml` | DL-088, DL-127 |
@@ -1855,6 +1943,18 @@ end pairs the entries that record the same decision under both.
 | `api/dto/ScreenWorkAreaSecurityTest.java` | DL-082 |
 | `api/dto/NavigationContextSecurityTest.java` | DL-087 |
 | `repository/TransactionCategoryBalanceRepositoryIT.java` | DL-013, DL-192 |
+| `src/test/resources/fixtures/expected/*.txt` | DL-213, DL-219 |
+| `support/ExpectedOutputFixtureContractTest.java` | DL-213, DL-219 |
+| `support/ExpectedHtmlStatementFixtureContractTest.java` | DL-213, DL-219 |
+| `e2e/BatchPipelineE2ETest.java` | DL-213, DL-219, DL-220, DL-221 |
+| `e2e/OnlineTransactionE2ETest.java` | DL-220 |
+| `e2e/GateVerificationTest.java` | DL-219, DL-220 |
+| `config/grafana/dashboards/carddemo-overview.json` | DL-152 (superseded panel reasoning), DL-242 |
+| `batch/CategoryBalanceReportJobConfig.java` | DL-243 |
+| `pom.xml` | DL-159, DL-244 |
+| `docker-compose.yml` | DL-246 |
+| `config/ContainerHardeningContractTest.java` | DL-246 |
+| `config/DecisionLogIdentifierContractTest.java` | DL-245 |
 
 ### 14.2 `D-nn` and anomaly-register citations
 
@@ -1945,7 +2045,7 @@ end pairs the entries that record the same decision under both.
 | D-36 | DL-044 |
 | D-38 | DL-032 |
 | D-40 | DL-030 |
-| D-49 | DL-037, DL-038, DL-039 |
+| D-49 | DL-037, DL-038, DL-039 — all three now superseded or partly superseded by DL-209 |
 
 ---
 
@@ -2286,7 +2386,9 @@ The predicate is renamed `echoesAdministratorCode()`. It is named for what it re
 
 **Relationship to DL-045.** DL-045 decided that the queue keeps the legacy resource name rather than a conventional one, which is what this entry restores; the two now agree. One aside in DL-045 does not survive: it says the legacy name is used as the message group identifier too, and it is not - the group identifier is `carddemo-job-submission`, for the reason given above that the plan leaves that name to this module.
 
-### DL-092 - The job-submission queue is named `JOBS.fifo`, because that is the name the plan prescribes
+### DL-222 - The job-submission queue is named `JOBS.fifo`, because that is the name the plan prescribes
+
+> **Formerly recorded under `DL-092`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-092` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The legacy estate's entire online-to-batch bridge is a CICS transient-data queue named `JOBS`, written from exactly one site. This entry has been decided three times, and the record of the reversals is kept deliberately so the argument is not re-made a fourth time. The queue was first configured as `carddemo-jobs.fifo`, on the reasoning that all four AWS resource names should be namespaced after this module. A revision renamed it to `JOBS.fifo`. A second revision renamed it back to `carddemo-jobs.fifo` and asserted that the plan mandated that form byte-identically. It does not, and that assertion was the defect: the six repetitions it cited as evidence were six comments in this module's own configuration documents, each of which had been edited in the same pass - a document agreeing with its own binder proves nothing about either.
 
@@ -3915,7 +4017,9 @@ is owned. A reviewer re-checking this should expect the paths to still be presen
 *Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
 from a diff.
 
-### DL-130 - The reporting period travels as the three screen selectors it is entered on, in both directions, and the single resolved enumeration is kept beside them rather than replaced by them
+### DL-223 - The reporting period travels as the three screen selectors it is entered on, in both directions, and the single resolved enumeration is kept beside them rather than replaced by them
+
+> **Formerly recorded under `DL-130`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-130` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The report-request screen presents three independent one-character selectors -
 `MONTHLYI`, `YEARLYI` and `CUSTOMI` of `app/cpy-bms/CORPT00.CPY` - and the operator marks one. The
@@ -4434,329 +4538,9 @@ profile documents that supply them are `application.yml`, `application-local.yml
 
 ---
 
-### DL-121 - A keyed read of a nonunique alternate index becomes a bounded, base-key-ordered finder, and the supporting indexes are deliberately left alone
+### DL-224 - One scrape target per deployment, because a candidate list makes a dead target permanent and a live pair doubles the baseline
 
-**Context.** Two of the three legacy alternate indexes are declared `NONUNIQUEKEY` with `UPGRADE`:
-`CARDAIX` over the card cluster on the account identifier at `KEYS(11 16)`, and `CXACAIX` over the
-cross-reference cluster on the same identifier at `KEYS(11,25)`. Their Java counterparts were declared
-as finders returning an unbounded, unordered list, on the reasoning that the alternate key admits
-duplicates and that choosing one row out of several is a service-layer decision.
-
-**What the source actually does, which settles it.** Every legacy consumer of either path issues a
-single keyed `EXEC CICS READ`, never a browse: the bill-payment, transaction-add and account-view
-programs against the cross-reference path, and the card-detail program against the card path. A keyed
-read of a duplicate-bearing alternate index returns exactly one record, and which one is defined - the
-first in ascending *base*-key order. So the legacy behaviour is not "every match, and the caller
-decides"; it is "one match, and the structure decides which".
-
-**Why leaving that to the service layer was wrong rather than merely lax.** Handing a caller an
-unordered list to take the head of makes the result depend on plan shape, on insertion history and on
-whether a vacuum has run. Nothing in a relational query guarantees first-row identity or any ordering
-among duplicates without an `ORDER BY`. The legacy read is deterministic; the translation was not, in
-exactly the case where determinism is the contract. It also duplicated the same head-of-list decision
-into every future caller, where each one could get it wrong independently.
-
-**Decision.** Both finders become bounded and explicitly base-key ordered, and their names say so:
-`findFirstByCardAcctIdOrderByCardNumAsc` returning `Optional<Card>`, and
-`findFirstByXrefAcctIdOrderByXrefCardNumAsc` returning `Optional<CardCrossReference>`. The empty
-`Optional` is the analogue of the legacy not-found response, so no exception is raised at this layer.
-A single-valued *unbounded* derived query was rejected: it raises an incorrect-result-size failure the
-moment a second row exists, which is a failure the legacy system cannot produce.
-
-**The card repository keeps its paged overload, and the cross-reference repository still has none.**
-`Page<Card> findByCardAcctId(String, Pageable)` is the browse translation the migration plan names
-literally, and it stays - unchanged in name, shape and caller-supplied size and sort - for genuine
-browse consumers. The cross-reference path has no legacy browse at all, so it gains no paged form; the
-card-list screen browses the *base* cluster and filters by account after the read, so it uses the
-inherited paged `findAll` rather than either method.
-
-**The two supporting indexes are deliberately not widened.** Making
-`idx_card_cross_reference_xref_acct_id` a composite over the account identifier and the card number
-would let the ordering be satisfied from the index instead of by sorting the handful of rows the
-account owns. It was declined: the estate declares exactly three alternate indexes and the delivered
-migration emits exactly three B-tree indexes to match, so changing one into a composite alters a
-delivered migration for a plan-shape gain that no measured baseline asks for. The same reasoning
-applies to `idx_card_card_acct_id`.
-
-**Revision, 2026-08-06.** Two later findings touch this entry and neither overturns its core. The two
-ordered-first finders it mandates were removed from the delivered module and replaced by list-plus-minimum
-selection in seven services; DL-164 restores them and records what the regression cost. And the paged card
-overload this entry retained for "genuine browse consumers" never acquired one, so DL-165 removes it. The
-determinism argument, the rejection of a single-valued unbounded derived query, and the decision to leave
-`idx_card_cross_reference_xref_acct_id` and `idx_card_card_acct_id` un-widened all stand as written. This
-entry also appears twice in this document, identically; the duplication is a documentation defect recorded
-here rather than silently repaired, because a citation may point at either copy.
-
-*Cited by:* `repository/CardRepository.java`, `repository/CardCrossReferenceRepository.java`. The index
-inventory this preserves is `V2__create_indexes.sql`.
-
----
-
-### DL-122 - The report range is read a slice at a time, and a redundant pre-bound is what lets the timestamp index constrain both ends
-
-**Context.** The batch report's selection reproduces a sort specification that types the processing
-*date* as ten characters at one-based offset 305 over a 26-character column, and filters inclusively
-between two ten-character parameters. DL-era reasoning had already established the asymmetric
-predicate that makes that faithful - a bare column on the lower bound, a ten-character `SUBSTRING` on
-the upper - because comparing the full 26-character value against a ten-character end date would drop
-every transaction processed *on* the end date. Two consequences of that shape were left unaddressed.
-
-**First consequence: the range was materialised whole.** The bounds come from an operator-supplied job
-parameter and the table is append-only - the posting run, the interest run and the online add path only
-ever add rows. The number of rows a range selects is therefore unbounded in principle and grows for the
-life of the deployment, so a `List` return made the reporting job's memory a function of accumulated
-history and of how wide a range somebody typed.
-
-**Decision on the first.** The method returns a `Slice` and takes a `Pageable`. A slice rather than a
-page because a page carries a total count, which costs a second aggregate over the same range on every
-fetch and which the report has no use for: it breaks its pages and its totals from the rows themselves,
-line by line. The ordering gains a second term - the transaction identifier - because card number is
-not unique across transactions and an ordering on it alone lets a row be returned twice or skipped as
-the reader advances. That is faithful rather than additive: the legacy sort declares one key and no
-`EQUALS` option, so it guarantees nothing about the relative order of records sharing a card number,
-and any total order refining the declared key is admissible. The declared ordering sits in the query
-text, so a sort carried on the pageable is appended after it and can only refine an already total
-order.
-
-**Second consequence: the upper bound could not reach the index.** A predicate over a *function* of a
-column cannot bound an index built on the column, so the authoritative `SUBSTRING` comparison left the
-index entered at the start date and read to the end of the table, with every later row fetched,
-discarded and then sorted. The plan was measured rather than assumed: without a pre-bound the engine
-chooses a sequential scan and carries both predicates as filters.
-
-**Decision on the second.** A third, redundant predicate compares the bare column against the end date
-concatenated with sixteen nines. Its right-hand side mentions no column, so it is evaluated once and
-used as the index's upper bound; the measured plan becomes an index scan whose index condition carries
-*both* ends, with the ten-character comparison retained as the filter that decides membership.
-
-**The pre-bound is never the authority, and its safety is proved from the layout rather than assumed.**
-It only has to be wide enough never to exclude a row the authoritative predicate keeps. A populated
-processing timestamp is a ten-character date, a separating space, then a time of day, so its eleventh
-character is a space; an unprocessed transaction is blank throughout. Under byte ordering the
-comparison is decided at the first differing character: equal date prefixes hand the decision to the
-eleventh character, and a space is below the digit nine. Under a language-aware collation, which weighs
-digits ahead of spaces and punctuation, the pre-bound contributes the date's digits followed by sixteen
-nines while a stored value contributes the same digits followed by the time's, of which the first is
-the tens digit of an hour and so at most two. The pre-bound is the greater value either way. Both
-orderings were checked because the delivered stack pins one of them and the test containers do not: the
-compose database is initialised to byte ordering on purpose, so that sorted output can be compared byte
-for byte against the legacy baselines.
-
-**The invariant this rests on is written into the method, because a writer could break it silently.**
-A stored processing timestamp is either blank throughout or carries a space in its eleventh character.
-Widening the filler, or replacing it with a character a language-aware collation ignores, breaks the
-second argument; shortening it below the sixteen characters that follow the date prefix breaks the
-first. The neighbouring card-number invariant is recorded in the same place for the same reason: the
-report's single ascending ordering is faithful to a sort that types those bytes as zoned decimal *only*
-while every stored card number is sixteen zero-padded unsigned digits, and a shorter or signed value
-would reorder the report without breaking anything a compiler or an unwitting test would notice.
-
-**A deviation from this file's own generation brief, recorded rather than smoothed over.** The brief
-for the transaction repository fixed the range query's return type as a list and prohibited a paged
-overload. The migration plan fixes neither, and the review that reported both consequences above
-governs the point, so the return type changed. The brief's *countable* constraint was honoured
-literally: the interface still declares exactly two methods, because the pre-bound is derived inside
-the query text instead of becoming a third parameter that every caller would have to compose
-correctly.
-
-*Cited by:* `repository/TransactionRepository.java`. The index it now bounds on both sides is
-`idx_transaction_tran_proc_ts` in `V2__create_indexes.sql`.
-
----
-
-### DL-123 - The first failed validation ends the report-request turn, and the decision to accumulate several is withdrawn
-
-**Context.** The report-request translation collected more than one field failure in a turn. The
-reasoning recorded at the time was that the six independent range tests are written as six separate
-`IF` statements rather than as one evaluation, so each ought to be able to report its own field, and
-that the two-state field contract - not supplied, versus supplied wrongly - needed several entries to
-be worth having. A gate was kept between *stages* so that the date-validation subprogram was never
-handed a date assembled from a part already faulted, and that gate was believed to be the whole of the
-fidelity requirement.
-
-**What the source actually does.** Every failure site performs the send paragraph. The send paragraph
-ends with `GO TO RETURN-TO-CICS`. The return paragraph issues `EXEC CICS RETURN`. So the task **ends**
-at the first failure: the paragraph that performed the send never resumes, and everything sequenced
-after that `PERFORM` is unreachable. In the operator-supplied arm that is a great deal of work - the
-numeric normalisation of all six date parts, the five range tests after the first failing one, the
-assembly of both ten-character dates, both subprogram calls, the four substitution slots, the
-report-name assignment and the submission attempt. The earlier reading had the reachability boundary in
-the wrong place: it is not between stages, it is at the first failure.
-
-**Why the difference is observable and not merely structural.** Three things changed for a caller.
-The response could carry field errors the legacy screen never emitted together. The echoed input was
-mutated by a normalisation the legacy never performed on a turn it had already faulted, so a client
-redisplaying the echo would show values the operator never typed. And the end-date validator could be
-called after the start date had already failed, producing a second, derived failure on top of the real
-one.
-
-**Decision.** The send raises a turn-ended marker, and every site that could otherwise continue tests
-it and returns. The six range tests return after faulting; the end-date subprogram call is reached only
-when the start date was accepted; the operator-supplied arm returns after each stage that could have
-faulted; the acknowledgement block and the whole card-emitting path are gated on the same marker.
-
-**Why a marker and not an exception.** A jump out of a call stack has no Java equivalent, and an
-exception was rejected because ending a turn is the *ordinary* outcome here - the successful
-acknowledgement send ends the turn too. Modelling it as a throw would make every normal turn look like
-a fault to every caller, every logger and every error-handling boundary. The marker is deliberately
-separate from the error flag for the same reason: the acknowledgement raises the marker without raising
-the flag, so folding them together would have made success indistinguishable from failure.
-
-**What survives from the withdrawn decision.** The two-state field contract is untouched: a field is
-still reported as MISSING or INVALID, with its own byte-exact text and its own cursor position. There
-is simply at most one such report per turn, which is the legacy's own cardinality. The latch that keeps
-the summary message and the cursor position on the *first* failure also survives, and is now
-structurally redundant rather than load-bearing - kept because it states the invariant at the point
-where it could otherwise be broken.
-
-*Cited by:* `service/ReportRequestService.java`, and its covering suite
-`ReportRequestServiceTest.TheFirstFailedValidationEndsTheTurn`, whose assertions check both halves of
-the contract: that the reported failure is the one the legacy would have shown, and that the work the
-legacy never reached did not happen.
-
----
-
-### DL-124 - The production migration state is one exact point, not an upper bound, and the guard now refuses falling short as well as reaching too far
-
-**Context.** Two guards hold the production database to the delivered schema: one over the migration
-location and one over the version ceiling. Both were written against a single threat - that a merged
-environment, an operator override or a co-activated overlay would let the two seed scripts reach
-production, seeding fifty synthetic customer rows carrying regulated identity data and ten known
-sign-on identities. Read that way, "at most version two" and "a location beneath the delivered one" are
-both perfectly safe, and both were accepted.
-
-**The failure that reading admits.** Production is not an upper bound; it is an exact state - the four
-delivered scripts, resolved from the one canonical location, applied up to and including version two.
-A ceiling of one satisfies "at most two" and applies only `V1__create_schema.sql`, so the three
-alternate-index equivalents and the six foreign keys in `V2__create_indexes.sql` are never created. An
-absent location list, a nested sub-path, a file-system descriptor or a prefix-less spelling each
-resolve fewer than the four delivered scripts, with the same effect.
-
-**Why nothing downstream would have caught it.** Hibernate is fixed at schema *validation*, and
-validation inspects tables and columns. It does not inspect indexes and it does not inspect
-constraints. A production deployment migrated to version one would start, pass validation, report
-healthy, serve every request - and run every access path the module was measured against as an
-unindexed scan with no referential integrity behind any of it. There is no later gate: the seeded-database
-refusal callback answers a different question, and the coverage and contract suites run against a
-database migrated by the test profile.
-
-**Decision.** Both guards now require an exact state under production. The ceiling must parse to
-exactly version two: a higher ceiling, a lower one, the seeding marker, any predefined marker, an
-unreadable value and an absent value are all refused. The location list, after blank and `null` entries
-are discarded, must be exactly the one canonical descriptor: an empty or absent list, an additional
-location beside it, a nested sub-path beneath it, a file-system descriptor addressing the same
-directory and a prefix-less spelling are all refused.
-
-**Two deliberate tolerances, so the guard refuses wrong configuration rather than untidy
-configuration.** Blank and `null` list entries are ignored before the comparison, because a
-comma-separated property list frequently produces one and an empty entry addresses nothing. The ceiling
-is compared as a *parsed* version rather than as text, so a padded or differently spelled spelling of
-the same version is accepted while a different version is not.
-
-**The completion half is deliberately left permissive, and the asymmetry is the point.** For local and
-test the resolver still appends the canonical location when the bound list does not already resolve it,
-and it still recognises every spelling of the directory when deciding whether it is already there. That
-predicate's job is to avoid appending a duplicate, not to constrain anything, so tightening it would
-make a legitimate local configuration fail for no benefit. The two halves now answer two different
-questions, which is why the strict comparison is written separately rather than by narrowing the
-existing predicate.
-
-**Three tests that asserted the old leniency were re-aimed rather than deleted.** They had encoded the
-four near-miss location spellings as acceptable, a ceiling of `1.1` as acceptable, and an absent
-location list under production as resolving to nothing. Each now asserts the refusal, and each carries
-the reason in its own comment so the change is not mistaken for a tightening without cause. Two new
-cases were added for the state that was previously reachable: a ceiling of one, and a list that
-addresses nothing in each of its four forms.
-
-*Cited by:* `config/FlywayConfig.java` and `FlywayConfigTest`. The one-location-plus-ceiling arrangement
-this enforces is DL-102, restated in DL-111 and DL-116, and the directory-split round trip it replaces
-is DL-119.
-
----
-
-### DL-125 - The user-security fixture keeps its geometry and loses its credential, and the absence is asserted rather than trusted
-
-**Context.** The provisioning job carries its ten sign-on identities in stream as fifty-seven-character
-cards, and the record layout pads each to eighty. That content was reproduced into a committed
-fixture - eight hundred bytes, ten records - byte for byte, including the one shared eight-character
-password literal every card carries. The reasoning was fidelity: the fixture is derived from the job
-and reproducing it exactly is what makes it evidence.
-
-**Why fidelity was the wrong test to apply here.** The requirement that no credential is hardcoded is
-not satisfied by a credential being *faithful*. Reproducing the literal put a working, reusable secret
-into version control in the most directly extractable form there is: a fixed offset in a fixed-width
-file, identical on all ten records. The seed migration was already correct - it stores BCrypt digests
-and never the literal - so the fixture was the only artefact in the module from which the value could
-be lifted, and it undid what the seed had been careful about.
-
-**Decision.** The credential window carries a fixed structural placeholder of exactly the same width.
-Everything else is unchanged: the eight hundred bytes, the ten records, the eighty-byte stride, the
-absent line terminator, the ten identifiers in the order the job writes them, both name fields, the
-five-and-five role split and the blank filler from character fifty-seven to eighty. So the fixture is
-still the record-geometry evidence it was created to be, and the mapper still reads a full-width slice
-where the layout says one is.
-
-**Why substitution rather than deletion, which was the other option.** Deleting the fixture removes
-today's copy of the literal and does nothing about tomorrow's. The substituted fixture carries two new
-assertions instead: the credential window must equal the placeholder on every record, and the legacy
-literal must not appear anywhere in the file in any case. Those turn the property into something the
-build enforces, which deletion could not. Positively asserting the placeholder also matters more than it
-looks: the previous assertions - non-blank, full width, identical across records - were all equally true
-of the credential, so they could not have detected it.
-
-**The literal is named once, in the test that forbids it.** Asserting an absence requires writing the
-value down. It is declared as a single constant in the fixture suite with a comment stating that its
-only purpose is to be forbidden, and nothing reads it as an authentication input. The seed's digests are
-digests of the legacy literal, so the placeholder authenticates against nothing.
-
-*Cited by:* `src/test/resources/fixtures/input/usrsec.txt` and
-`FixtureContractTest.TheDerivedCredentialFixture`. The seeded digests this leaves untouched are
-`V4__seed_user_security.sql`.
-
----
-
-### DL-126 - A cross-reference row renders no value at all, because a partial redaction is an assurance rather than a control
-
-**Context.** The cross-reference entity withheld its card number from the diagnostic rendering - that
-value is a primary account number - while rendering the customer identifier and the account identifier
-in full. The reasoning was that those two are internal keys naming no cardholder and revealing no
-instrument, and that a diagnostic unable to say which account a row points at explains nothing.
-
-**Why that reasoning does not hold for this entity in particular.** This row's entire purpose is to
-resolve a card number to those two identifiers. A rendering that names them is therefore one join away
-from the value it was careful not to print, and the join is against a table the same application
-already has open. The withheld field and the rendered fields are not independent here; they are the two
-sides of one mapping.
-
-**The second problem is what a partial redaction communicates.** A rendering that visibly redacts one
-field reads as a considered judgement that rendering the entity is safe - which is exactly the belief
-that leads an author to put an instance into a log line, an exception message or an assertion. A
-control that encourages the behaviour it exists to constrain is not a control.
-
-**Decision.** All three fields render as the same placeholder. The type name and the field names are
-kept, because identifying *what* reached a diagnostic is the one thing a rendering is legitimately for;
-*which* row it was is not carried at all. Code that has to identify a specific row must name the value
-it chose to disclose, deliberately, at that site. Every accessor still returns its value untouched, so
-nothing stored, mapped or transmitted changes.
-
-**The covering test asserted the opposite and was withdrawn with the exposure.** It positively required
-both resolved identifiers to remain visible, so it would have failed this change and, left as it was,
-would have held the exposure in place permanently. It now requires that no field value of either seeded
-row appears in the rendering, in whole or in a six-character fragment, and adds the strongest available
-statement of the property: two rows that agree on nothing must render identically, which cannot be true
-of a rendering carrying anything row-specific.
-
-**What this does not close.** The schema applies no field-level protection to the card number and the
-migration introduces none, because the legacy design applies none and inventing one would be feature
-expansion. That residual gap is decision D-14 and remains open. This entry settles only that an
-unintended rendering is not the thing that widens it.
-
-*Cited by:* `domain/CardCrossReference.java`, `CardCrossReferenceTest.DiagnosticRendering`. The
-placeholder vocabulary is the one `domain/Card.java` and the DTO layer already use.
-
----
-
-### DL-127 - One scrape target per deployment, because a candidate list makes a dead target permanent and a live pair doubles the baseline
+> **Formerly recorded under `DL-127`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-127` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The application scrape job listed two targets in one static configuration: the compose
 service name for an application running as a container beside the stack, and the host-gateway address
@@ -4796,58 +4580,6 @@ removed afterwards.
 *Cited by:* `config/prometheus/prometheus.yml`. The job selector it preserves is
 `config/grafana/dashboards/carddemo-overview.json`; the gateway mapping it relies on is the Prometheus
 service's `extra_hosts` entry in `docker-compose.yml`.
-
----
-
-### DL-128 - Eighteen artefacts published ahead of their processing position are absorbed and reviewed rather than reset, because the alternative destroys mandated deliverables
-
-**Context.** A checkpoint review found that eighteen paths outside its declared processed range had been
-modified by the same commit that delivered the range: sixteen test classes, the provisioned Grafana
-dashboard, and this log. Its finding is correct as stated - those contents were not covered by that
-review's file-by-file pass - and the resolution it suggested was to move them to their owning checkpoint
-or reset them from the branch before publication.
-
-**Two constraints decide what "resolving" it can mean here, and they point the same way.** The
-publication contract this work runs under prohibits history-altering git operations outright - no
-rebase, no reset, no force - in the repository and in every submodule, so a reset is not available. And
-the migration plan mandates each of the eighteen by pattern: the test tree, the observability
-configuration directory, and this document are all named as deliverables to create. So the only reset-like
-action available - deleting them in a further commit - would delete mandated artefacts.
-
-**What deleting them would actually cost, stated concretely rather than as a worry.** Fifteen of the
-sixteen test classes are the covering suites of production files *inside* the reviewed range: the
-exception handler, four screen contracts, the reject-record writer, the AWS properties holder, the
-entity mapping inventory, the transaction entity, both concurrency-token services, the menu and
-report-request services, the named fixtures, and two record mappers. They contribute 1,086 executing
-assertions. Removing them would drop coverage that the enforced floor depends on, and would remove the
-verification of work the same review passed. This log is cited by forty-seven production sources by
-decision number, so deleting it would break every one of those citations - including the citations three
-of this session's own fixes add. The dashboard is the artefact the metrics job's own topology decision is
-verified against, and it is mounted by the compose stack.
-
-**Decision.** The eighteen stay, and the review's underlying concern - unreviewed content on the branch
-- is answered by reviewing them here rather than by removing them. Every one was read and audited in
-this session: each Java file carries the exact fourteen-line licence header, none imports from the
-pre-Jakarta namespace, none uses a wildcard or star import, none carries a warning suppression, none
-contains a placeholder, a deferred-work marker or a hardcoded credential, and all sixteen execute in the
-suite with no failure, no error and nothing skipped. Reflection appears in four of them and is
-legitimate and in scope: it is used to assert record components, a handler's declared methods and the
-constructors of static-only utility classes, and the unsafe-code audit is explicitly scoped to
-production sources, where the count remains zero. The dashboard parses as JSON, declares eleven panels
-and is wired by the provisioning provider the compose stack mounts.
-
-**Two of the eighteen were changed again in this session, deliberately.** The report-request suite gained
-the eight cases that hold the corrected turn-termination contract, and the named-fixture suite gained the
-two that forbid the credential literal. Both are the covering suites of production files fixed in this
-same pass, and a fix without its covering assertions would be the weaker outcome of the two available.
-
-**What is not claimed.** This does not make the eighteen part of the range that review covered, and it
-does not overturn the finding. It records that the artefacts are mandated, that the suggested remedy is
-unavailable and its available approximation destructive, and that the content has now been reviewed and
-is owned. A reviewer re-checking this should expect the paths to still be present.
-
-*Cited by:* nothing in code - this entry exists so the disposition is on the record rather than inferred
-from a diff.
 
 ---
 
@@ -4901,11 +4633,12 @@ names either transport state.
 
 ### DL-143 - The account-update screen reads the stored regulated values because the program it reproduces displays them, and the residual exposure is recorded rather than masked away
 
-**Superseded in part by DL-145.** The licence this entry grants still stands, and so does every
+**Superseded in part by DL-225.** The licence this entry grants still stands, and so does every
 reason given for it. Its "residual exposure" paragraph does not: the composed response is now
 published through the gate at the route, so the cleartext it describes no longer reaches an
-unauthorized caller. Read this entry for why the reads are licensed, and DL-145 for what happens to
-what they produce.
+unauthorized caller. Read this entry for why the reads are licensed, and DL-225 for what happens to
+what they produce. (DL-225 was recorded under `DL-145` until that identifier was de-duplicated; see
+entry DL-245.)
 
 **Context.** DL-135 masked the regulated components of the two account screens by default and revealed
 them only under a named purpose and an authorization, which it recorded as a documented departure from
@@ -4946,12 +4679,13 @@ a test rather than taken on the word of this entry.
 
 ### DL-144 - The account view screen's assembler is the REST boundary, it holds no licence to read the stored regulated values, and the mask therefore applies to that screen
 
-**Superseded in part by DL-145.** The assembler licence and the never-read-a-regulated-column
+**Superseded in part by DL-225.** The assembler licence and the never-read-a-regulated-column
 arrangement this entry records still stand. The fixed authority it presents does not: the boundary
 now derives the authority from the authenticated principal instead of passing
 `unprivileged(ACCOUNT_VIEW, null)`, so an administrator sees what the legacy screen showed and every
 other operator still sees masks. The two-screen asymmetry described near the end is likewise gone,
-for the reason DL-145 gives.
+for the reason DL-225 gives. (DL-225 was recorded under `DL-145` until that identifier was
+de-duplicated; see entry DL-245.)
 
 **Context.** DL-135 made the four regulated components of the two account screens masked by default and
 revealable only under a named purpose plus an authorization. DL-140 added the guard requiring any source
@@ -5005,7 +4739,9 @@ the gate and the first two by never touching a regulated column.
 
 ---
 
-### DL-145 - Both account screens derive their disclosure authority from the authenticated principal, which closes the update screen's cleartext exposure and restores the administrator's view
+### DL-225 - Both account screens derive their disclosure authority from the authenticated principal, which closes the update screen's cleartext exposure and restores the administrator's view
+
+> **Formerly recorded under `DL-145`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-145` is the one the module's own source cites. See entry DL-245.
 
 **Context.** DL-135 made the four regulated components of the two account screens masked by default
 and revealable only under a named purpose plus an authorization. DL-143 then licensed
@@ -5083,80 +4819,18 @@ submitted value round-trips while a resolved one does not.
 
 ---
 
-### DL-130 - The three cloud clients are aimed from this module's own namespace by customizing them, because publishing clients of our own would seize settings we have no position on
+### DL-226 - The archive object is fixed-length blocked with no separator, and its length is asserted before it is published
 
-**Context.** Two of the six key paths the migration plan mandates under this module's own prefix - the
-region and the optional endpoint redirection - were bound and validated and then read by nothing. The
-configuration class that owns the settings type said so in its own words, claiming both belonged
-exclusively to the cloud integration's namespace, while the settings type it registers bound both. One of
-those two statements had to be wrong, and it was the configuration class: a key that is bound while
-nothing consumes it advertises an adjustability that does not exist, which is the very fault two earlier
-entries record for the withdrawn queue keys.
+> **Formerly recorded under `DL-145`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-145` is the one the module's own source cites. See entry DL-245.
 
-**Decision.** The configuration class takes the settings type as a constructor parameter and contributes
-one customizer per client - object store, queue, notifications. Each applies the configured region
-unconditionally and the configured endpoint redirection only when one is configured. Nothing else is
-touched: no credential is read, no bucket, queue or topic is created, no addressing style is overridden,
-and no attempt count, time-out, backoff interval, pool size or capacity figure is set.
+> **Integrated-state note.** This note was published under a second `DL-145` heading of its own, which made the identifier ambiguous for every citation that names it. The words are unchanged; only the duplicate heading is gone, and the note now sits inside the entry it annotates. See entry DL-222.
+>
+> **Correction — integrated state, 2026-08-05.** The fixed-length framing decision remains current, and
+> the consumer obligation recorded below is now implemented. `CombineTransactionsJobConfig` reads the
+> archive through the fixed-width transaction reader, so it advances in exact 350-byte strides and never
+> looks for a line separator. The original statement that no in-module consumer existed is retained as
+> the state at the time this decision was first written.
 
-**Why customizing rather than publishing clients.** The plan asks this class to register the three
-clients and, in its next breath, to prefer the starters' auto-configured clients and customize them
-rather than hand-build. The second reading is the one that survives contact with the code. Publishing
-clients here would take over credential resolution and the object store's path-style addressing from the
-integration's own settings - values every profile document already states - leaving two sources of truth
-for one setting, which is the hazard the settings type's own reasoning warns about. It would also silence
-the customizers, since the auto-configuration backs off once a client bean exists. Customizing changes
-only what this module has a position on and leaves the rest exactly where the profile documents put it.
-
-**Why a customizer is authoritative, established by reading the library rather than assuming.** The
-integration's builder configurer applies, in order, the credentials provider, the region, the endpoint,
-the defaults mode and the protocol flags, and only then the per-service customizers. A customizer is
-therefore the last writer of every property it sets, so the region and redirection this module states are
-the ones the built client uses. Both are set to one definite value, so the outcome cannot depend on the
-order customizers happen to run in.
-
-**Why the redirection is conditional and the region is not.** An absent redirection is not a fault and
-must not be defaulted: a client with no redirection resolves its region's own real endpoint, which is
-precisely what a deployment wants, and the production guard refuses the redirection keys outright, so the
-redirecting branch is unreachable under that profile. The region has no such absent case - every client
-must resolve somewhere - and every profile derives the integration's region setting from this same key, so
-the two namespaces cannot name different regions. The decision "is a redirection configured" is taken
-once, in one helper, rather than three times at three builders where getting it wrong once means one
-client silently addressing a real account.
-
-**Nothing is registered that could shorten a submission.** No publishing template is contributed here.
-The auto-configured one already carries the library's message conversion and observation wiring, and the
-publisher supplies the two per-message properties that matter: the stable message group that preserves
-append order, and a per-card deduplication identifier derived from the card's ordinal. That second one is
-the subtlest hazard in the bridge - several of the seventeen cards are comment or delimiter cards with
-byte-identical bodies, so content-based deduplication would discard the duplicates and shorten the job
-stream into something a reader would accept - and it is closed twice, by that identifier and by the
-bootstrap creating the queue with content-based deduplication off.
-
-**Verified by running it, not by reading it.** The packaged artefact was started under the local profile
-on a clone-index-derived port and against a clone-index-derived database, leaving the shared stack
-untouched. It reported healthy with no warning and no error, logged the five resource settings and a
-boolean for whether a redirection was configured - never the redirection itself, per the diagnostics
-rule - and emitted one debug line per client showing that all three customizers ran and each applied the
-redirection, naming the key rather than its value. The throwaway database was dropped afterwards. Unit
-assertions additionally require the region on all three builders, the redirection on all three when
-configured, and none on any when the value is absent or blank, each paired with the region assertion so
-the absent cases cannot pass vacuously.
-
-*Cited by:* `config/AwsConfig.java`. The settings it consumes are `config/AwsProperties.java`; the
-profile documents that supply them are `application.yml`, `application-local.yml`,
-`application-test.yml` and `application-prod.yml`; the production refusal of the redirection keys is
-`config/ProductionConfigurationValidator.java`; and the resources it addresses are provisioned by
-`localstack/init/01-create-aws-resources.sh`.
-
-### DL-145 - The archive object is fixed-length blocked with no separator, and its length is asserted before it is published — CORRECTED
-
-**Correction — integrated state, 2026-08-05.** The fixed-length framing decision remains current, and
-the consumer obligation recorded below is now implemented. `CombineTransactionsJobConfig` reads the
-archive through the fixed-width transaction reader, so it advances in exact 350-byte strides and never
-looks for a line separator. The original statement that no in-module consumer existed is retained as
-the state at the time this decision was first written.
-### DL-145 - The archive object is fixed-length blocked with no separator, and its length is asserted before it is published
 
 **Context.** The legacy archive dataset is allocated fixed-length blocked at the transaction record width.
 A fixed-length blocked dataset carries no separator between two records at all: its record boundaries *are*
@@ -5164,6 +4838,12 @@ the width, which is why the width is declared once for the dataset rather than m
 first revision of the archive step nonetheless wrote a line feed after every record image, and said so in
 its own words - the reason it gave was that the module's line-oriented fixed-width reader could then
 consume the object without a second convention.
+
+> **Generalised by DL-213.** This entry states the rule for one dataset, and a later audit found that
+> seven other artefacts of this module still carried the separator this entry removed - including a second
+> producer of *this very dataset*, whose line-fed generation the consolidation job could not read. DL-213
+> restates the rule for every logical dataset the module produces and moves every consumer with its
+> producer. Nothing here is withdrawn; it is the special case of the general rule.
 
 That reason inverted the contract. Every row became one byte wider than the format the object claims, and
 the whole object became one byte per record longer than the record count multiplied by the width. A
@@ -5195,21 +4875,22 @@ written correctly rather than written against the defect.
 
 ---
 
-### DL-146 - Every staged dataset is an object addressed by a validated relative name, and the staging directory is withdrawn — CORRECTED
-
-**Correction — integrated state, 2026-08-05.** The durable-boundary part of this decision survives;
-the staging-directory withdrawal does not. The eight job configurations that consume or produce staged
-datasets use the configured S3 bucket through `BatchStagingArea` and/or `StagedGenerationStore`.
-Execution-local paths remain for file-backed Spring Batch restart state, atomic `.part` completion and
-fixed-name local views, with `carddemo.batch.staging-directory` as their shared root. They are working
-buffers, not the durable staging contract. Completed generations are published to S3, and
-`StagedGenerationStore` applies the measured retention depths there. `FileProbeJobConfig` is the ninth
-job and produces no staged dataset. The positive name-validation rule remains active through
-`StagedResourceNames` and the staging-store key contracts.
-
-The original single-service/no-directory design is retained below as the intermediate implementation
-that was superseded when durable generation publication and restart-safe local buffers were combined.
 ### DL-146 - Every staged dataset is an object addressed by a validated relative name, and the staging directory is withdrawn
+
+> **Integrated-state note.** This note was published under a second `DL-146` heading of its own, which made the identifier ambiguous for every citation that names it. The words are unchanged; only the duplicate heading is gone, and the note now sits inside the entry it annotates. See entry DL-222.
+>
+> **Correction — integrated state, 2026-08-05.** The durable-boundary part of this decision survives;
+> the staging-directory withdrawal does not. The eight job configurations that consume or produce staged
+> datasets use the configured S3 bucket through `BatchStagingArea` and/or `StagedGenerationStore`.
+> Execution-local paths remain for file-backed Spring Batch restart state, atomic `.part` completion and
+> fixed-name local views, with `carddemo.batch.staging-directory` as their shared root. They are working
+> buffers, not the durable staging contract. Completed generations are published to S3, and
+> `StagedGenerationStore` applies the measured retention depths there. `FileProbeJobConfig` is the ninth
+> job and produces no staged dataset. The positive name-validation rule remains active through
+> `StagedResourceNames` and the staging-store key contracts.
+> The original single-service/no-directory design is retained below as the intermediate implementation
+> that was superseded when durable generation publication and restart-safe local buffers were combined.
+
 
 **Context.** The migration plan replaces sequential-dataset and generation-group staging with object
 storage. Only the archive step had made that move. Five job configurations still resolved a configured
@@ -5364,7 +5045,9 @@ contracts are exercised by `service/JobSubmissionServiceSecurityTest.java`,
 
 ---
 
-### DL-149 - Whole job streams are serialized across replicas by a PostgreSQL transaction-scoped advisory lock
+### DL-227 - Whole job streams are serialized across replicas by a PostgreSQL transaction-scoped advisory lock
+
+> **Formerly recorded under `DL-149`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-149` is the one the module's own source cites. See entry DL-245.
 
 **Context.** One JVM-local fair lock kept two threads in one process from interleaving their card streams,
 but the deployment can run several application replicas. Every card uses the same FIFO message group, so
@@ -5700,7 +5383,9 @@ which selects the ceiling; `batch/CreateStatementJobConfig.java`, whose three ga
 expressed as three transitions; and `batch/PostTransactionJobConfig.java`, which raises the completion
 code that is no longer read as a ceiling. The covering suites are `config/BatchConfigTest.java`,
 `batch/BackupTransactionJobConfigTest.java` and `batch/PostTransactionJobConfigTest.java`.
-### DL-145 - The jarmode tools library is declared so the vulnerability gate can see it, the plugin's own copy is turned off so only one writer remains, and the loader's redundant copy is accepted because excluding it would recreate the very gap being closed
+### DL-228 - The jarmode tools library is declared so the vulnerability gate can see it, the plugin's own copy is turned off so only one writer remains, and the loader's redundant copy is accepted because excluding it would recreate the very gap being closed
+
+> **Formerly recorded under `DL-145`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-145` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The supply-chain gate scans the resolved dependency graph and fails the build on a critical
 or high finding. `DeployableSupplyChainIT` already asserted the other half of that claim's honesty -
@@ -5787,7 +5472,9 @@ embedded-resource route rather than only for the one already found.
 
 ---
 
-### DL-146 - One hashing strength, owned by the digest service and read by the security configuration, because two encoders quietly produced two different work factors
+### DL-229 - One hashing strength, owned by the digest service and read by the security configuration, because two encoders quietly produced two different work factors
+
+> **Formerly recorded under `DL-146`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-146` is the one the module's own source cites. See entry DL-245.
 
 **Context.** Two components constructed a BCrypt encoder. `config/SecurityConfig` declared a strength of
 12 and used it for the encoder bean the authentication manager consumes; `service/CredentialDigestService`
@@ -5820,7 +5507,9 @@ protect. The policy figure governs what this module writes; the floor governs wh
 
 ---
 
-### DL-147 - A bearer session is established only while it still names its own record, so a demotion, a deletion or a credential change revokes it at the next request rather than at its expiry
+### DL-230 - A bearer session is established only while it still names its own record, so a demotion, a deletion or a credential change revokes it at the next request rather than at its expiry
+
+> **Formerly recorded under `DL-147`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-147` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The issued grant carried issuer, subject, issue time, expiry and role, and the bearer filter
 established authority from the role claim alone with no reference to current state. Every claim was true when
@@ -5854,7 +5543,9 @@ version marker in the fingerprint scheme is, deliberately, a way to revoke every
 
 ---
 
-### DL-148 - The batch-control surface is administrator-only, and its job parameters are an allowlist rather than a map, because the framework's untyped parameter path can name a class
+### DL-231 - The batch-control surface is administrator-only, and its job parameters are an allowlist rather than a map, because the framework's untyped parameter path can name a class
+
+> **Formerly recorded under `DL-148`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-148` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The batch-control endpoints launch the nine wired jobs and report an execution. Two things about
 them had no legacy counterpart and therefore no parity answer: who may reach them, and what a caller may pass.
@@ -5931,7 +5622,9 @@ audit - because a new source of identifiers is a concurrency decision, not a for
 
 ---
 
-### DL-150 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission — CORRECTED
+### DL-232 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission — CORRECTED
+
+> **Formerly recorded under `DL-150`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-150` is the one the module's own source cites. See entry DL-245.
 
 **Correction — integrated state, 2026-08-06.** The nonce-backed identity and per-message reassembly
 envelope remain current, and so does the supersession of the process-local-only interleaving decision
@@ -5977,7 +5670,9 @@ produced one identity, which was the discarded-submission bug expressed as an ex
 
 ---
 
-### DL-151 - A diagnostic publishes a classified failure chain and never a throwable, and never a primary account number, because the console the estate wrote to and the log this module writes to are not the same surface
+### DL-233 - A diagnostic publishes a classified failure chain and never a throwable, and never a primary account number, because the console the estate wrote to and the log this module writes to are not the same surface
+
+> **Formerly recorded under `DL-151`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-151` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The estate's only diagnostic channel was 217 console displays, read by an operator inside the same
 security boundary as the data. This module's diagnostics are structured events that are aggregated, forwarded
@@ -6015,7 +5710,9 @@ value is a boolean.
 
 ---
 
-### DL-152 - The local stack binds every published port to the loopback interface and pins every image it does not build, because the throwaway credentials and the network exposure are one decision
+### DL-234 - The local stack binds every published port to the loopback interface and pins every image it does not build, because the throwaway credentials and the network exposure are one decision
+
+> **Formerly recorded under `DL-152`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-152` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The local validation stack publishes eight ports and is deliberately full of readable values - a
 database password in the file, a dashboard password of `admin`, and a token signing secret committed in the local
@@ -6051,7 +5748,9 @@ text in the guard so that a different unpinned image still fails.
 
 ---
 
-### DL-145 - Caller-selected record identifiers require a declared CardDemo operator authority
+### DL-235 - Caller-selected record identifiers require a declared CardDemo operator authority
+
+> **Formerly recorded under `DL-145`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-145` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The account view and update, card list/detail/update, transaction list/view/add and bill
 payment surfaces all accept a business identifier from the caller. Their services resolve that
@@ -6086,7 +5785,9 @@ forbidden outcome, so the machine-readable interface does not claim that authent
 
 ---
 
-### DL-146 - The three card turns carry complete screen state in bounded bodies, reconcile identity from authentication, and seal the update before-image on the server
+### DL-236 - The three card turns carry complete screen state in bounded bodies, reconcile identity from authentication, and seal the update before-image on the server
+
+> **Formerly recorded under `DL-146`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-146` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The three card routes were individually callable, but their pseudo-conversational
 contracts were not complete. The list route discarded three values from the program's retained
@@ -6162,7 +5863,9 @@ reaches the detail operation.
 
 ---
 
-### DL-147 - Transaction turns carry one bounded list continuation, derive identity from authentication, and keep entered and persisted amounts distinct
+### DL-237 - Transaction turns carry one bounded list continuation, derive identity from authentication, and keep entered and persisted amounts distinct
+
+> **Formerly recorded under `DL-147`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-147` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The transaction-list boundary divided one pseudo-conversational screen turn between a
 JSON body and three query parameters. The body carried the cursor pair and direction, while the
@@ -6221,7 +5924,9 @@ only.
 
 ---
 
-### DL-148 - Account and bill-payment turns derive identity from authentication, and payment account selection comes only from the screen field
+### DL-238 - Account and bill-payment turns derive identity from authentication, and payment account selection comes only from the screen field
+
+> **Formerly recorded under `DL-148`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-148` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The account-view, account-update and bill-payment boundaries accepted a
 client-echoed `NavigationContext` and passed it to their services unchanged. That record contains
@@ -6263,7 +5968,9 @@ tests.
 
 ---
 
-### DL-149 - The HTTP boundary denies browser origins by default and applies one finite request budget in every profile
+### DL-239 - The HTTP boundary denies browser origins by default and applies one finite request budget in every profile
+
+> **Formerly recorded under `DL-149`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-149` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The delivered API had field-level bounds but no coherent middleware budget. No CORS
 policy was registered, the security chain did not process one, and no shipped configuration stated
@@ -6307,7 +6014,9 @@ tests.
 
 ---
 
-### DL-150 - The served OpenAPI document derives nineteen operations and one shared typed error vocabulary
+### DL-240 - The served OpenAPI document derives nineteen operations and one shared typed error vocabulary
+
+> **Formerly recorded under `DL-150`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-150` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The standalone OpenAPI metadata bean still described an empty milestone after all
 seventeen screen-derived operations and two batch-control operations had been delivered. Most
@@ -6350,7 +6059,9 @@ containment.
 
 ---
 
-### DL-151 - Authentication and abend diagnostics publish fixed outcomes, never caller-carried identities or program text
+### DL-241 - Authentication and abend diagnostics publish fixed outcomes, never caller-carried identities or program text
+
+> **Formerly recorded under `DL-151`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-151` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The sign-on service and controller wrote the operator identifier into rejection,
 admission and session-issuance records. The identifier was bounded to the eight-character screen
@@ -6385,7 +6096,9 @@ eight-character bound and JSON write-only credential contract.
 `api/GlobalExceptionHandler.java`, `api/dto/SignOnRequest.java`, and their authentication,
 controller, exception-handler, DTO-boundary and JSON-contract tests.
 
-### DL-152 - The active-job panel reads the exported name, and the meter-collision warning beside it is two framework instrumentation paths colliding, not a defect to suppress
+### DL-242 - The active-job panel reads the exported name, and the meter-collision warning beside it is two framework instrumentation paths colliding, not a defect to suppress
+
+> **Formerly recorded under `DL-152`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-152` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The "Active job executions" panel of the provisioned dashboard queried
 `spring_batch_job_active_seconds_active_count`. It returned nothing under every condition, so the panel
@@ -6433,6 +6146,18 @@ that distinction removes the exported series instead - which is exactly the clas
 this entry necessary. A cosmetic log line is not worth reintroducing the defect. The zero-warning
 commitment this module holds itself to is a compiler contract enforced by `-Xlint:all -Werror`, and it
 excepts framework-generated code; a runtime diagnostic emitted by a framework component is outside it.
+
+> **PARTLY SUPERSEDED by DL-217.** (This entry was recorded under `DL-152` until that identifier was
+> de-duplicated; see entry DL-245.) The panel reasoning above still holds and the framework's meter still
+> keeps its exported name, so the shipped expression is unchanged. What no longer holds is the conclusion
+> that the collision must be tolerated. The objection recorded here was that the only available
+> suppression discriminates on tag keys and therefore risks removing the exported series - and that
+> objection is sound. DL-217 does not take that route: it keys on the **presence of the observation's own
+> tag**, which the framework's meter does not carry, and it **renames** rather than denies, so no meter is
+> dropped and no statistic is re-bucketed. The consequence is that the second registration now succeeds
+> under a sibling name, the warning no longer appears on any launch, and the job-name-and-status dimension
+> that this entry recorded as permanently lost exists after all. The reasoning here is retained because it
+> is the reason the fix is shaped the way it is.
 
 *Cited by:* `config/grafana/dashboards/carddemo-overview.json`, and the dashboard metric-name and
 executed-query suites that hold it.
@@ -6554,7 +6279,9 @@ a document that claims a clean gate elsewhere.
 
 ---
 
-### DL-159 - The category-balance report's edit mask prints every digit position it declares, so a zero balance is nine zeros and not a blank field
+### DL-243 - The category-balance report's edit mask prints every digit position it declares, so a zero balance is nine zeros and not a blank field
+
+> **Formerly recorded under `DL-159`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-159` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The report step of `app/jcl/PRTCATBL.jcl` reprojects the balance under
 `EDIT=(TTTTTTTTT.TT)` at lines 53 to 56. The first translation rendered that mask the way the module's
@@ -7777,8 +7504,12 @@ audit forbids the construct everywhere.
 `.github/workflows/carddemo-java-ci.yml`.
 
 
-### DL-159 - A newly published high-severity finding against the servlet container has no released fix on any line, so the pin stays at the newest published release, the gate keeps reporting it, and nothing is suppressed
+### DL-244 - A newly published high-severity finding against the servlet container has no released fix on any line, so the pin stays at the newest published release, the gate keeps reporting it, and nothing is suppressed
 
+> **Formerly recorded under `DL-159`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-159` is the one the module's own source cites. See entry DL-245.
+
+> **Integrated-state note.** This note was published under a second `DL-159` heading of its own, which made the identifier ambiguous for every citation that names it. The words are unchanged; only the duplicate heading is gone, and the note now sits inside the entry it annotates. See entry DL-222.
+>
 > **Reconciliation note.** This entry and the `DL-159` entry above were written independently about the
 > same finding. Both measurements stand and neither is withdrawn: no released artifact clears the finding
 > on any line, and the practical exposure of an embedded container that ships none of the example
@@ -7789,8 +7520,6 @@ audit forbids the construct everywhere.
 > reporting the finding and that no suppression file exists as the position at the time this entry was
 > written; the evidence in them is unchanged, the disposition is the one above.
 
-
-### DL-159 - A newly published high-severity finding against the servlet container has no released fix on any line, so the pin stays at the newest published release, the gate keeps reporting it, and nothing is suppressed
 
 **Why this entry exists.** `pom.xml` carries `<tomcat.version>` as a security override, documented as
 clearing "a cluster of high severity findings against the container shipped by default on this
@@ -8117,56 +7846,6 @@ that gap by rendering the value.
 
 ---
 
-### DL-145 - All four condition-code step gates are the one strict form the plan freezes, and the fourth member's divergent literal is recorded here instead of implemented
-
-**Context.** The estate carries six `COND=` occurrences, of which four are step gates: three on STEP020,
-STEP030 and STEP040 of `app/jcl/CREASTMT.JCL` at lines 56, 66 and 79, and one on STEP10 of
-`app/jcl/TRANBKP.jcl:51`. The remaining two, at `app/jcl/TRANREPT.jcl:47` and `app/proc/TRANREPT.prc:45`,
-select records inside an ordering step and are not step gates at all. The migration plan states that all
-four step gates demand a prior return code of exactly zero. Read on its own, the fourth member's literal
-is spelled differently from the other three and would admit a prior warning.
-
-**What was implemented before this entry, and why it was wrong.** An earlier revision treated that
-reading as a correction to the plan. `config/BatchConfig.ConditionCodeGate` carried **two** constants
-with two ceilings - zero for the statement job and four for the backup job - `batch/BackupTransactionJobConfig`
-selected the looser one, and three test suites asserted the tolerance as behaviour: that a second gate
-exists, that its ceiling is four, that a step completing with a stated code of four is admitted, and that
-the backup configuration's source text must *not* name the strict constant. That is the failure mode a
-migration is least able to recover from on its own. The plan is the frozen, agreed contract for how the
-estate translates; a test written against a departure from it does not expose the departure, it protects
-it, and every later reader is then told by a green suite that the looser rule is correct.
-
-**Decision.** One ceiling, zero, for all four gates. `ConditionCodeGate` now declares the single constant
-`ALL_PRIOR_STEPS_ZERO`; the backup job routes its gate through that constant, permitting the reset only
-when every earlier step of that execution returned zero and ending - not failing - the flow otherwise. No
-second ceiling may be introduced beside it. The divergent literal is retained as *metadata* about the
-estate: it is stated in the documentation of the configuration, of the backup job and of the two test
-suites, and it is recorded here, but no code path and no assertion expresses a tolerance for it.
-
-**Why the decider is kept rather than replaced by a bare failure transition.** The plan maps the gates to
-fail-or-end step transitions, and a transition on the framework's failure status alone would be a weaker
-rule than the one the plan states: a step that *completed* while stating a nonzero completion code of its
-own has not failed, so such a step would pass a bare transition and would be running behind a gate that
-demands zero. The decider closes that hole. It derives a numeric code per accumulated step execution -
-digits at face value, nothing from a step that has not ended, the error code from a step that did not
-complete, zero from a step that completed silently or with one of the framework's own exit codes, and a
-remark code from a step that completed while saying anything else - and gates on the highest. With the
-ceiling at zero, a stated four, a stated twelve, an unparseable over-long digit run and a free-text remark
-are all refused, which is the strict rule stated completely rather than partially.
-
-**What deliberately did not change.** `service/TransactionPostingService.RETURN_CODE_REJECTS_PRESENT`
-stays four. That value is the posting program's own, set at `app/cbl/CBTRN02C.cbl` lines 229 to 230, and
-it is reported on the posting job's own step for an operator to read. It was previously asserted by
-equality against the tolerant gate's ceiling, which made two unrelated facts look like one contract; the
-assertion now cites the program and additionally records that no step gate admits the code. A gate reads
-only the step executions of the job execution it sits inside, so a code raised by one job was never
-something another job's gate could have admitted.
-
-*Cited by:* `config/BatchConfig.java` and its gate enumeration; `batch/BackupTransactionJobConfig.java`,
-which selects the ceiling; `batch/CreateStatementJobConfig.java`, whose three gates are the same rule
-expressed as three transitions; and `batch/PostTransactionJobConfig.java`, which raises the completion
-code that is no longer read as a ceiling. The covering suites are `config/BatchConfigTest.java`,
-`batch/BackupTransactionJobConfigTest.java` and `batch/PostTransactionJobConfigTest.java`.
 ### DL-194 — The sign-on role code is stored unconstrained, because the legacy split has no third branch
 
 **Context.** `user_security.sec_usr_type` is the single character that decides whether an operator reaches
@@ -8201,332 +7880,6 @@ The two assertions together say the column *accepts* a third code while the deli
 
 *Cited by:* `domain/UserSecurity.java`, `config/SecurityConfig.java`. Proven by
 `repository/UserSecurityRepositoryIT.java` and `service/UserSecurityCredentialIT.java`.
-
----
-
-### DL-145 - The jarmode tools library is declared so the vulnerability gate can see it, the plugin's own copy is turned off so only one writer remains, and the loader's redundant copy is accepted because excluding it would recreate the very gap being closed
-
-**Context.** The supply-chain gate scans the resolved dependency graph and fails the build on a critical
-or high finding. `DeployableSupplyChainIT` already asserted the other half of that claim's honesty -
-that nothing the gate deliberately skips, meaning the test graph, reaches the deployable archive. Neither
-mechanism addressed the opposite direction: a library that reaches the archive without ever having been
-in the graph at all. Review found one, and it is not an oversight in a declaration.
-
-**What was actually happening.** `spring-boot-jarmode-tools-3.5.16.jar` shipped inside `BOOT-INF/lib`
-and the container image went on to **execute** it - `Dockerfile` runs `java -Djarmode=tools -jar <jar>
-extract --layers --launcher` to split the archive into image layers. It was nevertheless invisible to the
-scan, because it is not a resolved artefact: it is an ordinary **resource embedded inside the build
-tool**. `spring-boot-loader-tools` carries it at `META-INF/jarmode/spring-boot-jarmode-tools.jar`, and
-with `includeTools` at its default the repackaging step copies that resource out of itself into the
-archive. Nothing in this project's graph ever names it, so no amount of reading the graph could have
-found it. Measured before the change: of the 179 bundled libraries, 178 resolved from the repository and
-exactly one did not.
-
-**Why a bounded, shipped-and-executed library is worth this much attention.** The exposure is small in
-size and ordinary in kind, which is exactly why it is the interesting case. A gate that reports "no
-critical or high findings across the dependency graph" is trusted as a statement about the product, and
-the product contained a library the statement did not cover. The defect is in the *scope of the claim*,
-not in the library, and a claim whose scope is wrong by one is wrong in the same way as a claim whose
-scope is wrong by fifty.
-
-**The decision, in three parts.** First, the artefact is **declared** in `pom.xml` at `runtime` scope,
-version inherited from the parent, which puts it in the graph the gate scans. Second, the plugin's own
-extraction is turned **off** with `<includeTools>false</includeTools>`, so the graph is the single writer
-of the library. Third, the `spring-boot-loader` copy that arrives as its transitive dependency is
-**accepted** rather than excluded.
-
-**Why the scope is `runtime` and not `provided`.** `provided` was tried first and is wrong twice over.
-The repackaging step includes provided-scope libraries as well, so the two writers still collided; and
-describing a library the image genuinely runs as "provided" misstates how it reaches the runtime.
-`runtime` is the narrowest scope that both ships the library and puts it in the scanned graph, and
-nothing compiles against it, so `compile` would widen the compile classpath for no benefit.
-
-**Why the extraction is turned off rather than the graph copy excluded.** With the artefact declared and
-the extraction left on, the plugin refuses outright: *Duplicate library
-spring-boot-jarmode-tools-3.5.16.jar*. That refusal is correct behaviour and is what forced the choice -
-a silent duplicate inside the archive would have been a worse defect than the gap. The plugin's
-`<excludes>` filter was tried on the graph copy and did not prevent the collision, so the remaining
-correct arrangement is to leave exactly one writer. **Nothing about the artefact changes:** the jar
-resolved from the repository and the resource embedded in the build tool are the same bytes, sha256
-`d05beb46a7eac0f1a06733c75828b190a1cb250076ce03be2213aca4a5c0f03f`, so only the provenance moved.
-`DeployableSupplyChainIT` asserts that digest rather than assuming it, because if the two sources ever
-stop matching, a change of provenance has become a change of content and must not pass silently.
-
-**Why the loader's redundant copy is accepted, which is the least obvious part of this entry.**
-Declaring the tools library brings its own runtime dependency, `spring-boot-loader`, onto the graph, so
-the archive now carries `spring-boot-loader-3.5.16.jar` as a bundled library - about 200 kB in a 92 MB
-artefact - **in addition** to the loader's 99 classes that the repackaging step already writes unpacked
-at the archive root, because that is how a repackaged jar boots. The obvious tidy-up is to exclude the
-transitive dependency. It was rejected, and for the same reason this entry exists at all: the unpacked
-classes come from a resource embedded in the build tool, by the identical route that hid the tools
-library. Verified byte for byte - the classes at the archive root and the classes inside the resolved
-`spring-boot-loader` jar have matching digests, 99 classes on each side. So excluding the coordinate
-would save 200 kB and put 99 shipped classes outside the scan, reintroducing the defect for a different
-artefact. The redundancy is the price of the coverage and it is the cheaper of the two. The trade is
-asserted, not just described: the test requires the loader coordinate to be on the graph and requires the
-unpacked classes to still be written, so if either premise stops holding the trade is revisited rather
-than silently inherited.
-
-**Coverage after the change, measured rather than asserted.** `dependency-check:check` scans 128
-top-level entries plus 69 merged related entries, a union of 197 artefact names. Every one of the 180
-libraries bundled inside the deployable jar appears in that union: **packaged-JAR coverage is 180 of 180,
-with zero critical or high findings and one medium.** Reproduce it by running `./mvnw -B
-dependency-check:check` and comparing `target/dependency-check-report.json` - the union of `dependencies`
-and their `relatedDependencies` file names - against the `BOOT-INF/lib` listing of
-`target/carddemo-java-1.0.0.jar`.
-
-**What the new guard asserts, and why it asserts resolvability rather than reading the report.**
-`DeployableSupplyChainIT` requires every bundled library to exist as a resolved artefact in the
-repository the running build used - the location is handed to the integration tier by the build itself
-through `carddemo.maven.repository`, rather than guessed, so the check stays correct under a custom
-repository. It deliberately does not read the scan report: the integration tier runs in the
-`integration-test` phase and the scan is bound to `verify`, so the report does not exist yet when the
-test executes, and a check written against a file that is usually absent is a check that usually passes
-for the wrong reason. Resolvability is the property the gate's coverage actually rests on, it is available
-in every build including a fully offline one, and it fails for any future library arriving by the
-embedded-resource route rather than only for the one already found.
-
-*Cited by:* `pom.xml` - the dependency declaration and the `includeTools` note - and
-`src/test/java/com/carddemo/support/DeployableSupplyChainIT.java`.
-
----
-
-### DL-146 - One hashing strength, owned by the digest service and read by the security configuration, because two encoders quietly produced two different work factors
-
-**Context.** Two components constructed a BCrypt encoder. `config/SecurityConfig` declared a strength of
-12 and used it for the encoder bean the authentication manager consumes; `service/CredentialDigestService`
-called the library constructor with no argument, which is cost 10. Both were correct in isolation and the
-module's own documentation described a single hashing policy, so the divergence was invisible: a credential
-written through one path was four times cheaper to attack than one written through the other, and nothing
-compared the two.
-
-**The decision.** The strength is a single published constant, `CredentialDigestService.HASHING_STRENGTH`,
-and it is 12. The digest service constructs its encoder with it, and `SecurityConfig.PASSWORD_HASHING_STRENGTH`
-reads it rather than restating it - which is legal in this direction because the configuration package sits
-above the service package, and illegal in the other. The digest service was therefore raised from the library
-default rather than the configuration lowered to meet it: the cost of a slower hash is borne once per sign-on
-and once per credential write, and the module's own tests absorbed it without a measurable change to the suite.
-
-**What is asserted rather than described.** `SecurityConfigTest` reads the cost factor back out of digests
-produced by both encoders and requires them equal, so a future component constructing its own encoder is
-caught by a comparison rather than by a reading of two files. The two javadoc paragraphs that were about to
-become lies - one claiming the cost was left at the encoder's own default, the other instructing components to
-obtain digests from the service rather than construct a second encoder - were rewritten in the same change.
-
-**One floor that is deliberately separate and lower.** `domain/UserSecurity` enforces a structural minimum
-cost of 10 on any digest presented for persistence. That is not the policy figure and must not be raised to
-match it: it exists to refuse a value that is not a credible digest at all, including one produced by an older
-policy, and a persistence guard that rejected every historically valid digest would refuse data it is meant to
-protect. The policy figure governs what this module writes; the floor governs what it will accept.
-
-*Cited by:* `service/CredentialDigestService.java`, `config/SecurityConfig.java`,
-`config/SecurityConfigTest.java`.
-
----
-
-### DL-147 - A bearer session is established only while it still names its own record, so a demotion, a deletion or a credential change revokes it at the next request rather than at its expiry
-
-**Context.** The issued grant carried issuer, subject, issue time, expiry and role, and the bearer filter
-established authority from the role claim alone with no reference to current state. Every claim was true when
-minted and none was re-checked, so an operator demoted from administrator, deleted outright, or given a new
-credential kept the authority the grant recorded for the remainder of its lifetime - up to thirty minutes of
-administrative access to the user-maintenance and batch-control surfaces after the change intended to remove it.
-
-**The decision.** The grant carries one further claim, `authstate`, and the filter establishes an identity only
-while that claim still matches the authoritative record. `service/SignOnStateService` computes it as a SHA-256
-digest over a version marker and three length-prefixed fields - the identifier, the raw user-type code and the
-stored credential digest - and comparison is constant-time. Each of the three revocation cases changes at least
-one covered field, so each invalidates every grant already issued to that identity at the next request. Nothing
-is bumped or written: the value is DERIVED from state that already changes, which is why no migration, no column
-and no write-path edit was needed, and why a revocation cannot be forgotten at a write site.
-
-**Why nothing is stored.** No revocation list, no session table and no cache. The migration plan excludes an
-application-level cache, and a store would have to be authoritative to be trusted, which makes it a second
-source of truth for the same fact. The cost is one primary-key read of `user_security` per authenticated
-request, on the table's own key, which is the same read the sign-on turn already performs.
-
-**Two consequences stated plainly.** First, issuing refuses rather than guesses: if the record is absent, or its
-type disagrees with the role about to be minted, `JwtTokenProvider.issue` raises rather than producing a grant
-whose claim would be stale from birth, and the boundary answers a neutral failure. That path is reachable only
-by a race between verification and issuing. Second, the claim leaks one bit of metadata: a party holding two
-grants for one identity can tell whether a covered field changed between them. That party already holds two of
-that identity's credentials, so the disclosure is accepted and recorded rather than mitigated. Bumping the
-version marker in the fingerprint scheme is, deliberately, a way to revoke every live session at once.
-
-*Cited by:* `service/SignOnStateService.java`, `config/JwtTokenProvider.java`, `config/SecurityConfig.java`,
-`service/SessionTokenIssuer.java`, `api/AuthController.java`.
-
----
-
-### DL-148 - The batch-control surface is administrator-only, and its job parameters are an allowlist rather than a map, because the framework's untyped parameter path can name a class
-
-**Context.** The batch-control endpoints launch the nine wired jobs and report an execution. Two things about
-them had no legacy counterpart and therefore no parity answer: who may reach them, and what a caller may pass.
-The estate's route from an operator to a batch job was a fixed-width queue write read by a scheduler, not a
-transaction, so the resource definitions classify nothing here.
-
-**The decision on authority.** The endpoints are gated to the administrator authority. The reasoning is by
-analogy rather than by inheritance: the legacy queue write was reachable only from the reporting transaction,
-whose own submission gate the estate placed behind a confirmation, and every operator-facing maintenance
-transaction the estate does classify is administrative. Launching a posting or interest run is at least as
-consequential as editing a sign-on record. The gate is implemented as a path region - the controller publishes
-its prefix and the security configuration reads that constant - so the rule and the mapping cannot disagree by
-being written twice, and `DeliveredRouteSecurityStateTest` asserts both batch operations stay inside it.
-
-**The decision on parameters.** The untyped launch path was removed. A caller previously supplied a map that
-was converted to properties and handed to the framework's conversion, which accepts a type-bearing syntax and
-will resolve a named class - a caller-controlled type name is not an acceptable input to a control surface.
-Each job now declares an explicit allowlist of parameter names and each accepted value is converted to a typed
-parameter by this module, so an unknown name, a value bearing a separator or a control character, and an
-attempt to override an identifying parameter are all refused before the framework sees anything.
-
-**A second constraint that follows from the same reasoning.** The five job configurations resolve staged file
-names against a staging root. Those names were checked only for being non-blank before being resolved, so an
-absolute path or one containing a parent reference escaped the root and could be created, truncated or deleted.
-`util/StagedResourceNames.requireSimpleName` now refuses anything but a simple name for a dataset, while the
-staging root itself stays legitimately multi-segment. The distinction is the point: the root is configuration,
-the names are data.
-
-*Cited by:* `api/BatchJobController.java`, `config/SecurityConfig.java`, `util/StagedResourceNames.java`,
-`batch/JobParameterValidators.java`.
-
----
-
-### DL-149 - The two transaction-identifier allocators take one advisory lock before reading the highest key, and the estate's browse-and-add-one is preserved rather than replaced by a sequence
-
-**Context.** Both allocators reproduce the estate's method of minting a transaction identifier: read the
-highest existing key and add one. `service/BillPaymentService` read it with a maximum-value query and
-`service/TransactionAddService` with a descending browse. `repository/TransactionRepository` already published
-an advisory lock for exactly this purpose and its documentation obliged a caller to take it before the read and
-to retry on a duplicate key. Neither allocator did either, so two concurrent turns could read the same maximum
-and mint the same identifier.
-
-**The decision.** Both allocators take `lockIdentifierAllocation` on one shared key immediately before the read
-and hold it through the insert inside the same transaction, and both carry a bounded retry that re-reads under
-the lock when a duplicate key is nevertheless reported. A database sequence was not used and is excluded by the
-migration plan: a sequence diverges permanently from the highest-key-plus-one rule after the first gap, and a
-gap is guaranteed by the first rolled-back turn.
-
-**A second defect found while fixing the first.** An assigned-identifier save resolves to a merge, so a
-colliding insert would have silently overwritten an existing transaction row rather than failing. Both
-allocators now probe for the identifier and flush explicitly, which is what makes the retry reachable at all -
-without it the duplicate-key condition the retry exists for could not occur.
-
-**How a third allocator is prevented from quietly getting this wrong.** `IdentifierAllocationLockAuditTest`
-names the two minting sources and requires the lock to precede the read in each. Adding a third minting caller
-fails that audit, and the correct response is to enrol it deliberately with a note here rather than to widen the
-audit - because a new source of identifiers is a concurrency decision, not a formatting one.
-
-*Cited by:* `service/BillPaymentService.java`, `service/TransactionAddService.java`,
-`repository/TransactionRepository.java`, `repository/IdentifierAllocationLockAuditTest.java`,
-`repository/TransactionRepositoryIT.java`.
-
----
-
-### DL-150 - A submission identity is minted per request and reused only on an explicit retry, and each card carries a reassembly envelope, because a date-derived identity silently discarded a legitimate second submission
-
-**Context.** The report-request turn publishes a seventeen-card job image to a first-in-first-out queue, one
-card per message, reproducing the estate's queue write. The deduplication identity was derived from the
-requested date range alone, and the class documentation claimed it carried a nonce - it did not. Two
-consequences followed, in opposite directions. A legitimate second request for the same period inside the
-queue's five-minute deduplication window was discarded by the broker and reported to the caller as success. A
-delayed partial retry after that window duplicated the prefix that had already landed.
-
-**The decision on identity.** The identity is minted per request as the range plus a thirty-two-character
-random nonce, bounded at minting so it cannot exceed the broker's limit, and it is returned on the submission
-result so that a retry is possible at all. Reuse is available only through the explicit entry point that takes
-an identity, which is what a retry is. A same-period second request is therefore a second submission - which is
-also the closer reading of the estate, whose queue write appended unconditionally.
-
-**The decision on interleaving, and what it deliberately does not add.** The publishing lock is process-local,
-so two instances can interleave two seventeen-card streams in one message group. A distributed lock or a single
-active publisher would need a coordination service, and the migration plan excludes adding one. Instead every
-message carries three attributes - the submission identity, the one-based card ordinal and the card count - so a
-consumer reassembles a submission atomically regardless of interleaving. The eighty-byte card payload, the
-one-card-per-message shape, the single message group, the append ordering and the non-fatal failure semantics
-the estate's errors-ignored queue specified are all unchanged; only the envelope is new, and it is a reviewed
-widening of what crosses the bridge, enrolled by name in the two guard tests that police that boundary.
-
-**Six tests that encoded the defect were rewritten rather than relaxed,** each carrying a note of what it used
-to assert and why that reasoning failed - the clearest being a test that asserted two identical requests
-produced one identity, which was the discarded-submission bug expressed as an expectation.
-
-*Cited by:* `service/JobSubmissionService.java`, `service/ReportRequestService.java`,
-`service/JobSubmissionServiceTest.java`, `service/JobSubmissionServiceIT.java`.
-
----
-
-### DL-151 - A diagnostic publishes a classified failure chain and never a throwable, and never a primary account number, because the console the estate wrote to and the log this module writes to are not the same surface
-
-**Context.** The estate's only diagnostic channel was 217 console displays, read by an operator inside the same
-security boundary as the data. This module's diagnostics are structured events that are aggregated, forwarded
-and retained outside that boundary. Two habits carried across from the estate and stopped being safe in the
-crossing.
-
-**The decision on throwables.** Thirty-four diagnostics handed a caught throwable to the logger, which renders
-its message and frames - the message being where a data layer quotes the connection string it failed on and a
-driver quotes the statement and its bound parameters. All thirty-four now report authored context plus
-`util/FailureDiagnostics.failureChainOf`, which composes the chain of failure TYPES and reads no message, no
-frame and no suppressed throwable. The legacy diagnostic constant remains the leading token of each message so
-operator log-matching still works. The review named twenty of the thirty-four; the remainder were found by
-scanning for the pattern rather than working the list, and fixing only the named ones would have made the guard
-below worthless.
-
-**The decision on the primary account number.** Four diagnostics wrote a card number in full. Each now emits the
-module's existing fixed stand-in. A partial mask was rejected, as it has been four times before in this module: a
-fragment of a sixteen-character numeric key is recoverable by enumeration, so a truncated primary account number
-is still cardholder data. What is deliberately NOT withheld is the daily-transaction, account and customer
-identifier that accompany them - they are the keys that make a rejected transaction traceable, the estate
-protects none of them, and withholding them would leave the batch tier undiagnosable in exchange for nothing.
-The card number likewise stays in the 133-byte report record, which is a file record under a byte-parity
-obligation rather than a diagnostic.
-
-**Why a guard and not a review.** Both defects are properties of a call site, introduced by writing one
-ordinary-looking line, and every one of them executes only on a failure path whose log no behavioural test
-inspects - which is why a large suite had caught none of them. `DiagnosticConfidentialityAuditTest` scans the
-sources, requires both counts to be zero, requires the sanctioned reporting form to be genuinely in use so the
-rule cannot be satisfied by deleting diagnostics, and carries self-checks that plant each violation and require
-the detector to fire. One argument is enrolled by name: a negated presence predicate over a browse key, whose
-value is a boolean.
-
-*Cited by:* `util/FailureDiagnostics.java`, `DiagnosticConfidentialityAuditTest.java`,
-`service/DailyTransactionReadService.java`, `service/TransactionReportService.java`.
-
----
-
-### DL-152 - The local stack binds every published port to the loopback interface and pins every image it does not build, because the throwaway credentials and the network exposure are one decision
-
-**Context.** The local validation stack publishes eight ports and is deliberately full of readable values - a
-database password in the file, a dashboard password of `admin`, and a token signing secret committed in the local
-profile - so that a developer can bring it up and sign on with nothing prepared. Every mapping omitted the host
-address, which binds every interface on the machine. On that binding the fixtures stop being fixtures: the
-database answers any peer that can route to the host, the dashboard admits anyone who has read the repository,
-and - the one that is authority rather than information - the application signs bearer grants with a published
-secret, so a peer can mint an administrator grant and reach the batch-control surface DL-148 had just gated.
-
-**The decision.** Every mapping is written `${SERVICE_BIND_ADDRESS:-127.0.0.1}:${SERVICE_PORT:-n}:n`. Loopback
-is what an unqualified bring-up produces; widening is per-service, so widening one leaves the rest closed; and
-the obligation that comes with widening - generate the database password, the dashboard password and above all
-the signing secret - is stated at the point of the decision and in the module README, because Compose has no
-conditional and cannot enforce a pairing. `LocalValidationStackExposureTest` fails the build if any mapping
-loses its default. Verified at runtime, not only in the file: the application answers on the loopback address
-and the host's own routable address refuses the connection.
-
-**The diagnostic services are gated by reachability, not by start-up.** Each takes its own bind address, so
-reaching Jaeger, Prometheus or Grafana from elsewhere is an opt-in exactly as it is for the database. They are
-deliberately NOT put behind a Compose profile that would stop them starting: the performance baseline is read
-from the meter set Prometheus scrapes, so a default bring-up producing no scrape would make a delivered gate
-unobtainable by the documented command.
-
-**Image pinning, and the one image that cannot be pinned.** The five external images now carry a digest
-alongside the tag, matching the form the two build stages and the continuous-integration actions already use, so
-an upstream republish of a tag cannot change what the gates were validated against without appearing here as a
-diff. The application image is built from this module's own Dockerfile inside the same stack, so its digest does
-not exist until the build that produces it has run; its inputs are pinned instead, and it is enrolled by exact
-text in the guard so that a different unpinned image still fails.
-
-*Cited by:* `docker-compose.yml`, `src/main/resources/application-local.yml`,
-`LocalValidationStackExposureTest.java`, `README.md`.
 
 ---
 
@@ -8658,41 +8011,6 @@ identifier is the one column in the schema a reviewer is most likely to propose 
 *Embodied in:* `V1__create_schema.sql`, `V2__create_indexes.sql` (decision B), `domain/Account.java`,
 `repository/AccountRepository.java`.
 *Cited by:* `src/test/java/com/carddemo/repository/AccountRepositoryIT.java`.
-
----
-
-### DL-145 - Caller-selected record identifiers require a declared CardDemo operator authority
-
-**Context.** The account view and update, card list/detail/update, transaction list/view/add and bill
-payment surfaces all accept a business identifier from the caller. Their services resolve that
-identifier directly against the corresponding repository. The user-security record identifies a
-person and a one-character user type; it carries no customer, account, card or transaction identifier,
-and no program in the estate joins a sign-on identity to one. Treating a caller-supplied identifier as
-proof of ownership would therefore be the vulnerability, while inventing an ownership table would be a
-new business rule with no legacy authority.
-
-**Decision.** The four controller roots are an explicit online-data operator surface. The filter chain
-admits exactly the two primary authorities derived from the two user types the estate declares:
-`ROLE_ADMIN` and `ROLE_USER`. It does not rely on bare authentication for those roots. Both legacy user
-types retain the access they had, including the administrator path licensed by the protected-data
-adapter, while an unrelated authenticated principal such as a future audit or service identity receives
-forbidden rather than inheriting record-wide access from the closing catch-all.
-
-**Why no third user type or client-carried entitlement is introduced.** A synthetic operator type would
-alter the fixed one-character user-security layout, and a request flag would merely let the caller grant
-itself access. The authority set is server-owned, immutable and assembled from the existing primary
-authorities. Controller mappings remain the one home of their path constants; the security rule imports
-those constants and matches both each root and every descendant, so a new operation under an existing
-data controller is protected before its handler is written.
-
-**What is verified.** The real filter chain is driven across all nine routes. Tokens for both declared
-user types receive success; no credential receives unauthorized; and an authenticated principal carrying
-only an unrelated authority receives forbidden on every route. The controller contracts also publish the
-forbidden outcome, so the machine-readable interface does not claim that authentication alone is enough.
-
-*Cited by:* `config/SecurityConfig.java`, `api/AccountController.java`,
-`api/CardController.java`, `api/TransactionController.java`,
-`api/BillPaymentController.java`, `config/SecurityConfigTest.java`.
 
 ---
 
@@ -8897,307 +8215,6 @@ DL-113; relies on the truncating scale policy of DL-013 and the verbatim fixed-w
 
 ---
 
-### DL-146 - The three card turns carry complete screen state in bounded bodies, reconcile identity from authentication, and seal the update before-image on the server
-
-**Context.** The three card routes were individually callable, but their pseudo-conversational
-contracts were not complete. The list route discarded three values from the program's retained
-paging area and consequently treated every request as the first page. The detail route put a full
-card number and the echoed communication area in a GET request target. The update route echoed a
-client-provided concurrency token without opening it and handed no change action or before-image to
-the service. All three routes also passed the communication area's user identifier and user type
-straight through, even though those two members came from the client. Each defect had the same root:
-state that CICS kept outside the operator's control had been translated as ordinary client-authored
-input without recreating the original trust boundary.
-
-**The list decision.** The CCLI paging area is five values, not merely two cursor keys and a
-direction. The request now carries the cursor pair and direction in `PageCursorRequest`, plus the
-three-character retained page number, the last-page-already-shown flag and the next-page-indicated
-flag. The boundary converts the page text to the integer the service counts with and otherwise
-passes every value through unchanged. An absent, blank or unreadable page value becomes page one,
-which is the same state the program initializes on first entry; no clamping or page arithmetic is
-performed at the boundary. The service returns the last-page flag beside `PageMetadata`, and the
-response publishes it so a second forward press at the end can produce the distinct no-more-pages
-outcome instead of repeating the first end-of-data response.
-
-**The list header decision.** COCRDLIC writes both title lines, the transaction and program names,
-and the current date and time on every send. Those six values therefore belong to the service
-result, not to a transport mapper guessing what the screen probably showed. `CardListService` takes
-an injected `Clock`, reads it once per send, and assembles `MM/DD/YY` and `HH:MM:SS` with the
-module's locale-neutral fixed-width primitive. The controller publishes the returned header
-component for component. This brings the list screen into the same model as the detail and update
-screens and prevents a timestamp from being fabricated at a layer that cannot be tested against the
-turn that produced it.
-
-**The detail decision.** CCDL remains idempotent in effect, but it is submitted with POST rather
-than fetched with GET. Its card filter is a primary account number, and its navigation record
-contains further cardholder identifiers; putting either in the request target exposes it to proxy
-and gateway access logs, browser history and referrer handling before the application's own safe
-logging policy can act. `CardDetailRequest` carries the two optional filters, the key and the
-navigation record in the body. The filters remain optional because the program has distinct
-outcomes for no account, no card and no input. Their eleven- and sixteen-character map widths are
-declared as validation bounds, so an impossible terminal value is rejected rather than silently
-truncated by the service's defensive receive logic. The former GET surface is not retained as an
-alias.
-
-**The update decision.** The change action and `CarriedCardImage` are one continuation and are
-sealed together under a binding and scheme distinct from the older record-concurrency proof. The
-image is written in its record declaration order: owning account, card number, verification code,
-embossed name, expiry year, expiry month, expiry day and active status. A literal count is used in
-production because the unsafe-code budget forbids reflection there; a test reflects over the record
-to pin that literal to eight and inspects the protected payload to pin the field order. An absent
-token is the genuine first-entry state, details-not-fetched with an empty image. Any present token
-that fails authentication, carries another binding or scheme, has the wrong part count, names no
-declared action or contains an unreadable field marker is a 409 conflict before the update service
-runs. Every successful turn seals a fresh continuation from the action and image the service
-settled on; the caller's token is never echoed as the next token.
-
-**The identity decision.** Every card route reconciles a supplied `NavigationContext` before the
-service sees it. Routing, selected-card and screen members cross unchanged, while `userId` and
-`userType` are replaced from the established `Authentication` through the single readers on
-`ConversationStateAdapter`. An absent record stays absent because the programs distinguish a
-zero-length communication area from an empty one. A forged administrative type in the body
-therefore changes no authority and cannot survive into a service as though the server had asserted
-it.
-
-**What is asserted.** Tests pin the five list paging values in both directions, the six header
-values under a fixed clock, the detail route's body-only surface and exact width rejections, the
-continuation's eight-field count and seal order, every continuation refusal arm, token rotation,
-and identity reconciliation on list, detail and update. The controller tests additionally prove
-that an untrusted continuation produces 409 before the service is invoked and that GET no longer
-reaches the detail operation.
-
-*Cited by:* `api/CardController.java`, `api/ConversationStateAdapter.java`,
-`api/dto/CardDetailRequest.java`, `api/dto/CardListRequest.java`,
-`api/dto/CardListResponse.java`, `service/CardConcurrencyTokenService.java`,
-`service/CardListService.java`, and their card controller, DTO, service and continuation tests.
-
----
-
-### DL-147 - Transaction turns carry one bounded list continuation, derive identity from authentication, and keep entered and persisted amounts distinct
-
-**Context.** The transaction-list boundary divided one pseudo-conversational screen turn between a
-JSON body and three query parameters. The body carried the cursor pair and direction, while the
-request target carried the displayed identifiers, an integer page number and the next-page flag.
-That split allowed state from different turns to be combined, changed the eight-character page image
-to a different wire type, and left the displayed-identifier collection unbounded. The list, view and
-add routes also passed the communication area's user identifier and user type through unchanged.
-Finally, the add response sourced its amount only from a record that had been written, so validation
-and confirmation turns lost the twelve-character amount still visible on the screen.
-
-**The list-continuation decision.** `TransactionListRequest.ScreenContinuation` is the one inbound
-shape for every value needed to resume a CT00 page: the first and last transaction keys, direction,
-the eight-character page image, the look-ahead result and the identifiers displayed in row order.
-The continuation is part of the request body; CT00 accepts no paging query parameter. Each key and
-displayed identifier is bounded to sixteen characters, the identifier list is bounded and
-constructor-enforced at ten entries, and the page image is bounded to eight characters while
-retaining its text form and space padding. The controller converts that validated page image to the
-service's arithmetic counter only at the service boundary. `TransactionListResponse` publishes the
-same continuation type, built exclusively from the page metadata and rows the service returned, so
-the next request can echo one coherent server-produced turn.
-
-**Why the response still carries `PageMetadata`.** `PageMetadata` is the presentation description of
-the page just produced: page size, both boundary keys, direction, the independent previous/next
-indicators and the displayed image. The continuation is the narrower next-turn input, including the
-ten displayed identifiers that positional row selection requires and excluding page size and any
-aggregate. Keeping both is not two authorities: the controller derives the continuation from that
-same metadata and row list in one method, and tests pin every derived field.
-
-**The identity decision.** CT00, CT01 and CT02 all reconcile an echoed `NavigationContext` through
-`ConversationStateAdapter.reconcile` before invoking a service. Routing and screen state remain as
-echoed, while `userId` and `userType` are replaced from the established `Authentication`. An absent
-communication area remains absent because each legacy program distinguishes that condition. A
-caller can therefore echo navigation state but cannot choose the identity or role a transaction
-service receives.
-
-**The amount decision.** `TransactionAddResponse.amountEntered` is the twelve-character screen image
-from `TransactionAddService.ScreenFields.amount()` and is published on every turn, including the
-confirmation prompt and every validation rejection. The existing `amount` remains the exact
-two-decimal `BigDecimal` from the persisted transaction projection and remains absent until a write
-succeeds. `newTransactionId` follows the same successful-write rule. No boundary reparses the screen
-text to manufacture a decimal, so the service remains the sole authority for amount validation and
-conversion while the transport faithfully redisplays what the operator entered.
-
-**What is asserted.** Tests require the CT00 handler to expose only the body plus
-`Authentication`, require the complete continuation to reach the service and return in the response,
-refuse an eleventh displayed identifier, report a seventeenth character at its list index, preserve
-the fixed-width page text, and redact every transaction key from diagnostics. Controller tests pass
-a forged administrative identity in each transaction route and require the service input to carry
-the authenticated standard-user identity instead. CT02 tests require `amountEntered` on both written
-and unwritten turns while the persisted amount and generated identifier remain successful-write
-only.
-
-*Cited by:* `api/TransactionController.java`, `api/ConversationStateAdapter.java`,
-`api/dto/TransactionListRequest.java`, `api/dto/TransactionListResponse.java`,
-`api/dto/TransactionAddResponse.java`, and their transaction controller, DTO and service tests.
-
----
-
-### DL-148 - Account and bill-payment turns derive identity from authentication, and payment account selection comes only from the screen field
-
-**Context.** The account-view, account-update and bill-payment boundaries accepted a
-client-echoed `NavigationContext` and passed it to their services unchanged. That record contains
-the signed-on user identifier and user type, so a caller could make a service observe an identity
-the authentication chain had never established. Bill payment carried a second trust-boundary
-defect: on first entry it nominated the account to read from the account identifier inside that
-same echoed record, even though the screen already supplies a separately bounded eleven-character
-account field. CICS owned the communication area; an HTTP client does not, so neither identity nor
-row authority can be inherited from it.
-
-**The account decision.** Both account routes reconcile navigation state through
-`ConversationStateAdapter.reconcile` before invoking a service. The view route passes the
-reconciled record directly. The update route uses
-`AccountUpdateRequest.withNavigationContext` to make a mechanical copy of all forty-six request
-components while replacing only navigation state, so the controller cannot accidentally alter a
-screen field, attention key or concurrency token while establishing identity. An absent
-communication area remains absent. When one is supplied, every routing, selected-record and screen
-member remains unchanged while `userId` and `userType` come from the established
-`Authentication`.
-
-**The bill-payment decision.** `BillPaymentController` performs the same identity reconciliation
-before constructing `BillPaymentScreenInput`. `BillPaymentService` nominates an account only from
-that input's explicit `accountId` field. The service still reloads the nominated account from
-`AccountRepository` before any balance or write decision, but an account identifier present only
-in navigation state cannot cause a lookup. The navigation account member remains available as
-retained screen state; it is simply not an authorization or row-selection source.
-
-**What is asserted.** Account controller tests submit forged administrative identities on both
-routes and require the service inputs to carry the authenticated standard-user identity while
-retaining the non-identity fields. Bill-payment controller tests drive the real servlet binding
-with an authenticated principal and require the same replacement. Bill-payment service tests
-require the explicit screen account to win over a different echoed account and require an echoed
-account by itself to produce no repository access.
-
-*Cited by:* `api/AccountController.java`, `api/BillPaymentController.java`,
-`api/ConversationStateAdapter.java`, `api/dto/AccountUpdateRequest.java`,
-`service/BillPaymentService.java`, and their account and bill-payment controller, DTO and service
-tests.
-
----
-
-### DL-149 - The HTTP boundary denies browser origins by default and applies one finite request budget in every profile
-
-**Context.** The delivered API had field-level bounds but no coherent middleware budget. No CORS
-policy was registered, the security chain did not process one, and no shipped configuration stated
-limits for the request line, headers, body, form parser, parameter count or rejected-body discard.
-That left browser admission implicit and let transport work grow independently of the bounded DTO
-that eventually received it.
-
-**The CORS decision.** Every application operation is beneath `/api/**`, so that is the one CORS
-mapping. `carddemo.web.cors.allowed-origins` is an empty value in the shared baseline and therefore
-an explicit deny-all exact-origin list in every shipped profile. A deployment may supply up to
-sixteen comma-separated HTTP or HTTPS origins. Each must contain only scheme, host and an optional
-valid port; wildcards, the opaque `null` origin, patterns, paths, queries, fragments and user
-information are refused at start-up. The admitted methods are GET and POST, the admitted request
-headers are Accept, Authorization and Content-Type, the Authorization response header is exposed,
-and credentials remain false. `SecurityConfig` enables its CORS integration against the same
-configuration source so a permitted preflight is handled before bearer authentication rather than
-being rejected by the authenticated catch-all.
-
-**The request-budget decision.** The shared baseline, inherited unchanged by local, test and
-production, caps the combined request line and header block at 8 KiB, form content at 64 KiB,
-parsed query-plus-form parameters at 64, rejected-body swallowing at 64 KiB, and request-line
-delivery at ten seconds. Multipart parsing is disabled because no upload operation exists. A
-separate 64 KiB request-body filter is necessary because the embedded container's form limit does
-not govern JSON. `RequestBodyLimitFilter` runs before security and MVC, reads at most one byte beyond
-that ceiling, covers bodies with either a declared length or chunked transfer, returns a bounded
-repeatable servlet request, and answers 413 before controller invocation when the ceiling is crossed.
-The configurable body ceiling is itself restricted to the range from one byte through 16 MiB so a
-misconfiguration cannot turn the bounded copy into an unbounded allocation.
-
-**What is asserted.** Configuration tests resolve the same limits under all three runtime profiles
-and prove that neither packaged nor suite-only overlays widen them. MVC tests inspect the installed
-deny-all and exact-origin policies, reject unsafe origin forms and unsafe body-size settings, cover
-declared-length and chunked excess bodies, and drive an oversized JSON body through the real servlet
-pipeline to a 413 response with zero controller invocations. Security tests prove that the
-shipped empty origin list refuses a preflight and that one exact configured origin receives its
-preflight without a bearer token.
-
-*Cited by:* `config/WebMvcConfig.java`, `config/SecurityConfig.java`,
-`src/main/resources/application.yml`, and their MVC, security, profile-baseline and profile-startup
-tests.
-
----
-
-### DL-150 - The served OpenAPI document derives nineteen operations and one shared typed error vocabulary
-
-**Context.** The standalone OpenAPI metadata bean still described an empty milestone after all
-seventeen screen-derived operations and two batch-control operations had been delivered. Most
-controllers declared response descriptions without a machine-readable success schema, the sign-on
-response mentioned its bearer header only in prose, and controller errors did not consistently bind
-their status codes to `ErrorResponse`. Tests inspected the standalone bean but never fetched the
-document after Springdoc merged the annotated controllers, so a stale description and an empty or
-partially typed route inventory could pass together.
-
-**The component decision.** `OpenApiConfig` continues to hand-maintain no path. It now states the
-delivered split of nineteen operations and registers all thirty-two top-level request and response
-types as derived schemas. It also registers one `BearerAuthorization` response-header component and
-six reusable responses for 400, 401, 403, 404, 409 and 500. Every reusable response carries
-`application/json` content whose schema is the single `ErrorResponse` component. No credential or
-specimen token is published, and examples were removed from the batch response DTOs so adding those
-types to the complete schema roster did not create a credential-like sample value.
-
-**The operation decision.** Every controller applies the same six reusable errors at its type
-boundary, so every one of its operations publishes the complete safe error vocabulary. Every
-successful operation either asks Springdoc to derive its schema from the Java return type or, for
-the two batch operations, names its typed response explicitly. Spring request-body and parameter
-types remain the source of the input schemas. The sign-on success response references the shared
-Authorization header and explicitly clears the document-wide bearer requirement; every protected
-operation inherits that requirement. The bearer-scheme prose names both administrator-only regions,
-`/api/admin` and `/api/batch`, from the enforcing security constants rather than repeated literals.
-
-**What is asserted.** A real MVC slice starts all nine controller classes with mocked business
-collaborators, fetches `/v3/api-docs`, and requires the exact set of nineteen method-and-path pairs.
-For every operation it requires a typed 200 response, typed request body or parameters, and all six
-error response references. It resolves each shared response through
-`#/components/schemas/ErrorResponse`, requires the sign-on Authorization-header reference, and
-requires the sign-on operation's security array to be empty. Standalone tests independently hold
-the description, thirty-two-family schema roster, shared components, bearer scheme and credential
-containment.
-
-*Cited by:* `config/OpenApiConfig.java`, every `api/*Controller.java`,
-`api/dto/BatchJobExecutionResponse.java`, `api/dto/BatchJobLaunchResponse.java`,
-`config/OpenApiRouteContractTest.java`, the OpenAPI configuration tests, and
-`api/dto/WireVocabularyContractTest.java`.
-
----
-
-### DL-151 - Authentication and abend diagnostics publish fixed outcomes, never caller-carried identities or program text
-
-**Context.** The sign-on service and controller wrote the operator identifier into rejection,
-admission and session-issuance records. The identifier was bounded to the eight-character screen
-field but could still contain a control or format character, so those records exposed identity data
-and allowed one request value to change the shape of a log event. The REST abend handler had the
-same structural problem: it logged the caller-carried culprit program field even though the
-navigation layer deliberately treated that field as untrusted text.
-
-**The authentication decision.** Every credential outcome now has a fixed diagnostic vocabulary.
-Missing input, unknown identifiers, unclassifiable stored roles and failed secret comparisons log
-only a stable rule code. Admission may log the resolved user type and route because both are
-server-derived enumerated values, but it never logs the operator identifier. Session issuance logs
-only `outcome=issued`; neither the identifier nor the bearer token is included. The identifier
-field rejects Unicode control and format categories before service invocation, closing the
-line-shaping path while preserving the legacy blank, width and case-handling cascade. The password
-remains write-only and retains its existing screen semantics; it is never logged.
-
-**The abend decision.** `GlobalExceptionHandler` omits `AbendException.culprit()` completely. The
-bounded culprit is not made safe merely by its width and may still contain a line break. The event
-retains the module-defined abend code, reason, message and sanitised failure-type chain, which are
-sufficient for diagnosis without reintroducing caller-carried program text.
-
-**What is asserted.** Service tests exercise every credential outcome through a Logback list
-appender and require the fixed rule or outcome while excluding the identifier and line controls.
-Controller tests prove that a control-bearing identifier is rejected before repository lookup and
-that an issued session logs neither identity nor token. Handler tests send an abend whose culprit
-contains a line break and require one error event containing the code and reason but no culprit or
-control character. DTO tests cover control and format characters independently from the existing
-eight-character bound and JSON write-only credential contract.
-
-*Cited by:* `service/AuthenticationService.java`, `api/AuthController.java`,
-`api/GlobalExceptionHandler.java`, `api/dto/SignOnRequest.java`, and their authentication,
-controller, exception-handler, DTO-boundary and JSON-contract tests.
-
----
-
 ### DL-204 — A coded field is seeded at its layout width; only display text is right-trimmed, and `dalytran_source` was on the wrong side of that line
 
 **Context.** `V3__seed_reference_data.sql` carries one rule for character data: *display text is
@@ -9339,7 +8356,705 @@ investigating and for no other reason — not so that a subset can be presented 
 
 *Embodied in:* `carddemo-java/pom.xml`.
 
+### DL-208 — A condition-code gate bypasses the steps behind it *and* propagates the abend, because a submission's completion code is its highest step code
+
+**Context.** `app/jcl/CREASTMT.JCL` gates three of its four steps with `COND=(0,NE)` — run this step
+only if every earlier step returned zero. The migrated job wired each gate as a transition on the
+framework's `FAILED` exit status routed to a plain end of flow. That reproduced half of the construct
+and inverted the other half. The bypass was right: no step behind a failed one ran. The reporting was
+wrong: a flow that *ends* completes, so a run whose very first step abended was recorded as
+`COMPLETED` with `ExitStatus` `COMPLETED`.
+
+`COND=` does not suppress a return code. It suppresses the *execution of a step*. The job's own
+completion code is the highest code any step that did run returned, so a stream whose first step
+abended with a non-zero code is an abended stream — visibly, in the job log, in the completion
+notification, and to anything that reads the code and decides what to do next. A translation that
+reports zero for that run does not merely lose a diagnostic; it tells a downstream consumer to
+proceed.
+
+**Decision.** Each of the three gates is a failure-*propagating* transition rather than a
+failure-ending one: `.on(GATE_FAILURE_OUTCOME).fail()`. The bypass behaviour is unchanged and is
+still asserted in both directions — a gate still admits its guarded step after a clean predecessor and
+still refuses it after a failed one — and the job now ends `FAILED` with exit code `FAILED` whenever
+any step it ran abended. Nothing else moved: no step gained a retry, no gate gained tolerance, and the
+strict form of the rule (bypass on anything other than zero, rather than tolerating a code up to four
+the way the sibling backup job's single gate does) is untouched.
+
+**Why not a listener that reports separately.** Deriving a job-level verdict outside the flow would
+put two authorities on the same fact and let them disagree; the flow is where the gate lives, so the
+flow is where the verdict belongs.
+
+*Embodied in:* `batch/CreateStatementJobConfig.java` (`GATE_FAILURE_OUTCOME`,
+`CONDITION_CODE_GATE_COUNT`, the three transitions in `createStatementJob`).
+*Asserted by:* `batch/CreateStatementJobConfigTest`
+(`exactlyThreeFailurePropagatingTransitionsAreDeclared`, which also fails if a failure-ending
+transition reappears), `batch/CreateStatementJobConfigIT`
+(`aFailedOrderingStepIsRefusedByEveryGate` and `aFailedScratchStepIsRefusedByTheThirdGate`, each of
+which now asserts the bypass *and* the propagated `FAILED` status and exit code).
+
+### DL-209 — Statement HTML encodes nothing: every value is emitted byte for byte, and hardening is refusal rather than rewriting — REVERSES DL-037, DL-039 and D-49
+
+**Context.** `app/cbl/CBSTM03A.CBL` composes each hundred-byte HTML record by wrapping paragraph
+literals around display fields with a `STRING` statement and writing the result. There is no encoding
+step anywhere in the estate. An earlier delivery added one: the five markup-significant characters
+were replaced by character references in every substituted value, recorded as a narrow parity
+exception on the reasoning that escaping is the identity function over the legitimate domain of these
+fields and diverges only for input that would inject markup.
+
+**Why that reasoning does not hold here.** It is empirically false for this estate. The seeded data
+carries twelve apostrophes — one customer surname and eleven transaction descriptions — so escaping
+changed emitted bytes for records the pipeline actually produces. Worse, because a reference is longer
+than the character it replaces and the record width is fixed, every byte after a substitution was
+displaced and the record tail was pushed off the end. The module's own expected-output oracle records
+the correct bytes: `src/test/resources/fixtures/expected/statement-html.txt` carries
+`Zulauf-O'Keefe` raw and no character reference anywhere, and the 80-byte oracle agrees character for
+character. Escaping therefore made production disagree with its own golden file on precisely the
+records that make byte parity observable — which is a Gate 1 defect, not a hardening.
+
+**Decision — remove the encoding, keep and widen the refusal.** No published path escapes, encodes,
+masks or repairs a byte. The five character-reference constants and the escape routine are gone. The
+width fit is a plain cut at the record boundary, and the refinement that blanked a trailing partial
+reference is gone with the references it existed to repair — the legacy `MOVE` cuts at the boundary
+and blanks nothing.
+
+What replaces escaping is a control that cannot alter a byte: every path validates its input and
+**refuses** what it cannot carry. Anything outside printable US-ASCII is rejected, which closes the
+hazards that actually threaten a fixed-width data artefact — an embedded line feed or carriage return
+that would reframe records, an escape byte that a terminal would obey, a tab, a NUL, and any byte
+above 0x7E that would have become a question mark under encoding. The account-number slot is narrower
+still: digits and the pad space only, because the legacy moves a numeric display item there. A refusal
+is not a rewrite, so parity is unaffected by it.
+
+**The boundary this leaves open, stated rather than glossed.** A legitimately-stored angle bracket in a
+name or description now reaches the file, exactly as it reached the mainframe file. The statement
+artefact is fixed-width data; a consumer that renders it as a live document is responsible for
+encoding at its own serving boundary, which is where a rendering concern belongs and where the
+context needed to escape correctly actually exists. This is the same division the estate's other
+output artefacts already rely on.
+
+**Precedence, since this reverses a recorded decision.** The AAP's preservation boundary (§0.8.1)
+requires zero behavioural regressions in external interface contracts, and the statement file is one
+of the estate's three; its tie-break (§0.10.5) resolves faithful-versus-idiomatic in favour of
+faithful and requires the divergence to be recorded here rather than settled by taste; and Gate 1
+requires byte equivalence against the documented baseline, which the golden files are. All three point
+the same way.
+
+*Embodied in:* `util/StatementHtmlTemplates.java` (the escape routine and its five constants removed,
+the five composers substituting values verbatim, `fitToWidth` a plain boundary cut, the
+printable-US-ASCII and digits-or-spaces refusals retained).
+*Asserted by:* `util/StatementHtmlTemplatesTest`
+(`everyPublishedPathMovesMarkupSignificantBytesThroughUntouched`,
+`noValueIsWidenedSoTheCutIsOnlyEverAtTheRecordBoundary`), `util/StatementHtmlTemplatesSecurityTest`
+(the verbatim-transfer suite plus the refusal suite), `util/StatementHtmlWorkLineExposureTest` (the
+production census that keeps the bare fitter out of the composing path),
+`support/ExpectedHtmlStatementFixtureContractTest` (every composed record of the committed oracle
+re-emitted and compared byte for byte, with no divergence permitted, and no character reference
+anywhere in the oracle).
+*Reverses:* DL-037, DL-039 and D-49. *Partly supersedes:* DL-038, whose removal of the anything-goes
+sink still stands.
+
+### DL-210 — The durable generation number is allocated against the object store, not taken from the framework's execution identifier
+
+**Context.** Every published object was keyed `<base>/G<execution-id>V00`. The execution identifier is
+the batch metadata store's, and the metadata store is not the durable store. Re-create the metadata
+store — a fresh database, a wiped schema, a new environment pointed at the same bucket — and execution
+identifiers restart at one while the bucket keeps every object it ever received. The next run therefore
+PUTs onto a key an earlier run already published. This was observed rather than reasoned about:
+`AWS.M2.CARDDEMO.TRANSACT.BKUP/G0000000005V00` went from 109,512 bytes to a zero-byte latest version
+across two fresh-database runs. Bucket versioning preserved the history, so nothing was destroyed, but
+`IsLatest` silently changed, and every consumer reads the latest.
+
+**Decision.** The generation number is allocated by the store, at publication time, as one more than the
+highest generation the base already holds — which is what a relative `(+1)` allocation against a
+catalogued generation group does, and where the legacy system got its generation numbers from too. The
+allocation runs inside the per-base publication lock, which is already held across upload and retention,
+so two concurrent publications to one base cannot choose the same number. A base holding nothing starts
+at generation one.
+
+**What deliberately did not change.** The framework's execution identifier still names the *local*
+per-execution file. Two concurrent executions must not compose over each other, and the identifier is
+exactly the right thing for that: it is unique within the metadata store that hands it out, which is the
+scope the local file lives in. The two namings are now independent, which is the point — a local file's
+name is a concurrency concern and a durable key is a catalogue concern.
+
+**Consequences a reader should expect.** A key can no longer be predicted before publication, so the
+transaction-backup job reads back the key its publication returns rather than composing one when it
+opens its output; the reported key is now the key that was written. A publication that cannot list its
+base fails and uploads nothing, because a generation cannot be named without risking an overwrite — and
+that is a pre-commit failure, fully covered by the existing compensation. Retention is unaffected: it
+already sorted by the numeric token, and the token remains numeric and monotonic per base.
+
+*Embodied in:* `batch/step/StagedGenerationStore.java` (`allocateGeneration`,
+`highestDurableGeneration`, `upload`, `publishFile`; the public `objectKey(String, long)` is gone
+because no caller can predict a key any more), `batch/BackupTransactionJobConfig.java` (the key is read
+from the publication).
+*Asserted by:* `batch/step/StagedGenerationStoreTest` (nest `the durable generation number is the
+store's own`, including an execution identifier of one against a base already holding three
+generations), `batch/BackupTransactionJobConfigTest`
+(`advancesTheGenerationForEveryPublication`, whose third run carries an identifier lower than both
+predecessors — the re-created-metadata-store case — over a listing double that reflects what it has
+accepted).
+
+### DL-211 — A submission that does not complete discards the local artefacts it allocated
+
+**Context.** Publication is skipped for a job that did not complete, which is correct and is what keeps a
+failed submission's output out of the bucket. What was missing is the other half. The local files such a
+job created were left where they were: sealed generations that nothing would ever publish, read or
+prune, and working `.part` files from steps that failed mid-composition. Observed after a gate-failed
+statement run as `AWS.M2.CARDDEMO.STATEMNT.PS.G0000000005V00.part` and its markup sibling, and after a
+sequence of failed runs as one zero-byte local generation per failed execution.
+
+**Decision.** The job-boundary listener sweeps the staging root when a job ends without completing,
+removing the regular files whose names carry *that execution's* generation token — the sealed
+generations and the working files alike. This is the abnormal disposition of the legacy allocation:
+`DISP=(NEW,CATLG,DELETE)` catalogues a newly allocated dataset when the step ends normally and
+**deletes** it when it does not, and a submission that did not complete is exactly that case.
+
+**Why selection is by token and not by suffix or by age.** Every local file the store hands out carries
+the generation token, and the token is unique to one execution, so the sweep cannot reach a file a
+concurrently running job is still composing. A suffix rule would have caught another execution's working
+file; an age rule would have depended on wall-clock timing. Directories are skipped, because the store
+hands out no directory. The sweep never raises: the job has already failed for its own reason, and that
+reason is the one an operator must read, so a failure to remove a file is reported and nothing more.
+
+*Embodied in:* `batch/step/StagedGenerationStore.java` (`discardLocalArtifactsOf`),
+`config/BatchConfig.java` (the boundary listener sweeps when the status is not `COMPLETED`, and takes
+the shared staging root for that purpose).
+*Asserted by:* `batch/step/StagedGenerationStoreTest` (nest `an execution that did not complete discards
+its own local artifacts`, including that another execution's generation and an unrelated staged input
+both survive), `batch/CombineTransactionsJobConfigIT`
+(`equalIdentifiersRetainConcatenationOrder`, where the load step fails and the combined generation is
+gone afterwards).
+
+### DL-212 — One publisher, one canonical key: the in-step uploads are removed and the staging area no longer publishes at all
+
+**Context.** Two publication paths existed at once. `StagedGenerationStore` published every *registered*
+artefact after its job completed, under `<base>/G…V00`. Separately, four job steps — the interest accrual
+step, both category-balance report steps and the transaction-report emit step — also called
+`BatchStagingArea.publish(Path)` on the very same sealed file, and that form used the *local file name*
+as the object key, which is the dot form `AWS.M2.CARDDEMO.SYSTRAN.G0000000002V00`. Every generation was
+therefore in the bucket twice, at the same size, both marked latest, under two different key shapes. The
+combined-transactions generation added a third shape of its own: `combineTransactionsJob/combined/<id>`,
+which is not a generation key at all.
+
+Two consequences, both observed. **Retention could only prune one family**, because the retention scan
+lists with the prefix `<base>/` and the dot form does not match it: seven interest runs against a depth
+of five left seven dot-form objects and five slash-form ones. And **a failed job left output behind**,
+because an in-step upload has already happened by the time a later step fails — including a zero-byte
+`combineTransactionsJob/combined/4` from a submission that failed before composing anything, which is
+not even faithful to the legacy disposition it was standing in for.
+
+**Decision.** Every step registers and none publishes. The four in-step calls are gone; the combined
+generation is registered under the legacy generation-group base
+`AWS.M2.CARDDEMO.TRANSACT.COMBINED`, which the measured job stream names in its own data definitions,
+so it joins the one key shape and the one retention pass with everything else. And the publication forms
+are **removed from `BatchStagingArea`** rather than documented as discouraged: that component is now a
+read boundary with no upload method on it at all, so the single-publisher invariant is structural and a
+future caller cannot reintroduce a second key shape by reaching for the convenient method.
+
+**The divergence this accepts, stated rather than glossed.** `DISP=(NEW,CATLG,DELETE)` catalogues a
+generation at the end of the step that wrote it, so under the legacy stream a generation written by an
+early step survived a later step's abend and could be rerun from. Post-job publication does not: a
+submission that fails anywhere publishes nothing. That is deliberate. In an object store the key *is*
+the contract, and a catalogued intermediate from a failed submission is indistinguishable from a good
+one to every consumer that reads the base; the invariant that a failed job leaves nothing externally
+visible is worth more than the rerun convenience, and it is the invariant the post-job publisher was
+built to uphold. The local sealed generation is still there for a rerun until the abnormal-disposition
+sweep of DL-211 removes it. The transaction-backup job's archive step keeps its immediate publication,
+because its generation is its whole output rather than an intermediate, and it already published under
+the canonical key.
+
+**A consequence in the combined generation's lifecycle.** Its load-side close used to delete the local
+file once every record had been served. It no longer does: the registration names that file and the
+publication has not run yet, so deleting it left the publication with nothing to upload. Accumulation is
+handled where it belongs — a completed submission's generation is a generation like any other, and a
+failed one is swept by DL-211.
+
+*Embodied in:* `batch/BatchStagingArea.java` (three publication forms and the publishing-writer
+decorator removed), `batch/InterestCalculationJobConfig.java`,
+`batch/CategoryBalanceReportJobConfig.java`, `batch/TransactionReportJobConfig.java` (the in-step
+uploads removed and the staging-area parameter with them),
+`batch/CombineTransactionsJobConfig.java` (`COMBINED_DATASET_BASE`, registration on close, the local
+generation named in the legacy generation form and no longer discarded by the reader).
+*Asserted by:* `batch/BatchStagingAreaTest` (`nothingOnThisBoundaryCanUpload`, a census over the
+declared methods rather than a list of spellings), `batch/InterestCalculationJobConfigTest`
+(the step registers exactly one artefact), `batch/CombineTransactionsJobConfigTest`
+(`closingRegistersTheExecutionGenerationOnce`, `theSealedGenerationSurvivesBeingServed`),
+`batch/CombineTransactionsJobConfigIT` and `batch/CombineTransactionsJobIT` (the sealed generation is
+read from the legacy base rather than from an intercepted publication).
+
+### DL-213 — One framing rule per logical dataset, taken from the DD: fixed-length means no separator
+
+**Context.** Nine of the module's own artefacts were written with a trailing line feed after every
+fixed-length record while two were written without one, and the inconsistency was not cosmetic. The
+transaction-backup dataset has two producers — the archive step of the backup job and the unload step of
+the report job — and they disagreed: 262 records came out as 91,700 bytes from one and 91,962 bytes from
+the other. The consolidation job frames that dataset by width, so it read the first record of the
+line-fed generation correctly and every later one shifted by its ordinal, failing at record 2 with
+`zoned decimal field 'TRAN-AMT': expected an ASCII digit ... but found 0x20`. Both producers are governed
+by the *same* data-definition statement, `DCB=(LRECL=350,RECFM=FB,BLKSIZE=0)`, declared at
+`app/jcl/TRANBKP.jcl:31` and again at `app/proc/TRANREPT.prc:29`.
+
+**Decision.** The record format on the DD decides the framing, and every DD in the estate declares
+`RECFM=F` or `RECFM=FB`. Neither carries a record separator: on the platform being migrated from, the
+record boundary is the access method's, established by the declared length, and no byte is written
+between two records. Every producer in this module therefore writes a fixed-length dataset with
+**nothing between two records**, and every consumer frames such a dataset **by width and never by line**.
+The rule is applied to every logical dataset the module produces rather than to the three the earlier
+entries happened to name:
+
+| Logical dataset | Record | Producer |
+|---|---|---|
+| `AWS.M2.CARDDEMO.TRANSACT.BKUP` | 350 | archive step (already separator-free) **and** report unload step |
+| `AWS.M2.CARDDEMO.TRANSACT.DALY` | 350 | report filter-and-order step |
+| `AWS.M2.CARDDEMO.TRANREPT` | 133 | report emit step |
+| `AWS.M2.CARDDEMO.TCATBALF.BKUP` | 50 | category-balance unload step |
+| `AWS.M2.CARDDEMO.TCATBALF.REPT` | 40 | category-balance report step |
+| `AWS.M2.CARDDEMO.TRXFL.SEQ` | 350 | statement order-and-reproject step |
+| `AWS.M2.CARDDEMO.STATEMNT.PS` | 80 | statement emit step |
+| `AWS.M2.CARDDEMO.STATEMNT.HTML` | 100 | statement emit step |
+| `AWS.M2.CARDDEMO.TRANSACT.COMBINED` | 350 | consolidation load step |
+| `AWS.M2.CARDDEMO.DALYREJS` | 430 | reject writer (already separator-free) |
+| `AWS.M2.CARDDEMO.SYSTRAN` | 350 | interest accrual step (already separator-free) |
+
+**Consumers moved with their producers, in the same change.** A framing change that moved only the
+writers would have produced exactly the defect it set out to remove, so each reader of a changed dataset
+was re-pointed in the same edit: the report job's two transaction readers and its filtered-generation
+walk, the category-balance report's unload reader, all three of the statement job's reads, and the
+consolidation job's served read of its own combined generation. `FixedWidthFlatFileReaderFactory` gained
+`fixedWidthReader(Path,int)` — the primitive its own fixed-stride item reader already used, published so
+that a step reading through a plain `BufferedReader` frames identically — and
+`fixedTransactionCategoryBalanceReader`, the fixed-unblocked sibling of the line-oriented reader.
+
+**What deliberately did not change.** The nine sample data files under `app/data/ASCII` are
+newline-delimited, and they stay that way: they are the repository's readable rendering of the EBCDIC
+sequential datasets, not datasets this module produces. Their readers keep the line-oriented flavour, and
+the two flavours are named separately in the factory so that restart metadata can never cross between
+them. The external sorter's spill format is length-prefixed and private to the sorter; it is not a
+dataset and is untouched.
+
+*Embodied in:* `batch/step/FixedWidthFlatFileReaderFactory.java` (`fixedWidthReader`,
+`fixedTransactionCategoryBalanceReader`), `batch/TransactionReportJobConfig.java`,
+`batch/CategoryBalanceReportJobConfig.java`, `batch/CreateStatementJobConfig.java`,
+`batch/CombineTransactionsJobConfig.java` (each producer's separator write removed, its record-separator
+constant deleted, and every reader of a changed dataset re-pointed).
+*Asserted by:* the job integration tests measure each artefact's length as an exact multiple of its
+record width and assert it carries no line feed; `e2e/BatchPipelineE2ETest` compares the four terminal
+artefacts byte for byte against their golden fixtures.
+
+> **Supersession note.** This entry generalises the three-dataset statement of DL-226 - recorded under
+> `DL-145` until that identifier was de-duplicated, see entry DL-245 - to every logical
+> dataset the module produces. Where an earlier entry describes a staged dataset as line-oriented, or
+> justifies a literal `"\n"` as "matching the estate's own sample data", this entry governs: the sample
+> data is an input rendering and never the authority for an output format.
+
 ---
+
+### DL-214 — A generation base is resolved to its current generation, reproducing the legacy relative generation (0)
+
+**Context.** `app/jcl/COMBTRAN.jcl` names its two inputs as `AWS.M2.CARDDEMO.TRANSACT.BKUP(0)` and
+`AWS.M2.CARDDEMO.SYSTRAN(0)`: two dataset names the member declares itself, each at relative generation
+zero, resolved by the catalog at submission. The migrated job instead required a configured location and
+refused to substitute any default — which is right about defaults in general and wrong here in
+particular, because it turned "the DSN the member declares" into knowledge the *caller* had to supply,
+and the only spelling it accepted was one absolute generation. Since a generation name embedded the
+producing job's execution identifier, running the fourth link of the chain meant predicting the third
+link's execution id before the consuming context started. The chain could not be run without that
+out-of-band knowledge.
+
+**Decision.** The two properties default to the two dataset bases the legacy member declares, and a
+configured base is resolved to its current generation. The durable store is the catalog: the highest
+generation number beneath the base is what `(0)` named. The resolution order is
+exact durable key → current durable generation of the base → exact local staged name → current *local*
+generation of the base → application resource loader. The local rungs matter because that is precisely
+the state the five-link chain is in while it runs: each link has sealed its generation locally and the
+terminal publication for the link now being consumed may not have run. The suffix `(0)` is accepted
+verbatim so that an operator may write what the job stream writes; no other relative generation is
+accepted, because the member reads `(0)` on both inputs and writes `(+1)` on its output.
+
+**Why this does not weaken the refusal it replaces.** Three properties of the original refusal are
+preserved exactly. No caller-supplied path is honoured — resolution runs from a whitelisted logical base
+or an already-validated simple name, never from a path composed here. An explicitly blanked property is
+still a hard refusal, reported as a deployment error before any step runs. And a base that holds no
+generation still fails rather than reading one input instead of two, because a consolidation that read
+half its input would produce a perfectly well-formed result missing half its records — the outcome that
+must never be allowed to resemble success. What changed is only the *identity* of the default: not a
+conventional path invented by this module, but the dataset name the legacy member itself declares.
+
+*Embodied in:* `batch/step/StagedGenerationStore.java` (`currentGenerationKey`,
+`currentLocalGeneration`), `batch/CombineTransactionsJobConfig.java` (`DEFAULT_BACKUP_DATASET_BASE`,
+`DEFAULT_SYNTHESIZED_DATASET_BASE`, `CURRENT_GENERATION_SUFFIX`, the resolution cascade in
+`resolveInput` and `stripCurrentGeneration`), `batch/InterestCalculationJobConfig.java`
+(`DEFAULT_TRANSACT_DATASET_BASE` published so one constant names one dataset).
+*Asserted by:* `batch/step/StagedGenerationStoreTest` (the current generation of an empty base, of a
+base holding several, and the exclusion of working files and foreign keys),
+`batch/CombineTransactionsJobConfigTest` (the suffix is stripped, another suffix is refused),
+`batch/CombineTransactionsJobConfigIT` (a run with neither property configured resolves both inputs),
+and `e2e/BatchPipelineE2ETest` (the five-link chain runs with no per-execution resource property).
+
+---
+
+### DL-215 — An input the framework cannot open still reports the program's own open-failure arm
+
+**Context.** `0000-DALYTRAN-OPEN` mandates three things when the sequential input cannot be opened:
+`DISPLAY 'ERROR OPENING DALYTRAN'`, then `9910-DISPLAY-IO-STATUS` with the `NNNN` image of the raw file
+status, then `9999-ABEND-PROGRAM` with abend code 999. The module implements that pattern everywhere the
+acquisition is its own — the orphan extract job, the file-probe job, and this same program's own write
+path all emit it. It did not implement it for the posting job's *input*, because that acquisition is the
+framework's: the reader is opened around the step, so a missing landing file produced
+`ItemStreamException: Failed to initialize the reader` and `Input resource must exist (reader is in
+'strict' mode)`. A search of the run for `ERROR OPENING DALYTRAN` returned nothing. The job did end
+FAILED, so nothing was at risk except the diagnostic — and the diagnostic is a mapped paragraph.
+
+**Decision.** The acquisition stays delegated and the diagnostic returns to the program.
+`TransactionPostingService` publishes `dailyTransactionOpenFailure(Throwable)`, which is the existing
+private arm made reachable: it emits the literal, the `NNNN` status image and the abend, and *returns*
+the `AbendException` so a caller writes `throw service.dailyTransactionOpenFailure(failure)` and keeps
+its own control flow definite. The job configuration wraps the factory-built reader in
+`DiagnosingDailyTransactionReader`, whose `open` translates any runtime failure into that arm.
+
+**Only the open is decorated, and that is deliberate.** Read, update and close pass straight through.
+The driving loop's own read-failure arm already belongs to the translated program and is raised from
+there, so decorating the read as well would emit one diagnostic twice. An `AbendException` the delegate
+itself raises is re-thrown unchanged rather than re-wrapped, so a failure that already carries the
+program's verdict never acquires a second one. The decorator is declared as the stream-reader interface,
+which keeps the step-scoped proxy interface-based and the module's reflection budget intact.
+
+*Embodied in:* `service/TransactionPostingService.java` (`dailyTransactionOpenFailure`),
+`batch/PostTransactionJobConfig.java` (`DiagnosingDailyTransactionReader`).
+*Asserted by:* the posting job's integration test deletes the landing file and asserts all three legacy
+lines, and asserts the job still ends FAILED.
+
+---
+
+### DL-216 — A logical dataset name resolves against the staging root before the resource loader, and a run that reads nothing says so
+
+**Context.** Two defects in the orphan extract job, sharing one cause: its resolution cascade had only two
+rungs where every other staged-dataset job of the package has three. A location that names one logical
+dataset — `AWS.M2.CARDDEMO.DALYTRAN.PS`, which is a dataset name and not a URI — went straight to the
+application resource loader, which resolves a scheme-less name as a *class-path* resource. The result was
+`Input resource must exist (reader is in 'strict' mode): class path resource
+[AWS.M2.CARDDEMO.DALYTRAN.PS]` for a name that resolves correctly for every sibling job. Separately, when
+nothing was staged at all the run resolved its input from the relational source — which is the deliberate
+design — but said so only at `DEBUG`, so at the default level an unconfigured run that read nothing was
+indistinguishable from a successful one with no work to do.
+
+**Decision.** Three rungs, matching the sibling jobs: an exact durable object, then the local staging root
+for an already-validated simple name, then the resource loader for an explicit `file:` or `classpath:`
+location. A new `staging-directory` property names the root, defaulting to the shared staging property and
+then to the platform temporary directory, exactly as the consolidation job's does. No path is composed
+from a caller's value; the local rung accepts only a simple name and resolves it beneath the one
+configured root.
+
+**And the vacuous run is made audible rather than refused.** The unstaged case is promoted to `INFO` and
+names the property that would stage a dataset, and a run that read *zero* records with nothing staged adds
+a `WARN` saying so in as many words. Refusing to start would have been the other half of the finding's
+suggested fix, and it is deliberately not taken: reading the ordered input from the relational source when
+no dataset is staged is this job's documented design, and refusing it would remove a working path to fix a
+reporting problem. Zero records is not an error either — the legacy member reaches end of file immediately
+on an empty input and stops cleanly — it simply must not be silent.
+
+*Embodied in:* `batch/DailyTransactionReadJobConfig.java` (`STAGING_DIRECTORY_PROPERTY`,
+`stagedResource`, `isSimpleLocation`, the two diagnostics in `readPass`).
+*Asserted by:* the job's integration test resolves a simple dataset name from the staging root, and
+asserts the two diagnostics on an unconfigured run over an empty relational source.
+
+---
+
+### DL-217 — The observation-derived active-job meter is renamed so that it stops being dropped
+
+**Context.** On *every* job launch the Prometheus registry logged
+`The meter (MeterId{name='spring.batch.job.active', tags=[application, spring.batch.job.name,
+spring.batch.job.status]}) registration has failed: Prometheus requires that all meters with the same name
+have the same set of tag keys. There is already an existing meter named 'spring_batch_job_active_seconds'
+containing tag keys [application, spring_batch_job_active_name].` Two independent mechanisms publish under
+one name: the framework's own long-task timer for a running job, tagged `spring.batch.job.active.name`,
+and the observation registry's automatic active-observation meter for the long-running
+`spring.batch.job` observation, carrying that observation's `spring.batch.job.name` and
+`spring.batch.job.status`. The second registration was refused every time, so the job-name-and-status
+dimension of the active-job measurement never existed.
+
+**Decision.** One `MeterFilter` maps the observation-derived identifier to
+`carddemo.batch.job.observed.active`, keyed on the presence of the observation's own tag so the
+framework's meter is never touched. Both then register and both are exported.
+
+**Why the newcomer is the one renamed, and why a filter is acceptable here at all.** The dashboard
+provisioned with this module reads `spring_batch_job_active_seconds` and `spring_batch_job_active_name`,
+which belong to the framework's meter; renaming that would empty a panel. This module's observability
+configuration otherwise contributes no filter on the stated ground that dropping or re-bucketing a series
+would starve the very baseline it exists to establish. This filter is the opposite of that: without it a
+series is dropped, and the filter is what recovers it. Only the identifier is mapped — no meter is denied,
+no distribution statistic is configured, and no value is transformed — so nothing here can alter a
+measurement. The chosen name is a deliberate sibling rather than a variation, so an alert or a panel
+cannot match it by accident when it meant the framework's series.
+
+**What this supersedes.** The collision itself was already recorded, beside the dashboard panel that
+survived it, as two framework instrumentation paths colliding rather than a defect to fix - and the reason
+given for leaving it was that the only suppression then in view discriminated on *tag keys*, one character
+away from deleting the exported series. That reason is why this filter discriminates on something else
+entirely. See DL-242, the active-job panel entry - recorded under `DL-152` until that identifier was
+de-duplicated, see entry DL-245 - now annotated as partly superseded: its panel
+reasoning stands, its resignation does not.
+
+*Embodied in:* `config/ObservabilityConfig.java` (`batchActiveJobMeterNameFilter` and the four names it
+is stated with).
+*Asserted by:* `config/ObservabilityConfigTest` maps both identifier shapes through the filter, and the
+batch integration tests assert no meter-registration warning is logged across a launch.
+
+---
+
+### DL-218 — A repeated transient store conflict on a launch reservation is a refusal, not an internal error
+
+**Context.** Two identical launches arriving together produced one completed execution and, for the other
+caller, `CannotAcquireLockException PreparedStatementCallback; SQL [INSERT INTO BATCH_JOB_INSTANCE…];
+ERROR: could not serialize access due to read/write dependencies among transactions … Hint: The
+transaction might succeed if retried.` The metadata was intact — exactly two executions, no duplicate or
+partial instance — so the outcome was correct and only its reporting was wrong: a driver-level message
+reached the caller as though the service had malfunctioned. The framework creates its instance and
+execution rows in its own transaction at serializable isolation, so two launches that arrive together can
+be cancelled as a serialization pivot even though neither did anything wrong.
+
+**Decision.** The reservation is attempted twice. A `TransientDataAccessException` — the precise family
+whose contract is that retrying may succeed, and the one PostgreSQL's own hint describes — is logged and
+retried once; the advisory lock is released by the rollback before the retry begins, and a reservation
+this short means the competing one has finished. A second transient conflict becomes
+`LaunchRejectedException(ACTIVE_EXECUTION)`, which is the same answer the caller already receives when the
+advisory lock is busy or the framework reports an execution already running: "not now", expressed in the
+closed reason code the HTTP boundary already knows how to translate. A failure that is *not* transient is
+still an internal error and is still reported as `IllegalStateException`, because retrying would not help
+and pretending it was a refusal would hide it.
+
+*Embodied in:* `batch/BatchLaunchCoordinator.java` (`RESERVATION_ATTEMPTS`, the retry loop in
+`reserveWithDatabaseLock`).
+*Asserted by:* `batch/BatchLaunchCoordinatorTest` drives a transient failure on the first attempt and
+asserts the second succeeds, and a repeated transient failure and asserts the closed refusal reason.
+
+---
+
+### DL-219 — A golden output file is a dataset image and carries no separator; the one delimited fixture is an input rendering, and the asymmetry is deliberate
+
+**Context.** The four committed goldens were framed with one line feed per record — 38 x 431, 519 x 134,
+1262 x 81 and 6632 x 101 — while the writers that produce those datasets emit no separator at all, because
+every member that allocates them declares a fixed length: the reject dataset at `RECFM=F,LRECL=430`, the
+report at `LRECL=133,RECFM=FB`, the statement at `LRECL=80`, the HTML statement at 100. A whole-file
+comparison against a separator-framed oracle is therefore impossible in principle: the production side
+cannot produce the extra byte, and the assertion would fail for a reason that has nothing to do with the
+records. Nothing compared them, so the mismatch survived.
+
+**Decision.** The goldens are de-framed to their exact legacy widths — 16,340, 69,027, 100,960 and 663,200
+bytes — and the framing absence is asserted twice for each: once as an exact multiple of the record width,
+and once as the total absence of a line feed or a carriage return anywhere in the file.
+
+**Why de-framed rather than regenerated.** The de-framing removes one byte per record and touches no
+record content, so the goldens remain what they were: an oracle authored independently of the code. That
+independence is not decorative — it is the reason three separate production defects were caught. The
+committed statement oracle already carried the *unflushed* closing balance, so the accrual defect showed up
+as the oracle disagreeing with production rather than as production agreeing with itself; the committed HTML
+oracle already carried `Zulauf-O'Keefe` unescaped, so the escaping defect showed up the same way. Had the
+goldens been regenerated from a run, both defects would have been baked into the expectation and both
+suites would have gone green on wrong bytes. Regeneration is the one thing that must not be done to a
+golden file.
+
+**The one exception, and why it is not an inconsistency.** `fixtures/input/dailytran.txt` keeps its 300
+line feeds and must. It is not a dataset image; it is the estate's own newline-delimited ASCII *rendering*
+of the sequential input, and it is staged as a landing file that the reader frames by width while ignoring
+the terminator. Because one helper had been serving both kinds, the de-framing broke a test that walked the
+input with the goldens' stride — which is the useful failure: the two framings now have two helpers,
+`records` for a dataset image and `delimitedTextRecords` for a rendering, so a golden can no longer regain
+a separator without an assertion noticing.
+
+*Embodied in:* `src/test/resources/fixtures/expected/daily-reject.txt`, `transaction-report.txt`,
+`statement.txt`, `statement-html.txt`; the empty and unreferenced `transaction-archive.txt` is deleted
+rather than left to invite a vacuous assertion, and only the encoded `transaction-archive.b64` the archive
+suite actually reads remains.
+*Asserted by:* `support/ExpectedOutputFixtureContractTest` and
+`support/ExpectedHtmlStatementFixtureContractTest` (framing, both directions),
+`e2e/BatchPipelineE2ETest` (whole-file byte equality against a real run), and
+`e2e/GateVerificationTest` (the four names, widths and counts as a named-artefact inventory).
+*Generalises:* DL-213, which removed the separator from the produced side.
+
+---
+
+### DL-220 — The three gate classes assert what nothing else asserts, and deliberately restate nothing
+
+**Context.** The plan names three end-to-end classes and none existed. The consequence was specific rather
+than general: the module's four golden files had two consumers, and both re-emitted one record at a time
+through the very formatter that owns that record's layout. A formatter proved against its own output proves
+that it is self-consistent. It cannot see a wrong value arriving from a service, a value transformed on its
+way into a cell, or a framing the dataset does not allow — which is why a fully green suite reported nothing
+while all three were shipped.
+
+**Decision.** Three classes are added, and each is scoped by what it is the *only* possible holder of.
+
+`e2e/BatchPipelineE2ETest` holds Gate 1. It stages the committed sample input, launches all six jobs of the
+plan's pipeline against a real PostgreSQL server and a real object store, and compares each of the four
+produced artefacts to its golden as a byte array. Nothing is mocked; the graph is assembled explicitly,
+which narrows the *bean set* and substitutes no boundary.
+
+`e2e/OnlineTransactionE2ETest` holds the one Gate 5 contract that had no end-to-end assertion: the sign-on
+program's operator-visible texts and its two routing outcomes, over a real HTTP boundary on a real port,
+through the shipped filter chain, against the ten identities the seed migration applied to a real server.
+
+`e2e/GateVerificationTest` holds the gate-level inventory: the named artefacts at their measured sizes, the
+goldens at their legacy widths, the applied credential seed's ten identities across two roles with no
+credential in clear, the three shipped lookup resources at 490 = 410 + 80, 56 and 240 read out of the
+resource files rather than out of the service that also loads them, the unsafe-code audit counts over the
+production tree, and the build settings Gates 2, 7 and 8 rest on.
+
+**Why each class states what it does *not* assert.** Two assertions of one fact drift apart and the weaker
+one wins, so each class names the narrower suite that owns each neighbouring fact instead of restating it:
+the input fixtures' digests and layouts belong to `support/FixtureContractTest`; the record-level
+reproduction belongs to the two fixture-contract suites; the lookup sets' semantics belong to
+`service/ValidationLookupServiceTest`; and Gate 5's batch-trigger contract — seventeen eighty-byte cards,
+four substituted date slots, the transmitted end-of-stream sentinel, the single message group, the per-card
+deduplication identity — is already drained out of a real first-in-first-out queue by
+`service/JobSubmissionServiceIT` and is not touched here.
+
+**One expectation was wrong and the source settled it.** The sign-on prompts were first written as "Please
+enter your User ID ..." and "Please enter your Password ...". The emitting program's literals carry no
+"your". The expectations were corrected to the program's own text, not the other way round — which is the
+whole reason the texts are asserted verbatim rather than by meaning: a paraphrase reads correctly and is not
+the contract.
+
+*Embodied in:* `e2e/BatchPipelineE2ETest.java`, `e2e/OnlineTransactionE2ETest.java`,
+`e2e/GateVerificationTest.java`. The integration tier already included `**/*E2ETest.java` and
+`**/e2e/**/*Test.java`, so all three execute in an ordinary `verify` without a build change.
+
+---
+
+### DL-221 — Reproducing a golden needs a pinned instant and the whole pipeline, and both for reasons a reader would not guess
+
+**Context.** Two independent things had to be discovered by running the comparison the wrong way first, and
+both are recorded here because either one silently produces an artefact that is short rather than wrong.
+
+**The clock.** Every timestamp the accrual run writes into a synthesised interest transaction is read from
+the clock, so an unpinned run writes a different image on every execution and no byte comparison is
+possible at all. Worse, the processing date those transactions carry is what the reporting window filters
+on — so under a system clock all fifty of them fall outside the window, the report comes out sixty-eight
+records short, and nothing fails. The instant is therefore pinned at `2022-07-06T12:00:00Z`, which is the
+instant the committed goldens were produced under and which falls inside the window the golden's own header
+states.
+
+**The pipeline order.** The accrual run does not write its synthesised transactions into the master. It
+writes them to its own sequential dataset, exactly as the member it translates does, and the *consolidation*
+run is what merges that dataset into the master. A report or a statement produced before the consolidation
+is missing every interest transaction: 451 report records instead of 519, and 1,212 statement records
+instead of 1,262. Both artefacts are internally consistent and both are wrong. The end-to-end class
+therefore drives the plan's own order — post, accrue, archive, consolidate, then report and statement — and
+asserts the master's row count after each of the three stages that change it, so a future reordering fails
+on the count rather than on a mysterious short file.
+
+*Embodied in:* `e2e/BatchPipelineE2ETest.java` (the pinned clock bean, the launch order, and the three
+row-count assertions that pin the order in place).
+*Asserted by:* the same class; all four goldens match byte for byte under this recipe and under no other.
+
+---
+
+
+---
+
+### DL-245 — Every decision identifier is unique, because an ambiguous citation is worse than no citation
+
+**Context.** Two hundred and seventy-one `### DL-` headings carried only two hundred and twenty-one
+distinct identifiers. Nineteen identifiers were shared, and one - `DL-145` - was carried by six headings
+covering six unrelated decisions: an account-screen disclosure rule, an archive framing rule, a
+condition-code gate rule, a build-tooling declaration, an operator-authority rule, and a correction note.
+Nine places in the module's own source cite `DL-145`. A reader following any of them arrived at six
+candidate entries with no way to tell which was meant, and a citation that cannot be resolved is worse
+than an absent one: it looks like evidence while supplying none.
+
+**Decision.** The collision is removed in three passes, in this order, and each pass is the least
+destructive one that could resolve its own cases.
+
+*Verbatim republication is deleted.* Twenty-four heading blocks were byte-identical to an earlier block
+under the same identifier, or differed from one only by a trailing separator. The later copy of each is
+removed. Nothing is lost, because nothing differed.
+
+*A note that was given a heading is folded into the entry it annotates.* Five headings carried no decision
+at all - they were integrated-state corrections and one reconciliation note, published under the
+identifier of the entry immediately beneath them. Each is now a block quote inside that entry, at the top,
+where a reader meets it before the reasoning it qualifies. Every word is retained; only the duplicate
+heading is gone. Two further pairs differed only in that the earlier copy carried such a note and the
+later one did not; the annotated copy is the one kept.
+
+*A genuinely distinct decision receives a genuinely distinct identifier.* Twenty-three remained: separate
+decisions that happened to share a number. Each is renumbered into the DL-222 to DL-244 range and carries
+a "formerly recorded under" note naming its old identifier, so a reader who arrives with an old citation
+in hand is told where they are and why.
+
+**Which occurrence keeps the shared identifier, and why that question was not answered by ordering.** The
+keeper is decided by *what the module's source actually cites*, read citation by citation rather than by
+taking the first occurrence. That mattered in three places and would have been got wrong by any mechanical
+rule:
+
+- `DL-145` is kept by the condition-code gate entry. All nine citations - in `config/BatchConfig`,
+  `batch/BackupTransactionJobConfig`, `batch/step/CombineTransactionsProcessor` and their three suites -
+  speak of "all four gates as the strict form" and of a divergent literal recorded rather than
+  implemented. The archive-framing entry, which a reader might reasonably have guessed at, is cited by
+  none of them and becomes DL-226.
+- `DL-152` is kept by the diagnostic-fidelity entry, which `logback-spring.xml` and
+  `application-local.yml` both cite alongside DL-100. The Grafana dashboard cites the *active-job panel*
+  entry instead, which becomes DL-242, and that one citation is repointed.
+- `DL-159` is kept by the supply-chain determination the build file's primary reference means. Its
+  sibling CVE entry becomes DL-244 - the build file already described it as "the sibling DL-159 entry",
+  which is the defect in one phrase - and the category-balance edit-mask entry, cited by
+  `batch/CategoryBalanceReportJobConfig`, becomes DL-243.
+
+Three in-log cross-references pointed at a shared identifier as well - two supersession notes naming
+`DL-145` when they meant the account-screen entry, and one naming `DL-152` when it meant the panel entry -
+and each now names the renumbered entry and says where the old number went.
+
+**What is deliberately not done.** No identifier already unique is renumbered, so the seventy-six
+citations of `DL-041`, the thirty-four of `DL-127`, the twenty-three of `DL-102` and every other resolved
+citation are untouched. No reasoning is edited, shortened or merged: this entry moves headings and adds
+notes, and changes not one sentence of a decision.
+
+*Embodied in:* `docs/decision-log.md` (244 headings, 244 distinct identifiers), and the three repointed
+citations in `pom.xml`, `config/grafana/dashboards/carddemo-overview.json` and
+`batch/CategoryBalanceReportJobConfig.java`.
+*Asserted by:* `DecisionLogIdentifierContractTest`, which parses every heading and fails the build if any
+identifier appears twice or if any identifier cited by the module's own source does not resolve to exactly
+one entry.
+
+---
+
+### DL-246 — Compose defaults every variable it interpolates, because a teardown cannot require the provenance of the image it removes
+
+**Context.** `docker-compose.yml` declared two build arguments as required variables,
+`${APP_VERSION:?...}` and `${SOURCE_REVISION:?...}`. Compose interpolates the whole file for *every*
+subcommand, so with neither exported, `docker compose config`, `ps`, `logs`, `stop` and `down` all failed
+with an interpolation error naming the variable but not what a correct value would be. The documented
+local validation stack could therefore not be brought up *or torn down* from a clean checkout without
+three exports, and the README's own three-line preamble was load-bearing rather than convenient.
+
+**Decision.** Both arguments carry a default. `APP_VERSION` defaults to this module's own Maven version.
+`SOURCE_REVISION` defaults to the all-zero forty-character sentinel.
+
+**Why this weakens no guard.** The guards were never in Compose. The `Dockerfile` refuses `APP_VERSION`
+unless it matches the Maven version grammar *and* equals the `build.version` the packaged artefact
+carries, and refuses `SOURCE_REVISION` unless it is forty lowercase hexadecimal characters *and* is not
+the all-zero sentinel. So `docker compose up --build` without exports still stops - at the build, with the
+Dockerfile's own message naming the forty-character requirement, which is a better diagnostic than
+Compose's - while every read-only subcommand now works. An unlabelled image still cannot be produced by
+accident; the refusal simply moved to the place that can say what a correct value looks like.
+
+**Why a `.env` file was rejected.** Shipping one was the other available fix and is the wrong one here.
+`.gitignore` excludes `.env` and `.env.*` for a stated reason: Compose reads that file from this
+directory and interpolates the database password and the AWS keys from it, which makes a module-level
+`.env` the most likely place for a real credential to be committed by accident. Un-ignoring it to hold a
+version string would trade a documented security posture for a convenience that a default provides
+anyway.
+
+**Where the invariant now lives.** `config/ContainerHardeningContractTest` reads this module's Maven
+version out of `pom.xml` and asserts the Compose default equals it, asserts the revision default is
+exactly the sentinel, asserts neither is a required-variable reference, and asserts the Dockerfile still
+carries all three refusals. A drift between the Compose default and the project version fails the build,
+which the `:?` form could never have detected.
+
+*Embodied in:* `docker-compose.yml` (the two defaults and the note explaining them), `README.md` (the
+bring-up section now separates what needs no exports from what does).
+*Asserted by:* `config/ContainerHardeningContractTest`.
+
 
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
