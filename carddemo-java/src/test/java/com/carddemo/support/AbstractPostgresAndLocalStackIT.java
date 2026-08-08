@@ -17,11 +17,15 @@
 package com.carddemo.support;
 
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
 /**
  * Shared base for an integration test that needs <strong>both</strong> a real database and a real
@@ -172,5 +176,106 @@ public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT
      */
     protected static List<String> stagedObjectKeysUnder(final String bucket, final String prefix) {
         return AbstractLocalStackIT.objectKeysUnder(bucket, prefix);
+    }
+
+    /**
+     * Returns the versioning state the staging bucket reports, so a subclass can assert the
+     * retained-generation posture rather than assume it.
+     *
+     * @param  bucket the bucket to inspect; must not be null
+     * @return the state the service reports
+     */
+    protected static BucketVersioningStatus stagingBucketVersioningStatus(final String bucket) {
+        return AbstractLocalStackIT.bucketVersioningStatus(bucket);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // THE SUBMISSION QUEUE
+    //
+    // The emulator this type composes serves the submission queue as well as the object store, and a
+    // specification of the online-to-batch bridge needs both at once: the identities it signs on with
+    // live on the database, and the cards its request publishes land on the queue. The queue helpers
+    // are therefore delegated on exactly the terms the object-store helpers above already are - one
+    // emulator, one queue, described in one place - so that a subclass never builds a client and never
+    // starts a container of its own.
+    //
+    // These are additions rather than changes: every delegate below forwards to a method
+    // AbstractLocalStackIT already published, so a subclass that used only the object store is
+    // unaffected, and a subclass of AbstractLocalStackIT addresses the very same queue.
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Returns the URL of the submission queue the emulator provisioned.
+     *
+     * <p>Asked of the emulator rather than composed from a name, because the URL carries the
+     * ephemeral host and port of the container this process started.</p>
+     *
+     * @return the queue's URL
+     */
+    protected static String jobSubmissionQueueUrl() {
+        return AbstractLocalStackIT.jobSubmissionQueueUrl();
+    }
+
+    /**
+     * Returns the notification topic's ARN, as the emulator allocated it.
+     *
+     * @return the topic ARN
+     */
+    protected static String jobNotificationTopicArn() {
+        return AbstractLocalStackIT.jobNotificationTopicArn();
+    }
+
+    /**
+     * Reads messages back off the submission queue in delivery order, deleting each as it is read so
+     * that the next messages of the same group become visible.
+     *
+     * <p>Bounded and deterministic: it stops at the expected count, at the first empty response, or at
+     * the shared deadline. Stopping on an empty response is what lets a caller assert that
+     * <em>fewer</em> messages than requested were published - which is how a specification proves that
+     * a blocked confirmation published nothing at all.</p>
+     *
+     * @param  expectedMessageCount how many messages to stop after; must not be negative
+     * @return the messages read, in the order the service delivered them
+     */
+    protected static List<Message> drainJobSubmissionQueue(final int expectedMessageCount) {
+        return AbstractLocalStackIT.drainQueue(AbstractLocalStackIT.jobSubmissionQueueUrl(),
+                expectedMessageCount);
+    }
+
+    /**
+     * Empties the shared submission queue by receiving and deleting, and reports how many messages it
+     * removed.
+     *
+     * <p>A subclass calls this from a callback that runs whatever its test's outcome. A message one
+     * test leaves behind is a message the next test drains and cannot explain, and a half-drained queue
+     * disrupts a neighbouring specification as surely as a full one.</p>
+     *
+     * @return the number of messages removed, which is zero when the queue was already empty
+     */
+    protected static int resetJobSubmissionQueue() {
+        return AbstractLocalStackIT.resetJobSubmissionQueue();
+    }
+
+    /**
+     * Reads back the attributes the submission queue reports, so a specification can assert its shape
+     * rather than assume it.
+     *
+     * @return the attributes the service reports, keyed as the service names them
+     */
+    protected static Map<QueueAttributeName, String> jobSubmissionQueueAttributes() {
+        return AbstractLocalStackIT.queueAttributes(AbstractLocalStackIT.jobSubmissionQueueUrl());
+    }
+
+    /**
+     * Reports whether the submission queue is a first-in-first-out queue, as the service itself sees
+     * it.
+     *
+     * <p>That property is what preserves the append ordering of the legacy transient-data queue, so a
+     * specification of the bridge asserts it against the service rather than against configuration.</p>
+     *
+     * @return {@code true} when the service reports the first-in-first-out attribute as set
+     */
+    protected static boolean jobSubmissionQueueIsFifo() {
+        return AbstractLocalStackIT.isFifoQueue(AbstractLocalStackIT.jobSubmissionQueueUrl());
     }
 }

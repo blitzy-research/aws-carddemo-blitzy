@@ -16,16 +16,24 @@ Every claim in this log was verified against the legacy estate at a fixed point,
 itself was never modified by the migration.
 
 | Identifier | Value |
-|---|---|
+| :--------- | :---- |
 | Analysed commit (SHA) | `7756d895ffeb65f7ea72aaa609e356d9899afcec` |
 | Upstream release stamp | `CardDemo_v1.0-15-g27d6c6f-68`, dated 2022-07-19 |
+| Members carrying that stamp | **78** legacy members under `app/` — 25 programs, 25 copybooks, 26 job members, 2 cataloged procedures |
 | Legacy estate location | `app/` — read-only reference throughout |
 | Target module | `carddemo-java/` — physically disjoint, self-contained |
 
-The upstream release stamp is the trailer comment embedded in every COBOL and JCL member of the
-estate. The two identifiers together are the only durable link between the target module and the
+The upstream release stamp is the trailer comment embedded in the legacy members of the estate, and
+the count above is a measurement rather than a description: 78 members under `app/` carry exactly that
+stamp. The two identifiers together are the only durable link between the target module and the
 source it was derived from, because no COBOL, JCL, BMS, copybook or CSD text is copied into the
 target. Traceability is by citation, never by transcription.
+
+The stamp is not perfectly uniform, and the non-uniformity is itself recorded rather than smoothed
+over: a small number of members under `app/` carry later stamps than the 78 — one copybook most
+visibly, which is row 26 of the anomaly register — and the generated screen-map members carry a
+different stamp again. The 78 is therefore the count of members carrying *this* stamp, not a claim
+that the estate is stamped once.
 
 ## The tie-break rule
 
@@ -98,15 +106,28 @@ The legacy user-security record holds an eight-character password in clear text,
 program compares the entered value against it directly. The target stores a BCrypt hash and
 verifies against that hash.
 
-This is the flagship entry of the log, and it is the one place where the prohibition on
-hardcoded and cleartext credentials openly outranks byte-for-byte behavioural faithfulness.
-Reproducing the cleartext comparison would have satisfied parity and violated the credential
-requirement; the two could not both be honoured.
+This is the flagship entry of the log, and it is a **deliberate, documented parity exception** — the one
+place where the prohibition on hardcoded and cleartext credentials openly outranks byte-for-byte
+behavioural faithfulness. Reproducing the cleartext comparison would have satisfied parity and violated
+the credential requirement; the two could not both be honoured, so the tie-break rule does not apply and
+a named exception is recorded instead of a silent departure.
 
 **What does not change:** the sign-on outcome for every valid and invalid credential, the routing
 split between the administrative and main menus driven by the user-type byte, and all seven
 message literals the sign-on screen emits. No value from the legacy credential record is restated
 anywhere in the module — the seed migration stores hashes, never the literal it hashed.
+
+**How far the exception reaches.** The estate's provisioning job carries **ten** sign-on identities in
+clear — five administrative and five standard, every one of them sharing a single password literal of the
+same eight-character width. All ten are seeded, with their identifiers, names and user types reproduced
+exactly, and every credential stored as a **BCrypt hash**. The seeding migration reaches the local and
+test profiles only, so a production deployment migrates schema and indexes without inheriting a seeded
+credential of any kind — see DL-127 and D-47 for the mechanism that guarantees it.
+
+**Nothing on this page reproduces a credential.** The field width and the fact that one literal is shared
+across all ten identities are recorded because they are what make hashing necessary; the literal itself
+is not written here, in the module, or in any committed configuration. The demonstration credentials that
+appear in the repository's root README describe the **legacy** system and are deliberately not restated.
 
 *Cited by:* `domain/UserSecurity.java`, `api/dto/SignOnRequest.java`, `application.yml`,
 `api/dto/SignOnRequestTest.java`.
@@ -441,10 +462,13 @@ scheme. Both identifiers are cited from the module and both resolve here.
 Truncation makes arithmetic non-associative, so operand order is contractual. The monthly-interest
 computation multiplies the balance by the rate and only then divides; dividing the rate first is
 algebraically identical in exact arithmetic and moves the truncation point. The overlimit basis is
-evaluated strictly left to right and is what decides which transactions are rejected.
+evaluated strictly left to right and is what decides which transactions are rejected — it is the
+basis for reject reason **102**, so a reordering changes which transactions are rejected rather than
+merely a reported figure.
 
 Both are reproduced operand for operand. No expression in the module is simplified, reassociated
-or factored.
+or factored. The corroborating fact is that the report program contains no `COMPUTE` statement at
+all, so the reporting path introduces no arithmetic and must not acquire any.
 
 *Cited by:* `util/ZonedDecimalCodecTest.java`.
 
@@ -453,14 +477,28 @@ scheme. Both identifiers are cited from the module and both resolve here.
 
 ### DL-015 — There is no packed-decimal decoder, because no packed field is ever written
 
-The construct mapping anticipated packed decimal. In this estate the packed usage appears exactly
-once, on a screen work field that is never persisted; every persisted monetary and rate field is
-zoned decimal under display usage. The target therefore implements a zoned-decimal codec handling
-the overpunched trailing-byte sign convention and implements no binary-coded-decimal decoder at
-all.
+The construct mapping anticipated packed decimal. Every persisted monetary and rate field in this
+estate is zoned decimal under display usage instead, so the target implements a zoned-decimal codec
+handling the overpunched trailing-byte sign convention and implements no binary-coded-decimal decoder
+at all.
 
 Writing one would have been dead code, and its absence is recorded so that it does not read as an
 omission.
+
+**A specification claim is corrected here rather than repeated.** The plan states that packed usage
+"appears exactly once", on a screen work field. A direct scan of the estate at this checkout returns
+**nine** packed declaration sites in the program tree and **none at all** in the copybook tree. All
+nine are working-storage scratch fields — counters, an index-style length field, three intermediate
+arithmetic fields, an absolute-time field, a group item and one screen work field — and not one of
+them participates in a persisted record. The token itself appears ten times, the tenth being a
+comment rather than a declaration, which is the likeliest origin of an undercount in either
+direction.
+
+The claim that is actually true, and actually load-bearing, is the narrower one: **no persisted
+monetary or rate field uses packed decimal.** That is what makes the decoder unnecessary. The count
+does not change the decision; it is corrected so that a reader who greps the estate and finds nine
+does not conclude the analysis missed eight persisted fields. `architecture.md` records the same
+nine.
 
 *Cited by:* `util/ZonedDecimalCodecTest.java`.
 
@@ -528,14 +566,25 @@ place scale is applied, so an inconsistent policy cannot creep in.
 scheme. Both identifiers are cited from the module and both resolve here.
 
 ### D-03 — Expression order preserved literally
-Truncation makes arithmetic non-associative, so operand order is contractual.
-`WS-MONTHLY-INT = (TRAN-CAT-BAL * DIS-INT-RATE) / 1200` in `app/cbl/CBACT04C.cbl` multiplies first
-and divides second; dividing the rate by 1200 first is algebraically identical in exact arithmetic
-and moves the truncation point. `WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT +
-DALYTRAN-AMT` in `app/cbl/CBTRN02C.cbl` evaluates strictly left to right and is the basis for the
-overlimit reject, so a reordering changes which transactions are rejected. **Decision:** no
-`COMPUTE` expression is algebraically rearranged.
-*Binding on future work;* the two computing programs are not yet delivered.
+Truncation makes arithmetic non-associative, so operand order is contractual. Two expressions in the
+estate carry that weight, and both are described here rather than transcribed.
+
+The monthly-interest computation in `app/cbl/CBACT04C.cbl` (line 464) multiplies the category-balance
+field by the disclosure-rate field **and only then** divides the product by 1200, storing into a
+`PIC S9(09)V99` receiving field. Dividing the rate by 1200 first is algebraically identical in exact
+arithmetic and numerically different, because it moves the truncation point.
+
+The overlimit basis in `app/cbl/CBTRN02C.cbl` (line 403) evaluates the cycle-credit field minus the
+cycle-debit field plus the daily-transaction amount **strictly left to right** into a `PIC S9(09)V99`
+receiving field, and that value is what the overlimit test compares. It is the basis for reject
+reason **102**, so a reordering changes *which transactions are rejected* — not merely a reported
+figure.
+
+**Decision:** no `COMPUTE` expression is algebraically rearranged, reassociated, factored or
+simplified anywhere in the module. Corroborating fact: `app/cbl/CBTRN03C.cbl` contains no `COMPUTE`
+statement at all, so the reporting path introduces no arithmetic and must not acquire any.
+*Embodied in:* `service/InterestCalculationService.java`, `service/TransactionPostingService.java`,
+`batch/step/InterestCalculationProcessor.java`, `batch/step/TransactionValidationProcessor.java`.
 
 *Also recorded as:* DL-014 — the same decision, recorded independently under the other identifier
 scheme. Both identifiers are cited from the module and both resolve here.
@@ -635,7 +684,7 @@ property of the layout rather than a choice the fixture author makes. Stating it
 so no golden fixture is generated against the wrong bound:
 
 | Layout | Fixture | Filler in the fixture | Parity bound a round trip is asserted at |
-|---|---|---|---|
+| :----- | :------ | :-------------------- | :--------------------------------------- |
 | Account, 300 B | `acctdata.txt` | 178 spaces | **whole record** — byte-identical, 50/50 |
 | Card, 150 B | `carddata.txt` | 59 spaces | **whole record** — byte-identical, 50/50 |
 | Customer, 500 B | `custdata.txt` | 168 spaces | **whole record** — byte-identical, 50/50 |
@@ -883,9 +932,11 @@ matters because the folded value is written back into a fixed 50-byte field.
 scheme. Both identifiers are cited from the module and both resolve here.
 
 ### D-19 — The menu option lexeme is right-justified and zero-filled
-`INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0'` over a `PIC X(02) JUST RIGHT` field turns a
-single-digit entry into a zero-filled two-digit value. **Decision:** reproduced as a named primitive
-rather than as an incidental `String.format`, so the behaviour is separately testable.
+A `REPLACING`-form inspection substitutes zero for every space in the option field, and because the
+field is declared `PIC X(02)` with right justification a single-digit entry arrives already
+right-aligned — so the substitution turns it into a zero-filled two-digit value. **Decision:**
+reproduced as a named primitive rather than as an incidental `String.format`, so the behaviour is
+separately testable.
 *Embodied in:* `util/CobolStringUtils.java`.
 
 ### D-20 — Attention keys 13 to 24 fold onto 1 to 12; an unrecognised key yields no action
@@ -942,7 +993,8 @@ scheme. Both identifiers are cited from the module and both resolve here.
 
 `app/cbl/CBACT04C.cbl` invokes `1050-UPDATE-ACCOUNT` from two places. The reachable one is the
 key-change control break at line 196. The other is the `ELSE` arm at lines 219 to 221, which sits
-inside `PERFORM UNTIL END-OF-FILE = 'Y'` — a test-*before* loop whose flag the read paragraph raises
+inside the driver's read loop — a `PERFORM UNTIL` construct testing the end-of-file flag, and therefore
+a test-*before* loop whose flag the read paragraph raises
 itself at line 340, so the loop terminates before the arm can be taken. `END-OF-FILE` is declared
 `PIC X(01) VALUE 'N'` at line 137 and is set nowhere else.
 
@@ -981,6 +1033,62 @@ break, and the both-accumulators confirmation applies only to a group that was r
 `1050-UPDATE-ACCOUNT`), `batch/InterestCalculationJobConfigIT`
 (`postingThenOneAccrualPassTruncatesAndSkipsInTheSameRun`, which reads the amounts back from a real
 PostgreSQL after a real posting-then-accrual chain).
+
+### DL-247 — The control-flow census, measured at this checkout, and what each figure obliges
+
+The entries above decide *how* each construct is translated. This entry records the measurements that
+bound how much of each there is, because a reviewer checking whether the translation is exhaustive
+needs the denominator, and because two of these figures are easy to mis-measure in a way that hides a
+gap.
+
+| Construct | Measured | What the figure obliges |
+| :-------- | :------- | :---------------------- |
+| `EVALUATE` statements | **111** | Each becomes a `switch` with clause order intact — DL-021 |
+| `GO TO` statements | **134** total | Every one resolved against an in-program label; none dangles |
+| — forward, to an exit label | **125** | Each becomes an early `return` |
+| — backward, forming a loop | **9** | Each becomes an explicit loop; **6 of the 9** belong to the statement generator — DL-020 |
+| `INSPECT` statements | **11** | Three distinct forms, two of them traps — DL-022, DL-023 |
+| — `CONVERTING` | **7** | The alphabetic-or-space predicate and the ASCII-only fold |
+| — `REPLACING` | **3** | Menu-option zero fill and the card-list selection bitmap |
+| — `TALLYING` | **1** | The more-than-one-action-per-page count |
+| `UNSTRING` statements | **0** | Nothing to translate; no delimiter or pointer semantics exist to reproduce |
+| Internal `SORT` statements | **0** | All ordering is external, so comparators belong to jobs, not to programs |
+| Internal `MERGE` statements | **0** | Same |
+| Macro-copybook expansions | **39** | Collapse to 39 calls on one method — DL-032's structural sibling, recorded at D-32 |
+
+**Two of these are easy to get wrong, and both would hide real work.** A naive token count of
+`EVALUATE` returns 220 rather than 111, because the scope terminator carries the same word and a word
+boundary sits either side of the hyphen; a reviewer who accepts 220 concludes the translation covers
+half of what it does. And a naive token count of `REPLACING` returns 42 rather than 3, because 39 of
+those occurrences are the macro copybook's substitution clause rather than a string operation — the
+same 39 that D-32 collapses into one method. The two counts are therefore recorded here together, so
+that the 42 is understood as 3 plus 39 rather than as a contradiction.
+
+**Method.** Fixed-format comment lines are excluded by the column-7 indicator; only columns 8 to 72 are
+read; the scope terminator is excluded from the `EVALUATE` count by an explicit negative lookbehind; and
+every `GO TO` target is resolved against the Area-A labels of its own program, which is what allows the
+forward and backward split to be stated rather than estimated.
+
+### DL-248 — Screen dispatch becomes a route constant in the response body, never a server-side forward
+
+**Decision.** Every program-to-program transfer in the online tier becomes a route constant the response
+carries, and the client makes the next call. Nothing is forwarded inside the server.
+
+**Legacy behaviour, measured.** The estate performs **25** transfer-control dispatches and re-arms the
+next transaction on **19** of its **26** pseudo-conversational returns. It contains **zero** link
+invocations — the verb that would have meant "call and come back" — so there is no legacy behaviour of
+returning to a caller for the translation to preserve. Transfer of control in this estate is genuinely a
+hand-off, not a call.
+
+**Why the faithful answer is also the testable one.** Because the legacy transfer never returns, a route
+constant in the response body reproduces its semantics exactly: control leaves the program, and the next
+program starts fresh from the state it was handed. Server-side forwarding would be the *less* faithful
+option as well as the harder one to test, since it would couple two endpoints into one request and make
+neither independently exercisable.
+
+**Consequence a reader must know.** An endpoint that returns a route has not performed the next step. A
+test that asserts a route is asserting the hand-off; a test that wants the destination's behaviour must
+make the second call, exactly as a terminal operator would have pressed the next key.
 
 ---
 
@@ -1203,6 +1311,52 @@ apart. Where a member carries COBOL sequence numbers in columns 1 through 6, it 
 name only and never by number (anomaly 16).
 *Embodied in:* `util/FixedWidthFieldReader.java`.
 
+### DL-249 — One repository, one physically disjoint module, and a corrected base package
+
+**Decision.** The target is a self-contained Maven module inside the existing repository, not a second
+repository.
+
+**The constraint being honoured.** COBOL source is not copied into the target. That constraint is about
+*text*, not about repositories: it is satisfied by a module that contains no program, copybook, screen
+map, job stream or resource-definition text of any kind, which is exactly what `carddemo-java/` is. The
+module carries its own build manifest, its own wrapper, its own container definitions, its own
+configuration, its own migrations and its own README, so it builds and validates without reference to any
+mainframe asset.
+
+**Why not a second repository.** A second repository would satisfy the same text constraint while
+fragmenting the history and — the decisive cost — severing the traceability anchor. The whole
+paragraph-level mapping is verifiable only because the estate and its translation sit at one checkout,
+under one commit identifier, where a reviewer can read a citation and then read the member it cites. Two
+repositories would make every row of that mapping a cross-repository claim resolvable only by
+coordinating two revisions.
+
+**A corrected base package, recorded because the misspelling is in circulation.** The base package is
+**`com.carddemo`**. The prior delivery's documentation carries a misspelled variant with a dropped
+letter. The build manifest's group coordinate and every source file use the correct spelling; the
+misspelling is noted here so that a search against the prior documentation's spelling returning nothing
+is understood as the documentation's defect rather than a missing package.
+
+### DL-250 — Two deliverables sit outside the module, and neither placement is a design choice
+
+**Decision.** Everything the target needs lives inside `carddemo-java/`, with exactly two categories of
+exception, each forced by a platform that resolves files from a fixed location.
+
+**The continuous-integration definition** lives at `.github/workflows/carddemo-java-ci.yml` because the
+CI platform resolves workflow definitions only from that directory at the repository root. It scopes
+itself back into the module with a working-directory default, so every command it runs is a command a
+developer runs in the module.
+
+**This documentation set** lives at the repository's documentation directory because the documentation
+generator resolves its content directory there by convention and the service catalog publishes
+documentation from the repository root. A documentation page inside the module would simply not be
+published.
+
+**Why the distinction matters rather than being pedantic.** "Self-contained module" is an acceptance
+property, and two files outside the module boundary look like a violation of it. They are not: neither
+file is *depended on* by the module — the module builds, tests and packages with both absent. They are
+consumed by tooling that cannot look inside a subdirectory. Recording the reason here means the boundary
+can be audited without the two exceptions reading as drift.
+
 ---
 
 ## 7. External interface contracts
@@ -1383,6 +1537,33 @@ configuration sites and in the already-provisioned local emulator.
 
 *Cited by:* `application-local.yml`.
 
+### DL-260 — The online-to-batch bridge becomes a first-in-first-out queue, preserving three declared attributes
+
+**Decision.** The estate's sole online-to-batch bridge becomes a publish to a first-in-first-out managed
+queue, and three attributes the CICS resource definition declares are each mapped to a specific property
+of that publish rather than approximated by it.
+
+**Legacy behaviour, measured.** There is exactly **one** transient-data queue write in the entire estate
+— the reporting program's job-submission path. It is the only mechanism by which the online tier causes
+batch work to happen, which is why its properties are contract rather than implementation detail.
+
+| Declared attribute | What it means | How the target preserves it |
+| :----------------- | :------------ | :-------------------------- |
+| `RECORDSIZE(80)` with `RECORDFORMAT(FIXED)` | fixed eighty-byte unblocked records | one message per card, each an eighty-character fixed-width payload; the width is asserted, not assumed |
+| `DISPOSITION(MOD)` | append, so writes accumulate in order | a single message group, which is what makes ordering a guarantee rather than a probability |
+| `ERROROPTION(IGNORE)` | a failed write is ignored, not raised | a **non-blocking publish whose failure logs and continues**; the caller is not aborted, and the exception type says so — see DL-044 |
+
+**Why the third attribute is the one that needs recording.** The first two are shapes and a reviewer will
+see them in the payload. The third is a *failure* semantic, and the idiomatic Java answer — propagate the
+exception — is the wrong one here: the legacy screen reported that the write had failed and carried on,
+so a caller that aborted would change observable behaviour on a path the estate deliberately made
+survivable. Preserving it is faithful; it is also the only one of the three that a passing test suite
+would not notice was missing.
+
+**Consequence.** A publish failure is visible in the log and nowhere else. A submission is therefore
+confirmed by draining the queue, not by the absence of an exception — which is how the contract is
+exercised rather than self-certified.
+
 ### DL-046 — Fixed output widths are contractual and are asserted as bytes
 
 Four output widths are contractual — eighty bytes for statement text, one hundred for statement
@@ -1561,7 +1742,7 @@ the generic error boundary that does not differentiate.
 ## 9. Conflicts between legacy artifacts, and how each was resolved
 
 | # | Conflict | Resolution |
-|---|---|---|
+| :--- | :------- | :--------- |
 | D-43 | The same generation-data-group base is declared `LIMIT(5)` in `app/jcl/DEFGDGB.jcl` and `LIMIT(10)` in `app/jcl/REPTFILE.jcl` | Ten for the transaction-report base, as the later and more specific declaration; five remains the measured default for the other generation groups. `StagedGenerationStore` applies those depths to completed objects in the staging bucket, so the figures bound durable retained generations rather than local working files. |
 | D-44 | One DD is declared `LRECL=80` in one `app/jcl/CREASTMT.JCL` step and `LRECL=100` in the next | One hundred, matching the `PIC X(100)` record the emitting program declares for the HTML stream. |
 | D-45 | `app/jcl/TRANFILE.jcl` and `app/jcl/TRANIDX.jcl` both define an alternate index of the same name, over the same cluster, with the same key width and offset | One logical index described in two members, emitted exactly once. Emitting it twice fails on a duplicate name; renaming the second copy would leave a permanent redundant index behind. |
@@ -1573,16 +1754,21 @@ the generic error boundary that does not differentiate.
 
 ## 10. The source anomaly register
 
-Thirty-one defects and oddities were identified in the legacy source. None is propagated into new
-logic, and none is silently corrected where correcting it would alter a record layout or an
-external contract. The numbering is the one the module cites: eight source and test files refer to
-these rows by number, so a row is never renumbered.
+Thirty-one defects and oddities were identified in the legacy source. Every one is **documented, never
+propagated, and never silently corrected where correcting it would alter a record layout or an external
+contract**. The numbering is the one the module cites: eight source and test files refer to these rows by
+number, so a row is never renumbered.
 
 Where an anomaly participates in a record layout, the layout is preserved byte for byte and only
 the Java-side spelling is corrected.
 
+The migration plan named **fourteen** anomalies plus a fifteenth observation. All fifteen are present
+below as rows 1 to 15 in the plan's own order, and rows 16 to 31 are the further defects this analysis
+found at the same checkout. Row 15 is the fifteenth observation and is a **comment defect rather than a
+code defect** — see the note following the table.
+
 | # | Anomaly | Handling |
-|---|---|---|
+| :-- | :---------- | :--------- |
 | 1 | `ACCT-EXPIRAION-DATE` in `app/cpy/CVACT01Y.cpy` and `CARD-EXPIRAION-DATE` in `app/cpy/CVACT02Y.cpy` are misspelled — a letter is dropped from EXPIRATION | Correct spelling in the Java property and the SQL column; mapper offset and width unchanged, so the record image stays byte-compatible |
 | 2 | Two identically named `0000-MAIN-EXIT` paragraphs in `app/cbl/COACTVWC.cbl` | Collapsed to a single method when that program is translated; recorded now so the paragraph count is not read as an error |
 | 3 | `app/csd/CARDDEMO.CSD` defines `PROGRAM(COCRDSEC)` with no corresponding source member, and the developer transaction `DEFINE TRANSACTION(CDV1)` is bound to exactly that definition — so the transaction was never dispatchable either | No target is generated for either the program or the transaction; recorded as a dangling resource definition and its dangling binding. This is why the navigation vocabulary derives seventeen destinations from eighteen registered transactions rather than eighteen — see DL-104 |
@@ -1596,7 +1782,7 @@ the Java-side spelling is corrected.
 | 11 | `AWS.M2.CARDDEMO.ACCDATA.PS` is byte-identical to `AWS.M2.CARDDEMO.ACCTDATA.PS` and is referenced by no job member | Retained as reference evidence; not seeded twice |
 | 12 | `app/cbl/CBTRN01C.cbl` is a complete 491-line program that no JCL member, procedure or resource definition invokes | Migrated as a job that is defined and exercised by tests but excluded from the default pipeline; not dropped |
 | 13 | `app/cpy/UNUSED1Y.cpy` has zero `COPY` references estate-wide | Deliberately not migrated. Recorded as a decision, not an omission: migrating it would create dead Java code |
-| 14 | `1400-COMPUTE-FEES` in `app/cbl/CBACT04C.cbl` contains only a "to be implemented" comment and an exit, yet is genuinely invoked from the interest driver | Preserved as an explicitly documented no-op. **No fee logic may be invented to fill it**: doing so would be feature expansion and would change interest-run output |
+| 14 | `1400-COMPUTE-FEES` in `app/cbl/CBACT04C.cbl` (declared at line 518) contains a single comment marking the logic as not yet implemented, followed by an exit — yet it is genuinely invoked from the interest driver at line 216 | Preserved as an explicitly documented no-op: the Java method exists, is called, and does nothing. **No fee logic may be invented to fill it**: doing so would be feature expansion and would change interest-run output |
 | 15 | The comments labelling two macro expansions in `app/cbl/COACTUPC.cbl` are transposed relative to the code they describe | The code governs. Token substitutions are followed, not the adjacent comments |
 | 16 | `app/cpy/CVCRD01Y.cpy` carries COBOL sequence numbers in columns 1 through 6, and the sequence number `004800` appears twice, at its physical lines 40 and 42 | Every citation of that member is by field name and never by line number, because a line number quoted from it would really be a sequence number. The duplication has no effect on the field layout |
 | 17 | The header comment of `app/cpy/CSMSG02Y.cpy` names the member `CABENDD.CPY`, which disagrees with the member name that exists | Not corrected — the legacy tree is the parity baseline and must remain byte-identical |
@@ -1613,23 +1799,33 @@ the Java-side spelling is corrected.
 | 28 | The file-status display routine is named one way in six batch programs and another way in two | One Java name; both spellings recorded here. See D-41 |
 | 29 | Four members of `app/cpy/CVCRD01Y.cpy`, and their four condition names, are referenced by no program in the estate | Not declared in the target. See D-40 |
 | 30 | The paragraph closing the daily-rejects file in `app/cbl/CBTRN02C.cbl` correctly tests its own status to decide the close failed, then displays the cross-reference file's status instead (line 649). Its three sibling close paragraphs each display their own | Not reproduced. The status travels from the failing operation to the diagnostic as a parameter rather than through a shared display field, so reporting another resource's status is structurally impossible. Recorded because there is no line of target code to point at |
-| 31 | The page-break test in `app/cbl/CBTRN03C.cbl` is `FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0` (line 282), and it fires only when the counter lands exactly on a multiple of the page size. The write routine `1111-WRITE-REPORT-REC` never increments the counter; each caller does — a header block adds four, a page-total block two, an account-total block two, a detail record one, and the grand-total record nothing. An account-total block's increment of two can therefore step the counter straight over a multiple of the page size, and that page break is missed entirely | Reproduced faithfully, never repaired: the modulus is taken over every written record and the per-caller increments are kept as found, so a skipped break stays skipped. The counter, the accumulations and the break decision belong to the report service; `util/ReportLineFormatter` holds no state and publishes only the page-size constant. Related: account totals do not roll into the grand total (only page totals do) and no rule record follows the grand total |
+| 31 | The page-break test in `app/cbl/CBTRN03C.cbl` (line 282) takes the line counter modulo the page size and fires only when the counter lands exactly on a multiple of the page size. The write routine `1111-WRITE-REPORT-REC` never increments the counter; each caller does — a header block adds four, a page-total block two, an account-total block two, a detail record one, and the grand-total record nothing. An account-total block's increment of two can therefore step the counter straight over a multiple of the page size, and that page break is missed entirely | Reproduced faithfully, never repaired: the modulus is taken over every written record and the per-caller increments are kept as found, so a skipped break stays skipped. The counter, the accumulations and the break decision belong to the report service; `util/ReportLineFormatter` holds no state and publishes only the page-size constant. Related: account totals do not roll into the grand total (only page totals do) and no rule record follows the grand total |
 
-A fifteenth observation is a documentation defect rather than a code defect: in the account-update
-program the comments labelling two adjacent macro expansions are transposed relative to the code
-they describe. The code is correct and the comments are swapped, so the translation follows the
-token substitutions rather than the adjacent comments.
+**Row 15 is a comment defect, not a code defect,** and it is called out separately because the
+handling differs in kind from every other row. In the account-update program the comments labelling
+two adjacent macro expansions — the primary-cardholder expansion and the EFT-account-identifier
+expansion — are transposed relative to the code they describe. Nothing in the code is wrong: the
+token substitutions are correct and the prose beside them is swapped. The translation therefore
+**follows the token substitutions and not the adjacent comments**, and a generating or reviewing
+agent that trusts the comments over the code at that site will mis-map two fields. No comment text is
+reproduced here; the defect is described.
 
 ### DL-055 — Two file-status codes are declared but unexercised, contradicting the prior specification
 
 A prior specification asserts two particular status codes for file-not-found and duplicate-key
-handling. A census of the estate returns **zero** occurrences of either literal: neither is compared
-anywhere in the legacy source.
+handling — `'35'` and `'22'`. A full literal census of the estate at this checkout returns **zero**
+occurrences of `'22'` and **zero** occurrences of `'35'`: neither is compared anywhere in the legacy
+source, in status-test context or in any other.
 
-Both are declared so the documented vocabulary stays discoverable, but no behaviour in the module
-depends on, branches on or special-cases either one. The discrepancy between the prior
-specification and the source is recorded here rather than resolved by adopting the specification's
-claim.
+The vocabulary that *is* present, counted across all 28 programs and all 28 copybooks, is exactly nine
+codes: `'00'`, `'01'`, `'02'`, `'04'`, `'05'`, `'10'`, `'12'`, `'23'` and `'31'`. That measured list is
+what the raw enumeration is built from, which is why it is small and honest.
+
+Both documented codes are declared so the documented vocabulary stays discoverable, but **no code path
+may depend on, branch on or special-case either one**, and no test asserts behaviour for them. The
+discrepancy between the prior specification and the source is recorded here rather than resolved by
+adopting the specification's claim — and it is a genuine discrepancy rather than a counting difference,
+because the measurement is zero and not merely lower.
 
 *Cited by:* `domain/enums/FileStatus.java`.
 
@@ -1684,16 +1880,35 @@ per-operation distinction that makes end of file normal for a read and a failure
 
 ### DL-057 — The unreferenced copybook is not migrated
 
-One copybook has zero inclusion references anywhere in the estate. Migrating it would create dead
-Java code. It is recorded here as a decision rather than left to look like an omission.
+`app/cpy/UNUSED1Y.cpy` has **zero** inclusion references anywhere in the estate — measured across all
+28 programs and all 28 copybooks at this checkout. Migrating it would create dead Java code. It is
+recorded here as a decision rather than left to look like an omission.
+
+**This is the traceability matrix's one deliberate non-row.** The copybook contributes no procedure
+paragraphs, so it produces no row to mark as an unimplemented translation the way a paragraph-level
+non-implementation does. It appears in the matrix's accounting only by reference to this entry, and it
+appears here as consciously excluded dead code. Cross-referenced from `traceability-matrix.md`, so a
+reader auditing the row count against the estate finds the one artefact that is absent by intent rather
+than by oversight.
 
 ### DL-058 — The unwired batch program is migrated but excluded from the default pipeline
 
-One complete batch program is invoked by no job member, procedure or CICS definition. It is
+`app/cbl/CBTRN01C.cbl` is a complete program — **491 lines** carrying **18** procedure-division
+paragraphs — and it is invoked by no job member, no cataloged procedure and no CICS definition. It is
 nonetheless translated, because the mandate is to migrate every program, and its job is defined but
 excluded from the default pipeline and exercised only by tests. Both halves are deliberate:
 translating it honours completeness, and leaving it unwired honours the estate's actual
 orchestration.
+
+**Why both halves matter to a reviewer.** Someone auditing coverage will find a job that no pipeline
+runs and read it as dead configuration; someone auditing the pipeline will find a program the estate
+never scheduled and read its absence as a missed translation. Only one of those readings can be
+right, and neither is: the program is migrated *and* unwired, on purpose, and this entry is the reason
+neither audit needs to guess.
+
+The paragraph count is stated because it is the figure the matrix carries. The member declares 19
+Area-A labels, one of which belongs to the environment division rather than the procedure division;
+18 is the count of translatable units.
 
 ### DL-059 — The empty fee-computation paragraph remains an empty method
 
@@ -1706,9 +1921,12 @@ of the no-feature-expansion boundary in the estate, because the vacuum is so obv
 
 ### DL-060 — The file-availability and catalog-utility job members have no runtime equivalent
 
-Three job members toggle CICS file availability and drive the CICS catalog utility. Once the
-underlying data store is replaced these have no runtime equivalent at all. They are documented as
-intentionally unmigrated rather than dropped silently.
+Three job members are intentionally unmigrated: `app/jcl/CLOSEFIL.jcl` and `app/jcl/OPENFIL.jcl`, which
+disable and re-enable CICS file availability, and `app/jcl/CBADMCDJ.jcl`, which drives the CICS
+resource-definition utility. Once the underlying data store is replaced these have no runtime
+equivalent at all — connection availability becomes a pooled-datasource concern with no job to toggle,
+and there is no resource-definition catalogue to update. They are documented as intentionally
+unmigrated rather than dropped silently.
 
 ### DL-061 — The commented-out alternative menu label stays inactive
 
@@ -1719,9 +1937,9 @@ change.
 Three further categories are not migrated, and are recorded here for the same reason.
 
 | Artifact | Reason |
-|---|---|
-| The 69 non-application `EXEC PGM` steps across the estate | Dataset definition, deletion, repro and CICS file toggling. Absorbed by schema migrations, container service definitions and test fixtures rather than becoming job steps |
-| The unimplemented future-state entities on one page of the data-model diagram | No corresponding copybook, program or dataset exists; implementing them would be feature expansion |
+| :------- | :----- |
+| The non-application `EXEC PGM` steps across the estate — **70** of the 79, measured at this checkout | Dataset definition, deletion, repro and CICS file toggling. Absorbed by schema migrations, container service definitions and test fixtures rather than becoming job steps. The specification's figure is 69; the discrepancy is resolved in DL-251 |
+| The `Product` / `Fee` / `Feature` page of `diagrams/CARDDEMO-DataModel.drawio` | Illustrative future-state entities with **no corresponding copybook, program or dataset** anywhere in the estate. Implementing them would be feature expansion, and the data-model diagram is read as reference for the eleven layouts that *do* have copybooks. Nothing on that page is modelled, migrated or seeded |
 | The two packaged emulator runtimes under `samples/` | Opaque vendor binaries with no source content to translate |
 
 ---
@@ -1730,15 +1948,31 @@ Three further categories are not migrated, and are recorded here for the same re
 
 ### DL-062 — The framework line is pinned to the constrained major version, not the newest release
 
-The requirement names the 3.x framework line while a 4.x line exists. The narrower, explicit
-qualifier governs, so the newest generally-available 3.x release is used. The 4.x line would breach
-the stated ceiling.
+**Decision.** `spring-boot-starter-parent` **3.5.16**, read back out of the module's own build manifest.
+
+**The tension.** The requirement names "Spring Boot 3.x (latest stable)" while **4.1.0** is the latest
+release overall. Two readings of that phrase are available and they select different artifacts.
+
+**Why the narrower term governs.** The `3.x` qualifier is explicit and narrower than the general phrase
+"latest stable", so it is the operative constraint and the general phrase describes position *within*
+it. Read that way, 3.5.16 is the newest generally-available release on the 3.x line and 4.1.0 would
+breach a stated ceiling rather than satisfy a stated preference. A ceiling that a plausible reading can
+step over is worth recording, which is why this entry exists at all.
+
+**Consequence.** Anything the 4.x line introduced is out of reach by construction, and no future upgrade
+past 3.x may be taken as routine maintenance — it is a change of contract.
 
 ### DL-063 — Maven with a committed wrapper, rather than the permitted alternative build tool
 
-Either build tool was permitted. Maven was chosen because full version pinning plus a
-project-distributed build tool is the stronger guarantee of a reproducible, zero-warning build from
-a clean checkout with no preinstalled toolchain.
+**Decision.** Maven, with the Maven Wrapper committed and pinned to **3.9.16**.
+
+The requirement permitted "Maven 3.9+ or Gradle 8.x", so this is a tie-break between two admissible
+answers rather than a correction of a wrong one. Maven was chosen because the acceptance criterion is a
+**zero-warning deployable artefact from a clean checkout**, and that criterion is discharged most
+directly by exhaustive version pinning plus a build tool the project distributes itself: the wrapper
+means a clean checkout needs no preinstalled Maven, and the pinned distribution means two machines run
+the same build rather than two builds that happen to agree. The wrapper's distribution URL and its
+SHA-256 are the sole declaration of the version, so no second copy of it can drift.
 
 ### DL-064 — No annotation processor and no code-generation library
 
@@ -1747,10 +1981,27 @@ compound: under a warnings-as-errors build, processor-generated code is a live s
 build-failing warnings; and the unsafe-code audit commits to a reflection count of zero, which
 DL-034 depends on. Boilerplate is written explicitly instead.
 
+**Named exclusions, so the absence reads as a decision rather than an oversight.** **Lombok**,
+**MapStruct**, **Immutables' processor** and **AutoValue** appear nowhere in the build. This is the
+constraint that obliges all eleven fixed-width record mappers to be written by hand with explicit
+offsets — a mapping framework would reintroduce reflection, and the audit budget for reflection is
+zero, not small.
+
+**One distinction is worth stating precisely, because a reader scanning the manifest will meet it.** An
+annotation-**only** companion artefact *is* declared, because the non-shaded Docker transport publishes
+signatures that cannot be read under `-Xlint:all` without it. The **processor-bearing** artefact of the
+same family is deliberately not added. An annotation library that generates nothing is not a code
+generator, and the line this entry draws is at code generation rather than at the word "annotation".
+
 ### DL-065 — Test container library stays at the version the framework manages
 
-A newer major version of the container test library is published, but the framework's dependency
-management pins an earlier one. Remaining managed avoids an unmanaged major-version override.
+**Decision.** Testcontainers **1.21.4** — the version the Spring Boot 3.5.16 dependency management pins.
+
+Testcontainers **2.0.5** is published, so this is a deliberate hold rather than a stale dependency.
+Adopting it would mean overriding a managed coordinate across a major-version boundary, and the
+override would then sit outside the one bill of materials that keeps every other test-scope version
+consistent. Remaining managed keeps a single source of truth for the whole test tier; the cost is
+foregoing 2.x features, and nothing in the eight acceptance criteria needs one.
 
 ### DL-066 — Two transitive libraries are pinned forward past published advisories
 
@@ -1807,6 +2058,45 @@ declared after the coverage check, so a coverage shortfall ended the build befor
 the scan's evidence was never produced. The scan is now declared first. Both goals now execute in
 one lifecycle, which is verifiable from the goal order in the build log rather than asserted.
 
+### DL-258 — The AWS emulator is the community edition, and no entitlement token exists to hold
+
+**Decision.** The local validation stack uses the **community** edition of the AWS emulator, not the
+commercial one.
+
+**Why it suffices rather than merely being cheaper.** The whole AWS surface this migration needs is object
+storage for staged batch output, a first-in-first-out queue for the job-submission bridge, and a
+notification topic for job completion. All three are community features. There is no service in the
+target's design that the commercial edition would unlock, so the choice costs nothing in coverage.
+
+**Why it is worth an entry.** The commercial edition was the **only non-open component that could have
+entered this stack**, and it would have entered it as a licensing dependency on a build that is otherwise
+reproducible from public artefacts alone. Excluding it keeps a clean-checkout build genuinely
+self-sufficient.
+
+**A stale reference is corrected rather than inherited.** Prior-run documentation refers to an
+entitlement token for the commercial edition. **No such token is required, configured, or present
+anywhere.** That reference is drift, and it is named here because a reader who goes looking for a missing
+credential will not find one and should not conclude that the stack is misconfigured. There is no
+credential to find.
+
+### DL-259 — No application-level cache, because the legacy system has none
+
+**Decision.** No cache library, no cache abstraction and no cached repository path anywhere in the
+module.
+
+**Legacy behaviour.** The estate has no application-level cache of any kind. Every read reaches the data
+store, and the consistency a program observes is whatever the store gave it on that read.
+
+**Why adding one would be a divergence rather than an optimisation.** A cache changes two observable
+properties at once. It changes *consistency*, because a caller can be served a value that no longer
+reflects the store — which in a tier that reads a balance, decides on it and writes it back is a
+correctness change, not a speed change. And it changes the *timing profile* that the performance work
+measures, which would corrupt a baseline being established for the first time rather than improve a
+figure being compared against a target.
+
+**Consequence.** Where a value is read repeatedly within one unit of work, the module scopes it to that
+unit of work explicitly rather than caching it globally, so nothing outlives the run that computed it.
+
 ---
 
 ## 13. Open items and coordination risks
@@ -1855,10 +2145,19 @@ Every reference to this log from the target module, mapped to the entry that ans
 index is in two parts because the module cites two identifier schemes; the concordance at the
 end pairs the entries that record the same decision under both.
 
+This index lists *citations*, not entries. An entry with no row here is not unindexed — it is simply not
+yet cited from the module's own source, which is the ordinary state of an entry that records a
+documentation-level decision. Sections 16 to 19 are wholly of that kind: their entries carry stable
+identifiers so that `traceability-matrix.md`, `gate-evidence.md`, `architecture.md` and
+`onboarding-guide.md` can cite them by name, and they appear here only if and when module source cites
+them too. `config/DecisionLogIdentifierContractTest` enforces the property that actually matters in both
+directions — every heading is a well-formed, unique identifier, and every identifier the module cites
+resolves to exactly one entry.
+
 ### 14.1 `DL-nnn` citations
 
 | Citing file | Entry |
-|---|---|
+| :---------- | :---- |
 | `api/GlobalExceptionHandler.java` | DL-080, DL-083, DL-084, DL-085 |
 | `api/dto/AccountUpdateRequest.java` | DL-011, DL-028, DL-029, DL-031, DL-074, DL-078 |
 | `api/dto/CardUpdateRequest.java` | DL-103 |
@@ -1959,7 +2258,7 @@ end pairs the entries that record the same decision under both.
 ### 14.2 `D-nn` and anomaly-register citations
 
 | Citing file | Entry |
-|---|---|
+| :---------- | :---- |
 | `api/GlobalExceptionHandler.java` | D-14 |
 | `api/dto/AccountUpdateRequest.java` | D-02, D-13, D-17, D-33, D-34 |
 | `api/dto/ErrorResponse.java` | D-33, D-34 |
@@ -2020,7 +2319,7 @@ end pairs the entries that record the same decision under both.
 ### 14.3 Concordance — the same decision under both schemes
 
 | `D-nn` | `DL-nnn` |
-|---|---|
+| :----- | :------ |
 | D-01 | DL-015 |
 | D-02 | DL-013 |
 | D-03 | DL-014 |
@@ -2915,7 +3214,7 @@ container runs every post-processor of that kind to completion before it runs an
 `BeanFactoryPostProcessor`, which is what the guard is published as. The condition resolves the key
 strictly one phase earlier, so start-up aborts with
 
-```
+```text
 org.springframework.util.PlaceholderResolutionException: Could not resolve placeholder
 'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT' in value "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
 Wrapped by: java.lang.IllegalStateException: Error processing condition on
@@ -3199,7 +3498,7 @@ of this kind, and because an entry that quietly changes its mind teaches nothing
 four lines on the forked process's error stream, quoted here exactly as the build produced them at
 the time:
 
-```
+```text
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
 WARNING: sun.misc.Unsafe::allocateMemory has been called by io.netty.util.internal.PlatformDependent0$2
          (file:.../netty-common-4.1.136.Final.jar)
@@ -3739,12 +4038,12 @@ be worth having. A gate was kept between *stages* so that the date-validation su
 handed a date assembled from a part already faulted, and that gate was believed to be the whole of the
 fidelity requirement.
 
-**What the source actually does.** Every failure site performs the send paragraph. The send paragraph
-ends with `GO TO RETURN-TO-CICS`. The return paragraph issues `EXEC CICS RETURN`. So the task **ends**
-at the first failure: the paragraph that performed the send never resumes, and everything sequenced
-after that `PERFORM` is unreachable. In the operator-supplied arm that is a great deal of work - the
-numeric normalisation of all six date parts, the five range tests after the first failing one, the
-assembly of both ten-character dates, both subprogram calls, the four substitution slots, the
+**What the source actually does.** Every failure site performs the send paragraph. The send paragraph ends
+by jumping unconditionally to the `RETURN-TO-CICS` paragraph, which issues a terminal `EXEC CICS RETURN`.
+So the task **ends** at the first failure: the paragraph that performed the send never resumes, and
+everything sequenced after that `PERFORM` is unreachable. In the operator-supplied arm that is a great
+deal of work - the numeric normalisation of all six date parts, the five range tests after the first
+failing one, the assembly of both ten-character dates, both subprogram calls, the four substitution slots, the
 report-name assignment and the submission attempt. The earlier reading had the reachability boundary in
 the wrong place: it is not between stages, it is at the first failure.
 
@@ -4447,13 +4746,17 @@ operations. Ten repositories are unwired - account, card, customer, cross-refere
 transaction, category balance, disclosure group, transaction type and transaction category. The nine
 batch job configurations the plan names are likewise not built.
 
-**Four documentation deliverables the plan names are also absent**, and they are listed here for the
-same reason: `docs/gate-evidence.md`, `docs/traceability-matrix.md` with its five hundred and
-forty-four rows, `docs/architecture.md` and `docs/onboarding-guide.md`. None of them is referenced from
-the documentation site's navigation, so nothing is broken by their absence, but one comment in the
+**Four documentation deliverables the plan names were also absent when this entry was written**, and
+they are listed here for the same reason: `gate-evidence.md`, `traceability-matrix.md` with its five
+hundred and forty-four rows, `architecture.md` and `onboarding-guide.md`. None of them was referenced from
+the documentation site's navigation, so nothing was broken by their absence, but one comment in the
 metrics scrape configuration already points at the gate-evidence file as the place measured figures are
 written up. That pointer is left standing rather than removed, because the file is intended to exist and
 the comment states where its content belongs.
+
+*Currency note.* All four have since been delivered, and this log, `architecture.md` and
+`gate-evidence.md` are registered in the documentation site's navigation. The paragraph above is kept as
+written because it records the state the decision was taken in; it is not the current inventory.
 
 **Two obligations attach to each one when it is built**, and both are already enforced rather than
 merely written down. Any source assembling an account response must obtain the regulated components from
@@ -5715,8 +6018,10 @@ value is a boolean.
 > **Formerly recorded under `DL-152`.** That identifier was carried by more than one distinct decision, so a citation naming it could not be resolved to a single entry. This decision now has an identifier of its own and nothing in the reasoning below is changed. The entry that keeps `DL-152` is the one the module's own source cites. See entry DL-245.
 
 **Context.** The local validation stack publishes eight ports and is deliberately full of readable values - a
-database password in the file, a dashboard password of `admin`, and a token signing secret committed in the local
-profile - so that a developer can bring it up and sign on with nothing prepared. Every mapping omitted the host
+database password written into the file, a dashboard credential left at the tool's own documented default, and
+a token signing secret committed in the local profile - so that a developer can bring it up and sign on with
+nothing prepared. None of those values is reproduced on this page: this log names the *fact* of a readable
+credential and never the credential. Every mapping omitted the host
 address, which binds every interface on the machine. On that binding the fixtures stop being fixtures: the
 database answers any peer that can route to the host, the dashboard admits anyone who has read the repository,
 and - the one that is authority rather than information - the application signs bearer grants with a published
@@ -6127,7 +6432,7 @@ renders as a blank legend entry, and no name-comparison test can see that.
 **The warning that appears beside it, and why nothing suppresses it.** Launching any job logs one
 Micrometer warning:
 
-```
+```text
 The meter (MeterId{name='spring.batch.job.active', tags=[application, spring.batch.job.name,
 spring.batch.job.status]}) registration has failed: Prometheus requires that all meters with the same
 name have the same set of tag keys. There is already an existing meter named
@@ -6170,7 +6475,7 @@ executed-query suites that hold it.
 two sub-threshold findings. A vulnerability-database refresh then produced `CVE-2026-66299` at CVSS 7.5
 against the embedded servlet container, and every online `./mvnw verify` began failing:
 
-```
+```text
 [ERROR] One or more dependencies were identified with vulnerabilities that have a CVSS score
         greater than or equal to '7.0':
 [ERROR] tomcat-embed-core-10.1.57.jar (pkg:maven/org.apache.tomcat.embed/tomcat-embed-core@10.1.57,
@@ -6185,7 +6490,7 @@ a gate that fails is not a gate that can be left failing.
 obvious move was one more property bump. The advisory names 10.1.58 as the fixed release on the 10.1
 line (`versionEndExcluding` 10.1.58 in the record) and 11.0.25 on the 11 line. Neither is published:
 
-```
+```console
 $ for v in 10.1.58 10.1.59 10.1.60 11.0.25; do curl -sI -o /dev/null -w "$v -> %{http_code}\n" \
     https://repo1.maven.org/maven2/org/apache/tomcat/embed/tomcat-embed-core/$v/tomcat-embed-core-$v.jar; done
 10.1.58 -> 404
@@ -6204,7 +6509,7 @@ its own text: users who followed the guidance to remove the examples web applica
 Spring Boot application embeds the container as a library and has no `webapps` directory from which an
 examples application could be deployed. The archive listings confirm there is nothing there to exploit:
 
-```
+```text
 tomcat-embed-core-10.1.57.jar        1681 entries,  0 matching webapps/|examples/|websocket/chat
 tomcat-embed-websocket-10.1.57.jar    191 entries,  0
 tomcat-embed-el-10.1.57.jar           164 entries,  0
@@ -6246,7 +6551,7 @@ with `failBuildOnUnusedSuppressionRule` set true - a flag that was enabled befor
 to police, precisely for a moment like this one. Pointing the rule at a non-matching identifier makes the
 build fail:
 
-```
+```text
 [ERROR] Suppression Rule had zero matches: SuppressionRule{packageUrl=...tomcat-embed-(core|websocket|el)...}
 [ERROR] There are 1 unused suppression rule(s): check logs.
 [INFO] BUILD FAILURE
@@ -6629,7 +6934,8 @@ then observes it released.
 9400-GETCUSTDATA-BYCUST at L3763-L3795. The catch-all arm of each raises the input error, raises its
 filter flag, moves `'READ'` into `ERROR-OPNAME` and the resource literal into `ERROR-FILE`, and moves the
 composed `WS-FILE-ERROR-MESSAGE` into `WS-RETURN-MSG`. The write range's two read-for-update statements at
-L3894 and L3917 are tested with `IF WS-RESP-CD EQUAL TO DFHRESP(NORMAL) ... ELSE`, so **every** non-normal
+L3894 and L3917 each test their response code for equality with the normal condition value and route
+everything else to a single `ELSE` arm, so **every** non-normal
 response reaches the could-not-lock arm and leaves the range.
 
 **The defect this entry records.** None of those five arms existed. A repository failure on any of the
@@ -6693,7 +6999,7 @@ was not weakened: it still fails on a stale value rather than passing silently.
 ### DL-170 - The posting rewrite establishes the invalid-key answer under a write lock before it rewrites, instead of asking afterwards whether the row exists
 
 **Context.** `CBTRN02C` paragraph `2800-UPDATE-ACCOUNT-REC` (`app/cbl/CBTRN02C.cbl` L545-L560) adds the
-posted amount onto three balances and issues `REWRITE FD-ACCTFILE-REC`. Its `INVALID KEY` arm sets reject
+posted amount onto three balances and then rewrites the account record in place. Its `INVALID KEY` arm sets reject
 code 109 and does nothing else - no status test, no diagnostic, no abend - so 109 is inert and the mainline
 still writes the transaction and counts the record posted. The file is `ORGANIZATION IS INDEXED, ACCESS MODE
 IS RANDOM` (L51-L53), so the rewrite is keyed rather than positional, and the cluster is defined
@@ -6742,7 +7048,7 @@ written before the account row in both the posting and the interest-accrual path
 
 **Context.** `CBACT04C` synthesizes one transaction record per accruing category-balance row and writes it
 immediately: `1300-COMPUTE-INTEREST` adds the row's interest to the running total and then performs
-`1300-B-WRITE-TX`, whose `WRITE FD-TRANFILE-REC` is at `app/cbl/CBACT04C.cbl` L500, inside the read loop.
+`1300-B-WRITE-TX`, whose write of the transaction record is at `app/cbl/CBACT04C.cbl` L500, inside the read loop.
 The account is rewritten only at the control break, `1050-UPDATE-ACCOUNT` at L350-L370, reached from L196 on
 a key change and from L220 at end of file. So in the legacy **every** record of a group reaches its dataset
 before that group's balance is rewritten, and the write-error arm at L508-L512 abends with the balance
@@ -7349,7 +7655,7 @@ was the normal case rather than the edge case.
 
 The guidance panel compounded it by pointing the reader at a panel called *Records read per second*, which
 no panel on the dashboard was titled — so a reader following the gate's own instructions arrived nowhere —
-and `docs/gate-evidence.md`, which the same panel named as where figures are written up, did not exist.
+and `gate-evidence.md`, which the same panel named as where figures are written up, did not yet exist.
 
 **The decision.** The dashboard measures and visualizes; it does not certify. Every panel adjacent to a
 Gate 3 figure is now titled as a visualization and its description states what its divisor or its sampling
@@ -7371,13 +7677,14 @@ positive elapsed time, the fixture's own record count, a peak the platform repor
 figure is fast enough, because no numeric performance figure exists anywhere in the legacy estate to
 compare against and inventing one is expressly forbidden. It **refuses a measurement with no fixture
 volumes named beside it**, because a number without them is not a baseline. And it writes to
-`target/gate-evidence/` rather than into `docs/`, because a recorded baseline belongs to a machine and a
-date that a person supplies; a test that edited the documentation tree would make this repository's content
-depend on the hardware of whoever last ran the suite.
+`target/gate-evidence/` rather than into this documentation tree, because a recorded baseline belongs to a
+machine and a date that a person supplies; a test that edited the documentation tree would make this
+repository's content depend on the hardware of whoever last ran the suite.
 
 *Cited by:* `config/grafana/dashboards/carddemo-overview.json`,
 `src/test/java/com/carddemo/support/RunScopedPerformanceRecorder.java`,
-`src/test/java/com/carddemo/batch/InterestCalculationJobIT.java`, `docs/gate-evidence.md`.
+`src/test/java/com/carddemo/batch/InterestCalculationJobIT.java`, and `gate-evidence.md` in this
+documentation set.
 
 ### DL-183 — A CI gate reads the same health group the container probe reads, not the aggregate
 
@@ -8224,7 +8531,7 @@ preserved only where they are behaviourally significant.* The rule is right. Its
 characters — while three other shipped artefacts describe the same field at ten:
 
 | Artefact | What it declares |
-|---|---|
+| :------- | :--------------- |
 | `app/cpy/CVTRA06Y.cpy` → `V1__create_schema.sql` | `DALYTRAN-SOURCE PIC X(10)` → `dalytran_source VARCHAR(10)` |
 | `util/DailyTransactionRecordMapper` | reads record bytes `[22:32)` **untrimmed**, at width 10 |
 | `domain/enums/TransactionSourceType` | `POS_TERM("POS TERM  ")`, `OPERATOR("OPERATOR  ")`, `SYSTEM("System    ")`, `VALUE_LENGTH = 10`, and `fromValue` is an exact match |
@@ -8263,6 +8570,7 @@ the record layout is the one that moves.
 
 **What keeps it from happening again.** Three assertions, deliberately layered so that each catches what the
 others cannot:
+
 1. V3's own verification block counts the two padded literals **without `btrim` on either side**, so a
    re-shortened seed fails the migration rather than the tests.
 2. The same block asserts `length(dalytran_source) = 10` on all 300 rows and asserts every row is inside the
@@ -8604,7 +8912,7 @@ The rule is applied to every logical dataset the module produces rather than to 
 entries happened to name:
 
 | Logical dataset | Record | Producer |
-|---|---|---|
+| :-------------- | :----- | :------- |
 | `AWS.M2.CARDDEMO.TRANSACT.BKUP` | 350 | archive step (already separator-free) **and** report unload step |
 | `AWS.M2.CARDDEMO.TRANSACT.DALY` | 350 | report filter-and-order step |
 | `AWS.M2.CARDDEMO.TRANREPT` | 133 | report emit step |
@@ -9009,7 +9317,7 @@ citations of `DL-041`, the thirty-four of `DL-127`, the twenty-three of `DL-102`
 citation are untouched. No reasoning is edited, shortened or merged: this entry moves headings and adds
 notes, and changes not one sentence of a decision.
 
-*Embodied in:* `docs/decision-log.md` (244 headings, 244 distinct identifiers), and the three repointed
+*Embodied in:* this log (every heading carrying a distinct identifier), and the three repointed
 citations in `pom.xml`, `config/grafana/dashboards/carddemo-overview.json` and
 `batch/CategoryBalanceReportJobConfig.java`.
 *Asserted by:* `DecisionLogIdentifierContractTest`, which parses every heading and fails the build if any
@@ -9055,6 +9363,269 @@ which the `:?` form could never have detected.
 bring-up section now separates what needs no exports from what does).
 *Asserted by:* `config/ContainerHardeningContractTest`.
 
+---
+
+## 16. Discrepancies between the specification and the source
+
+Section 9 records conflicts *inside* the legacy estate. This section records conflicts between the
+migration specification — or the prior delivery's own documentation — and what the source actually
+contains.
+
+The handling is the same in every case and is stated once here: **the measured value is recorded, the
+claim it corrects is named, and neither side is silently adopted.** A figure is never quietly replaced,
+because a reader who greps the estate and gets a different number needs to find out here that the
+difference is known rather than conclude the analysis was careless. Equally, a specification figure is
+never quietly preserved, because a document that repeats a measurement it cannot reproduce is not
+evidence of anything.
+
+None of these discrepancies changes a translation decision. Every one of them is a counting or drafting
+error in a document, and the load-bearing claim each figure was supporting survives the correction —
+which is worth saying plainly, because a list of seven corrections can otherwise read as though the
+plan were unsound.
+
+| # | Claim in the specification or prior documentation | Measured at this checkout | Entry |
+| :-- | :---------------------------------- | :------------------------ | :---- |
+| 1 | Status `'35'` for file-not-found and `'22'` for duplicate-key handling are part of the model | **Neither literal is compared anywhere** — 0 occurrences of each | DL-055, D-22 |
+| 2 | Packed decimal "appears exactly once" | **Nine** declaration sites, all working-storage, none persisted | DL-015 |
+| 3 | 78 program-execution steps, 9 application and 69 utility | **79** steps, 9 application and **70** utility | DL-251 |
+| 4 | 1,285 non-comment lines in the validation-lookup copybook | **1,285** non-comment lines, of which **1,283** carry text | DL-252 |
+| 5 | 217 `DISPLAY` statements | **215** statement-initial `DISPLAY` lines | DL-253 |
+| 6 | `APPL-RESULT` referenced 223 times | **223 lines**, **229 occurrences** | DL-254 |
+| 7 | Status `'23'` compared exactly once | **Three** status-test lines, **one** decision point | DL-255 |
+| 8 | 888 tests = 729 unit + 134 integration + 33 end-to-end | That breakdown sums to **896**; the self-consistent form is 729 + 159 | DL-256 |
+| 9 | A master batch-pipeline orchestrator class exists | **Nine job configurations and no orchestrator**; the order is an operational convention | DL-257 |
+
+### DL-251 — The program-execution step count is 79, not 78, and the utility remainder is 70, not 69
+
+**Decision.** The measured figures are recorded here; `architecture.md` and the module README keep the
+specification's framing so that the three documents agree with one another rather than disagreeing in
+three different ways, and both of them point here for the correction.
+
+**Measured at this checkout.** **79** program-execution steps — **76** across the 29 job members and
+**3** across the 2 cataloged procedures. **Nine** invoke an application program: the report program
+twice, and the posting, statement, customer-extract, interest, category-balance, card-extract and
+account-extract programs once each. The remaining **70** invoke system utilities: 52 dataset-utility
+steps, 8 spool-display steps, 5 sort steps, 3 no-operation steps, 1 generator step and 1 CICS
+resource-definition step.
+
+**Why the specification's figure cannot be right on its own terms.** The utility breakdown the
+specification itself tabulates is 52 + 8 + 5 + 3 + 1 + 1, which sums to **70**. Its stated remainder is
+69, and its stated total is 78. The document therefore disagrees with its own arithmetic by one step,
+independently of any measurement — which is what makes this a drafting error rather than a difference of
+counting method.
+
+**The load-bearing claim is unaffected under either count**, and that is the point of recording it here
+rather than treating it as a defect. Whether the remainder is 69 or 70, the finding that shapes the whole
+batch tier is unchanged: only nine steps invoke application code, so the target carries **nine job
+configuration classes** rather than one class per step, and the other seventy are absorbed by schema
+migrations, container service definitions and test fixtures.
+
+### DL-252 — The validation-lookup copybook line count differs only in whether blank lines are counted
+
+**Measured.** The member carries **1,318** lines in total. Excluding fixed-format comment lines leaves
+**1,285**. Excluding blank lines as well leaves **1,283**, because exactly two of the non-comment lines
+are blank.
+
+**Both published figures are therefore correct**, under two different and equally reasonable definitions
+of "non-comment line". Neither is a mistake, and this entry exists so that a reader meeting 1,283 in one
+document and 1,285 in another stops looking for an error that is not there. The definition is stated
+rather than the number asserted: 1,285 non-comment lines, 1,283 of which carry text.
+
+**The figures that actually matter are the cardinalities, and they match exactly.** The copybook declares
+its permitted values as condition-name lists, and the target loads them as immutable sets whose sizes are
+themselves assertions: **490** telephone area codes, being an exact partition of **410** general-purpose
+plus **80** easily-recognisable codes; **56** state codes; and **240** state-and-postal-prefix
+combinations. All five were counted from the value lists and all five agree with the specification. A
+line count is a measure of how the data is laid out; a cardinality is a measure of what the data *is*,
+and only the second can be wrong in a way that changes behaviour.
+
+### DL-253 — The diagnostic-statement count is 215, not 217
+
+**Measured.** **215** lines begin a `DISPLAY` statement across the 28 programs, counting only code lines
+and reading only columns 8 to 72. The bare token appears 306 times, because a statement's operand list
+continues across lines and because the verb also occurs inside paragraph names.
+
+Neither figure is the specification's 217, and the gap is small enough to be a drafting slip rather than
+a different method. **Either figure supports the point the number was there to make**: console display
+was the estate's *only* diagnostic channel — no log framework, no severity level, no structured field, no
+destination other than the job output an operator read inside the same session. That is the observation
+that justifies replacing all of them with structured logging, and it does not turn on two statements.
+
+### DL-254 — The normalised-result reference count reconciles at two figures, and both are true
+
+**Measured.** The normalised file-status result is referenced on **223 lines** of the program tree, and
+**229** times in total: six lines reference it twice.
+
+The specification's 223 and a naive occurrence count of 229 are therefore the same measurement expressed
+per line and per reference. Recorded because the two numbers look like a contradiction and are not.
+
+**The point the figure supports is untouched.** The programs do not branch on the raw two-byte status;
+they normalise it first and branch on the normalised result, which is why the target carries two levels
+rather than one enumeration — see DL-056 and D-21. Whether that normalised value is read on 223 lines or
+229 times, it is what the estate actually tests, and collapsing the model would still erase the
+end-of-file-versus-error distinction every batch read loop depends on.
+
+### DL-255 — Status `'23'` occupies three status-test lines and one decision point
+
+**Measured.** The literal appears in status-test context on **three** lines across **two** members: the
+disclosure-group lookup accepts either success or `'23'` and then branches on `'23'` to take the
+default-group fallback, and the category-balance read likewise accepts either.
+
+**One decision point, three lines.** The specification's "exactly once" describes the branch — there is
+precisely one place where `'23'` selects a different path — while the line count is three, because two of
+the sites merely admit the code alongside success rather than discriminating on it. Both readings are
+accurate and they answer different questions, so both are recorded.
+
+**Why the distinction is worth the entry.** The single decision point is the one that matters
+behaviourally: it is the default-group fallback, and it is the reason the interest run is provably
+exercisable on both branches from seeded data. The two accepting sites matter differently — they are why
+`'23'` cannot be classified as an error outcome in the raw status vocabulary, because two operations
+treat it as an ordinary result. A model built from the branch alone would misclassify it.
+
+### DL-256 — The prior delivery's test breakdown is published only in the form that sums
+
+**Attribution first: these are the prior delivery's measured results, not this delivery's.** They are
+recorded because the prior completion report is cited as evidence of what was previously achieved, and a
+cited figure that does not add up undermines the citation.
+
+The prior completion report states **888** tests passing and breaks them down as **729** unit plus
+**159** integration and end-to-end, which sums correctly. The specification restates the same breakdown
+as 729 unit plus 134 integration plus 33 end-to-end, which sums to **896** rather than 888.
+
+**Only the self-consistent form is published anywhere in this documentation set**: 729 + 159 = 888. The
+eight-test overstatement is recorded here rather than propagated, and no figure from either source is
+presented as a result of the current work. The gated acceptance criterion is the enforced line-coverage
+floor, which the build checks on every run; a historical test count is context, not evidence.
+
+### DL-257 — There is no master pipeline orchestrator, and the named class is prior-run drift
+
+**The claim.** The specification names a batch-pipeline orchestrator class.
+
+**The design.** There are **nine job configurations and no orchestrator class at all.** The pipeline
+order is an **operational convention** — the sequence an operator submits, not a sequence any artefact
+encodes.
+
+**Independently re-proven at this checkout,** because "no orchestrator exists" is a claim about absence
+and absence is exactly what a stale document gets wrong. Three measurements support it. There are **zero**
+internal-reader submissions in any job member or cataloged procedure — the sole reference to the internal
+reader anywhere under `app/` is in the online reporting program, which is the online-to-batch bridge and
+not a job scheduling another job. There are **zero** job-to-job invocations across all 29 job members and
+both procedures. And the only procedure-invocation target in the whole estate is a single cataloged
+procedure that performs a dataset copy, invoked from three members — a shared utility step, not a
+pipeline driver.
+
+**Consequence.** Nothing in the target may be built to encode the pipeline order as though it were a
+contract, because the estate never encoded it. The order is documented in `architecture.md` as the
+convention it is, and each of the nine jobs is independently launchable — which is also what makes each
+one independently testable.
+
+---
+
+## 17. Catalog metadata: the inaccuracies are recorded here rather than corrected
+
+### DL-261 — The stale service-catalog tags are retained, not removed
+
+**Decision.** The repository's service-catalog descriptor is updated by **addition only**. Its component
+type moves from a website to a service and its tag list **gains** the Java stack. Its name, its
+project-slug annotation and its declared system are **deliberately left untouched.**
+
+**What is inaccurate and stays inaccurate.** The descriptor carries `python`, `typescript` and `web-app`
+tags, none of which describes this repository, and it declares a system named for a TypeScript estate.
+None of that is true of a COBOL-to-Java migration.
+
+**Why it is not fixed.** The name, the project slug and the system are the catalog's identity and the
+publication path its documentation is served from. Changing any of them would break the catalog entry
+and the documentation publication rather than improve the description — a cosmetic accuracy gain paid for
+with a broken integration. The authorised change is therefore addition only, and the inaccuracy is
+**recorded here instead of corrected there.**
+
+**Consequence a reader must know.** Anyone auditing the descriptor against this repository will find
+tags that do not fit and a system that names the wrong stack. That mismatch is known, is deliberate, and
+is not evidence that the migration was mis-catalogued. If the identity fields ever become safe to change,
+this entry is the record of why they were not.
+
+---
+
+## 18. Prior-run open items, and what closes each
+
+### DL-262 — The five open items the prior delivery left, and the artefact that closes each
+
+The prior delivery recorded five open items. They are listed here **as the prior delivery's open
+items**, each against the artefact that closes it, so that a reader comparing the two deliveries can see
+what moved rather than inferring it.
+
+| # | The prior delivery's open item | What closes it |
+| :-- | :--------------------------- | :------------- |
+| 1 | Continuous integration not started | `.github/workflows/carddemo-java-ci.yml`, scoped into the module with a working-directory default |
+| 2 | Vulnerability scan pending, execution unconfirmed | `dependency-check-maven` **12.1.3** bound to `verify`, failing the build at CVSS 7.0, with its report as a gate artefact |
+| 3 | Signing secret hardcoded | Eliminated completely: the production profile resolves every secret from the environment with **no fallback value**, so a missing secret fails start-up instead of binding a placeholder |
+| 4 | No production profile | `application-prod.yml` |
+| 5 | No transport security configured | Configured in the production profile, which consumes externally supplied keystore material |
+
+Two of the five deserve a note, because "closed" means something stronger than "present" in both cases.
+
+Item 2 is closed by **execution**, not by declaration. A scanner that is declared but not bound to a
+phase satisfies nothing, and a scanner bound to a phase but tolerant of findings satisfies little more;
+the plugin here runs in the ordinary build, scans test scope as well as compile scope, and fails on any
+finding at or above the threshold. `gate-evidence.md` publishes the executed result.
+
+Item 3 is closed by **absence of a default**, which is the part most easily got wrong. A defaulted
+secret violates the no-hardcoded-credentials constraint exactly as surely as a literal one does, because
+both mean a deployment can start without anyone having supplied the value. Failing closed at start-up is
+the only form of this item that is genuinely closed.
+
+Executed evidence for all eight acceptance criteria is published in `gate-evidence.md`; this section
+records only the decisions and their closing artefacts.
+
+---
+
+## 19. User-specified rules: a verified absence, and the standards adopted instead
+
+### DL-263 — No user-specified rules exist, and the bar is held by enterprise standards instead
+
+**No user-specified rules were provided for this engagement.** The project's rules document was read in
+full and reports that none was supplied. This was confirmed by repeated reads rather than inferred from
+one, so it is a **verified absence** and not an incomplete read.
+
+The absence is **not** licence to lower the standard of the work. With no rules to honour, the migration
+is held to enterprise-standard best practice, and that is recorded here as a conscious position rather
+than left as a silence. Two consequences follow and are stated so that neither reads as an omission: no
+file enters scope because a rule demands it — the rule-mandated category is deliberately empty — and no
+rule conflicts exist to resolve, because there is no rule.
+
+Two of those adopted standards are discharged by documentation rather than by code, and this log is where
+both land:
+
+- **Full auditability of translation decisions.** This log, together with `traceability-matrix.md`, *is*
+  that standard. It is discharged nowhere else in the repository. Every judgement where faithful
+  translation and idiomatic Java diverged appears here, with both provenance identifiers cited at the
+  top of the page.
+- **A stated tie-break rule.** Stated explicitly under *The tie-break rule* near the top of this page:
+  where faithful translation and idiomatic Java conflict, **faithful wins**, and the divergence is
+  recorded here rather than resolved by taste. It is the standard that makes the others coherent,
+  because it is the one that decides the hard cases.
+
+A third is discharged partly here: **secrets never in source and never defaulted.** No credential,
+password, token, signing secret or key value appears anywhere on this page, including the legacy
+cleartext credential — the field width and the fact of a shared literal are described in DL-001, and the
+value is not. The legacy demonstration credentials that appear in the repository's root README describe
+the **legacy** system and are deliberately not restated here.
+
+### One attribution boundary, stated because getting it wrong sends a reader to the wrong place
+
+Two bodies of mandatory content could be mistaken for rules, and neither is:
+
+- The construct-mapping table that pairs each COBOL construct with its Java equivalent and its
+  preservation requirement is a **requirement** of the refactoring.
+- The eight validation gates with their evidence obligations are **acceptance criteria**, and their
+  executed evidence is published in `gate-evidence.md`.
+
+Both are binding. **Neither originates in the rules document**, so neither should be sought there: a
+reader who goes looking for them among the user-specified rules will find the statement that none was
+provided and reasonably conclude this documentation is wrong. They are recorded in the migration
+specification and in `architecture.md`, which is where they belong.
+
+---
 
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
