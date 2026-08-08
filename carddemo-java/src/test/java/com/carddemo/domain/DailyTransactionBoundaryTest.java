@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
@@ -132,7 +133,7 @@ class DailyTransactionBoundaryTest {
             assertThat(record.getDalytranMerchantName()).isEqualTo(MERCHANT_NAME);
             assertThat(record.getDalytranMerchantCity()).isEqualTo(MERCHANT_CITY);
             assertThat(record.getDalytranMerchantZip()).isEqualTo(MERCHANT_ZIP);
-            assertThat(record.getDalytranCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(record.getDalytranOrigTs()).isEqualTo(ORIGIN_TIMESTAMP);
             assertThat(record.getDalytranProcTs()).isEqualTo(PROCESS_TIMESTAMP);
         }
@@ -246,7 +247,7 @@ class DailyTransactionBoundaryTest {
             assertThat(record.getDalytranMerchantName()).isEqualTo("  merchant  ");
             assertThat(record.getDalytranMerchantCity()).isEqualTo("  city  ");
             assertThat(record.getDalytranMerchantZip()).isEqualTo("  00000   ");
-            assertThat(record.getDalytranCardNum()).isEqualTo("0000000000000000");
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("0000000000000000"));
             assertThat(record.getDalytranOrigTs()).isEqualTo("1970-01-01 00:00:00.000000");
             assertThat(record.getDalytranProcTs()).isEqualTo("1970-01-02 00:00:00.000000");
         }

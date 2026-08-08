@@ -282,20 +282,23 @@ class BillPaymentControllerTest {
 
         @Test
         @DisplayName("the address is neither the anonymous route nor beneath the administrative "
-                + "prefix, so the surface is reachable by any caller carrying an identity and by no "
-                + "caller without one")
-        void theAddressIsGatedByTheAuthenticatedCatchAll() {
+                + "prefix, so the surface is reachable by a caller carrying either sign-on authority "
+                + "and by no other identity")
+        void theAddressIsGatedByTheOrdinaryBusinessRule() {
             assertThat(BillPaymentController.BILL_PAYMENT_PATH)
                     .as("the one anonymous route issues credentials; this one must not be it")
                     .isNotEqualTo(SecurityConfig.SIGN_ON_PATH)
                     .as("the administrative prefix is gated on an administrative authority")
-                    .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX);
+                    .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX)
+                    .as("it must lie inside the region the ordinary business rule governs, or it would "
+                            + "fall to the closing rule instead")
+                    .startsWith(SecurityConfig.API_PATH_PREFIX + "/");
             assertThat(SecurityConfig.TransactionRoute.BILL_PAYMENT.getGating())
                     .isEqualTo(SecurityConfig.Gating.AUTHENTICATED);
             assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
-                    .as("no dedicated rule: the chain's closing rule requires an identity of "
-                            + "everything it has not already named")
-                    .isEmpty();
+                    .as("the ordinary entitlement names one rule over the API root, which requires either "
+                            + "sign-on authority by name rather than merely an established identity")
+                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
         }
 
         @Test

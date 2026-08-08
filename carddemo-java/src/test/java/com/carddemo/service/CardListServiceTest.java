@@ -21,7 +21,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -56,10 +58,12 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 import com.carddemo.util.CobolStringUtils;
 import com.carddemo.util.PfKeyTranslator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -120,12 +124,19 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
  *       three fields the browse stores, it stays a three-character string, and it reaches no log.</li>
  * </ol>
  *
- * <h2>Traceability: the 42 units this class covers</h2>
+ * <h2>Traceability: the 39 units this member contributes, and the three things that are not units</h2>
  *
- * <p>The action plan records 39 paragraphs and direct measurement finds 42 translation units. Both
- * are right about different things and the production class reconciles them: 39 named labels in the
- * member's own procedure division, plus the copybook expansion site at line 1416, plus the two
- * paragraphs that expansion delivers. The nests below cover them as follows.
+ * <p><strong>39</strong> named labels stand in this member's own procedure division, and 39 is what the
+ * action plan records and what the traceability matrix carries rows for. The nests below cover them as
+ * follows.
+ *
+ * <p>The list runs to 42 lines because three further things are exercised from this member and are
+ * <em>not</em> units of it: the copybook expansion site at line 1416 is a directive rather than a
+ * paragraph, and the two paragraphs that expansion delivers are units of {@code app/cpy/CSSTRPFY.cpy},
+ * which the matrix gives a section and two rows of its own. That copybook is included by five members, so
+ * counting its two paragraphs against each of them would report ten units for two and the frozen 544 would
+ * no longer hold. This suite previously described all 42 lines as units it contributed; the three marked
+ * below carry their behaviour here and their rows elsewhere.
  *
  * <pre>
  *  1  0000-MAIN                     every nest (the entry point)
@@ -167,9 +178,9 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
  * 37  SEND-PLAIN-TEXT-EXIT          DiagnosticSenders
  * 38  SEND-LONG-TEXT                DiagnosticSenders
  * 39  SEND-LONG-TEXT-EXIT           DiagnosticSenders
- * 40  COPY 'CSSTRPFY' (site)        AttentionKeys
- * 41  YYYY-STORE-PFKEY              AttentionKeys (the fold, owned by the key translator)
- * 42  YYYY-STORE-PFKEY-EXIT         AttentionKeys
+ * --  COPY 'CSSTRPFY' (site 1416)  AttentionKeys        - a directive, not a paragraph
+ * --  YYYY-STORE-PFKEY              AttentionKeys        - a unit of CSSTRPFY.cpy, row held there
+ * --  YYYY-STORE-PFKEY-EXIT         AttentionKeys        - a unit of CSSTRPFY.cpy, row held there
  * </pre>
  *
  * <h2>Independent oracles</h2>
@@ -203,6 +214,16 @@ final class CardListServiceTest {
 
     /** {@code WS-ROW-CARD-NUM}, line 259: the card number on a row is sixteen characters. */
     private static final int CARD_NUMBER_WIDTH = 16;
+
+    /**
+     * Every decimal representation a monetary field could be declared as.
+     *
+     * <p>{@code BigDecimal} is the module's one permitted representation and the two floating-point
+     * primitives are the substitution the mandate forbids, so all three are named: a screen that declared
+     * any of them would have a site for a scale or a rounding policy, and this one has none.
+     */
+    private static final List<Class<?>> DECIMAL_TYPES =
+            List.of(BigDecimal.class, double.class, float.class);
 
     /** {@code WS-ERROR-MSG}, line 117: the summary message field is 75 characters. */
     private static final int ERROR_MESSAGE_WIDTH = 75;
@@ -2679,15 +2700,30 @@ final class CardListServiceTest {
             assertThat(row.screenSlot()).isOne();
 
             // The estate's persisted amounts are zoned decimal at two decimal places and carry no ROUNDED
-            // clause anywhere, so a store into such a field truncates. The two-place representation is
-            // pinned here as the shape any amount would have to keep, and the truncated value is written
-            // out as its own literal rather than produced by scaling something - this screen holds no
-            // amount to scale, and the codec that does is the only place allowed to perform the operation.
-            assertThat(new BigDecimal("0.00").scale()).isEqualTo(2);
-            assertThat(new BigDecimal("1.00"))
-                    .as("truncation to two places keeps the cent that a rounding policy would move")
-                    .isEqualByComparingTo(new BigDecimal("1.00"))
-                    .isNotEqualByComparingTo(new BigDecimal("1.01"));
+            // clause anywhere, so a store into such a field truncates - and the codec that performs that
+            // store is the only place in the module allowed to. The claim this test makes is that THIS
+            // screen offers no site for the operation at all, which is a statement about the types the
+            // screen path declares rather than about arithmetic. It is therefore asserted over those
+            // types: neither the row the screen returns, nor the result that carries it, nor the 150-byte
+            // record they are built from declares a decimal field of any kind.
+            assertThat(CardListService.CardListRow.class.getRecordComponents())
+                    .as("the row the screen returns declares no decimal component, so there is nothing "
+                            + "on it for a scale or a rounding policy to act on")
+                    .isNotEmpty()
+                    .noneMatch(component -> DECIMAL_TYPES.contains(component.getType()));
+            assertThat(CardListService.CardListResult.class.getRecordComponents())
+                    .as("and neither does the result that carries the rows")
+                    .isNotEmpty()
+                    .noneMatch(component -> DECIMAL_TYPES.contains(component.getType()));
+            assertThat(Arrays.stream(Card.class.getDeclaredFields())
+                            .filter(field -> !field.isSynthetic())
+                            .map(Field::getType)
+                            .toList())
+                    .as("the 150-byte card layout itself declares no monetary field: the estate's five "
+                            + "PIC S9(10)V99 balances belong to the 300-byte account layout, which this "
+                            + "screen never reads")
+                    .isNotEmpty()
+                    .doesNotContainAnyElementsOf(DECIMAL_TYPES);
         }
 
         @Test
@@ -3001,6 +3037,34 @@ final class CardListServiceTest {
 
             verifyNoInteractionsWithTheCluster();
             verifyNoMoreInteractions(abendService);
+        }
+    }
+
+    @Nested
+    @DisplayName("paragraph traceability: the 39 units this member contributes to the matrix")
+    class ParagraphTraceability {
+
+        /** Creates the nested specification. */
+        ParagraphTraceability() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("the unit count is the 39 the published matrix carries, read from the matrix, and "
+                + "the attention-key copybook's two paragraphs are counted in its own section")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            // Read from the matrix - its census subtotal, its section declaration and its rows, which the
+            // reader requires to agree - rather than restated as a constant here. The heading of this file
+            // once called all 42 lines of its coverage map units of this member, which counted a copy
+            // directive and a shared copybook's two paragraphs a second time.
+            assertAll(
+                    () -> assertThat(TraceabilityMatrixCensus.unitsOf("COCRDLIC.cbl"))
+                            .as("the member's own procedure-division labels, and nothing else")
+                            .isEqualTo(39),
+                    () -> assertThat(TraceabilityMatrixCensus.unitsOf("CSSTRPFY.cpy"))
+                            .as("the copybook is included by five members and contributes two units in "
+                                    + "total, not two per includer")
+                            .isEqualTo(2));
         }
     }
 }

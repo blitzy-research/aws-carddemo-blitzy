@@ -197,7 +197,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
         + "measured seed, sequential order")
 final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
 
-    /** The migrated table this specification is about. */
     private static final String LANDING_TABLE = "daily_transaction";
 
     /**
@@ -223,7 +222,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     /** How many trailing filler bytes follow the mapped ones, and are not a column. */
     private static final int FILLER_BYTES = 20;
 
-    /** The whole record width, mapped bytes plus filler. */
     private static final int RECORD_BYTES = 350;
 
     /** Digits the amount holds before the decimal point, from the layout's own width less its scale. */
@@ -259,19 +257,14 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      */
     private static final String DANGLING_KEY = "9700000000000010";
 
-    /** Reserved identifier of the row that exercises the full thirteen-property round trip. */
     private static final String ROUND_TRIP_KEY = "9700000000000020";
 
-    /** Reserved identifier of the row that exercises the widest amount the column holds. */
     private static final String WIDEST_AMOUNT_KEY = "9700000000000030";
 
-    /** Reserved identifier of the row that exercises truncation of a positive amount. */
     private static final String POSITIVE_TRUNCATION_KEY = "9700000000000040";
 
-    /** Reserved identifier of the row that exercises truncation of a negative amount. */
     private static final String NEGATIVE_TRUNCATION_KEY = "9700000000000050";
 
-    /** Reserved identifier carrying leading zeros, for the significant-zero round trip. */
     private static final String LEADING_ZERO_KEY = "0000000000009700";
 
     /** An identifier in the reserved band that is deliberately never written. */
@@ -288,13 +281,11 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      */
     private static final BigDecimal POSITIVE_THREE_DECIMAL_AMOUNT = new BigDecimal("12.349");
 
-    /** What {@link #POSITIVE_THREE_DECIMAL_AMOUNT} must become when stored. */
     private static final BigDecimal POSITIVE_TRUNCATED_AMOUNT = new BigDecimal("12.34");
 
     /** The negative counterpart, where truncating toward zero moves the value up rather than down. */
     private static final BigDecimal NEGATIVE_THREE_DECIMAL_AMOUNT = new BigDecimal("-12.349");
 
-    /** What {@link #NEGATIVE_THREE_DECIMAL_AMOUNT} must become when stored. */
     private static final BigDecimal NEGATIVE_TRUNCATED_AMOUNT = new BigDecimal("-12.34");
 
     /** A four-character category code whose leading zeros must survive. */
@@ -319,7 +310,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     /** Pages the fixture occupies at {@link #PAGE_SIZE}: seven full pages and one short one. */
     private static final int EXPECTED_PAGE_COUNT = 8;
 
-    /** Rows on the final, short page. */
     private static final int EXPECTED_LAST_PAGE_SIZE = 20;
 
     /**
@@ -330,32 +320,27 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      */
     private static final int CURSOR_LIMIT = 3;
 
-    /** Counts the columns of one table that carry one name. */
     private static final String COLUMN_PRESENCE_SQL = """
             SELECT count(*) FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
             """;
 
-    /** Projects the columns of one table in declaration order. */
     private static final String COLUMN_ORDER_SQL = """
             SELECT column_name FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = ?
              ORDER BY ordinal_position
             """;
 
-    /** Reads the declared width of one character column. */
     private static final String CHARACTER_WIDTH_SQL = """
             SELECT character_maximum_length FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
             """;
 
-    /** Reads the declared total digit count of one numeric column. */
     private static final String NUMERIC_PRECISION_SQL = """
             SELECT numeric_precision FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
             """;
 
-    /** Reads the declared fraction digit count of one numeric column. */
     private static final String NUMERIC_SCALE_SQL = """
             SELECT numeric_scale FROM information_schema.columns
              WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
@@ -399,17 +384,14 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
              ORDER BY indexname
             """;
 
-    /** Counts the card master rows carrying one card number. */
     private static final String CARD_PRESENCE_SQL = """
             SELECT count(*) FROM card WHERE card_num = ?
             """;
 
-    /** Counts the cross-reference rows carrying one card number. */
     private static final String CROSS_REFERENCE_PRESENCE_SQL = """
             SELECT count(*) FROM card_cross_reference WHERE xref_card_num = ?
             """;
 
-    /** Counts the account master rows carrying one account identifier. */
     private static final String ACCOUNT_PRESENCE_SQL = """
             SELECT count(*) FROM account WHERE acct_id = ?
             """;
@@ -427,7 +409,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    /** Creates the test class. */
     DailyTransactionRepositoryIT() {
     }
 
@@ -449,7 +430,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = DailyTransaction.class)
     static class RepositoryUnderTest {
 
-        /** Creates the configuration. */
         RepositoryUnderTest() {
         }
     }
@@ -458,7 +438,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the mapped schema, every column under the landing prefix")
     final class TheMappedSchema {
 
-        /** Creates the nest. */
         TheMappedSchema() {
         }
 
@@ -512,9 +491,28 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
             }
         }
 
+        /**
+         * The declared bound is a CHARACTER bound, and it is a byte bound only because of a constraint.
+         *
+         * <p>{@code VARCHAR(n)} and {@code information_schema.character_maximum_length} both count
+         * characters, and under UTF8 one character occupies up to four bytes. So the assertion below
+         * establishes that the declared bound EQUALS the layout field's width; on its own it does not
+         * establish that a stored value of that width occupies that many bytes, and describing it as byte
+         * evidence would overstate it.
+         *
+         * <p>What supplies the missing half is {@code ck_daily_transaction_single_byte_text} in
+         * {@code V1__create_schema.sql}, which requires every text column of this table to satisfy
+         * {@code octet_length = char_length}. This test asserts that the constraint exists and names the
+         * column, so the two halves are asserted together: a character bound of n, plus one byte per
+         * character, is n bytes. The refusal itself - a multibyte value rejected by the server, naming that
+         * constraint - is proven in {@code SchemaConstraintNegativeProofIT}.
+         */
         @Test
-        @DisplayName("each character column is declared at exactly the width its layout field occupies")
+        @DisplayName("each character column is declared at exactly the CHARACTER width its layout field "
+                + "occupies, and a constraint makes that character count a byte count")
         void eachCharacterColumnMatchesItsLayoutWidth() {
+            final String byteRepertoireRule = singleByteTextConstraintDefinition();
+
             for (final FieldSpec field : TestDataFactory.DAILY_TRANSACTION.fields()) {
                 final String column = columnNameOf(field);
                 if (AMOUNT_COLUMN.equals(column)) {
@@ -522,9 +520,14 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
                 }
 
                 assertThat(characterWidthOf(column))
-                        .as("column %s holds the %d bytes its field occupies in the record image",
-                                column, field.width())
+                        .as("column %s is declared %d CHARACTERS wide, which is the width its field "
+                                + "occupies in the record image", column, field.width())
                         .isEqualTo(field.width());
+                assertThat(byteRepertoireRule)
+                        .as("column %s must be named on both sides of an octet-length equality, which is "
+                                + "what turns its declared character bound into a byte bound", column)
+                        .contains("octet_length((" + column + ")::text)")
+                        .contains("char_length((" + column + ")::text)");
             }
         }
 
@@ -590,36 +593,62 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      * four-hundred-and-thirty byte reject record and to the five reject reason codes. A foreign key
      * here would refuse that row at insert time and delete the very case the posting job exists to
      * report.
+     *
+     * <p><strong>The one check constraint this table does carry is not an exception to that, and the
+     * distinction is exact.</strong> Every constraint forbidden here is about a value's CONTENT - which card
+     * it names, which account, whether a code is one the reference data knows. Content is what the
+     * validation cascade judges and what a reject reason reports, so the database must not pre-empt it.
+     * {@code ck_daily_transaction_single_byte_text} is about the ENCODING of the row instead: it requires
+     * every text column to satisfy {@code octet_length = char_length}, which is what makes the row
+     * re-encodable to the 350 bytes of the source image. A reject record IS that 350-byte image plus an
+     * 80-byte trailer, so a landed row that cannot be re-encoded could not be rejected either - the reject
+     * file, a contractual output, would fail rather than the posting. Refusing such a row on arrival is
+     * therefore what keeps every landed row rejectable, and it removes no reject case whatever.
      */
     @Nested
     @DisplayName("the deliberate absence of referential constraints")
     final class TheDeliberateAbsenceOfConstraints {
 
-        /** Creates the nest. */
         TheDeliberateAbsenceOfConstraints() {
         }
 
         @Test
-        @DisplayName("the table carries its primary key and nothing else - no foreign key, no check "
-                + "constraint and no unique constraint")
+        @DisplayName("the table carries its primary key and the encoding rule and NOTHING else - no "
+                + "foreign key, no unique constraint, and no check over any value's CONTENT")
         void theTableCarriesItsPrimaryKeyAndNothingElse() {
             assertThat(constraintKindCount('f'))
-                    .as("a foreign key would refuse a row whose card or account is absent, and that "
-                            + "row is the only route to the invalid-card and account-not-found reasons")
-                    .isZero();
-            assertThat(constraintKindCount('c'))
-                    .as("a check constraint would refuse a malformed value that the validation cascade "
-                            + "is supposed to report with a reason code")
+                    .as("a foreign key would refuse a row whose card is absent on INSERT, and such a "
+                            + "row is the only route to the invalid-card reason - the cascade cannot "
+                            + "report a reference it was never allowed to receive. It is NOT the route "
+                            + "to the two account-not-found reasons: those need a cross-reference to an "
+                            + "absent account, which the cross-reference table's own foreign key "
+                            + "forbids, and they are reached through the account-repository spy in "
+                            + "RejectReasonArmsIT instead")
                     .isZero();
             assertThat(constraintKindCount('u'))
                     .as("no uniqueness beyond the business key is declared")
                     .isZero();
             assertThat(constraintKindCount('p'))
-                    .as("the business key is the one constraint the table does carry")
+                    .as("the business key is one of the two constraints the table carries")
                     .isEqualTo(1);
+            assertThat(constraintKindCount('c'))
+                    .as("exactly one check constraint, and it is the encoding rule; a check over a "
+                            + "value's CONTENT would refuse a malformed value the validation cascade is "
+                            + "supposed to report with a reason code")
+                    .isEqualTo(1);
+            assertThat(checkConstraintNames())
+                    .as("named, so a content check added later cannot hide behind the count above")
+                    .containsExactly("ck_daily_transaction_single_byte_text");
+            assertThat(singleByteTextConstraintDefinition())
+                    .as("and the rule compares each column's encoded length against its character length "
+                            + "and nothing else: no literal, no pattern and no reference to another table")
+                    .doesNotContain("~")
+                    .doesNotContain("IN (")
+                    .doesNotContain("'");
             assertThat(constraintKinds())
-                    .as("so the whole constraint vocabulary of this table is the primary key")
-                    .containsExactly("p");
+                    .as("so the whole constraint vocabulary of this table is the primary key and one "
+                            + "encoding check")
+                    .containsExactlyInAnyOrder("p", "c");
         }
 
         @Test
@@ -648,7 +677,7 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
         @Test
         @Transactional
         @DisplayName("a row naming a card and an account that exist in no row is ACCEPTED, which is "
-                + "what keeps all five reject reason codes reachable")
+                + "what lets an unresolvable reference reach the validation cascade at all")
         void aRowNamingNoExistingCardOrAccountIsAccepted() {
             final String danglingCard = TestDataFactory.UNKNOWN_CARD_NUMBER;
             final String danglingAccount = TestDataFactory.UNKNOWN_ACCOUNT_ID;
@@ -688,7 +717,12 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
                 + "so the eighty-byte trailer can carry any of them")
         void everyRejectReasonCodeFitsTheTrailer() {
             assertThat(TestDataFactory.REJECT_REASON_CODES)
-                    .as("the posting program emits five distinct reasons")
+                    .as("the posting program emits five distinct reasons, and these are the five the"
+                            + " legacy source sets - transcribed from it rather than read back out of"
+                            + " the shipped enumeration, which is what makes the comparison mean"
+                            + " something")
+                    .containsExactly(100, 101, 102, 103, 109)
+                    .doesNotHaveDuplicates()
                     .hasSize(5)
                     .doesNotContain(TestDataFactory.NO_REJECT_REASON_CODE)
                     .allSatisfy(code -> assertThat(code)
@@ -719,7 +753,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the measured three-hundred-row seed")
     final class TheSeededComposition {
 
-        /** Creates the nest. */
         TheSeededComposition() {
         }
 
@@ -888,7 +921,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the stored amount: exact scale, preserved sign, truncation toward zero")
     final class TheStoredAmount {
 
-        /** Creates the nest. */
         TheStoredAmount() {
         }
 
@@ -1042,7 +1074,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @DisplayName("sequential access: ordering and caller-paged reads")
     final class SequentialAccessOrderingAndPaging {
 
-        /** Creates the nest. */
         SequentialAccessOrderingAndPaging() {
         }
 
@@ -1172,7 +1203,6 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the business key and the thirteen-property round trip")
     final class TheBusinessKey {
 
-        /** Creates the nest. */
         TheBusinessKey() {
         }
 
@@ -1403,6 +1433,48 @@ final class DailyTransactionRepositoryIT extends AbstractPostgresIT {
      */
     private int characterWidthOf(final String column) {
         return requiredCount(CHARACTER_WIDTH_SQL, LANDING_TABLE, column);
+    }
+
+    /**
+     * Reads the names of every CHECK constraint on the landing table.
+     *
+     * @return the constraint names, in name order
+     */
+    private List<String> checkConstraintNames() {
+        return jdbcTemplate.queryForList("""
+                SELECT con.conname
+                  FROM pg_constraint con
+                  JOIN pg_class rel ON rel.oid = con.conrelid
+                  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                 WHERE nsp.nspname = 'public'
+                   AND rel.relname = ?
+                   AND con.contype = 'c'
+                 ORDER BY con.conname
+                """, String.class, LANDING_TABLE);
+    }
+
+    /**
+     * Reads the rendered definition of this table's single-byte-text constraint from the catalogue.
+     *
+     * @return the rendered CHECK definition, never {@code null}
+     */
+    private String singleByteTextConstraintDefinition() {
+        final List<String> definitions = jdbcTemplate.queryForList("""
+                SELECT pg_get_constraintdef(con.oid)
+                  FROM pg_constraint con
+                  JOIN pg_class rel ON rel.oid = con.conrelid
+                  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                 WHERE nsp.nspname = 'public'
+                   AND rel.relname = ?
+                   AND con.contype = 'c'
+                   AND con.conname = 'ck_daily_transaction_single_byte_text'
+                """, String.class, LANDING_TABLE);
+
+        assertThat(definitions)
+                .as("the landing table must declare its single-byte-text constraint; without it the "
+                        + "declared character widths are not byte widths at all")
+                .hasSize(1);
+        return definitions.getFirst();
     }
 
     /**

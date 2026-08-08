@@ -115,14 +115,14 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("the public surface is the five bean contributions plus the CORS callback")
-    void theHookDeclaresOnlyItsSixFrameworkContributions() {
+    @DisplayName("the public surface is the six bean contributions plus the CORS callback")
+    void theHookDeclaresOnlyItsSevenFrameworkContributions() {
         List<Method> declared = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .filter(method -> Modifier.isPublic(method.getModifiers()))
                 .toList();
 
-        assertThat(declared).hasSize(6);
+        assertThat(declared).hasSize(7);
         assertThat(declared).extracting(Method::getName)
                 .containsExactlyInAnyOrder(
                         "addCorsMappings",
@@ -130,6 +130,10 @@ class WebMvcConfigBoundaryTest {
                         "requestBodyLimitFilter",
                         "strictScalarCoercionCustomizer",
                         "declaredClosedBodyCustomizer",
+                        // The third builder contribution. It refuses a transport control character in an
+                        // inbound text value at the reader, which is the only place the rule can cover
+                        // the two account-update components that are required to carry no constraint.
+                        "controlCharacterRefusingTextCustomizer",
                         "defaultValidator");
         assertThat(declared).filteredOn(method -> method.getName().equals("addCorsMappings")
                         || method.getName().equals("requestBodyLimitFilter"))
@@ -150,6 +154,7 @@ class WebMvcConfigBoundaryTest {
                         FilterRegistrationBean.class,
                         Jackson2ObjectMapperBuilderCustomizer.class,
                         Jackson2ObjectMapperBuilderCustomizer.class,
+                        Jackson2ObjectMapperBuilderCustomizer.class,
                         LocalValidatorFactoryBean.class);
         assertThat(Arrays.stream(WebMvcConfig.class.getDeclaredFields())
                 .filter(field -> !Modifier.isStatic(field.getModifiers()))
@@ -160,19 +165,20 @@ class WebMvcConfigBoundaryTest {
     }
 
     @Test
-    @DisplayName("all five bean-producing methods are accounted for by annotation")
-    void theAnnotatedBeanMethodsAreTheFiveDeclaredContributions() {
+    @DisplayName("all six bean-producing methods are accounted for by annotation")
+    void theAnnotatedBeanMethodsAreTheSixDeclaredContributions() {
         List<Method> beanMethods = Arrays.stream(WebMvcConfig.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Bean.class))
                 .toList();
 
-        assertThat(beanMethods).hasSize(5);
+        assertThat(beanMethods).hasSize(6);
         assertThat(beanMethods).extracting(Method::getName)
                 .containsExactlyInAnyOrder(
                         "corsConfigurationSource",
                         "requestBodyLimitFilter",
                         "strictScalarCoercionCustomizer",
                         "declaredClosedBodyCustomizer",
+                        "controlCharacterRefusingTextCustomizer",
                         "defaultValidator");
     }
 

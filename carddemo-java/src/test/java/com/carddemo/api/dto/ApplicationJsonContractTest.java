@@ -24,6 +24,7 @@ import java.util.stream.Stream;
 
 import com.carddemo.config.WebMvcConfig;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -513,7 +514,7 @@ class ApplicationJsonContractTest {
                         SignOnRequest.class);
 
                 assertThat(request.userId()).isEqualTo("ADMIN001");
-                assertThat(request.password()).isEqualTo("unset   ");
+                assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("unset   "));
             });
         }
 

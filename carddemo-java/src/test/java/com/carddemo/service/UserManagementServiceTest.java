@@ -69,6 +69,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.carddemo.support.SensitiveValues;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -946,9 +947,11 @@ class UserManagementServiceTest {
 
             final UserSecurity stored = repository.rows.get("NEWUSR01");
             assertThat(stored).isNotNull();
-            assertThat(stored.credentialDigest()).hasSize(DIGEST_LENGTH)
-                    .isNotEqualTo(submitted)
-                    .startsWith("$2");
+            assertThat(stored.credentialDigest().length()).isEqualTo(DIGEST_LENGTH);
+            assertThat(SensitiveValues.fingerprint(stored.credentialDigest())).isNotEqualTo(SensitiveValues.fingerprint(submitted));
+            assertThat(stored.credentialDigest().startsWith("$2"))
+                    .as("a recognised digest version marker, not the submitted value")
+                    .isTrue();
             assertThat(ENCODER.matches(foldedByThisClass(submitted),
                     stored.credentialDigest()))
                     .as("the sign-on path verifies the folded credential, so that is what is stored")
@@ -2934,7 +2937,7 @@ class UserManagementServiceTest {
             assertThat(response.generalError())
                     .as("the source emits this text without raising the error flag")
                     .isFalse();
-            assertThat(held.credentialDigest()).isEqualTo(digest);
+            assertThat(SensitiveValues.fingerprint(held.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(digest));
             verify(encoderSpy, never()).encode(any());
             verify(encoderSpy, times(1)).matches(any(), any());
             verify(mockRepository).findByIdForUpdate("UPDMCK03");
@@ -2975,7 +2978,7 @@ class UserManagementServiceTest {
 
             // Boolean outcomes only, every one of them.
             assertThat(response.message()).isEqualTo(MSG_UPDATE_NO_CHANGE);
-            assertThat(held.credentialDigest()).isEqualTo(seededDigest);
+            assertThat(SensitiveValues.fingerprint(held.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(seededDigest));
             verify(encoderSpy, never()).encode(any());
             verify(mockRepository).findByIdForUpdate(SEEDED_ADMIN_ID);
             verify(mockRepository, never()).save(any(UserSecurity.class));

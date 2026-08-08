@@ -30,6 +30,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.EnumSet;
 import java.util.Objects;
 import java.util.Set;
@@ -428,6 +429,110 @@ public final class SecureStagedFiles {
         final Set<PosixFilePermission> granted = Files.getPosixFilePermissions(target,
                 LinkOption.NOFOLLOW_LINKS);
         return OWNER_ONLY_DIRECTORY.containsAll(granted);
+    }
+
+    /**
+     * Whether one candidate may be trusted as a staged artefact of one staging root.
+     *
+     * <h2>What this exists to refuse</h2>
+     *
+     * <p>Writing a staged file owner-only says nothing about whether a file found <em>later</em> under
+     * the same root is the one that was written. A local actor able to write the staging root can put
+     * something else there under a name the resolver will accept, and the resolver then reads the
+     * planted content as though the job had produced it. This is the predicate that stands between the
+     * two, and it is asked immediately before the path is used rather than remembered from creation
+     * time.
+     *
+     * <h2>The four properties, and why each is separately necessary</h2>
+     * <ol>
+     *   <li><strong>The candidate is a real regular file, inspected without following links.</strong>
+     *       {@link Files#isRegularFile(Path, LinkOption...)} at its default follows a symbolic link and
+     *       answers about the <em>target</em>, so a link named like a staged generation and pointing
+     *       anywhere at all is reported as a regular file. Inspected with
+     *       {@link LinkOption#NOFOLLOW_LINKS} the link is what is examined, and a link is not a regular
+     *       file.</li>
+     *   <li><strong>Its normalised parent is the normalised root.</strong> Without this a name that
+     *       resolved out of the root - or a root reached through a link - would be accepted because the
+     *       file at the far end happens to be well formed.</li>
+     *   <li><strong>The candidate and the root have the same owner.</strong> The root is provisioned by
+     *       the deployment and owned by the account the module runs as, so a candidate owned by anybody
+     *       else is a file this deployment did not write, whatever its name and whatever its mode. The
+     *       comparison is between two filesystem principals rather than against a system property,
+     *       because a property is a weaker statement about the same thing and is absent on some
+     *       platforms.</li>
+     *   <li><strong>Neither the root nor the candidate grants WRITE permission outside its owner's.</strong>
+     *       A group- or world-writable root is a root somebody else can create, rename and delete
+     *       entries in, so ownership of the artefact found today is no evidence about the artefact found
+     *       tomorrow; and a writable file inside a traversable root can be rewritten in place after it
+     *       was checked. Read and execute permission is deliberately <em>not</em> examined: a staging
+     *       root a deployment lets an operator or a monitoring account read is a legitimate arrangement,
+     *       and refusing it would refuse the job's own output for a reason that has nothing to do with
+     *       whether the output is genuine. This is the one place where narrowing the rule beyond what
+     *       {@link #isOwnerOnly(Path)} asserts is correct: that method states the mode this module
+     *       <em>creates</em> with, while this one states the minimum a path must satisfy to be
+     *       <em>believed</em>.</li>
+     * </ol>
+     *
+     * <p>All four are required together and any one of them alone is insufficient, which is why this is
+     * one predicate rather than four call sites that might each be given a different subset.
+     *
+     * <h2>Filesystems with no POSIX view</h2>
+     *
+     * <p>Where the filesystem exposes no POSIX view there is no mode and no owner to read, so the two
+     * attribute properties are vacuously satisfied and the two structural ones still apply. That is the
+     * same accommodation {@link #isOwnerOnly(Path)} makes, for the same reason: a volume that cannot
+     * express the property must not be reported as violating it.
+     *
+     * <p>Answers {@code false} rather than raising when an attribute cannot be read. A candidate whose
+     * trustworthiness cannot be established is not trustworthy, and a resolver that had to catch an
+     * exception to learn that would be one refactoring away from treating the failure as a pass.
+     *
+     * @param  stagingRoot the directory the candidate must be a direct child of; must not be
+     *                     {@code null}
+     * @param  candidate   the path to examine; must not be {@code null}
+     * @return {@code true} only when all four properties hold
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public static boolean isTrustedStagedArtifact(final Path stagingRoot, final Path candidate) {
+        Objects.requireNonNull(stagingRoot, "stagingRoot must not be null");
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        final Path root = stagingRoot.toAbsolutePath().normalize();
+        final Path resolved = candidate.toAbsolutePath().normalize();
+        if (!root.equals(resolved.getParent())) {
+            return false;
+        }
+        try {
+            final BasicFileAttributes attributes = Files.readAttributes(resolved,
+                    BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile()) {
+                return false;
+            }
+            if (!supportsPosixPermissions(resolved)) {
+                return true;
+            }
+            if (grantsWriteOutsideOwner(resolved) || grantsWriteOutsideOwner(root)) {
+                return false;
+            }
+            final UserPrincipal owner = Files.getOwner(resolved, LinkOption.NOFOLLOW_LINKS);
+            return owner != null
+                    && owner.equals(Files.getOwner(root, LinkOption.NOFOLLOW_LINKS));
+        } catch (final IOException | UnsupportedOperationException unreadable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether one path lets anybody other than its owner write to it.
+     *
+     * @param  target      the path to examine
+     * @return             {@code true} when group or other write permission is granted
+     * @throws IOException if the permissions cannot be read
+     */
+    private static boolean grantsWriteOutsideOwner(final Path target) throws IOException {
+        final Set<PosixFilePermission> granted =
+                Files.getPosixFilePermissions(target, LinkOption.NOFOLLOW_LINKS);
+        return granted.contains(PosixFilePermission.GROUP_WRITE)
+                || granted.contains(PosixFilePermission.OTHERS_WRITE);
     }
 
 }

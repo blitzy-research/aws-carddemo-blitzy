@@ -222,13 +222,16 @@ public final class OpenApiConfig {
      * migration to be held to. The screen geometry it quotes is an interface fact, not a measurement.
      *
      * <p>This is published contract text rather than prose about the code, and its wording is asserted by
-     * {@code OpenApiConfigBoundaryTest} against the document actually built. It carries no claim about how
-     * many paths the inventory holds, deliberately: it once said the inventory was empty, which stopped
-     * being true the moment the first controller was mapped, and a count stated here would go stale the
-     * same way on the next one. What the text says instead is where the inventory comes from, and
-     * {@code OpenApiConfigBoundaryTest} asserts both that no emptiness claim has returned and that the
-     * count of delivered operations is what the code actually maps. It is edited only together with those
-     * assertions.
+     * {@code OpenApiConfigBoundaryTest} against the document actually built. The figure it states is held
+     * to the code by measurement rather than by intention: it once said the inventory was empty, which
+     * stopped being true the moment the first controller was mapped, and it then said nineteen while
+     * twenty were mapped, because sign-on's first-entry turn was left out of the count. So every figure in
+     * this text - the twenty operations, the nineteen paths, the eighteen screen-derived operations and the
+     * two batch-control ones - is asserted against the routes the code actually maps by
+     * {@code api.DeliveredApiSurfaceOracleTest}, which reads the count out of this text and compares it to
+     * the router's own inventory, and the delivered total is pinned again by
+     * {@code OpenApiConfigBoundaryTest}. A wrong figure here is therefore a failing test rather than a
+     * misleading contract, and the text is edited only together with those assertions.
      */
     private static final String API_DESCRIPTION = """
             Machine-readable interface description for the CardDemo application, migrated from the AWS \
@@ -237,10 +240,12 @@ public final class OpenApiConfig {
             exists that could drift away from the code.
 
             The endpoint inventory is derived from the code's annotated controllers rather than written \
-            here, so this description needs no edit when an operation moves. It publishes 19 operations: \
-            the REST form of the 17 legacy transactions that each drove a 24x80 terminal screen, including \
-            sign-on, plus 2 administrator-only batch-control operations that launch and report the \
-            migrated Spring Batch jobs. No path is hand-maintained in this description.
+            here, so this description needs no edit when an operation moves. It publishes 20 operations \
+            over 19 paths: the REST form of the 17 legacy transactions that each drove a 24x80 terminal \
+            screen, including sign-on - which is 18 operations, because sign-on's two turns share one \
+            path, first entry with no communication area and a submitted turn - plus 2 \
+            administrator-only batch-control operations that launch and report the migrated Spring Batch \
+            jobs. No path is hand-maintained in this description.
 
             Where this document describes an operation, message text, per-field error states, page sizes \
             and fixed-width record widths are reproduced from the legacy estate rather than redesigned, \

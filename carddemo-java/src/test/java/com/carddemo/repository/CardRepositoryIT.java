@@ -57,6 +57,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.carddemo.domain.Card;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 /**
@@ -183,6 +184,17 @@ import com.carddemo.support.TestDataFactory;
  * all read as read-only reference at checkout SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No legacy source statement is transcribed.
+ *
+ * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
+ *
+ * <p>This class writes through the shipped entity and repository, so the rules it observes are
+ * enforced twice over: once by the entity before the write and once by a named {@code CHECK}
+ * constraint in {@code V1__create_schema.sql}. That means a specification at this level passes
+ * whether or not the database guard exists, and deleting the guard would break nothing here.
+ * ck_card_card_num_width and ck_card_card_acct_id_digits are therefore exercised by RAW JDBC in
+ * {@code SchemaConstraintNegativeProofIT}, which bypasses the entity layer entirely and asserts the
+ * exact constraint name PostgreSQL reports. That is the shape of the writer these constraints exist
+ * to catch - a bulk load or a migration script that never constructs a record image.
  */
 @DisplayName("Card repository: record layout, the account access path, the seven-row fill and the "
         + "version counter")
@@ -614,7 +626,7 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                     .as("eleven characters, compared as stored")
                     .hasSize(11)
                     .isEqualTo(SEEDED_ACCOUNT);
-            assertThat(only.getCardNum()).hasSize(16);
+            assertThat(only.getCardNum().length()).isEqualTo(16);
             assertThat(only.getVersion()).as("a delivered row starts at the initial counter").isZero();
         });
     }
@@ -1112,8 +1124,10 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                 repository.saveAndFlush(reservedCard(ZERO_PADDED_CARD, SEEDED_ACCOUNT, "111",
                         "PADDED KEY FIXTURE", RESERVED_EXPIRY_DATE, LOSING_INDICATOR));
 
-                assertThat(repository.findById(ZERO_PADDED_CARD)).get().satisfies(stored ->
-                        assertThat(stored.getCardNum()).hasSize(16).isEqualTo(ZERO_PADDED_CARD));
+                assertThat(repository.findById(ZERO_PADDED_CARD)).get().satisfies(stored -> {
+                    assertThat(stored.getCardNum().length()).isEqualTo(16);
+                    assertThat(SensitiveValues.fingerprint(stored.getCardNum())).isEqualTo(SensitiveValues.fingerprint(ZERO_PADDED_CARD));
+                });
                 assertThat(repository.findById(UNPADDED_CARD_FORM))
                         .as("the padding belongs to the key, so the shortened form names no row")
                         .isEmpty();
@@ -1147,9 +1161,9 @@ final class CardRepositoryIT extends AbstractPostgresIT {
                         embossedName, expiryDate, WINNING_INDICATOR));
 
                 assertThat(repository.findById(ROUND_TRIP_CARD)).get().satisfies(stored -> {
-                    assertThat(stored.getCardNum()).isEqualTo(ROUND_TRIP_CARD);
+                    assertThat(SensitiveValues.fingerprint(stored.getCardNum())).isEqualTo(SensitiveValues.fingerprint(ROUND_TRIP_CARD));
                     assertThat(stored.getCardAcctId()).isEqualTo(SEEDED_ACCOUNT);
-                    assertThat(stored.getCardCvvCd()).isEqualTo(verificationCode);
+                    assertThat(SensitiveValues.fingerprint(stored.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(verificationCode));
                     assertThat(stored.getCardEmbossedName()).isEqualTo(embossedName);
                     assertThat(stored.getCardExpirationDate()).isEqualTo(expiryDate);
                     assertThat(stored.getCardActiveStatus()).isEqualTo(WINNING_INDICATOR);

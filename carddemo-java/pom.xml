@@ -101,9 +101,9 @@
 
   <!--
     The parent supplies dependency management, plugin management and the default plugin
-    configuration for the whole module. 3.5.16 is the newest generally available release on the
-    3.x line; a 4.x release exists but the migration contract names 3.x explicitly, so 3.x is a
-    ceiling rather than a floor.
+    configuration for the whole module. The migration contract names 3.x explicitly, so 3.x is a
+    ceiling rather than a floor: 3.5.16 is the generally available 3.x release this module is
+    pinned to, and a 4.x release is outside the contract however current it becomes.
 
     relativePath is deliberately empty: this module is standalone, there is no parent descriptor
     on disk, and an empty element stops Maven searching the enclosing directory.
@@ -172,131 +172,79 @@
     <springdoc-openapi.version>2.8.17</springdoc-openapi.version>
 
     <!-- ==============================================================
-         Security remediation overrides, in the order the scanner reported them. Each is a managed
-         version override an executed scan proved necessary, never a direct declaration.
+         Security remediation overrides. Each entry below is a managed version override the
+         supply-chain gate requires, never a direct dependency declaration. Each states which
+         coordinate it governs, how that coordinate reaches the classpath, and the finding the value
+         clears. Reproduce any of them with `./mvnw -B verify`, which executes the scan.
          ============================================================== -->
 
-    <!-- Servlet container. Clears a cluster of high severity findings
-         against the container shipped by default on this framework
-         line.
+    <!-- Servlet container, embedded by the web starter. Clears a cluster
+         of high severity findings against the container this framework
+         line ships by default.
 
-         THIS VALUE IS THE NEWEST PUBLISHED RELEASE OF THE 10.1 LINE AND
-         IT CARRIES ONE STANDING FINDING THE GATE REPORTS. An executed
-         scan reports CVE-2026-66299 at 7.5 here, above this build's 7.0
-         threshold, with the affected range running from 10.1.24 through
-         10.1.57 and the fix named as 10.1.58. The upgrade was attempted
-         and could not be taken: 10.1.58 is not published. Maven Central's
-         own version metadata for this coordinate lists 10.1.57 as the
-         newest final release of the 10.1 line, and resolution of 10.1.58
-         fails for the core, websocket and expression-language artifacts
-         alike. The neighbouring line is no escape either - the finding's
-         fix there is 11.0.25 and Central's newest 11.0 release is
-         11.0.24 - and that line targets a different servlet
-         specification than this framework line manages. So no released
-         artifact clears this finding today, on any line.
+         One finding stands open against this coordinate, and it is carried
+         as a written determination rather than concealed.
+         owasp-suppressions.xml holds exactly ONE rule; it is scoped to the
+         three embed artifacts and to that single identifier, and it records
+         the identifier, the fixed release, the measured exposure of this
+         deployment and the commands that reproduce both halves of the
+         determination. That file is the authority on all four, so those
+         values are stated there once instead of here as well.
+         failBuildOnUnusedSuppressionRule is true, so the rule fails the
+         build the moment it stops matching, which is what stops an accepted
+         risk from outliving the finding it was written for. Concealing a
+         finding to obtain a green gate is the one remedy this build
+         refuses; a determination is readable, scoped to one coordinate and
+         self-expiring.
 
-         Three things follow, and each is stated because the alternative
-         is worse. The value stays at the newest published release rather
-         than at a version that cannot be resolved, because an
-         unresolvable pin fails the build for everyone and protects
-         nobody. The finding is carried as a written determination rather
-         than as silence: owasp-suppressions.xml holds ONE rule, named
-         against the three embed artifacts and this single identifier and
-         carrying the commands that reproduce both halves of it, and
-         failBuildOnUnusedSuppressionRule stays true so the rule fails
-         the build the moment it stops matching - which is what stops an
-         accepted risk from outliving the finding it was written for.
-         Concealing a finding to obtain a green gate is still the one
-         remedy this build refuses, and the difference between that and
-         this is that a determination is readable, scoped to one
-         coordinate, and self-expiring. And the value moves to 10.1.58 as
-         soon as it publishes, which is a single-digit change to this
-         line - the fix is identified, not undecided, and adopting it
-         retires the rule because an unused rule fails the build.
-
-         Worth knowing while it stands: the finding's own text describes
-         uncontrolled resource consumption in the container's WebSocket
-         chat EXAMPLE application and says deployments that removed the
-         examples web application are unaffected. This module embeds the
-         container and deploys none of its example applications - no
-         embed artifact ships that webapp - so the practical exposure of
-         this deployment is low. That lowers urgency; it does not close
-         the finding, and it is not offered as a reason to stop
-         reporting it - it is the measured exposure the suppression rule
-         records. Recorded as DL-159, with the suppression rule's own
-         reasoning in the sibling DL-244 entry. -->
+         This value is raised to the fixed release once that release
+         resolves, which retires the rule - and an unused rule fails the
+         build, so the retirement cannot be forgotten. The reasoning is
+         recorded in docs/decision-log.md DL-159, with the rule's own
+         justification in the sibling DL-244 entry. -->
     <tomcat.version>10.1.57</tomcat.version>
 
     <!-- Asynchronous transport used by the AWS SDK object storage
-         client. This value moved from the 4.1 line to the 4.2 line to
-         clear a 7.5 finding, and both halves of that sentence need
-         their evidence, because an earlier revision of this comment
-         asserted the opposite and asserted it as settled fact.
+         client. This value selects the 4.2 line, because the transport
+         module on the 4.1 line carries a high severity finding whose fix
+         range begins at 4.2.16.
 
-         Whose value is this. An earlier revision claimed the plan's
-         dependency inventory freezes this coordinate at 4.1.136.Final
-         and that "the value is not ours to move". That claim is
-         withdrawn as false, having been checked against the plan
-         itself rather than against the comment. The inventory
-         enumerates every coordinate this file declares, and it
-         separately enumerates the artifacts that arrive transitively
-         at versions the framework parent pins and which this file must
-         not redeclare: the core, batch, data access, security,
-         persistence API, servlet container, JSON, pooling and logging
-         artifacts are all named there. Netty is named in none of those
-         lists, in no exclusion, and in no drift blacklist. The earlier
-         claim also refuted itself in passing: it conceded that the
-         framework bill of materials "would otherwise select
-         4.1.135.Final", which makes 4.1.136.Final an override chosen
-         here for security, not a measurement read out of the plan's
-         executed resolution. A value moved here for security is ours
-         to move again for security.
+         Whose value this is. The plan's dependency inventory does not
+         freeze this coordinate. It enumerates the coordinates this file
+         declares, and separately the artifacts that arrive transitively at
+         versions the framework parent pins and which this file must not
+         redeclare - the core, batch, data access, security, persistence
+         API, servlet container, JSON, pooling and logging artifacts.
+         Netty appears in none of those lists, in no exclusion and in no
+         drift blacklist, so this value is an override chosen here for
+         security. What the plan freezes is the outcome: a supply chain
+         gate tolerating zero critical and zero high findings, bound to
+         the verify phase so it is executed rather than declared. Under
+         that gate an upgrade is the only remedy that resolves the
+         finding, because declaring the finding acceptable would conceal
+         it, and the module ships inside the deployable jar at runtime
+         scope.
 
-         What is frozen is the outcome, not the number. The plan binds
-         this build to a supply chain gate that tolerates zero critical
-         and zero high findings, and binds the scan to the verify
-         phase so the gate is executed rather than declared. An
-         executed scan reported CVSS 7.5 against the transport module
-         on the 4.1 line, with the fix range beginning at 4.2.16, and
-         that module ships inside the deployable jar at runtime scope.
-         Under a zero tolerance gate an upgrade is the only remedy that
-         resolves the finding; declaring the finding acceptable would
-         only conceal it.
+         Why the 4.2 module layout is not an obstacle. The 4.2 line does
+         split the codec module into separate base, compression,
+         marshalling and protobuf artifacts, and the original codec module
+         arrives as a vestigial shell - confirmed by resolving the tree.
+         That does not break the SDK transport client: the whole suite
+         passes on this value, and the queue and object storage tiers that
+         drive this transport are exercised against a real emulated
+         endpoint in the integration tier rather than against a mock, so
+         the layout question is settled by exercising the runtime rather
+         than by argument. This line also carries no terminally deprecated
+         platform call on the direct buffer fast path, so the integration
+         tier runs it without a runtime notice.
 
-         The objection to 4.2 was tested rather than accepted. The
-         earlier revision argued that 4.2 changes the shape of the
-         graph and not merely its version, so the SDK transport client
-         would be assembled from a module set it never declared. The
-         first half of that is correct and was confirmed by resolving
-         the tree: 4.2 does split the codec module into separate base,
-         compression, marshalling and protobuf artifacts, and the
-         original codec module does arrive as a vestigial shell. The
-         conclusion does not follow, and was disproved by execution
-         rather than by argument. The whole suite passes on 4.2.16, and
-         the queue and object storage tiers that drive this transport
-         pass against a real emulated endpoint in the integration tier
-         rather than against a mock. A module layout objection that
-         predicts a runtime failure is answered by exercising the
-         runtime.
+         Scope bounds the residual risk. Every netty module reaches this
+         build at runtime scope only, by way of the SDK transport client,
+         so no source in this module compiles against netty and this value
+         cannot influence compilation. It influences resolution and the
+         shipped image, which is precisely the surface the gate covers.
 
-         The upgrade also closed a defect the pin was carrying. On the
-         4.1 line the direct buffer fast path called a terminally
-         deprecated platform method and the runtime printed a notice
-         whenever the integration tier exercised the transport. That
-         notice is measured at zero occurrences on 4.2.16. It was never
-         a compiler diagnostic, so the -Xlint:all -Werror gate was
-         never affected either way, but it is one fewer standing
-         anomaly.
-
-         Scope bounds the residual risk. Every netty module reaches
-         this build at runtime scope only, by way of the SDK transport
-         client, so no source in this module compiles against netty and
-         this value cannot influence compilation. It influences
-         resolution and the shipped image, which is precisely the
-         surface the gate is meant to cover.
-
-         Recorded, with the withdrawn pin and the withdrawn
-         deprecation notice, in docs/decision-log.md DL-115. -->
+         Recorded in docs/decision-log.md DL-115. -->
     <netty.version>4.2.16.Final</netty.version>
 
     <!-- Database driver. Clears an 8.2 finding that affects the range
@@ -320,7 +268,7 @@
          embeds; nothing in this module references it directly. The
          version this framework line would otherwise select carries an
          uncontrolled recursion finding whose fixed release is 3.18.0,
-         so the whole graph moves to the newest release on the 3.x line.
+         so the whole graph is held above it on the 3.x line.
          Governed through the framework bill of materials' own property
          name, so a single value moves every artifact of the family and
          no direct dependency declaration is introduced. -->
@@ -328,12 +276,12 @@
 
     <!-- Archive and compression library. Reaches the classpath only in
          the test tier, as the tar writer the container testing library
-         uses to copy files into a container. It became visible once the
-         scan stopped excluding the test scope, and the version the
-         container library selects carries two findings fixed on the
-         1.26 line, so the whole graph moves to the newest release on
-         the 1.x line. No bill of materials on this framework line
-         governs it, so it is pinned as a managed entry below. -->
+         uses to copy files into a container; the scan covers the test
+         scope, so it is inside the gate's surface. The version the
+         container library selects carries two findings fixed on the 1.26
+         line, so the whole graph is held above them. No bill of materials
+         on this framework line governs it, so it is pinned as a managed
+         entry below. -->
     <commons-compress.version>1.28.0</commons-compress.version>
 
     <!-- Second generation JSON library, which is the serialisation
@@ -375,19 +323,17 @@
          and response classpath regardless of which annotations the
          current sources happen to carry - the next writer of a data
          transfer object decides that, not this comment. Applicability
-         was therefore not accepted as a defence, the finding is not
-         suppressed, and no suppression file exists for the scan to
-         read. An earlier revision made this raise, a later one
-         reverted it to 2.21.4 on the grounds that the inventory is
-         frozen and the score sits below the build failing threshold,
-         and this revision restores it: the inventory freezes which
-         library is used, not the right to take its security patches,
+         is therefore not accepted as a defence, the finding is not
+         suppressed, and no suppression rule is written for it: the one
+         rule owasp-suppressions.xml carries names a different
+         identifier on different artifacts, so no rule in this build
+         covers this coordinate. The inventory freezes which library is
+         used, not the right to take that library's security patches,
          and a finding below the gate threshold is still a reported
-         finding. Recorded in docs/decision-log.md DL-090, which is
-         decided twice and states why the revert does not survive.
-         The raise leaves the annotations divergence exactly where it
-         was, because that has the separate upstream cause described
-         above and was never attributable to this property.
+         finding. Recorded in docs/decision-log.md DL-090.
+         This value leaves the annotations divergence exactly where it
+         is, because that has the separate upstream cause described
+         above and is not attributable to this property.
          This is entirely separate from the third generation
          coordinates governed by tools-jackson.version below, which
          reach the classpath only through the logging encoder. That
@@ -555,9 +501,8 @@
 
        There is deliberately no container testing bill of materials
        here. The Spring Boot parent already manages that family at
-       1.21.4, which is the newest release on its line, and importing a
-       newer major line would replace a managed version with an
-       unmanaged override for no benefit. The container engine client
+       1.21.4, and importing a different major line would replace a
+       managed version with an unmanaged override for no benefit. The container engine client
        that family depends on is pinned below instead, which remediates
        the finding without moving the testing library itself.
        ================================================================ -->
@@ -789,10 +734,11 @@
       Trace export to the collector provided by the local validation stack.
 
       The exclusion is a supply chain remediation, not a preference: this artefact's default
-      transport is a third-party HTTP client whose own language runtime carries a 9.8 finding with
-      no fixed release on the line it depends on. The replacement sender uses the platform HTTP
-      client, removing that client and its runtime from the graph, and is behaviourally equivalent
-      here because trace export is configured over HTTP with protobuf encoding.
+      transport is a third-party HTTP client that brings its own language runtime with it, and that
+      runtime is the subject of a critical finding the gate reports. The replacement sender uses the
+      platform HTTP client, which removes both the client and its runtime from the graph, and is
+      behaviourally equivalent here because trace export is configured over HTTP with protobuf
+      encoding.
     -->
     <dependency>
       <groupId>io.opentelemetry</groupId>
@@ -1199,21 +1145,59 @@
            beyond dependency management's reach. It is now excluded and
            replaced by the ordinary HttpClient 5 transport, whose visible
            HTTP Core dependency is pinned to the fixed release declared
-           above. No suppression and no scope exception is involved.
+           above. That remediation involves no suppression and no scope
+           exception; the one determination this gate does carry is
+           described immediately below.
 
-           WHAT THIS GATE CLAIMS, AND IT IS NOW THE STRONG CLAIM
+           WHAT THIS GATE CLAIMS, STATED AS THE ONE INVARIANT IT
+           ACTUALLY ENFORCES
 
-           Zero critical and zero high findings, with ZERO
-           SUPPRESSIONS. Not zero unsuppressed findings - zero
-           findings. There is no suppression file, the plugin is
-           configured with none, and the threshold that fails the build
-           is unchanged.
+           Zero UNSUPPRESSED critical or high findings across the
+           compile, runtime and test graph, plus EXACTLY ONE written
+           analyst determination that is part of the audited result
+           rather than a silence. Nothing else. The threshold that
+           fails the build is 7.0 and is unchanged; the scope is the
+           whole graph and is unchanged.
 
-           THIS NOTE PREVIOUSLY SAID SOMETHING WEAKER, AND SAID IT
-           HONESTLY: three entries scoring 7.5 HIGH were actively
-           suppressed, so the only defensible claim was zero
-           UNSUPPRESSED highs. That is no longer the position, and
-           neither finding was closed by relabelling it.
+           That one determination is CVE-2026-66299 at 7.5 against the
+           three embedded servlet container artifacts, and four
+           properties are what make it a determination rather than a
+           lowered gate: it is DISCLOSED - here, in
+           owasp-suppressions.xml, in the Gate 8 section of README.md
+           and in docs/decision-log.md at DL-159 with its sibling
+           DL-244; it is SCOPED to one identifier and three named
+           artifacts, with no wildcard platform record and no
+           coordinate regex broad enough to absorb a finding nobody has
+           examined; it carries a CHECKABLE false-match argument
+           rather than a tolerability opinion, with the commands that
+           reproduce both halves of it; and it is SELF-EXPIRING,
+           because failBuildOnUnusedSuppressionRule fails the build the
+           moment the rule stops matching. Its shape is asserted by
+           BuildAndCiContractTest and its scope by
+           GateVerificationTest, so it cannot be widened, unscoped or
+           disarmed without a failing test.
+
+           SO THE CLAIM IS NOT ZERO FINDINGS, AND MUST NOT BE WRITTEN
+           AS ONE. An earlier revision of this note made the stronger
+           claim - no qualifying finding of any kind and no analyst
+           determination of any kind - and described this plugin as
+           reading none. That was accurate when it was written and
+           stopped being accurate the moment the determination above
+           was configured, and a comment that overstates the gate is
+           the same class of defect as a gate that has been quietly
+           softened: both leave a reader believing something the build
+           does not enforce. The correction is to the wording only.
+           Nothing in the configuration below was relaxed, and neither
+           of the two findings named next was closed by relabelling it -
+           both were closed by upgrading, which is why neither is
+           suppressed and neither is counted here.
+
+           NOTHING WAS CLOSED BY RELABELLING IT, AND THE HISTORY OF
+           THE RULE FILE IS WHAT SHOWS IT. Three earlier entries,
+           each scoring 7.5 HIGH, were removed from
+           owasp-suppressions.xml by fixing the exposure rather than
+           by suppressing it, which is what leaves the one remaining
+           determination credible.
 
            The transport family finding, CVE-2026-56816, was closed by
            upgrading. The network transport moved to the next minor
@@ -1239,9 +1223,12 @@
            test libraries do not enter the repackaged product. It no
            longer justifies excluding those libraries from this scan.
 
-           ONE finding remains, scoring 5.3, and it is ACCEPTED RATHER
-           THAN SUPPRESSED - it is reported on every run and nothing
-           hides it. It is in the tracing semantic conventions
+           ONE finding remains BELOW THE THRESHOLD, scoring 5.3, and it
+           is ACCEPTED RATHER THAN SUPPRESSED - it is reported on every
+           run, no rule names it, and nothing hides it. Below the
+           threshold and unsuppressed is a third state, distinct both
+           from the determination above and from a finding that was
+           fixed. It is in the tracing semantic conventions
            artifact, and its report text describes another language's
            implementation of that specification: the matched product
            identifier names the Go platform and the defect it describes
@@ -1298,21 +1285,22 @@
           <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
           <!-- Analyst determinations, and the flag that makes each one self-expiring.
 
-               The file was empty of rules until a HIGH finding arrived against the embedded
-               servlet container naming a fixed release that is not published - so there was
-               nothing to upgrade to - for a vulnerability in the examples web application, which
-               an embedded container does not carry. One narrowly scoped rule records that, with
-               the commands that reproduce both halves of it. The file's own header states the
-               three rules that govern what may be written in it, and the case this module
-               deliberately did NOT suppress, which is documented under Gate 8 in README.md.
+               Every rule in the suppression file is narrowly scoped and carries the commands that
+               reproduce both halves of the determination it records: the finding as the scanner
+               reports it, and the reason the module is not exposed to it. The rule the file
+               currently holds covers a HIGH finding raised against the embedded servlet container
+               for a vulnerability in the examples web application, which an embedded container does
+               not carry. The file's own header states the three rules that govern what may be
+               written in it, and the case this module deliberately does NOT suppress, which is
+               documented under Gate 8 in README.md.
 
-               failBuildOnUnusedSuppressionRule is what keeps that entry honest, and it was set
-               true before any rule existed for it to police, precisely so this moment would be
-               covered. A rule that has stopped matching fails the build instead of being quietly
-               kept, so an accepted risk cannot outlive the finding it was written for: when a
-               patched container release is adopted the rule stops matching and the build demands
-               its removal. That is a sharper trigger than a review date, which would fire on the
-               calendar whether or not anything had changed. -->
+               failBuildOnUnusedSuppressionRule is what keeps each determination honest, and it is
+               set true whether or not any rule currently needs policing. A rule that has stopped
+               matching fails the build instead of being quietly kept, so an accepted risk cannot
+               outlive the finding it was written for: once a patched container release is adopted
+               the rule stops matching and the build demands its removal. That is a sharper trigger
+               than a review date, which fires on the calendar whether or not anything has
+               changed. -->
           <suppressionFiles>
             <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
           </suppressionFiles>

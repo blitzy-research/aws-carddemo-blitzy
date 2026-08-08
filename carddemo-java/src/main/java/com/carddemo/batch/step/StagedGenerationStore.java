@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -621,9 +622,34 @@ public final class StagedGenerationStore {
      * generation here too. Working files are excluded by construction: they end in
      * {@value #WORKING_SUFFIX} and therefore do not parse as a generation name.
      *
+     * <h2>The name alone is not enough, and this is where that is enforced</h2>
+     *
+     * <p>Resolution here is by <em>name</em>: the highest generation token wins, and the token is part
+     * of a filename. On a shared host that makes the answer partly the filesystem's rather than wholly
+     * this store's, so a local actor able to write the staging root could plant a file - or a symbolic
+     * link - named with a higher generation than any this store has allocated, and the next job to
+     * consume that base would read the attacker's records as its own input. Two independent controls
+     * stand between the name and the answer:
+     * <ul>
+     *   <li><strong>The grammar is exact and anchored.</strong> A candidate must be the base, the
+     *       separator, and a generation token at the store's own fixed width - not merely a name that
+     *       begins or ends the right way.</li>
+     *   <li><strong>The candidate must be a trusted staged artefact</strong>, which
+     *       {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)} decides: a real regular file
+     *       inspected without following links, a direct child of this root, owned by this process, and
+     *       with no permission granted outside its owner's - including on the root itself, because a
+     *       root anybody can write in makes today's ownership no evidence about tomorrow's file.</li>
+     * </ul>
+     *
+     * <p>A candidate that parses but is not trusted is skipped and reported rather than silently
+     * ignored: a well-named file in the staging root that this process does not own is exactly the
+     * event an operator needs to see, and continuing the scan means a planted higher generation cannot
+     * mask the genuine one below it.
+     *
      * @param  stagingDirectory the local staging root to search; must not be {@code null}
      * @param  logicalBase      the generation base whose current generation is wanted
-     * @return the path of the current local generation, or empty when the directory holds none
+     * @return the path of the current local generation, or empty when the directory holds no trusted
+     *         generation of that base
      * @throws NullPointerException     if either argument is {@code null}
      * @throws IllegalArgumentException if {@code logicalBase} is not a valid base
      */
@@ -632,7 +658,7 @@ public final class StagedGenerationStore {
         Objects.requireNonNull(stagingDirectory, "stagingDirectory");
         final String base = requireLogicalBase(logicalBase);
         final String prefix = base + LOCAL_NAME_SEPARATOR;
-        if (!Files.isDirectory(stagingDirectory)) {
+        if (!Files.isDirectory(stagingDirectory, LinkOption.NOFOLLOW_LINKS)) {
             return Optional.empty();
         }
         Path newest = null;
@@ -640,14 +666,25 @@ public final class StagedGenerationStore {
         try (Stream<Path> entries = Files.list(stagingDirectory)) {
             for (final Path entry : entries.toList()) {
                 final Path name = entry.getFileName();
-                if (name == null || !Files.isRegularFile(entry)) {
+                if (name == null) {
                     continue;
                 }
                 final Long generation = generationNumberFromKey(prefix, name.toString());
-                if (generation != null && generation.longValue() > highest) {
-                    highest = generation.longValue();
-                    newest = entry;
+                if (generation == null || generation.longValue() <= highest) {
+                    continue;
                 }
+                if (!SecureStagedFiles.isTrustedStagedArtifact(stagingDirectory, entry)) {
+                    // Named like a generation of this base and not one. Reported at warning level
+                    // because on a correctly-provisioned root this cannot happen, and named by
+                    // filename only - the content is not read and no attribute is echoed.
+                    LOGGER.warn("Ignoring {} in the local staging root {}: it is named as a generation"
+                                    + " of base {} but is not a regular file this process owns in an"
+                                    + " owner-only root, so it is not a staged artifact of this"
+                                    + " deployment", name, stagingDirectory, base);
+                    continue;
+                }
+                highest = generation.longValue();
+                newest = entry;
             }
         } catch (final IOException unreadableDirectory) {
             LOGGER.warn("The local staging root {} could not be searched for the current generation of"
@@ -666,13 +703,35 @@ public final class StagedGenerationStore {
      * both are the abnormal disposition of an allocation the job stream did not end normally with, and
      * leaving them behind accumulates one dead artifact per failed run.
      *
-     * <p>Selection is by this execution's own generation token, which appears in the name of every local
-     * file the store hands out, so a file belonging to a concurrently running execution can never match.
-     * Nothing is raised: the job has already failed for its own reason, and that reason is the one an
+     * <h2>Selection is by registration, never by name</h2>
+     *
+     * <p>An earlier form of this method swept the staging root and deleted every regular file whose name
+     * merely <em>contained</em> this execution's generation token. That is a deletion rule driven by a
+     * predictable substring: the token is derived from a monotonically increasing framework identifier,
+     * so its value is guessable, and any file whose name happened to contain it - one belonging to
+     * something else entirely, or one deliberately named to contain it - was removed on the next failed
+     * run. A cleanup path that can be aimed by choosing a filename is a worse problem than the dead
+     * artefact it was written to remove.
+     *
+     * <p>Selection is therefore from the execution's <strong>own registry</strong>. Every completed
+     * local generation this store hands out is registered on the job execution's context with its exact
+     * absolute path, and this method deletes those paths and nothing else - plus, for each of them, the
+     * one working sibling the store itself names, which is the completed path with the store's own
+     * working suffix appended and cannot therefore be anything a third party chose. Every path is
+     * checked against {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)} immediately before
+     * the delete, so a registered name whose file has since been replaced by a link or by another
+     * account's file is left alone rather than followed.
+     *
+     * <p>A file this store allocated but never completed has no registration - registration happens at
+     * completion - so it is not removed here. That is the safe direction for the omission to fall: an
+     * unregistered working file is a nuisance, whereas deleting by guessed name is a vulnerability.
+     *
+     * <p>Nothing is raised: the job has already failed for its own reason, and that reason is the one an
      * operator must read.
      *
      * @param jobExecution the execution that ended without completing; must not be {@code null}
-     * @param stagingDirectory the local staging root to sweep; must not be {@code null}
+     * @param stagingDirectory the local staging root the registered paths must lie in; must not be
+     *                         {@code null}
      * @return the number of local files removed
      */
     public static int discardLocalArtifactsOf(final JobExecution jobExecution,
@@ -683,27 +742,42 @@ public final class StagedGenerationStore {
         if (executionId == null || executionId.longValue() < 0L) {
             return 0;
         }
-        final String token = generationToken(executionId.longValue());
         int discarded = 0;
-        try (Stream<Path> entries = Files.list(stagingDirectory)) {
-            for (final Path entry : entries.toList()) {
-                final Path name = entry.getFileName();
-                if (name == null || !name.toString().contains(token)
-                        || !Files.isRegularFile(entry)) {
-                    continue;
-                }
-                if (Files.deleteIfExists(entry)) {
-                    discarded++;
-                    LOGGER.info("Discarded local batch artifact {} allocated by jobExecutionId={},"
-                            + " which did not complete", name, executionId);
-                }
-            }
-        } catch (final IOException failure) {
-            LOGGER.warn("The local staging root {} could not be swept after jobExecutionId={} ended"
-                            + " without completing; failureType={}", stagingDirectory, executionId,
-                    failure.getClass().getSimpleName());
+        for (final ArtifactRegistration registration : registrationsOf(jobExecution)) {
+            final Path completed = registration.completedPath();
+            discarded += discardRegistered(completed, stagingDirectory, executionId);
+            discarded += discardRegistered(workingPath(completed), stagingDirectory, executionId);
         }
         return discarded;
+    }
+
+    /**
+     * Deletes one path this execution registered, after re-establishing that it is still trustworthy.
+     *
+     * @param  target           the exact path to remove
+     * @param  stagingDirectory the root the path must be a direct child of
+     * @param  executionId      the execution the path was registered by, for the diagnostic
+     * @return one when the file was removed, zero otherwise
+     */
+    private static int discardRegistered(final Path target, final Path stagingDirectory,
+            final long executionId) {
+        if (!SecureStagedFiles.isTrustedStagedArtifact(stagingDirectory, target)) {
+            // Either it is already gone - the ordinary case for a working file that completed - or it is
+            // no longer the file that was registered. Neither is a reason to delete anything.
+            return 0;
+        }
+        try {
+            if (Files.deleteIfExists(target)) {
+                LOGGER.info("Discarded local batch artifact {} allocated by jobExecutionId={}, which"
+                        + " did not complete", target.getFileName(), executionId);
+                return 1;
+            }
+        } catch (final IOException failure) {
+            LOGGER.warn("The local batch artifact {} allocated by jobExecutionId={} could not be"
+                            + " removed after the job ended without completing; failureType={}",
+                    target.getFileName(), executionId, failure.getClass().getSimpleName());
+        }
+        return 0;
     }
 
     /**
@@ -989,11 +1063,23 @@ public final class StagedGenerationStore {
                 return null;
             }
         }
+        final long parsed;
         try {
-            return Long.valueOf(digits);
+            parsed = Long.parseLong(digits);
         } catch (final NumberFormatException outsideLongRange) {
             return null;
         }
+        // The grammar is anchored by round trip rather than by pattern: the token must be exactly what
+        // this store would have written for that number. That refuses every non-canonical spelling of
+        // the same value at once - a short form, an over-padded form, a form carrying a sign - without
+        // enumerating them, and it cannot drift from the writer because it calls the writer.
+        final String canonical;
+        try {
+            canonical = generationToken(parsed);
+        } catch (final IllegalArgumentException outsideAllocatableRange) {
+            return null;
+        }
+        return canonical.equals(token) ? Long.valueOf(parsed) : null;
     }
 
     /** Confirms every registered source exists and has been atomically completed. */

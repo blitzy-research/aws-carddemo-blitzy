@@ -45,6 +45,24 @@ package com.carddemo.util;
 public final class ApiRoutePaths {
 
     /**
+     * The root beneath which every business route of this module lives.
+     *
+     * <p><strong>Why the root is named and not merely implied.</strong> Every address below is spelled
+     * from it, so the three prefixes cannot drift onto different roots, and - more importantly - the
+     * security chain can state one positive rule over the whole business surface instead of relying on a
+     * closing rule that asks only whether the caller has <em>some</em> identity. Before this constant
+     * existed there was no way to write that rule without inventing the literal in the configuration
+     * package, and a rule written from an invented literal is a rule that can silently name a surface no
+     * controller serves.
+     *
+     * <p>Every delivered route is beneath it: the sign-on route, the administrative prefix, the batch
+     * control prefix, and the ten ordinary screen surfaces. Nothing outside it is served by this module
+     * except the container's own error path, which the chain treats separately because it is reached by an
+     * internal dispatch rather than by a client.
+     */
+    public static final String API_PATH_PREFIX = "/api";
+
+    /**
      * Address of the sign-on route, the one route reachable without presenting a credential.
      *
      * <p>It is the route that issues credentials, so requiring one would make it unreachable. The
@@ -52,7 +70,7 @@ public final class ApiRoutePaths {
      * to some other path would be answered by the chain's closing catch-all and would fail closed, which
      * is the safe direction for that mistake to fail in.
      */
-    public static final String SIGN_ON_PATH = "/api/auth/signon";
+    public static final String SIGN_ON_PATH = API_PATH_PREFIX + "/auth/signon";
 
     /**
      * Path prefix beneath which every administrator-only route lives.
@@ -65,7 +83,7 @@ public final class ApiRoutePaths {
      * the catch-all rule, so the failure mode of forgetting the prefix is a route that admits any
      * signed-on user rather than one that admits anybody.
      */
-    public static final String ADMIN_PATH_PREFIX = "/api/admin";
+    public static final String ADMIN_PATH_PREFIX = API_PATH_PREFIX + "/admin";
 
     /**
      * Address of the administrative user-maintenance routes, which sit beneath
@@ -76,7 +94,7 @@ public final class ApiRoutePaths {
     /**
      * Prefix beneath which the batch control surface lives.
      */
-    public static final String BATCH_CONTROL_PATH_PREFIX = "/api/batch";
+    public static final String BATCH_CONTROL_PATH_PREFIX = API_PATH_PREFIX + "/batch";
 
     /**
      * Base address of the batch job control surface.

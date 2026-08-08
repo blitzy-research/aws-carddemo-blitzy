@@ -40,6 +40,7 @@ import com.carddemo.service.InterestGroupTransactionBoundary;
 import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.IsolatedStagingRoot;
 
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
@@ -100,6 +101,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Integration specification for the two-step transaction-combine job against the shared real
@@ -157,9 +160,6 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
                 "spring.main.banner-mode=off",
                 "management.endpoint.health.validate-group-membership=false",
                 "management.tracing.enabled=false",
-                StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY
-                        + "=${java.io.tmpdir}/"
-                        + CombineTransactionsJobConfigIT.STAGING_SUBDIRECTORY,
                 CombineTransactionsJobConfig.BACKUP_RESOURCE_PROPERTY
                         + "=" + CombineTransactionsJobConfigIT.BACKUP_DATASET,
                 CombineTransactionsJobConfig.SYNTHESIZED_RESOURCE_PROPERTY
@@ -198,8 +198,14 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     /** Negative overpunch characters for final digits zero through nine. */
     private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
 
-    /** Context-wide local staging namespace for this specification. */
-    static final String STAGING_SUBDIRECTORY = "carddemo-combine-transactions-config-it";
+    /**
+     * This specification's label within this process's private staging namespace.
+     *
+     * <p>It named a directory directly beneath the platform temporary directory, which every run of this
+     * specification and every sibling clone on the host resolved identically; it is now one segment beneath
+     * a namespace unique to this process. See {@link IsolatedStagingRoot}.
+     */
+    static final String STAGING_LABEL = "combine-transactions-config-it";
 
     /** Deployment-owned logical name of the posting input. */
     static final String POSTING_DATASET = "combine-posting-input.txt";
@@ -364,7 +370,7 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
      * Starts from the exact reference seed and from an empty private staging namespace.
      *
      * @throws SQLException if the shared server cannot be restored
-     * @throws IOException if stale staged files cannot be removed
+     * @throws IOException if staged files cannot be removed
      */
     @BeforeAll
     static void restoreReferenceStateBeforeRuns() throws SQLException, IOException {
@@ -1125,14 +1131,27 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * Returns this specification's configured staging directory.
+     * Returns this run's own configured staging directory, which is the very path the context was given.
      *
-     * @return normalized local staging directory
+     * @return normalized local staging directory, private to this run
      */
     private static Path stagingDirectory() {
-        return Path.of(System.getProperty("java.io.tmpdir"), STAGING_SUBDIRECTORY)
-                .toAbsolutePath()
-                .normalize();
+        return IsolatedStagingRoot.forSpecification(STAGING_LABEL);
+    }
+
+    /**
+     * Binds the staging directory to a root private to this process, before the context is created.
+     *
+     * <p>A property callback rather than an entry in the annotation above, because the value cannot be a
+     * compile-time constant: it carries the process identifier so that no other run and no sibling clone
+     * resolves the same absolute path.
+     *
+     * @param registry the registry the framework supplies
+     */
+    @DynamicPropertySource
+    static void registerIsolatedStagingDirectory(final DynamicPropertyRegistry registry) {
+        registry.add(StagedGenerationStore.SHARED_STAGING_DIRECTORY_PROPERTY,
+                () -> IsolatedStagingRoot.pathFor(STAGING_LABEL));
     }
 
     /**
@@ -1148,21 +1167,12 @@ class CombineTransactionsJobConfigIT extends AbstractPostgresIT {
     /**
      * Removes only this specification's private staging namespace.
      *
-     * @throws IOException if any staged entry cannot be removed
+     * <p>"Private" is now a property of the path rather than a claim about it: the root carries this
+     * process's own namespace, so the removal cannot reach a file another run or another clone staged. It
+     * previously named a directory every one of them shared.
      */
-    private static void clearStagingDirectory() throws IOException {
-        final Path directory = stagingDirectory();
-        if (!Files.exists(directory)) {
-            return;
-        }
-        final List<Path> entries;
-        try (Stream<Path> paths = Files.list(directory)) {
-            entries = paths.toList();
-        }
-        for (final Path entry : entries) {
-            Files.deleteIfExists(entry);
-        }
-        Files.deleteIfExists(directory);
+    private static void clearStagingDirectory() {
+        IsolatedStagingRoot.discard(stagingDirectory());
     }
 
     /**

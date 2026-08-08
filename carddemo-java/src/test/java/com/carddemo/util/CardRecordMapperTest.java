@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import com.carddemo.domain.Card;
+import com.carddemo.support.SensitiveValues;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -550,9 +551,9 @@ class CardRecordMapperTest {
         void allSixFieldsReachTheirOwnProperty() {
             Card card = CardRecordMapper.fromRecord(seededImage());
 
-            assertThat(card.getCardNum()).isEqualTo("0500024453765740");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint("0500024453765740"));
             assertThat(card.getCardAcctId()).isEqualTo("00000000050");
-            assertThat(card.getCardCvvCd()).isEqualTo("747");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("747"));
             assertThat(card.getCardEmbossedName()).isEqualTo(seededEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo("2023-03-09");
             assertThat(card.getCardActiveStatus()).isEqualTo("Y");
@@ -564,7 +565,8 @@ class CardRecordMapperTest {
         void theCardNumberKeepsItsLeadingZero() {
             Card card = CardRecordMapper.fromRecord(seededImage());
 
-            assertThat(card.getCardNum()).isEqualTo(SEEDED_CARD_NUM).startsWith("0");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUM));
+            assertThat(card.getCardNum().startsWith("0")).isTrue();
             assertThat(card.getCardNum().getBytes(StandardCharsets.US_ASCII))
                     .hasSize(CARD_NUM_WIDTH);
         }
@@ -643,7 +645,7 @@ class CardRecordMapperTest {
             Card unfamiliar = CardRecordMapper.fromRecord(seededImageWithActiveStatus("Q"));
 
             assertThat(unfamiliar.getCardActiveStatus()).isEqualTo("Q");
-            assertThat(unfamiliar.getCardNum()).isEqualTo(SEEDED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(unfamiliar.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUM));
         }
 
         @Test
@@ -672,15 +674,16 @@ class CardRecordMapperTest {
         void aCodeOfSevenIsReadAsThreeCharacters() {
             Card card = CardRecordMapper.fromRecord(seededImageWithVerificationCode("007"));
 
-            assertThat(card.getCardCvvCd()).isEqualTo("007");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("007"));
             assertThat(card.getCardCvvCd().getBytes(StandardCharsets.US_ASCII))
                     .hasSize(CVV_CD_WIDTH);
 
             // NOT NUMERICALLY NORMALISED. The value is never parsed to an int and re-rendered:
             // doing so would narrow a three-byte field to one byte and shift every byte after it.
-            assertThat(card.getCardCvvCd()).isNotEqualTo("7");
-            assertThat(card.getCardCvvCd()).isNotEqualTo("07");
-            assertThat(card.getCardCvvCd()).startsWith("00").endsWith("7");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isNotEqualTo(SensitiveValues.fingerprint("7"));
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isNotEqualTo(SensitiveValues.fingerprint("07"));
+            assertThat(card.getCardCvvCd().startsWith("00")).isTrue();
+            assertThat(card.getCardCvvCd().endsWith("7")).isTrue();
         }
 
         @Test
@@ -689,11 +692,11 @@ class CardRecordMapperTest {
         void aCodeOfFortySevenIsReadAsThreeCharacters() {
             Card card = CardRecordMapper.fromRecord(seededImageWithVerificationCode("047"));
 
-            assertThat(card.getCardCvvCd()).isEqualTo("047");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("047"));
             assertThat(card.getCardCvvCd().getBytes(StandardCharsets.US_ASCII))
                     .hasSize(CVV_CD_WIDTH);
-            assertThat(card.getCardCvvCd()).isNotEqualTo("47");
-            assertThat(card.getCardCvvCd()).startsWith("0");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isNotEqualTo(SensitiveValues.fingerprint("47"));
+            assertThat(card.getCardCvvCd().startsWith("0")).isTrue();
         }
 
         @Test
@@ -747,8 +750,8 @@ class CardRecordMapperTest {
 
             // Stated again directly on the field rather than only through the image, so no value in
             // this suite is proved by a round trip alone.
-            assertThat(CardRecordMapper.fromRecord(withSeven).getCardCvvCd()).isEqualTo("007");
-            assertThat(CardRecordMapper.fromRecord(withFortySeven).getCardCvvCd()).isEqualTo("047");
+            assertThat(SensitiveValues.fingerprint(CardRecordMapper.fromRecord(withSeven).getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("007"));
+            assertThat(SensitiveValues.fingerprint(CardRecordMapper.fromRecord(withFortySeven).getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("047"));
         }
     }
 
@@ -989,12 +992,12 @@ class CardRecordMapperTest {
             // assertion that actually proves the three agree.
             assertThat(fromText).isEqualTo(fromBytes).isEqualTo(fromRange);
 
-            assertThat(fromBytes.getCardNum()).isEqualTo(SEEDED_CARD_NUM);
-            assertThat(fromRange.getCardNum()).isEqualTo(SEEDED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(fromBytes.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUM));
+            assertThat(SensitiveValues.fingerprint(fromRange.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUM));
             assertThat(fromBytes.getCardAcctId()).isEqualTo(SEEDED_ACCT_ID);
             assertThat(fromRange.getCardAcctId()).isEqualTo(SEEDED_ACCT_ID);
-            assertThat(fromBytes.getCardCvvCd()).isEqualTo(SEEDED_CVV_CD);
-            assertThat(fromRange.getCardCvvCd()).isEqualTo(SEEDED_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(fromBytes.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CVV_CD));
+            assertThat(SensitiveValues.fingerprint(fromRange.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CVV_CD));
             assertThat(fromBytes.getCardEmbossedName()).isEqualTo(seededEmbossedName());
             assertThat(fromRange.getCardEmbossedName()).isEqualTo(seededEmbossedName());
             assertThat(fromBytes.getCardExpirationDate()).isEqualTo(SEEDED_EXPIRAION_DATE);
@@ -1033,9 +1036,9 @@ class CardRecordMapperTest {
 
             assertThat(first.getCardActiveStatus()).isEqualTo("N");
             assertThat(second.getCardActiveStatus()).isEqualTo("Y");
-            assertThat(second.getCardNum()).isEqualTo(SEEDED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(second.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUM));
             assertThat(second.getCardAcctId()).isEqualTo(SEEDED_ACCT_ID);
-            assertThat(second.getCardCvvCd()).isEqualTo(SEEDED_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(second.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CVV_CD));
             assertThat(second.getCardEmbossedName()).isEqualTo(seededEmbossedName());
             assertThat(second.getCardExpirationDate()).isEqualTo(SEEDED_EXPIRAION_DATE);
 

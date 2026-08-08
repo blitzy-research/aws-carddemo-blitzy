@@ -86,28 +86,20 @@ class FixedWidthFieldReaderTest {
     // Only the layouts a test below actually slices are named here; a mapper is the
     // authority for its own layout and declares its own constants.
 
-    /** 11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178 = 300. */
     private static final int ACCOUNT_WIDTH = 300;
 
-    /** Leading key of the account file-section split, an 11-digit account identifier. */
     private static final int ACCOUNT_KEY_LENGTH = 11;
 
-    /** Data remainder of the account file-section split. 11 + 289 = 300. */
     private static final int ACCOUNT_DATA_LENGTH = 289;
 
-    /** 16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20 = 350. */
     private static final int TRANSACTION_WIDTH = 350;
 
-    /** Leading data prefix of the transaction file-section split. */
     private static final int TRANSACTION_DATA_PREFIX_LENGTH = 304;
 
-    /** Processing timestamp that follows the data prefix. */
     private static final int TRANSACTION_PROC_TS_LENGTH = 26;
 
-    /** Trailing filler that closes the transaction record. 304 + 26 + 20 = 350. */
     private static final int TRANSACTION_FILLER_LENGTH = 20;
 
-    /** 16 + 11 + 3 + 50 + 10 + 1 + 59 = 150. */
     private static final int CARD_WIDTH = 150;
 
     /**
@@ -117,25 +109,18 @@ class FixedWidthFieldReaderTest {
      */
     private static final int CARD_XREF_DATA_WIDTH = 36;
 
-    /** Declared cross-reference cluster record length, 36 mapped bytes plus 14 filler bytes. */
     private static final int CARD_XREF_CLUSTER_WIDTH = 50;
 
-    /** Filler run that separates the mapped cross-reference prefix from the cluster width. */
     private static final int CARD_XREF_FILLER_LENGTH = 14;
 
-    /** 10 + 2 + 4 + 6 + 28 = 50. */
     private static final int DISCLOSURE_GROUP_WIDTH = 50;
 
-    /** Mapped prefix of a disclosure-group record, everything ahead of its filler run. */
     private static final int DISCLOSURE_GROUP_DATA_LENGTH = 22;
 
-    /** Filler run that closes a disclosure-group record. 22 + 28 = 50. */
     private static final int DISCLOSURE_GROUP_FILLER_LENGTH = 28;
 
-    /** 11 + 2 + 4 + 11 + 22 = 50. */
     private static final int CATEGORY_BALANCE_WIDTH = 50;
 
-    /** Mapped prefix of a category-balance record, everything ahead of its filler run. */
     private static final int CATEGORY_BALANCE_DATA_LENGTH = 28;
 
     /**
@@ -226,11 +211,9 @@ class FixedWidthFieldReaderTest {
                     + "000000050"                       // XREF-CUST-ID          off  16, len   9
                     + "00000000050";                    // XREF-ACCT-ID          off  25, len  11
 
-    /** Row 1 of the cross-reference sample data, 36 bytes. */
     private static final String CARD_XREF_IMAGE_ROW_1 =
             "0683586198171516" + "000000027" + "00000000027";
 
-    /** Row 2 of the cross-reference sample data, 36 bytes. */
     private static final String CARD_XREF_IMAGE_ROW_2 =
             "0923877193247330" + "000000002" + "00000000002";
 
@@ -293,38 +276,18 @@ class FixedWidthFieldReaderTest {
     // Subjects under test. These build the object being exercised; they never produce an
     // expected value.
 
-    /**
-     * Builds a reader over account row 0.
-     *
-     * @return a reader over the 300-byte account image
-     */
     private static FixedWidthFieldReader accountRow0() {
         return FixedWidthFieldReader.of(ACCOUNT, ACCOUNT_IMAGE_ROW_0, ACCOUNT_WIDTH);
     }
 
-    /**
-     * Builds a reader over daily-transaction row 0.
-     *
-     * @return a reader over the 350-byte transaction image
-     */
     private static FixedWidthFieldReader transactionRow0() {
         return FixedWidthFieldReader.of(TRANSACTION, TRANSACTION_IMAGE_ROW_0, TRANSACTION_WIDTH);
     }
 
-    /**
-     * Builds a reader over cross-reference row 0 at its mapped 36-byte width.
-     *
-     * @return a reader over the 36-byte cross-reference image
-     */
     private static FixedWidthFieldReader cardXrefRow0() {
         return FixedWidthFieldReader.of(CARD_XREF, CARD_XREF_IMAGE_ROW_0, CARD_XREF_DATA_WIDTH);
     }
 
-    /**
-     * Builds a reader over the disclosure-group row keyed by the padded default value.
-     *
-     * @return a reader over the 50-byte disclosure-group image
-     */
     private static FixedWidthFieldReader disclosureGroupDefault() {
         return FixedWidthFieldReader.of(DISCLOSURE_GROUP, DISCLOSURE_GROUP_DEFAULT_IMAGE,
                 DISCLOSURE_GROUP_WIDTH);
@@ -355,11 +318,8 @@ class FixedWidthFieldReaderTest {
         @Test
         @DisplayName("declared field widths sum to the declared record width")
         void declaredFieldWidthsSumToTheRecordWidth() {
-            // Account layout: identifier, status, three amounts, three dates, two cycle amounts,
-            // postal code, group identifier, filler.
             assertThat(11 + 1 + 12 + 12 + 12 + 10 + 10 + 10 + 12 + 12 + 10 + 10 + 178)
                     .isEqualTo(ACCOUNT_WIDTH);
-            // Transaction layout, in copybook order.
             assertThat(16 + 2 + 4 + 10 + 100 + 11 + 9 + 50 + 50 + 10 + 16 + 26 + 26 + 20)
                     .isEqualTo(TRANSACTION_WIDTH);
             assertThat(16 + 11 + 3 + 50 + 10 + 1 + 59).isEqualTo(CARD_WIDTH);
@@ -375,7 +335,6 @@ class FixedWidthFieldReaderTest {
         void theLineTerminatorIsOneByteAndIsNotRecordContent() {
             assertThat(encodedBytes(LINE_TERMINATOR)).isEqualTo(1);
             assertThat(LINE_TERMINATOR.charAt(0)).isEqualTo('\n');
-            // A record image therefore never ends with it.
             assertThat(ACCOUNT_IMAGE_ROW_0.endsWith(LINE_TERMINATOR)).isFalse();
             assertThat(TRANSACTION_IMAGE_ROW_0.endsWith(LINE_TERMINATOR)).isFalse();
         }
@@ -653,10 +612,8 @@ class FixedWidthFieldReaderTest {
         void aSliceIsReturnedRaw() {
             FixedWidthFieldReader reader = transactionRow0();
 
-            // Two trailing spaces are part of the source field's contractual ten bytes.
             assertThat(reader.field("TRAN-SOURCE", 22, 10)).isEqualTo("POS TERM  ");
             assertThat(encodedBytes(reader.field("TRAN-SOURCE", 22, 10))).isEqualTo(10);
-            // Description text followed by 76 pad bytes, returned as the full hundred.
             assertThat(reader.field("TRAN-DESC", 32, 100))
                     .isEqualTo("Purchase at Abshire-Lowe" + spaces(76));
             // A leading-space value survives too: the merchant postal code is left-justified, so its
@@ -686,7 +643,6 @@ class FixedWidthFieldReaderTest {
 
             assertThat(reader.field(0, 1)).isEqualTo("0");
             assertThat(reader.field(0, ACCOUNT_WIDTH)).isEqualTo(ACCOUNT_IMAGE_ROW_0);
-            // Final byte, and the final field, both end exactly on the record width.
             assertThat(reader.field(ACCOUNT_WIDTH - 1, 1)).isEqualTo(" ");
             assertThat(reader.field(122, 178)).isEqualTo(spaces(178));
             assertThat(encodedBytes(reader.field(122, 178))).isEqualTo(ACCOUNT_WIDTH - 122);
@@ -792,7 +748,6 @@ class FixedWidthFieldReaderTest {
             assertThat(zeroRateGroup.field("DIS-ACCT-GROUP-ID", 0, 10)).isNotEqualTo("ZEROAPR");
             assertThat(encodedBytes(defaultGroup.field("DIS-ACCT-GROUP-ID", 0, 10))).isEqualTo(10);
             assertThat(encodedBytes(zeroRateGroup.field("DIS-ACCT-GROUP-ID", 0, 10))).isEqualTo(10);
-            // The three pad bytes are individually present.
             assertThat(defaultGroup.field(7, 3)).isEqualTo("   ");
             assertThat(zeroRateGroup.field(7, 3)).isEqualTo("   ");
             // Both groups carry a rate at the same offset, one non-zero and one zero. A seed-only
@@ -866,15 +821,12 @@ class FixedWidthFieldReaderTest {
 
             FixedWidthFieldReader reader = transactionRow0();
 
-            // Leading prefix, addressed as the key half of the split at offset zero.
             assertThat(encodedBytes(reader.key(TRANSACTION_DATA_PREFIX_LENGTH))).isEqualTo(304);
             assertThat(reader.key(TRANSACTION_DATA_PREFIX_LENGTH))
                     .isEqualTo(TRANSACTION_IMAGE_ROW_0.substring(0, 304));
             assertThat(reader.key(TRANSACTION_DATA_PREFIX_LENGTH)).startsWith("0000000000683580");
-            // Remainder, which is the timestamp and the filler taken together.
             assertThat(encodedBytes(reader.data(TRANSACTION_DATA_PREFIX_LENGTH))).isEqualTo(46);
             assertThat(reader.data(TRANSACTION_DATA_PREFIX_LENGTH)).isEqualTo(spaces(46));
-            // And each of the remainder's two fields addressed individually.
             assertThat(reader.field("FD-TRAN-PROC-TS", 304, 26)).isEqualTo(spaces(26));
             assertThat(reader.field("FD-FILLER", 330, 20)).isEqualTo(spaces(20));
         }
@@ -1553,7 +1505,6 @@ class FixedWidthFieldReaderTest {
             assertThat(reader.field("XREF-CARD-NUM", 0, 16)).isEqualTo("0500024453765740");
             assertThat(reader.field("XREF-CUST-ID", 16, 9)).isEqualTo("000000050");
             assertThat(reader.field("XREF-ACCT-ID", 25, 11)).isEqualTo("00000000050");
-            // The final field ends exactly on the record width, so nothing lies beyond it.
             assertThat(reader.field(25, 11)).isEqualTo("00000000050");
             assertThatIllegalArgumentException()
                     .isThrownBy(() -> reader.field("FILLER", 36, 14))
@@ -1590,7 +1541,6 @@ class FixedWidthFieldReaderTest {
 
             assertThat(built.recordWidth()).isEqualTo(50);
             assertThat(encodedBytes(built.image())).isEqualTo(50);
-            // The mapped prefix reproduces the sample row exactly.
             assertThat(built.field(0, CARD_XREF_DATA_WIDTH)).isEqualTo(CARD_XREF_IMAGE_ROW_0);
             // And the 14 bytes the sample file does not carry are spaces, never zeros.
             assertThat(built.field("FILLER", CARD_XREF_DATA_WIDTH, CARD_XREF_FILLER_LENGTH))
@@ -1610,7 +1560,6 @@ class FixedWidthFieldReaderTest {
             byte[] caller = ACCOUNT_IMAGE_ROW_0.getBytes(StandardCharsets.US_ASCII);
             FixedWidthFieldReader reader = FixedWidthFieldReader.of(ACCOUNT, caller, ACCOUNT_WIDTH);
 
-            // Overwrite the whole array the caller still holds, including the key.
             for (int i = 0; i < caller.length; i++) {
                 caller[i] = (byte) 0x39;
             }
@@ -1851,22 +1800,16 @@ class FixedWidthFieldReaderTest {
     // Diagnostic-hygiene fixtures. Control characters are given as decimal code points, so no escape
     // sequence appears here and a terminator found in a message can only have been echoed.
 
-    /** ASCII carriage return, 13. */
     private static final char CARRIAGE_RETURN = 13;
 
-    /** ASCII line feed, 10. */
     private static final char LINE_FEED = 10;
 
-    /** ASCII horizontal tab, 9. */
     private static final char TAB = 9;
 
-    /** ASCII delete, 127: the one control code above the printable range. */
     private static final char DELETE = 127;
 
-    /** ASCII null, 0. */
     private static final char NUL = 0;
 
-    /** One code point above US-ASCII entirely. */
     private static final char ABOVE_US_ASCII = 256;
 
     /**

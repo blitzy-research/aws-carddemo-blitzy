@@ -26,7 +26,9 @@ import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
 import com.carddemo.support.TestDataFactory;
 import java.nio.charset.StandardCharsets;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -273,6 +275,20 @@ class AuthenticationServiceTest {
     @Captor
     private ArgumentCaptor<String> roleCodeCaptor;
 
+    /**
+     * The abuse-resistance governor, at the figures the shipped defaults declare.
+     *
+     * <p>A real instance rather than a double, and built fresh per test so no specification inherits
+     * another's accumulated count. The allowance is far above what any specification here spends, so the
+     * governor refuses nothing in this file - which is the point: every assertion below is about the
+     * legacy cascade, and the governor's own behaviour is asserted by {@code SignOnAttemptGovernorTest}
+     * and by the abuse-resistance slice at the end of this file.
+     */
+    private SignOnAttemptGovernor attemptGovernor;
+
+    /** Where the governor's counters are registered, so a test can read what it counted. */
+    private SimpleMeterRegistry governorMeters;
+
     /** Subject under test, wired by constructor exactly as the container wires it. */
     private AuthenticationService subject;
 
@@ -291,6 +307,9 @@ class AuthenticationServiceTest {
      */
     private static final Clock FIXED_CLOCK =
             Clock.fixed(Instant.parse("2022-07-19T23:12:33Z"), ZoneOffset.UTC);
+
+    /** Failures the governor in this file allows, well above what any specification here spends. */
+    private static final int GOVERNOR_ALLOWANCE = 10;
 
     /** The header date the fixed clock renders, in the screen's own two-digit-year form. */
     private static final String EXPECTED_HEADER_DATE = "07/19/22";
@@ -329,8 +348,11 @@ class AuthenticationServiceTest {
         when(messageCatalogService.screenTitle01()).thenReturn(MSG_THANK_YOU);
         when(messageCatalogService.screenTitle02()).thenReturn(MSG_INVALID_KEY);
 
+        governorMeters = new SimpleMeterRegistry();
+        attemptGovernor = new SignOnAttemptGovernor(true, GOVERNOR_ALLOWANCE,
+                Duration.ofMinutes(5), Duration.ofMinutes(1), 10_000, FIXED_CLOCK, governorMeters);
         subject = new AuthenticationService(userSecurityRepository, credentialDigestService,
-                navigationService, messageCatalogService, FIXED_CLOCK);
+                navigationService, messageCatalogService, FIXED_CLOCK, attemptGovernor);
 
         serviceLogger = (Logger) LoggerFactory.getLogger(AuthenticationService.class);
         previousLogLevel = serviceLogger.getLevel();
@@ -849,17 +871,50 @@ class AuthenticationServiceTest {
         }
 
         @Test
-        @DisplayName("a store failure is translated rather than propagated, so no caller of the screen "
-                + "entry points has to handle a persistence exception")
+        @DisplayName("a store failure is translated rather than propagated at BOTH screen entry points, "
+                + "so no caller has to handle a persistence exception")
         void aStoreFailureIsTranslatedRatherThanPropagated() {
             when(userSecurityRepository.findById(any()))
                     .thenThrow(new DataAccessResourceFailureException("store unreachable"));
 
+            // The sibling above covers signOn alone. What this one adds is the OTHER entry point: handle
+            // delegates the ENTER key to signOn, so the translation has to reach a caller who only ever
+            // presses a key. Both are asserted to produce the same screen rather than merely to return.
+            final AuthenticationService.SignOnScreen throughSignOn =
+                    subject.signOn(ADMIN_USER_ID, OTHER_SECRET_ENTRY);
+            final AuthenticationService.SignOnScreen throughKeyAction =
+                    subject.handle(KeyAction.ENTER, ADMIN_USER_ID, OTHER_SECRET_ENTRY);
+
             assertAll(
-                    () -> assertThatCode(() -> subject.signOn(ADMIN_USER_ID, OTHER_SECRET_ENTRY))
-                            .doesNotThrowAnyException(),
-                    () -> assertThatCode(() -> subject.handle(KeyAction.ENTER, ADMIN_USER_ID,
-                            OTHER_SECRET_ENTRY)).doesNotThrowAnyException());
+                    () -> assertThat(throughSignOn.decision())
+                            .as("the persistence failure becomes the catch-all decision, not an escape")
+                            .isEqualTo(AuthenticationService.Decision.UNABLE_TO_VERIFY),
+                    () -> assertThat(throughKeyAction.decision())
+                            .as("and the key-driven entry point reaches the same one")
+                            .isEqualTo(AuthenticationService.Decision.UNABLE_TO_VERIFY),
+                    () -> assertThat(WIRE_TEXT_BY_DECISION.get(throughKeyAction.decision()))
+                            .as("which is the decision the frozen wire text is written for")
+                            .isEqualTo(MSG_UNABLE_TO_VERIFY),
+                    () -> assertThat(throughKeyAction.errorFlag())
+                            .as("the catch-all arm raises the flag")
+                            .isTrue(),
+                    () -> assertThat(throughKeyAction.focusScreenFieldId())
+                            .as("and positions the cursor on the identifier field")
+                            .isEqualTo(AuthenticationService.FIELD_USER_ID),
+                    () -> assertThat(throughKeyAction.userId())
+                            .as("a turn that could not verify names no authenticated operator")
+                            .isNull(),
+                    () -> assertThat(throughKeyAction.userType()).isNull(),
+                    () -> assertThat(throughKeyAction.userTypeCode()).isNull(),
+                    () -> assertThat(throughKeyAction.route())
+                            .as("and offers no destination, because nothing was admitted")
+                            .isNull(),
+                    () -> assertThat(throughKeyAction)
+                            .as("the two entry points do not merely both succeed - they produce the same "
+                                    + "screen, which is what makes handle a delegation rather than a "
+                                    + "second implementation")
+                            .isEqualTo(throughSignOn));
+            verifyNoInteractions(credentialDigestService, navigationService);
         }
 
         @Test
@@ -1446,24 +1501,34 @@ class AuthenticationServiceTest {
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the credential master")
                             .isThrownBy(() -> new AuthenticationService(null, credentialDigestService,
-                                    navigationService, messageCatalogService, FIXED_CLOCK)),
+                                    navigationService, messageCatalogService, FIXED_CLOCK,
+                                    attemptGovernor)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the digest verifier")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository, null,
-                                    navigationService, messageCatalogService, FIXED_CLOCK)),
+                                    navigationService, messageCatalogService, FIXED_CLOCK,
+                                    attemptGovernor)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the destination resolver")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
-                                    credentialDigestService, null, messageCatalogService, FIXED_CLOCK)),
+                                    credentialDigestService, null, messageCatalogService, FIXED_CLOCK,
+                                    attemptGovernor)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the shared catalogue")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
-                                    credentialDigestService, navigationService, null, FIXED_CLOCK)),
+                                    credentialDigestService, navigationService, null, FIXED_CLOCK,
+                                    attemptGovernor)),
                     () -> assertThatExceptionOfType(NullPointerException.class)
                             .as("the clock behind the header")
                             .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
                                     credentialDigestService, navigationService, messageCatalogService,
-                                    null)));
+                                    null, attemptGovernor)),
+                    () -> assertThatExceptionOfType(NullPointerException.class)
+                            .as("the abuse-resistance governor, without which the surface has no bound "
+                                    + "on how many attempts an unauthenticated caller may spend")
+                            .isThrownBy(() -> new AuthenticationService(userSecurityRepository,
+                                    credentialDigestService, navigationService, messageCatalogService,
+                                    FIXED_CLOCK, null)));
         }
     }
 }

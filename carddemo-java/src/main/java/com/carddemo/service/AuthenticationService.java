@@ -97,6 +97,16 @@ public final class AuthenticationService {
     /** Width of the legacy credential-master key. */
     private static final int USER_ID_WIDTH = 8;
 
+    /**
+     * The value the not-found path's digest is derived from.
+     *
+     * <p>Not a credential and not a placeholder for one: it is the subject of a comparison that is
+     * always meant to fail, and it is deliberately longer than the eight-character record key so that no
+     * stored record could be reached with it even if it were presented. See {@code #inertDigest}.
+     */
+    private static final String INERT_COMPARISON_SUBJECT =
+            "no-identity-holds-this-value-it-exists-only-to-be-compared-against";
+
     /** Diagnostic channel, replacing the program's console writes. */
     private static final Logger LOG = LoggerFactory.getLogger(AuthenticationService.class);
 
@@ -145,6 +155,41 @@ public final class AuthenticationService {
     private final Clock clock;
 
     /**
+     * The abuse-resistance governor consulted before any credential read or digest verification.
+     *
+     * <p>Its answer decides whether this turn does the work at all. What a refused caller is told is
+     * decided here rather than there, and it is one of the screen's existing outcomes - see
+     * {@link #verifyCredential(String, String, String)}.
+     */
+    private final SignOnAttemptGovernor attemptGovernor;
+
+    /**
+     * A digest of a value nothing presents, verified against on the not-found path.
+     *
+     * <p><strong>Why a digest of something exists at all.</strong> The legacy program answers a
+     * not-found identifier without comparing anything, because on a terminal there is nothing to learn
+     * from that. On an open network the difference is measurable: verification is deliberately expensive,
+     * so a turn that skips it returns in a fraction of the time a turn that performs it takes, and the
+     * two outcomes are then distinguishable by a caller that cannot read the message - a caller behind a
+     * proxy that normalises bodies, or one simply timing responses in bulk. Verifying the presented
+     * secret against this value on the not-found path makes both outcomes do the same work.
+     *
+     * <p>Its subject is a literal that is not a credential of anything and that no identity can hold:
+     * the record key is eight characters and the literal is longer, so no stored record could ever be
+     * reached with it.
+     *
+     * <p><strong>Derived on first use rather than at construction, and the direction of the asymmetry is
+     * the reason.</strong> Deriving it in the constructor would make this service invoke a collaborator
+     * while being built, which is both a wiring surprise and an interaction a caller cannot avoid. Doing
+     * it on first use means the very first not-found turn of a process performs a derivation
+     * <em>as well as</em> a verification and every later one performs only the verification - so a
+     * not-found turn is never <em>cheaper</em> than a wrong-secret turn, which is the whole property
+     * being bought. It is written once and read many times, so the field is volatile and the derivation
+     * is guarded.
+     */
+    private volatile String inertDigest;
+
+    /**
      * Creates the service over its collaborators.
      *
      * @param userSecurityRepository the credential master
@@ -152,12 +197,14 @@ public final class AuthenticationService {
      * @param navigationService the route resolver
      * @param messageCatalogService the shared screen-title catalog
      * @param clock the clock behind the header date and time
+     * @param attemptGovernor the abuse-resistance governor consulted before any credential work
      */
     public AuthenticationService(final UserSecurityRepository userSecurityRepository,
                                  final CredentialDigestService credentialDigestService,
                                  final NavigationService navigationService,
                                  final MessageCatalogService messageCatalogService,
-                                 final Clock clock) {
+                                 final Clock clock,
+                                 final SignOnAttemptGovernor attemptGovernor) {
         this.userSecurityRepository = Objects.requireNonNull(userSecurityRepository,
                 "userSecurityRepository must not be null");
         this.credentialDigestService = Objects.requireNonNull(credentialDigestService,
@@ -167,6 +214,27 @@ public final class AuthenticationService {
         this.messageCatalogService = Objects.requireNonNull(messageCatalogService,
                 "messageCatalogService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.attemptGovernor = Objects.requireNonNull(attemptGovernor,
+                "attemptGovernor must not be null");
+    }
+
+    /**
+     * Returns the digest the not-found path verifies against, deriving it once on first use.
+     *
+     * @return the inert digest
+     */
+    private String inertDigest() {
+        String derived = this.inertDigest;
+        if (derived == null) {
+            synchronized (this) {
+                derived = this.inertDigest;
+                if (derived == null) {
+                    derived = credentialDigestService.encode(INERT_COMPARISON_SUBJECT);
+                    this.inertDigest = derived;
+                }
+            }
+        }
+        return derived;
     }
 
     /**
@@ -205,8 +273,35 @@ public final class AuthenticationService {
     public SignOnScreen handle(final KeyAction keyAction,
                               final String presentedUserId,
                               final String presentedPassword) {
+        return handle(keyAction, presentedUserId, presentedPassword, null);
+    }
+
+    /**
+     * Handles one turn of transaction {@code CC00}, attributing it to a caller address.
+     *
+     * <p>Identical to {@link #handle(KeyAction, String, String)} in every respect the legacy program has,
+     * and it is the form the boundary calls. The extra argument is not a screen field and is never
+     * echoed, validated, stored or logged: it is the second subject the abuse-resistance governor counts
+     * against, and it exists because the two abuses this surface invites have different shapes. A
+     * credential-stuffing run repeats one identifier and is caught by the identity subject; an
+     * enumeration sweep never repeats an identifier at all, so only the source subject can catch it.
+     *
+     * <p>An unattributed address is a supported state rather than an error - a turn driven from a test
+     * or from a non-servlet caller has none - and it is counted under an explicit stand-in subject rather
+     * than skipped, so an unattributed flood is still bounded.
+     *
+     * @param keyAction the attention key the client pressed, or {@code null} for none
+     * @param presentedUserId the identifier the operator typed, possibly absent
+     * @param presentedPassword the secret the operator typed, possibly absent
+     * @param sourceKey the caller address the boundary attributed, or {@code null} for none
+     * @return the screen the turn produces
+     */
+    public SignOnScreen handle(final KeyAction keyAction,
+                              final String presentedUserId,
+                              final String presentedPassword,
+                              final String sourceKey) {
         if (keyAction == KeyAction.ENTER) {
-            return signOn(presentedUserId, presentedPassword);
+            return signOn(presentedUserId, presentedPassword, sourceKey);
         }
         if (keyAction == KeyAction.PFK03) {
             return signOff();
@@ -227,6 +322,24 @@ public final class AuthenticationService {
      * @return the screen the attempt produces
      */
     public SignOnScreen signOn(final String presentedUserId, final String presentedPassword) {
+        return signOn(presentedUserId, presentedPassword, null);
+    }
+
+    /**
+     * Drives one sign-on attempt, attributing it to a caller address.
+     *
+     * <p>The legacy cascade below is unchanged. What is added is that the two presence prompts are
+     * reached <em>before</em> the governor is consulted and are not counted as failures: a turn that
+     * supplied no identifier or no secret has presented no credential to be wrong about, and counting it
+     * would let an operator who submits an empty form a few times exhaust their own allowance.
+     *
+     * @param presentedUserId the identifier the operator typed, possibly absent
+     * @param presentedPassword the secret the operator typed, possibly absent
+     * @param sourceKey the caller address the boundary attributed, or {@code null} for none
+     * @return the screen the attempt produces
+     */
+    public SignOnScreen signOn(final String presentedUserId, final String presentedPassword,
+            final String sourceKey) {
         // Lines 132 to 136 sit after END-EVALUATE and therefore execute on every ENTER turn, including
         // turns whose ordered blank cascade has already selected a prompt.
         final String foldedUserId = CobolStringUtils.asciiUpperFold(nullToEmpty(presentedUserId));
@@ -246,7 +359,7 @@ public final class AuthenticationService {
             LOG.debug("Sign-on rejected: rule=secret-required");
             return rejection(Decision.PASSWORD_MISSING, displayUserId, true, FIELD_PASSWORD);
         }
-        return verifyCredential(displayUserId, foldedPassword);
+        return verifyCredential(displayUserId, foldedPassword, sourceKey);
     }
 
     /**
@@ -260,20 +373,60 @@ public final class AuthenticationService {
      * {@link Decision#UNABLE_TO_VERIFY}. Role interpretation is deliberately separate from that mapping:
      * an undeclared role code is still a successful read and follows the source's non-administrator route.
      *
+     * <p><strong>Three additions the legacy program has no counterpart for, and why each is here.</strong>
+     * <ul>
+     *   <li><strong>The attempt may be refused before the read.</strong> The governor is consulted first,
+     *       and a refused attempt performs no read and no verification - which is the point of it, since
+     *       it is the work rather than the answer that the abuse was spending. The refusal is reported as
+     *       {@link Decision#UNABLE_TO_VERIFY}, the screen's existing catch-all, and that reuse is
+     *       deliberate twice over: the seven message literals are a frozen external contract so no new
+     *       text may be minted, and a distinct "you are being throttled" answer would itself be an oracle
+     *       telling a sweeping caller exactly when to pause and from where to resume. It is also an
+     *       accurate statement of what happened - the service declined to verify.</li>
+     *   <li><strong>The not-found path verifies against an inert digest.</strong> The legacy program
+     *       compares nothing when the record is absent, which on a terminal reveals nothing and on an open
+     *       network reveals a great deal: verification is deliberately expensive, so skipping it makes a
+     *       not-found turn measurably faster than a wrong-secret one and hands a caller a timing oracle
+     *       that no message change can close. Both paths now do the same work. The two <em>messages</em>
+     *       still differ, because both are frozen contract text - so the explicit distinction remains and
+     *       is bounded by the governor instead of removed, which is recorded in
+     *       {@code docs/decision-log.md} entry DL-268.</li>
+     *   <li><strong>Every non-admitting outcome is counted, and an admission clears the count.</strong>
+     *       Counting only the wrong-secret outcome would leave the enumeration sweep uncounted, because a
+     *       sweep produces nothing but not-found outcomes.</li>
+     * </ul>
+     *
      * @param userId the folded identifier
      * @param password the folded secret
+     * @param sourceKey the caller address the boundary attributed, or {@code null} for none
      * @return the screen the read produces
      */
-    private SignOnScreen verifyCredential(final String userId, final String password) {
+    private SignOnScreen verifyCredential(final String userId, final String password,
+            final String sourceKey) {
+        if (attemptGovernor.isRefusing(userId, sourceKey)) {
+            // No identifier and no address in the record: an operator needs to know the governor
+            // refused a turn, and naming the subject would write an enumerated identifier or a caller
+            // address into the log on the caller's behalf.
+            LOG.warn("Sign-on refused without verification: rule=attempt-allowance-exhausted");
+            return rejection(Decision.UNABLE_TO_VERIFY, userId, true, FIELD_USER_ID);
+        }
         final Optional<UserSecurity> stored;
         try {
             stored = userSecurityRepository.findById(userId);
         } catch (final DataAccessException storeFailure) {
             LOG.warn("Sign-on rejected: rule=credential-store-unavailable failureChain={}",
                     FailureDiagnostics.failureChainOf(storeFailure));
+            // Not counted as a failure. The store being unavailable is this deployment's problem rather
+            // than evidence about the caller, and counting it would let an outage lock out every
+            // operator for as long as the outage plus the refusal period.
             return rejection(Decision.UNABLE_TO_VERIFY, userId, true, FIELD_USER_ID);
         }
         if (stored.isEmpty()) {
+            // The comparison that equalises the two paths. Its result is discarded because it is known
+            // in advance: nothing holds the value the digest was derived from. It is invoked, and its
+            // outcome deliberately ignored, so that the work happens.
+            credentialDigestService.matches(password, inertDigest());
+            attemptGovernor.recordFailure(userId, sourceKey);
             LOG.info("Sign-on rejected: rule=identifier-not-on-file");
             return rejection(Decision.USER_NOT_FOUND, userId, true, FIELD_USER_ID);
         }
@@ -281,9 +434,11 @@ public final class AuthenticationService {
         final UserSecurity record = stored.orElseThrow();
         if (!credentialDigestService.matches(password, record.credentialDigest())) {
             // Line 240: this branch composes a message and leaves the error flag lowered.
+            attemptGovernor.recordFailure(userId, sourceKey);
             LOG.info("Sign-on rejected: rule=secret-does-not-match");
             return rejection(Decision.WRONG_PASSWORD, userId, false, FIELD_PASSWORD);
         }
+        attemptGovernor.recordSuccess(userId, sourceKey);
 
         final String rawUserTypeCode = record.getSecUsrType();
         final UserType authorityUserType = UserType.fromCode(rawUserTypeCode).orElse(UserType.USER);

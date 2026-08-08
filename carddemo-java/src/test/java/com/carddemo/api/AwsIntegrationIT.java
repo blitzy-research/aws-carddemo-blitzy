@@ -61,9 +61,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -80,9 +82,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.PublishRequest;
@@ -145,6 +150,17 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * extended once and is the only base class in play. It touches no table, no repository, no entity and no
  * migration. It asserts no elapsed time, no throughput and no capacity figure, and it never sleeps to
  * synchronise - every read is a bounded long poll owned by that base class.
+ *
+ * <p><strong>It also asserts nothing about who may submit.</strong> The boundary is driven through a
+ * standalone servlet harness and handed a {@code Principal} directly, which is the right shape for this
+ * subject - the cards a submission carries do not depend on who asked for them, so installing a filter
+ * chain here would add machinery to a specification about bytes. The consequence is that a handed-in
+ * principal is an assumption: it establishes that the boundary uses the identity it is given, and not that
+ * the delivered route establishes one, that a caller presenting nothing is refused before the queue is
+ * touched, or that two callers are kept in separate deduplication namespaces. Those are security
+ * properties and they need the chain that mints and verifies a credential to actually run, so they are
+ * asserted by {@link ReportSubmissionAuthorizationIT} over the same graph and the same emulator with the
+ * real chain in front of it.
  *
  * <p>Provenance: {@code app/cbl/CORPT00C.cbl} lines 81 to 127 and 462 to 535, the queue definition at
  * {@code app/csd/CARDDEMO.CSD} lines 499 to 505, the sort symbol declarations in
@@ -401,6 +417,29 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
     }
 
     /**
+     * Empties the shared submission queue before every test, and proves it started empty.
+     *
+     * <p>The after-each reset below cannot establish this on its own, and the gap is not theoretical. It
+     * covers only what <em>this</em> class leaves behind: a class that ran earlier in this JVM and failed
+     * part-way through a submission leaves messages on the shared queue, and the first exact-count or
+     * ordering assertion here would drain them and report a card count it cannot explain. The mirror case
+     * is worse - a first test that publishes nothing would quietly erase that evidence in its own
+     * after-each and pass, taking the only trace of the earlier failure with it.
+     *
+     * <p>Asserting the count rather than discarding it is what turns "the queue was clean" from an
+     * assumption into a fact, and it names the right culprit when it is not: a non-zero count here fails
+     * before a single assertion about this class's own submission has been made.
+     */
+    @BeforeEach
+    void startFromAnEmptySubmissionQueue() {
+        assertThat(resetJobSubmissionQueue())
+                .as("the shared submission queue must be empty before a card-count or ordering "
+                        + "assertion; a message left by an earlier specification would be drained here "
+                        + "and counted against this one")
+                .isZero();
+    }
+
+    /**
      * Empties the shared submission queue after every test, whatever the outcome.
      *
      * <p>Receives and deletes through the base class's deterministic reset rather than the queue
@@ -411,6 +450,48 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
     @AfterEach
     void emptyTheSubmissionQueue() {
         resetJobSubmissionQueue();
+    }
+
+    /**
+     * Lists every version and delete marker the object store holds under one key prefix.
+     *
+     * @param  keyPrefix the prefix to list under
+     * @return the listing, carrying both the versions and the delete markers
+     */
+    private static ListObjectVersionsResponse versionsUnder(final String keyPrefix) {
+        return s3Client().listObjectVersions(ListObjectVersionsRequest.builder()
+                .bucket(stagingBucket())
+                .prefix(keyPrefix)
+                .build());
+    }
+
+    /**
+     * Removes every version and every delete marker under one key prefix, by identifier.
+     *
+     * <p>An unqualified delete against a versioned bucket writes a delete marker and keeps the versions,
+     * so nothing short of a per-version delete actually removes anything. Delete markers are versions too
+     * and are removed the same way, which is what leaves the prefix genuinely unlisted afterwards.
+     *
+     * @param keyPrefix the prefix to empty
+     */
+    private static void deleteEveryVersionUnder(final String keyPrefix) {
+        final ListObjectVersionsResponse listed = versionsUnder(keyPrefix);
+        final List<DeleteTarget> doomed = new ArrayList<>();
+        listed.versions().forEach(version ->
+                doomed.add(new DeleteTarget(version.key(), version.versionId())));
+        listed.deleteMarkers().forEach(marker ->
+                doomed.add(new DeleteTarget(marker.key(), marker.versionId())));
+        for (final DeleteTarget target : doomed) {
+            s3Client().deleteObject(DeleteObjectRequest.builder()
+                    .bucket(stagingBucket())
+                    .key(target.key())
+                    .versionId(target.versionId())
+                    .build());
+        }
+    }
+
+    /** One version of one key, named so a delete can address it exactly. */
+    private record DeleteTarget(String key, String versionId) {
     }
 
     // ===============================================================================================
@@ -874,8 +955,13 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
     @DisplayName("batch artefact staging, against the real object store")
     class BatchArtefactStaging {
 
-        /** Key one staged artefact is written under, scoped so no neighbouring test lists it. */
-        private static final String STAGED_KEY = "gate5-aws-integration/transaction-report.txt";
+        /**
+         * Key prefix every staged artefact in this group is written under.
+         *
+         * <p>Scoped so no neighbouring test lists it, and completed per test below so that no version any
+         * other test wrote can appear in a listing this group makes.
+         */
+        private static final String STAGED_KEY_PREFIX = "gate5-aws-integration/transaction-report-";
 
         /** The first generation's exact bytes. */
         private static final String FIRST_GENERATION = "first staged generation";
@@ -883,9 +969,42 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
         /** The second generation's exact bytes, deliberately a different length. */
         private static final String SECOND_GENERATION = "second staged generation, longer";
 
+        /**
+         * The key this test writes under, unique to it.
+         *
+         * <p>The bucket keeps versions, so a key shared between tests accumulates them: a listing would
+         * then return a predecessor's version, and an assertion that a prior generation survived an
+         * overwrite could be satisfied by a version this test never wrote - including in a bucket that
+         * had stopped keeping versions altogether. A key nothing else has ever written makes the listing
+         * a statement about this test's own puts and nothing else.
+         */
+        private final String stagedKey =
+                STAGED_KEY_PREFIX + UUID.randomUUID().toString().replace("-", "") + ".txt";
+
         /** Creates the nested specification. */
         BatchArtefactStaging() {
             // Intentionally empty.
+        }
+
+        /**
+         * Removes every version and every delete marker under this test's key, whatever the outcome.
+         *
+         * <p>A versioned bucket does not forget: an unqualified delete writes a delete marker and leaves
+         * the versions in place, so the removal is by version identifier, one call per version and one per
+         * marker. The listing is then repeated and required to be empty, because a version left behind is
+         * exactly the defect this per-test key exists to prevent.
+         */
+        @AfterEach
+        void removeEveryVersionOfThisTestsKey() {
+            deleteEveryVersionUnder(this.stagedKey);
+
+            final ListObjectVersionsResponse remaining = versionsUnder(this.stagedKey);
+            assertThat(remaining.versions())
+                    .as("no version of %s may outlive the test that wrote it", this.stagedKey)
+                    .isEmpty();
+            assertThat(remaining.deleteMarkers())
+                    .as("and no delete marker either, because a marker is itself a version", this.stagedKey)
+                    .isEmpty();
         }
 
         @Test
@@ -894,13 +1013,16 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
         void aStagedArtefactIsReturnedByteIdentical() {
             final byte[] staged = FIRST_GENERATION.getBytes(StandardCharsets.US_ASCII);
 
-            putObject(stagingBucket(), STAGED_KEY, staged);
+            putObject(stagingBucket(), this.stagedKey, staged);
 
-            assertThat(objectBytes(stagingBucket(), STAGED_KEY))
+            assertThat(objectBytes(stagingBucket(), this.stagedKey))
                     .as("a fixed-width artefact differs from a correct one by a trailing space, so the"
                             + " comparison is over bytes")
                     .isEqualTo(staged);
-            assertThat(objectExists(stagingBucket(), STAGED_KEY)).isTrue();
+            assertThat(objectExists(stagingBucket(), this.stagedKey)).isTrue();
+            assertThat(versionsUnder(this.stagedKey).versions())
+                    .as("one put under a key nothing else has written is exactly one version")
+                    .hasSize(1);
         }
 
         @Test
@@ -909,62 +1031,98 @@ public class AwsIntegrationIT extends AbstractLocalStackIT {
         void overwritingKeepsThePriorVersionRetrievable() {
             // The legacy output data sets were retained generations, and the two job streams that
             // declare a limit for the report base disagree - one says five and the other ten - which is
-            // resolved to ten in the decision log. No count is asserted here: what the contract needs is
-            // that a prior generation survives an overwrite at all.
+            // resolved to ten in the decision log. No retention COUNT is asserted here: what the contract
+            // needs is that a prior generation survives an overwrite at all.
             final byte[] first = FIRST_GENERATION.getBytes(StandardCharsets.US_ASCII);
             final byte[] second = SECOND_GENERATION.getBytes(StandardCharsets.US_ASCII);
 
-            putObject(stagingBucket(), STAGED_KEY, first);
-            putObject(stagingBucket(), STAGED_KEY, second);
+            putObject(stagingBucket(), this.stagedKey, first);
+            putObject(stagingBucket(), this.stagedKey, second);
 
-            assertThat(objectBytes(stagingBucket(), STAGED_KEY))
+            assertThat(objectBytes(stagingBucket(), this.stagedKey))
                     .as("the newest generation is what an unqualified read returns")
                     .isEqualTo(second);
 
-            final List<ObjectVersion> versions = s3Client().listObjectVersions(
-                            ListObjectVersionsRequest.builder()
-                                    .bucket(stagingBucket())
-                                    .prefix(STAGED_KEY)
-                                    .build())
-                    .versions();
+            final List<ObjectVersion> versions = versionsUnder(this.stagedKey).versions();
 
+            // Exactly two, not merely more than one. The key is this test's own, so two puts can produce
+            // two versions and nothing else can contribute one: a bucket that had stopped keeping
+            // versions would report one here and could not be covered by a predecessor's leftover.
             assertThat(versions)
-                    .as("an unversioned bucket would report one version here, and the prior generation"
-                            + " would be gone")
-                    .hasSizeGreaterThan(1);
+                    .as("two puts under a key nothing else has written are two versions; an unversioned"
+                            + " bucket would report one and the prior generation would be gone")
+                    .hasSize(2);
 
-            final String priorVersionId = versions.stream()
+            final List<ObjectVersion> superseded = versions.stream()
                     .filter(version -> !Boolean.TRUE.equals(version.isLatest()))
-                    .map(ObjectVersion::versionId)
-                    .findFirst()
-                    .orElseThrow(() -> new AssertionError(
-                            "the overwrite left no earlier version of " + STAGED_KEY
-                                    + ", so the retained-generation contract is not met"));
+                    .toList();
+            assertThat(superseded)
+                    .as("of this test's two versions exactly one is superseded, and it is the one the"
+                            + " first put wrote")
+                    .hasSize(1);
 
-            assertThat(readVersion(priorVersionId))
+            assertThat(readVersion(this.stagedKey, superseded.get(0).versionId()))
                     .as("and the prior generation still reads back byte-identical")
                     .isEqualTo(first);
         }
 
         /**
-         * Reads one nominated version of the staged artefact as exact bytes.
+         * Reads one nominated version of a staged artefact as exact bytes.
          *
+         * @param  key       the key to read under
          * @param  versionId the version to read
          * @return that version's bytes
          * @throws AssertionError if the version cannot be read
          */
-        private static byte[] readVersion(final String versionId) {
+        private static byte[] readVersion(final String key, final String versionId) {
             try (ResponseInputStream<GetObjectResponse> body = s3Client().getObject(
                     GetObjectRequest.builder()
                             .bucket(stagingBucket())
-                            .key(STAGED_KEY)
+                            .key(key)
                             .versionId(versionId)
                             .build())) {
                 return body.readAllBytes();
             } catch (final java.io.IOException unreadable) {
-                throw new AssertionError("version " + versionId + " of " + STAGED_KEY
+                throw new AssertionError("version " + versionId + " of " + key
                         + " could not be read", unreadable);
             }
+        }
+
+        /**
+         * Removes every version and every delete marker beneath one key prefix.
+         *
+         * <p>Both collections are enumerated, because they are reported separately and a bucket can hold a
+         * delete marker for a key that has no remaining version. Deleting by version identifier is what
+         * actually removes bytes; a delete without one would add yet another marker.
+         *
+         * @param prefix the key prefix to clear; nothing outside it is touched
+         */
+        private static void removeAllVersionsUnder(final String prefix) {
+            final ListObjectVersionsResponse listed = s3Client().listObjectVersions(
+                    ListObjectVersionsRequest.builder()
+                            .bucket(stagingBucket())
+                            .prefix(prefix)
+                            .build());
+            for (final ObjectVersion version : listed.versions()) {
+                deleteVersion(version.key(), version.versionId());
+            }
+            for (final DeleteMarkerEntry marker : listed.deleteMarkers()) {
+                deleteVersion(marker.key(), marker.versionId());
+            }
+        }
+
+        /**
+         * Removes one nominated version of one key.
+         *
+         * @param key       the key to remove a version of
+         * @param versionId the version to remove
+         */
+        private static void deleteVersion(final String key, final String versionId) {
+            s3Client().deleteObject(DeleteObjectRequest.builder()
+                    .bucket(stagingBucket())
+                    .key(key)
+                    .versionId(versionId)
+                    .build());
         }
     }
 

@@ -19,23 +19,37 @@ package com.carddemo.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.api.dto.SignOnResponse;
+import com.carddemo.batch.CategoryBalanceReportJobConfig;
 import com.carddemo.domain.UserSecurity;
 import com.carddemo.domain.enums.UserType;
 import com.carddemo.repository.UserSecurityRepository;
+import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.ValidationLookupService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.util.JclCardImageBuilder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -48,6 +62,10 @@ import java.util.TreeMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -63,6 +81,11 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 /**
  * The integration sign-off, executed: Gate 4's named artefacts and the whole of Gate 8.
@@ -115,9 +138,18 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  * not exist while this class runs, and a test demanding them would fail every clean build for a reason
  * unrelated to either gate. So the enforcing <em>mechanism</em> is asserted unconditionally - the scan is
  * declared, bound to a phase an ordinary build reaches, not skipped, and configured to end the build on a
- * qualifying score - and any report a build has already produced is read and checked. What is never done
- * is to infer a pass from an absent report: the sign-off summary records the mechanism as the satisfying
- * artefact and says so in as many words.
+ * qualifying score that no analyst determination covers - and any report a build has already produced is
+ * read on both its unsuppressed and its suppressed side. What is never done is to infer a pass from an
+ * absent report: the sign-off summary records the mechanism as the satisfying artefact and says so in as
+ * many words.
+ *
+ * <p>That phrase "that no analyst determination covers" is the whole of the supply-chain gate's honesty,
+ * and it is asserted rather than assumed. The threshold ends the build on an <em>unsuppressed</em>
+ * qualifying finding, and this module carries exactly one determination - a high-severity match against
+ * the embedded servlet container whose fixed releases are published on no line. So the claim is zero
+ * unsuppressed critical or high findings <em>plus</em> one disclosed, scoped, self-expiring determination,
+ * never "zero findings"; the determination's shape and scope are asserted here, and the withdrawn stronger
+ * wording is asserted absent from both the build file and the manual so it cannot quietly return.
  *
  * <h2>On user-specified rules</h2>
  * There are none. {@code review_rules} returns a single line stating that no rules were provided, read to
@@ -150,22 +182,66 @@ class GateVerificationTest extends AbstractPostgresIT {
     // CONSTANTS
     // ===================================================================================================
 
-    /** Module-relative path of the build file the compiler and the gate plugins are configured in. */
     private static final String BUILD_FILE = "pom.xml";
+
+    /** Module-relative path of the operator manual, which publishes the gate results. */
+    private static final String OPERATOR_MANUAL = "README.md";
+
+    /** Module-relative path of the analyst-determination file the vulnerability scan reads. */
+    private static final String SUPPRESSION_FILE = "owasp-suppressions.xml";
+
+    /**
+     * The one identifier a determination is written for, and therefore the only identifier a suppressed
+     * qualifying finding may carry.
+     *
+     * <p>A high-severity match against the embedded servlet container whose fixed releases are not
+     * published on any line. Carried as a written determination rather than as a version bump that cannot
+     * resolve, and recorded in the decision log at DL-159.
+     */
+    private static final String DETERMINED_IDENTIFIER = "CVE-2026-66299";
+
+    /**
+     * The artifact scope that determination is confined to.
+     *
+     * <p>Three artifacts rather than one, because the product-level platform record migrates between the
+     * embedded jars across consecutive scans; the false-match evidence was taken for each of the three
+     * separately, which is what permits the wider name. Asserted as an exact string so a later edit cannot
+     * loosen the regex into a family wildcard.
+     */
+    private static final String DETERMINED_ARTIFACT_SCOPE =
+            "^pkg:maven/org\\.apache\\.tomcat\\.embed/tomcat-embed-(core|websocket|el)@.*$";
+
+    /** Substring every artifact inside that scope carries, used to check a report entry against it. */
+    private static final String DETERMINED_ARTIFACT_FAMILY = "tomcat-embed";
+
+    /** The score at which a finding qualifies as high, which is the score the build fails at. */
+    private static final double QUALIFYING_SCORE = 7.0d;
 
     /** Module-relative production source tree. The Gate 6 audit is scoped to exactly this. */
     private static final String PRODUCTION_TREE = "src/main/java";
 
-    /** Class-path directory holding the golden output artefacts. */
+    /** Module-relative test source tree, which a covering-test citation is resolved against. */
+    private static final String TEST_TREE = "src/test/java";
+
     private static final String GOLDEN_DIRECTORY = "/fixtures/expected/";
 
-    /** Class-path directory holding the externalised validation lookup tables. */
+    /**
+     * Lowest card number in the delivered cross-reference fixture.
+     *
+     * <p>Named rather than written into the assertion that reads it, so the assertion can compare digests
+     * and print neither value. It is a synthetic fixture value, and it is still not printed: a card number
+     * is regulated by its shape rather than by where it came from, and a build log is retained and widely
+     * readable.
+     */
+    private static final String LOWEST_SEEDED_CARD_NUMBER = "0500024453765740";
+
+    /** Highest card number in the delivered cross-reference fixture; see the field above. */
+    private static final String HIGHEST_SEEDED_CARD_NUMBER = "9805583408996588";
+
     private static final String LOOKUP_DIRECTORY = "/lookup/";
 
-    /** Repository-relative directory of the read-only legacy estate. */
     private static final String LEGACY_ROOT = "app";
 
-    /** Repository-relative directory holding the sequential datasets in their mainframe encoding. */
     private static final String ENCODED_DATASET_DIRECTORY = "app/data/EBCDIC";
 
     /** Repository-relative directory holding the migration's documentation deliverables. */
@@ -174,11 +250,33 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** The traceability matrix, which carries one row per procedure unit. */
     private static final String TRACEABILITY_MATRIX = "traceability-matrix.md";
 
-    /** The decision log, which is the authority for every divergence. */
     private static final String DECISION_LOG = "decision-log.md";
 
-    /** The recorded gate evidence. */
     private static final String GATE_EVIDENCE = "gate-evidence.md";
+
+    /** The architecture description, which is the authority for the shape of the batch tier. */
+    private static final String ARCHITECTURE = "architecture.md";
+
+    /**
+     * The four golden-backed output widths, keyed by the golden that carries each.
+     *
+     * <p>Four rather than five: the fifth contractual width, the category-balance report line, has no
+     * golden because Gate 1 names four expected outputs. It is asserted from the emitting job's own
+     * configuration instead, and the complete five-width inventory is asserted over both sources.
+     */
+    private static final Map<String, Integer> GOLDEN_WIDTHS = Map.of(
+            "statement.txt", Integer.valueOf(80),
+            "statement-html.txt", Integer.valueOf(100),
+            "transaction-report.txt", Integer.valueOf(133),
+            "daily-reject.txt", Integer.valueOf(430));
+
+    /**
+     * Heading of the manual's ledger of documentation pages that have not landed.
+     *
+     * <p>Held as an ASCII prefix of the real heading rather than the whole of it, because the heading
+     * carries a dash this file has no reason to encode.
+     */
+    private static final String PENDING_DOCUMENTS_HEADING = "**Not yet published";
 
     /**
      * The column header every per-member table in the matrix carries.
@@ -200,6 +298,15 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** Marker denoting a member no job stream invokes. */
     private static final String MARKER_UNWIRED = "\u00a7";
 
+    /**
+     * Marker denoting a paragraph no delivered call site reaches, whose covering test must therefore name
+     * its method rather than rely on the driver.
+     */
+    private static final String MARKER_UNWIRED_PARAGRAPH = "\u00b6";
+
+    /** The package every matrix target class and covering test is named relative to. */
+    private static final String BASE_PACKAGE_PATH = "com/carddemo";
+
     /** Paragraphs in the procedure divisions of the 28 COBOL programs. */
     private static final int PROGRAM_PARAGRAPHS = 528;
 
@@ -212,6 +319,15 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** The coverage invariant: every procedure unit in the estate has a row. */
     private static final int TOTAL_PROCEDURE_UNITS =
             PROGRAM_PARAGRAPHS + DATE_COPYBOOK_PARAGRAPHS + PFKEY_COPYBOOK_PARAGRAPHS;
+
+    /**
+     * Rows whose paragraph no delivered call site reaches: three account-update edits and their exits.
+     *
+     * <p>A fixed figure rather than a derived one, because the population is a decision. Wiring one of the
+     * three in, or dropping one, must fail here and be re-decided rather than silently change the marker
+     * distribution.
+     */
+    private static final int UNWIRED_PARAGRAPH_ROWS = 6;
 
     /** Application tables the schema migration creates, one per verified record layout. */
     private static final int APPLICATION_TABLE_COUNT = 11;
@@ -236,10 +352,96 @@ class GateVerificationTest extends AbstractPostgresIT {
     /** File the sign-off summary is written to. */
     private static final String SIGN_OFF_FILE = "gate8-sign-off.md";
 
+    /** Column header of the recorded Gate 3 table, which the measured rows are read from. */
+    private static final String PERFORMANCE_ROW_HEADER = "| Date | Machine | Run | Records | "
+            + "Elapsed (ms) | Peak heap (bytes) | Records/second |";
+
+    /**
+     * Casts to a parameterised type or a type variable the production tree may carry.
+     *
+     * <p>The plan budgets five. All five that exist are lambda-target casts onto a parameterised
+     * functional interface, which the compiler does not treat as an unchecked operation - and it could
+     * not, because every warning is an error here and the build compiles. The budget is asserted as a
+     * ceiling and the measured figure is recorded, so a sixth site cannot appear unnoticed.
+     */
+    private static final int GENERIC_CAST_BUDGET = 5;
+
+    /** Suppressed-warning budget the plan sets; the measured figure is zero. */
+    private static final int SUPPRESSION_BUDGET = 3;
+
+    /** Recognises a static call to a named subprogram, which the linkage census counts by target. */
+    private static final Pattern STATIC_CALL =
+            Pattern.compile("\\bCALL\\s+['\"]([A-Z0-9$#@]+)['\"]", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * The 27 static call sites, by target, as the estate declares them.
+     *
+     * <p>Written out as the expectation and compared against a census taken from {@code app/cbl}, so the
+     * figure is evidence rather than arithmetic over remembered numbers.
+     */
+    private static final Map<String, Integer> EXPECTED_CALL_TARGETS = Map.of(
+            "CBSTM03B", Integer.valueOf(13),
+            "CSUTLDTC", Integer.valueOf(4),
+            "CEE3ABD", Integer.valueOf(9),
+            "CEEDAYS", Integer.valueOf(1));
+
+    /** Transfer-control transitions the online estate declares. */
+    private static final int EXPECTED_TRANSFER_CONTROL_SITES = 25;
+
+    /** Pseudo-conversational re-arms the online estate declares. */
+    private static final int EXPECTED_REARM_SITES = 19;
+
+    /** Online programs across which those transitions and re-arms are distributed. */
+    private static final int ONLINE_PROGRAM_COUNT = 17;
+
+    /** The member that declares the same exit label twice, which is the one uniqueness exception. */
+    private static final String DUPLICATED_LABEL_MEMBER = "app/cbl/COACTVWC.cbl";
+
+    /** The label that member declares twice. */
+    private static final String DUPLICATED_LABEL = "0000-MAIN-EXIT";
+
+    /** The class the empty fee paragraph maps into. */
+    private static final String FEE_METHOD_OWNER = "service/InterestCalculationService.java";
+
+    /**
+     * The nine named sequential inputs, at the byte counts they were measured at.
+     *
+     * <p>The same nine names and sizes the parameterised case above asserts one at a time. They are held
+     * here as well because the sign-off row has to be the result of a check rather than a literal, and a
+     * row cannot read a parameterised case's outcome. Written out by name, because "specified by name" is
+     * the requirement and a directory listing would still pass after a rename.
+     */
+    private static final Map<String, Integer> NAMED_FIXTURE_SIZES = Map.of(
+            "acctdata.txt", Integer.valueOf(15050),
+            "carddata.txt", Integer.valueOf(7550),
+            "cardxref.txt", Integer.valueOf(1850),
+            "custdata.txt", Integer.valueOf(25050),
+            "dailytran.txt", Integer.valueOf(105300),
+            "discgrp.txt", Integer.valueOf(2601),
+            "tcatbal.txt", Integer.valueOf(2550),
+            "trancatg.txt", Integer.valueOf(1098),
+            "trantype.txt", Integer.valueOf(427));
+
+    /** The twelve encoded datasets the plan names: eleven sequential datasets and one initial copy. */
+    private static final int ENCODED_DATASET_COUNT = 12;
+
+    /** Precision the recorded rate is re-derived at, wide enough that the comparison is the tolerance. */
+    private static final MathContext MEASUREMENT_PRECISION = new MathContext(16, RoundingMode.HALF_UP);
+
+    /**
+     * Tolerance the re-derived rate is compared within.
+     *
+     * <p>Five per cent, and the reason it is not tighter is arithmetic rather than laxity: the recorder
+     * divides nanoseconds while the published table carries whole milliseconds, so a short run's quotient
+     * differs in the third significant figure from the same run's published one. The check is there to
+     * catch a number nobody measured, and a fabricated figure does not land inside five per cent of the
+     * quotient of the two figures beside it.
+     */
+    private static final BigDecimal RATE_TOLERANCE = new BigDecimal("0.05");
+
     /** Recognises a step's program invocation in a control statement. */
     private static final Pattern EXEC_PGM = Pattern.compile("\\bEXEC\\s+PGM=([A-Z0-9$#@]+)");
 
-    /** Creates the specification. */
     GateVerificationTest() {
         super();
     }
@@ -270,7 +472,6 @@ class GateVerificationTest extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = UserSecurity.class)
     static class GateContext {
 
-        /** Creates the configuration. */
         GateContext() {
             // Intentionally empty: this slice contributes beans, not state.
         }
@@ -295,9 +496,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 4 - the nine named ASCII artefacts, at their measured geometry")
     class NamedInputArtefacts {
 
-        /** Creates the nested specification. */
         NamedInputArtefacts() {
-            // Intentionally empty.
         }
 
         /**
@@ -409,20 +608,28 @@ class GateVerificationTest extends AbstractPostgresIT {
                 cards.add(TestDataFactory.CARD_CROSS_REFERENCE_FIXTURE.slice(record, "XREF-CARD-NUM"));
             }
 
-            assertThat(cards)
-                    .as("fifty distinct cards, one row each")
-                    .hasSize(TestDataFactory.SEEDED_FIFTY_ROW_COUNT)
-                    .doesNotHaveDuplicates();
-            assertThat(cards)
+            // Every assertion below is exactly as strong as the direct one it replaces, and none of them
+            // prints a card number. hasSize, doesNotHaveDuplicates and isSorted each render the whole
+            // collection when they fail - fifty card numbers into a build log - and an equality assertion
+            // renders both the actual and the expected. Counting, a predicate, and a digest comparison
+            // pin the same facts: two values with one SHA-256 digest are one value, so a wrong boundary
+            // card still fails here.
+            assertThat(cards.size())
+                    .as("fifty cards, one row each")
+                    .isEqualTo(TestDataFactory.SEEDED_FIFTY_ROW_COUNT);
+            assertThat(SensitiveValues.distinctCount(cards))
+                    .as("and all fifty distinct")
+                    .isEqualTo(TestDataFactory.SEEDED_FIFTY_ROW_COUNT);
+            assertThat(SensitiveValues.ascending(cards))
                     .as("ascending by card number, which is the order a keyed browse returns and the "
                             + "order the statement generator's key-change exit relies on")
-                    .isSorted();
-            assertThat(cards.get(0))
+                    .isTrue();
+            assertThat(SensitiveValues.fingerprint(cards.get(0)))
                     .as("the lowest card number in the seeded set")
-                    .isEqualTo("0500024453765740");
-            assertThat(cards.get(cards.size() - 1))
+                    .isEqualTo(SensitiveValues.fingerprint(LOWEST_SEEDED_CARD_NUMBER));
+            assertThat(SensitiveValues.fingerprint(cards.get(cards.size() - 1)))
                     .as("the highest card number in the seeded set")
-                    .isEqualTo("9805583408996588");
+                    .isEqualTo(SensitiveValues.fingerprint(HIGHEST_SEEDED_CARD_NUMBER));
 
             final Map<String, Integer> perCard = new TreeMap<>();
             for (final String record : asciiRecords("dailytran.txt")) {
@@ -451,9 +658,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 4 - the daily-transaction census, which is what makes the input representative")
     class DailyTransactionCensus {
 
-        /** Creates the nested specification. */
         DailyTransactionCensus() {
-            // Intentionally empty.
         }
 
         /**
@@ -665,9 +870,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 4 - the disclosure groups, the account group-id anomaly, and the filler contract")
     class ReferenceDataComposition {
 
-        /** Creates the nested specification. */
         ReferenceDataComposition() {
-            // Intentionally empty.
         }
 
         /**
@@ -893,17 +1096,19 @@ class GateVerificationTest extends AbstractPostgresIT {
      * The ten identifiers, both name fields and the role code are asserted from the fixture and from the
      * applied seed. The credential is asserted only by its properties.
      *
-     * <p>The obvious assertion - "each stored digest accepts the fixture's credential window" - is
-     * <strong>wrong here, and the factory documents why</strong>. This module deliberately does not hold
-     * the legacy cleartext at all: the fixture's credential window carries a synthetic stand-in, and the
-     * seeded digests were produced from the legacy provisioning value, so no seeded digest accepts the
-     * window and that is by design rather than a defect. Writing the acceptance assertion against a
-     * seeded digest would fail, and "fixing" it by putting the legacy value in the test would be the one
-     * thing the credential standard forbids absolutely.
-     *
-     * <p>So three properties are asserted instead, and together they are stronger than an acceptance
-     * check alone:
+     * <p>Four properties of the ten stored credentials are asserted, and the FIRST of them was once
+     * argued to be impossible here:
      * <ul>
+     *   <li><strong>acceptance</strong> - each stored digest accepts the credential. This was previously
+     *       omitted, on the reasoning that a module which digests a credential should not hold it and
+     *       that the fixture's window therefore had to carry a synthetic stand-in no seeded digest could
+     *       accept. The consequence went unnoticed: with acceptance omitted, the remaining three
+     *       properties are ALL satisfied by a digest of any value whatsoever, so a wrong literal in the
+     *       fourth migration would have passed this gate while admitting nobody. That was measured, not
+     *       argued - perturbing the credential by a single character fails the acceptance assertion and
+     *       leaves every other assertion in this nest passing. The fixture now reproduces the delivered
+     *       provisioning records, and the credential still appears in no Java source, no method name and
+     *       no diagnostic in this module;</li>
      *   <li><strong>shape</strong> - each stored value is a digest of the required length, under a
      *       recognised version marker, at the module's cost factor;</li>
      *   <li><strong>refusal</strong> - each stored digest refuses a value it was not derived from, which
@@ -917,13 +1122,11 @@ class GateVerificationTest extends AbstractPostgresIT {
      * factory in either direction.
      */
     @Nested
-    @DisplayName("Gate 4 - the ten identities by id, name and role, with the credential asserted only by "
-            + "its properties")
+    @DisplayName("Gate 4 - the ten identities by id, name and role, and the credential digests proved to "
+            + "ACCEPT the delivered credential")
     class CredentialSeed {
 
-        /** Creates the nested specification. */
         CredentialSeed() {
-            // Intentionally empty.
         }
 
         /**
@@ -1079,6 +1282,64 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
+         * Each of the ten DELIVERED digests accepts the delivered credential.
+         *
+         * <h4>Why shape and refusal were not enough, which is the whole reason this test exists</h4>
+         *
+         * <p>The two properties asserted by {@link #everyStoredCredentialIsASaltedDigest()} - correct
+         * shape, and refusal of a value the digest was not derived from - are both satisfied by a digest
+         * of <em>any</em> value whatsoever. A wrong literal in the seed migration produces a digest that
+         * is exactly sixty characters, opens with a recognised version marker, carries the module's cost
+         * factor, refuses a probe, and differs from its nine siblings. It passes every one of those
+         * checks and admits nobody. The seeded sign-on would simply stop working, silently, and no
+         * committed test would say so.
+         *
+         * <p>Acceptance is the only property that separates a <em>correct</em> shipped digest from a
+         * merely <em>well-formed</em> one, and it cannot be asserted without the credential. It is
+         * asserted here for all ten rows, read straight off the server, <strong>before anything in this
+         * suite mutates a credential</strong> - this class installs no digest anywhere.
+         *
+         * <p>The value never enters this frame. The window is read, used and overwritten inside the
+         * shared fixture; this test observes one boolean per row and names only the identity.
+         */
+        @Test
+        @DisplayName("every one of the ten delivered credential digests ACCEPTS the delivered "
+                + "credential, which shape and refusal alone cannot establish")
+        void everyDeliveredCredentialDigestAcceptsTheDeliveredCredential() {
+            final PasswordEncoder encoder =
+                    new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR);
+
+            assertThat(TestDataFactory.fixtureCredentialWindowIsFoldInvariant())
+                    .as("the sign-on transaction upper-cases a submitted credential before comparing it,"
+                            + " so this acceptance check is only equivalent to a real sign-on while the"
+                            + " credential is invariant under that fold. Asserted first, because a"
+                            + " fixture that folded to something else would make every assertion below"
+                            + " quietly weaker than it reads")
+                    .isTrue();
+
+            for (final TestDataFactory.SeededIdentity expected : TestDataFactory.SEEDED_IDENTITIES) {
+                final UserSecurity identity =
+                        userSecurityRepository.findById(expected.userId()).orElseThrow();
+                final String digest = identity.credentialDigest();
+
+                assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(encoder, digest))
+                        .as("%s: the delivered digest must accept the delivered credential. A digest of"
+                                + " some other value would satisfy every shape and refusal check in this"
+                                + " suite and admit nobody, so this is the assertion that would catch a"
+                                + " wrong literal in the fourth migration", expected.userId())
+                        .isTrue();
+                assertThat(TestDataFactory.digestRefusesOtherValues(encoder, digest))
+                        .as("%s: and still refuse a value it was not derived from, so the acceptance"
+                                + " above is discriminating rather than universal", expected.userId())
+                        .isTrue();
+            }
+
+            assertThat(TestDataFactory.SEEDED_IDENTITIES)
+                    .as("all ten, not a sample: a per-row digest is a per-row opportunity to be wrong")
+                    .hasSize(TestDataFactory.SEEDED_USER_COUNT);
+        }
+
+        /**
          * Verification demonstrably works, proved without the value entering this frame.
          *
          * <p>The factory produces a digest from its credential window and then matches the same window
@@ -1120,9 +1381,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 4 - the twelve encoded datasets, named and sized, never copied and never decoded")
     class EncodedDatasetReference {
 
-        /** Creates the nested specification. */
         EncodedDatasetReference() {
-            // Intentionally empty.
         }
 
         /**
@@ -1254,9 +1513,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 4 - the lookup cardinalities, as a proven partition rather than as two totals")
     class LookupCardinalities {
 
-        /** Creates the nested specification. */
         LookupCardinalities() {
-            // Intentionally empty.
         }
 
         /**
@@ -1398,9 +1655,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 8 - the 544-unit coverage invariant: 528 + 14 + 2, per member")
     class ProcedureUnitCoverage {
 
-        /** Creates the nested specification. */
         ProcedureUnitCoverage() {
-            // Intentionally empty.
         }
 
         /**
@@ -1600,9 +1855,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 8 - the traceability matrix: 544 rows, both provenance anchors, and every marked row")
     class TraceabilityMatrix {
 
-        /** Creates the nested specification. */
         TraceabilityMatrix() {
-            // Intentionally empty.
         }
 
         /**
@@ -1681,6 +1934,147 @@ class GateVerificationTest extends AbstractPostgresIT {
         }
 
         /**
+         * Every row's citation resolves in the estate: the paragraph is declared, at that line.
+         *
+         * <p>The row count and the per-member subtotals above establish that the matrix is the right shape.
+         * They cannot establish that any individual row is true - a member's rows could be internally
+         * shuffled, cite a paragraph it does not declare, or cite the wrong line, and every count would
+         * still agree. This walks all 544 citations and resolves each one against the member it names.
+         *
+         * @throws IOException if the matrix or the estate cannot be read
+         */
+        @Test
+        @DisplayName("all 544 rows cite a paragraph the named member actually declares, at the line the "
+                + "row publishes")
+        void everyRowCitesAParagraphDeclaredAtTheLineItPublishes() throws IOException {
+            final List<String> unresolved = new ArrayList<>();
+            final Map<String, List<String>> membersRead = new LinkedHashMap<>();
+
+            for (final List<String> row : matrixRows()) {
+                final String member = row.get(0);
+                final String paragraph = unquoted(row.get(1));
+                final int line = citedLine(row);
+                final List<String> source = membersRead.computeIfAbsent(member,
+                        path -> readMember(path));
+                final String declared = paragraphLabelAt(source, line);
+                if (!paragraph.equals(declared)) {
+                    unresolved.add(member + ":" + line + " publishes '" + paragraph
+                            + "' but that line declares " + (declared == null ? "no paragraph" : "'"
+                            + declared + "'"));
+                }
+            }
+
+            assertThat(unresolved)
+                    .as("a citation that does not resolve is worse than a missing row: it reads as "
+                            + "traceability and is not. Every failure names the member, the line, what the "
+                            + "matrix claims and what the estate declares")
+                    .isEmpty();
+            assertThat(membersRead)
+                    .as("thirty members were read to resolve the citations, which is the same thirty the "
+                            + "row counts are attributed to")
+                    .hasSize(30);
+        }
+
+        /**
+         * Every row's target resolves in the module: the class exists and declares the method.
+         *
+         * <p>A mapping to a class that does not exist, or to a method that does not, is a fabricated
+         * mapping. Resolved by reading the source rather than by loading the type, so the assertion holds
+         * without reflection - the same constraint that forbids reflection in the production tree and is
+         * worth honouring in the instrument that audits it.
+         *
+         * @throws IOException if the matrix or a source file cannot be read
+         */
+        @Test
+        @DisplayName("every row's target class exists and declares the target method, and every covering "
+                + "test class exists")
+        void everyRowResolvesToADeclaredMethodAndAnExistingTest() throws IOException {
+            final List<String> unresolved = new ArrayList<>();
+            final Map<String, String> sources = new LinkedHashMap<>();
+            final Set<String> targetClasses = new LinkedHashSet<>();
+            final Set<String> coveringTests = new LinkedHashSet<>();
+
+            for (final List<String> row : matrixRows()) {
+                final String targetClass = unquoted(row.get(3));
+                final String targetMethod = unquoted(row.get(4));
+                final String coveringTest = unquoted(row.get(5));
+                targetClasses.add(targetClass);
+                coveringTests.add(coveringTest);
+
+                final Path classFile = Path.of(PRODUCTION_TREE, "com", "carddemo")
+                        .resolve(Path.of(targetClass.replace('.', '/') + ".java"));
+                if (!Files.isRegularFile(classFile)) {
+                    unresolved.add(row.get(0) + " -> no such target class at " + classFile);
+                    continue;
+                }
+                final String source = sources.computeIfAbsent(targetClass, name -> readSource(classFile));
+                if (!declaresMethod(source, targetMethod)) {
+                    unresolved.add(row.get(0) + " -> " + targetClass + " declares no method '"
+                            + targetMethod + "'");
+                }
+                final Path testFile = Path.of(TEST_TREE, "com", "carddemo")
+                        .resolve(Path.of(coveringTest.replace('.', '/') + ".java"));
+                if (!Files.isRegularFile(testFile)) {
+                    unresolved.add(row.get(0) + " -> no such covering test at " + testFile);
+                }
+            }
+
+            assertThat(unresolved)
+                    .as("every target and every covering test must resolve, or the matrix records a "
+                            + "mapping that does not exist")
+                    .isEmpty();
+            assertThat(targetClasses)
+                    .as("the 544 units land in a bounded set of classes, which is what makes the mapping "
+                            + "reviewable rather than a list")
+                    .hasSize(22);
+            assertThat(coveringTests)
+                    .as("and are covered by a bounded set of test classes")
+                    .hasSize(22);
+        }
+
+        /**
+         * No citation is recorded twice, and the one exception is the estate's own duplicate.
+         *
+         * @throws IOException if the matrix cannot be read
+         */
+        @Test
+        @DisplayName("every citation is unique, with the duplicated exit label the estate genuinely "
+                + "declares twice as the single stated exception")
+        void everyCitationIsUniqueExceptTheDuplicatedLabel() throws IOException {
+            final Map<String, Integer> byCitation = new LinkedHashMap<>();
+            final Map<String, Integer> byLabel = new LinkedHashMap<>();
+            for (final List<String> row : matrixRows()) {
+                final String label = row.get(0) + " " + unquoted(row.get(1));
+                byCitation.merge(label + " @" + row.get(2), Integer.valueOf(1),
+                        (first, second) -> Integer.valueOf(first.intValue() + second.intValue()));
+                byLabel.merge(label, Integer.valueOf(1),
+                        (first, second) -> Integer.valueOf(first.intValue() + second.intValue()));
+            }
+
+            final List<String> repeatedCitations = new ArrayList<>();
+            byCitation.forEach((citation, count) -> {
+                if (count.intValue() > 1) {
+                    repeatedCitations.add(citation + " x" + count);
+                }
+            });
+            assertThat(repeatedCitations)
+                    .as("member, paragraph and line together identify a unit, so a repeat means one unit "
+                            + "was counted twice and another has no row at all")
+                    .isEmpty();
+
+            final List<String> repeatedLabels = new ArrayList<>();
+            byLabel.forEach((label, count) -> {
+                if (count.intValue() > 1) {
+                    repeatedLabels.add(label);
+                }
+            });
+            assertThat(repeatedLabels)
+                    .as("only one label is recorded twice, and only because the member declares it twice. "
+                            + "Any other repeat is a matrix defect rather than an estate anomaly")
+                    .containsExactly(DUPLICATED_LABEL_MEMBER + " " + DUPLICATED_LABEL);
+        }
+
+        /**
          * Both provenance anchors appear in the header.
          *
          * <p>The release stamp is asserted <strong>only</strong> as a header provenance string. It is
@@ -1718,20 +2112,21 @@ class GateVerificationTest extends AbstractPostgresIT {
          * The marker distribution, so the 544 stays honest about what it counts.
          *
          * <p>The sign-off requires the count to include rows that are documented non-implementations rather
-         * than translations, and requires them to be visible as such. Three findings are marked, under three
-         * markers, and the four populations sum to the total: one invoked paragraph that implements nothing,
-         * three preserved source anomalies, eighteen paragraphs of a member no job stream invokes, and the
-         * ordinary translations that make up the rest.
+         * than translations, and requires them to be visible as such. Four findings are marked, under four
+         * markers, and the five populations sum to the total: one invoked paragraph that implements nothing,
+         * three preserved source anomalies, eighteen paragraphs of a member no job stream invokes, six
+         * paragraphs no delivered call site reaches, and the ordinary translations that make up the rest.
          *
          * @throws IOException if the matrix cannot be read
          */
         @Test
-        @DisplayName("1 non-implementation, 3 source anomalies and 18 unwired rows are marked, and with "
-                + "522 ordinary rows they sum to 544")
+        @DisplayName("1 non-implementation, 3 source anomalies, 18 unwired-member rows and 6 "
+                + "unwired-paragraph rows are marked, and with 516 ordinary rows they sum to 544")
         void theMarkedRowsSumWithTheOrdinaryOnesToTheTotal() throws IOException {
             int nonImplementation = 0;
             int sourceAnomaly = 0;
             int unwired = 0;
+            int unwiredParagraph = 0;
             int ordinary = 0;
 
             for (final List<String> row : matrixRows()) {
@@ -1742,9 +2137,11 @@ class GateVerificationTest extends AbstractPostgresIT {
                     sourceAnomaly++;
                 } else if (marker.contains(MARKER_UNWIRED)) {
                     unwired++;
+                } else if (marker.contains(MARKER_UNWIRED_PARAGRAPH)) {
+                    unwiredParagraph++;
                 } else {
                     assertThat(marker)
-                            .as("an unmarked row carries no marker text at all, so a fourth marker "
+                            .as("an unmarked row carries no marker text at all, so a fifth marker "
                                     + "cannot be introduced without this failing")
                             .isEmpty();
                     ordinary++;
@@ -1760,12 +2157,126 @@ class GateVerificationTest extends AbstractPostgresIT {
             assertThat(unwired)
                     .as("eighteen paragraphs belong to the member no job stream invokes")
                     .isEqualTo(18);
+            assertThat(unwiredParagraph)
+                    .as("six paragraphs are reached by no delivered call site: three edits the driver "
+                            + "deliberately does not route to, and their three paired exits")
+                    .isEqualTo(UNWIRED_PARAGRAPH_ROWS);
             assertThat(ordinary)
                     .as("and the rest are ordinary translations")
-                    .isEqualTo(522);
-            assertThat(nonImplementation + sourceAnomaly + unwired + ordinary)
-                    .as("1 + 3 + 18 + 522 = 544, so nothing is marked twice and nothing is unaccounted for")
+                    .isEqualTo(516);
+            assertThat(nonImplementation + sourceAnomaly + unwired + unwiredParagraph + ordinary)
+                    .as("1 + 3 + 18 + 6 + 516 = 544, so nothing is marked twice and nothing is "
+                            + "unaccounted for")
                     .isEqualTo(TOTAL_PROCEDURE_UNITS);
+        }
+
+        /**
+         * Every row resolves to code that exists: the class, the method declared on it, and the test.
+         *
+         * <p><strong>Why this assertion exists.</strong> The row count above proves the census. It cannot
+         * prove that a row's three code citations are real, and a matrix whose citations do not resolve
+         * discharges nothing while looking complete - a reader following a row arrives nowhere. The three
+         * cells are checked separately because they fail separately: a renamed class, a renamed method and
+         * a deleted test class are three different regressions, and the diagnostic names which one
+         * happened.
+         *
+         * <p>The method check looks for a <em>declaration</em> rather than for the name appearing anywhere,
+         * so a row cannot be satisfied by a call site or by a mention in a comment. A declaration is
+         * recognised by the name being preceded by a return type and followed by an argument list, which is
+         * what distinguishes {@code void editAlphaOptional(} from {@code editAlphaOptionalExit();}.
+         *
+         * @throws IOException if the matrix or a source file cannot be read
+         */
+        @Test
+        @DisplayName("every row resolves to a class that exists, a method that class declares, and a "
+                + "covering test that exists")
+        void everyRowResolvesToRealCodeAndARealTest() throws IOException {
+            final Map<String, String> sourceCache = new TreeMap<>();
+
+            for (final List<String> row : matrixRows()) {
+                final String targetClass = unquoted(row.get(3));
+                final String targetMethod = unquoted(row.get(4));
+                final String coveringTest = unquoted(row.get(5));
+                final String rowLabel = row.get(0) + " " + row.get(1);
+
+                final Path classFile = moduleFile(PRODUCTION_TREE, targetClass);
+                assertThat(classFile)
+                        .as("%s: the row names target class %s, which must exist under %s",
+                                rowLabel, targetClass, PRODUCTION_TREE)
+                        .isRegularFile();
+
+                final Path testFile = moduleFile(TEST_TREE, coveringTest);
+                assertThat(testFile)
+                        .as("%s: the row names covering test %s, which must exist under %s",
+                                rowLabel, coveringTest, TEST_TREE)
+                        .isRegularFile();
+
+                final String classSource = sourceCache.computeIfAbsent(targetClass,
+                        name -> readOrFail(classFile));
+                assertThat(declaresMethod(classSource, targetMethod))
+                        .as("%s: %s must DECLARE %s. A call site or a comment naming it is not a "
+                                + "declaration, and a row whose method moved elsewhere maps a paragraph "
+                                + "onto a class that no longer implements it", rowLabel, targetClass,
+                                targetMethod)
+                        .isTrue();
+            }
+        }
+
+        /**
+         * The rows a row count cannot vouch for: their covering test must name the method.
+         *
+         * <p><strong>Why this assertion exists, and what it would have caught.</strong> A covering test
+         * ordinarily reaches a row's method through the entry point the suite drives, so naming the method
+         * would be an unreasonable demand on 538 of the 544 rows. Six rows are different: no delivered call
+         * site reaches their method at all, so no amount of driving an entry point executes them, and a
+         * covering test that does not name them cannot be exercising them. That was exactly the defect this
+         * marker was introduced for - six rows claiming a suite that named none of the six - and it survived
+         * a green row-count check, which is why the check is here rather than in a reviewer's notes.
+         *
+         * <p>The three heads carry the stronger form: the test must contain an actual invocation. Their
+         * three paired exits carry the weaker one: they are reachable only from their head, which calls them
+         * on every arm, so naming them is what a reader needs and an invocation of their own would be
+         * fabricated coverage.
+         *
+         * @throws IOException if the matrix or a test source cannot be read
+         */
+        @Test
+        @DisplayName("every deliberately unwired paragraph is named by its covering test, and every "
+                + "unwired head is actually invoked by it")
+        void everyUnwiredParagraphRowIsNamedByItsCoveringTest() throws IOException {
+            final List<List<String>> marked = matrixRowsWhere(MARKER_UNWIRED_PARAGRAPH);
+            final Map<String, String> testCache = new TreeMap<>();
+
+            assertThat(marked)
+                    .as("the marker exists for six rows; changing that population is a decision that "
+                            + "belongs in the matrix legend and here, not in one of them")
+                    .hasSize(UNWIRED_PARAGRAPH_ROWS);
+            assertThat(marked)
+                    .as("all six belong to the account-update member, whose driver is the one that "
+                            + "deliberately routes to none of them")
+                    .allSatisfy(row -> assertThat(row.get(0)).isEqualTo("app/cbl/COACTUPC.cbl"));
+
+            for (final List<String> row : marked) {
+                final String targetMethod = unquoted(row.get(4));
+                final String coveringTest = unquoted(row.get(5));
+                final String rowLabel = row.get(0) + " " + row.get(1);
+                final String testSource = testCache.computeIfAbsent(coveringTest,
+                        name -> readOrFail(moduleFile(TEST_TREE, name)));
+
+                assertThat(testSource)
+                        .as("%s: no delivered call site reaches %s, so covering test %s must name it. "
+                                + "A suite that names none of these rows' methods cannot be exercising "
+                                + "them, however green a row count is", rowLabel, targetMethod,
+                                coveringTest)
+                        .contains(targetMethod);
+
+                if (!targetMethod.endsWith("Exit")) {
+                    assertThat(testSource)
+                            .as("%s: %s is a paragraph head, so the covering test must CALL it, not "
+                                    + "merely mention it", rowLabel, targetMethod)
+                            .contains("." + targetMethod + "(");
+                }
+            }
         }
 
         /**
@@ -1804,6 +2315,29 @@ class GateVerificationTest extends AbstractPostgresIT {
                     .as("and a named method, because the paragraph is invoked - an absent method would "
                             + "change the call graph rather than preserve it")
                     .isNotEmpty();
+
+            // The marking is only honest if the method it points at is genuinely an invoked no-op. Both
+            // halves are asserted against the shipped source, because both are ways the marking could
+            // become a lie: a method that had acquired a body would mean fee logic was invented, and a
+            // method nobody calls would mean the call graph was quietly simplified.
+            final String method = unquoted(row.get(4));
+            final String owner = readSource(Path.of(PRODUCTION_TREE, "com", "carddemo")
+                    .resolve(Path.of(FEE_METHOD_OWNER)));
+
+            assertThat(declaresMethod(owner, method))
+                    .as("%s must declare %s, because the paragraph is invoked in the estate",
+                            FEE_METHOD_OWNER, method)
+                    .isTrue();
+            assertThat(methodBodyStatements(owner, method))
+                    .as("%s must implement nothing: the paragraph's body is a comment and an exit, and "
+                            + "inventing fee logic here would be feature expansion that changed the "
+                            + "output of every interest run. Statements found: %s", method,
+                            methodBodyStatements(owner, method))
+                    .isEmpty();
+            assertThat(invocationCountOf(owner, method))
+                    .as("and it must be called, because the estate calls the paragraph. A no-op nobody "
+                            + "invokes is a different program from the one being migrated")
+                    .isPositive();
         }
 
         /**
@@ -1910,6 +2444,49 @@ class GateVerificationTest extends AbstractPostgresIT {
                             + "every divergence lives; expected at %s", documentationFile(DECISION_LOG))
                     .contains("UNUSED1Y");
         }
+
+        /**
+         * The manual's milestone ledger agrees with what this class has just asserted.
+         *
+         * <p>A delivered artefact that the manual still lists as pending is worse than an undelivered one:
+         * a reader trusts the ledger, does not open the page, and carries the stale status into whatever
+         * they write next. The manual had said the matrix was unpublished for as long as it was true, and
+         * kept saying it afterwards, which is the failure this assertion exists to stop recurring.
+         *
+         * <p>Scoped to the pending-documents section rather than to the whole page, deliberately. Two pages
+         * genuinely have not landed, so the manual must still be able to say "not yet published" about
+         * them; what it must not do is say it about this one. Reading the section instead of the document
+         * keeps the assertion about the ledger's contents rather than about a phrase.
+         *
+         * @throws IOException if the manual cannot be read
+         */
+        @Test
+        @DisplayName("the manual's milestone ledger records the matrix as delivered rather than pending, "
+                + "and links it")
+        void theManualRecordsTheMatrixAsDelivered() throws IOException {
+            final String manual = operatorManual();
+            final int pendingAt = manual.indexOf(PENDING_DOCUMENTS_HEADING);
+
+            assertThat(pendingAt)
+                    .as("the manual carries a pending-documents ledger headed %s, which is where a page "
+                            + "that has not landed is listed; without it this assertion would pass "
+                            + "vacuously", PENDING_DOCUMENTS_HEADING)
+                    .isNotNegative();
+
+            final int nextSection = manual.indexOf("\n## ", pendingAt);
+            final String pending = nextSection < 0
+                    ? manual.substring(pendingAt)
+                    : manual.substring(pendingAt, nextSection);
+
+            assertThat(pending)
+                    .as("the matrix is delivered, and every assertion in this class reads it - so listing "
+                            + "it as pending would make the manual contradict the build it documents")
+                    .doesNotContain(TRACEABILITY_MATRIX);
+            assertThat(manual)
+                    .as("and the manual links it, so a reader reaches the 544 rows rather than a "
+                            + "description of them")
+                    .contains("../" + DOCUMENTATION_DIRECTORY + "/" + TRACEABILITY_MATRIX);
+        }
     }
 
     /**
@@ -1924,9 +2501,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 8 - the migrated schema on a real server: 11 tables, 4 migrations, exact decimals")
     class MigratedSchemaState {
 
-        /** Creates the nested specification. */
         MigratedSchemaState() {
-            // Intentionally empty.
         }
 
         /**
@@ -2233,9 +2808,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 6 - the unsafe-code audit, executed over the production tree and scoped to it")
     class UnsafeCodeAudit {
 
-        /** Creates the nested specification. */
         UnsafeCodeAudit() {
-            // Intentionally empty.
         }
 
         /**
@@ -2279,7 +2852,69 @@ class GateVerificationTest extends AbstractPostgresIT {
                     .as("the budget is three, each of which would need a stated reason. None is needed, "
                             + "because every warning is already an error and so nothing accumulates to "
                             + "be suppressed")
-                    .isLessThanOrEqualTo(3)
+                    .isLessThanOrEqualTo(SUPPRESSION_BUDGET)
+                    .isZero();
+        }
+
+        /**
+         * No query string is assembled from a value, which is the category a literal grep cannot measure.
+         *
+         * <h4>Why this is not a keyword grep</h4>
+         * The words this category is named after - select, update, values, from - are ordinary English and
+         * appear throughout the module's diagnostics, so counting lines that contain them measures prose.
+         * What the audit actually forbids is a <em>query</em> assembled from something that is not a
+         * literal. The census therefore finds string literals that <em>begin</em> with a statement verb
+         * and carry a clause keyword, which is what distinguishes a query from a sentence, and flags one
+         * only when the expression around it concatenates a non-literal. Two literals joined together are
+         * a compile-time constant and are not flagged; a literal joined to an identifier or a call is.
+         *
+         * @throws IOException if the tree cannot be walked
+         */
+        @Test
+        @DisplayName("no query is assembled from a non-literal anywhere in the production tree, measured "
+                + "over the query strings themselves rather than over lines containing a keyword")
+        void noQueryIsAssembledFromANonLiteral() throws IOException {
+            final QueryStringCensus census = queryStringCensus();
+
+            assertThat(census.queryLiterals())
+                    .as("the census must find the module's query strings, or an absence assertion over "
+                            + "them proves nothing. %d were expected to exist at all",
+                            census.queryLiterals())
+                    .isPositive();
+            assertThat(census.assembledSites())
+                    .as("a query assembled from a value is the injection surface this module has none of: "
+                            + "every statement is a whole literal, a derived finder or a bound parameter. "
+                            + "Sites found: %s", census.assembledSites())
+                    .isEmpty();
+        }
+
+        /**
+         * Casts to a parameterised type stay inside their budget, and the measured figure is recorded.
+         *
+         * <p>The compiler is what makes the <em>unchecked</em> count zero: every warning is an error, so
+         * an unchecked operation cannot survive a build. What this measures is the population that could
+         * contain one - a cast whose target is a parameterised type or a type variable - so a sixth site
+         * cannot appear without being seen. All five that exist cast a lambda onto a parameterised
+         * functional interface, which carries no unchecked operation at all.
+         *
+         * @throws IOException if the tree cannot be walked
+         */
+        @Test
+        @DisplayName("casts to a parameterised type stay within the budget of five, and the compiler is "
+                + "what makes the unchecked count zero")
+        void castsToAParameterisedTypeStayWithinBudget() throws IOException {
+            final List<String> casts = genericCastSites();
+
+            assertThat(casts)
+                    .as("the plan budgets %d such casts. Sites: %s", GENERIC_CAST_BUDGET, casts)
+                    .hasSizeLessThanOrEqualTo(GENERIC_CAST_BUDGET);
+            assertThat(configuredList(activePlugin("maven-compiler-plugin"),
+                            "configuration", "compilerArgs"))
+                    .as("and the reason the unchecked count is zero rather than merely small: an unchecked "
+                            + "operation is a warning, every warning is an error, and the module compiles")
+                    .contains("-Xlint:all", "-Werror");
+            assertThat(occurrencesIn(PRODUCTION_TREE, "@SuppressWarnings(\"unchecked\")"))
+                    .as("with nothing hiding one, which a suppression would")
                     .isZero();
         }
 
@@ -2315,6 +2950,140 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
+     * The estate's fixed output widths, enumerated completely rather than golden by golden.
+     *
+     * <h2>Why five and not four</h2>
+     *
+     * <p>Four of the estate's fixed output widths have a golden fixture, because Gate 1 names four expected
+     * outputs: the reject record at 430 bytes, the report line at 133, the statement record at 80 and its
+     * hypertext counterpart at 100. A fifth exists and has no golden - the category-balance report line the
+     * {@code PRTCATBL} job stream emits, whose stream declares {@code SORTOUT DCB=(LRECL=40)} - and it is
+     * genuinely an external file format rather than an internal detail. An inventory that counted the
+     * goldens counted four and called that the contract, which is how the fifth width came to be omitted
+     * from the plan's width table and from this suite.
+     *
+     * <p>The fifth is asserted here from the delivered job configuration, and its ordering and its
+     * per-line width are asserted where they belong, in {@code batch/CategoryBalanceReportJobConfigIT}. No
+     * golden is minted for it: Gate 1 names four expected outputs, and inventing a fifth expected file
+     * would assert a baseline the gate does not define.
+     */
+    @Nested
+    @DisplayName("Gates 1 and 5 - the five contractual output widths, four golden-backed and one job-verified")
+    class ContractualOutputWidths {
+
+        /** Creates the nested specification. */
+        ContractualOutputWidths() {
+            // Intentionally empty.
+        }
+
+        /**
+         * Each golden is a separator-free stream whose length divides exactly by its contractual width.
+         *
+         * <p>Divisibility rather than line length, because these goldens carry <strong>no separator at
+         * all</strong> - the assertion below proves it, and it is the contract rather than an accident.
+         * Separation in a fixed-block data set belongs to the data set definition and not to the record, so
+         * a golden that carried line feeds would be asserting a record the emitting program never writes.
+         * The consequence is that a width is measured here as a stride over the delivered bytes: a file of
+         * the wrong width fails to divide, and a file of the right length holding a stray separator fails
+         * the separator assertion.
+         *
+         * @throws IOException if a golden cannot be read
+         */
+        @Test
+        @DisplayName("each of the four goldens divides exactly into records of its contractual width and "
+                + "carries no separator byte, so the width is measured from the delivered bytes")
+        void eachGoldenIsUniformAtItsContractualWidth() throws IOException {
+            for (final Map.Entry<String, Integer> golden : GOLDEN_WIDTHS.entrySet()) {
+                final int width = golden.getValue().intValue();
+                final byte[] content = classpathBytes(GOLDEN_DIRECTORY + golden.getKey());
+
+                assertThat(content.length).as("%s must carry content", golden.getKey()).isPositive();
+                assertThat(content.length % width)
+                        .as("%s is a fixed-width stream at %d bytes, so its %d bytes must divide exactly; "
+                                + "a remainder is a partial record no reader could interpret",
+                                golden.getKey(), width, content.length)
+                        .isZero();
+                assertThat(content.length / width)
+                        .as("%s holds at least one whole record", golden.getKey())
+                        .isPositive();
+                assertThat(new String(content, StandardCharsets.ISO_8859_1))
+                        .as("%s carries no line feed and no carriage return: separation belongs to the "
+                                + "data set definition, not to the record", golden.getKey())
+                        .doesNotContain("\n")
+                        .doesNotContain("\r");
+            }
+        }
+
+        /**
+         * The complete inventory is five widths, and the fifth comes from the job that emits it.
+         */
+        @Test
+        @DisplayName("the complete inventory is FIVE widths - 40, 80, 100, 133 and 430 - the fifth being "
+                + "the category-balance report line, which carries no golden and is verified in-job")
+        void theCompleteInventoryIsFiveWidths() {
+            assertThat(CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH)
+                    .as("the fifth width is read from the configuration of the job that emits it, so this "
+                            + "inventory cannot drift from the batch tier")
+                    .isEqualTo(40);
+
+            final Set<Integer> widths = new LinkedHashSet<>(GOLDEN_WIDTHS.values());
+            assertThat(widths)
+                    .as("the four golden-backed widths")
+                    .containsExactlyInAnyOrder(Integer.valueOf(80), Integer.valueOf(100),
+                            Integer.valueOf(133), Integer.valueOf(430));
+            widths.add(Integer.valueOf(CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH));
+            assertThat(widths)
+                    .as("five distinct fixed output widths in the whole estate. Counting the goldens gives "
+                            + "four, which is the count the plan's width table carries and the reason the "
+                            + "category-balance report was omitted from it")
+                    .hasSize(5)
+                    .containsExactlyInAnyOrder(Integer.valueOf(40), Integer.valueOf(80),
+                            Integer.valueOf(100), Integer.valueOf(133), Integer.valueOf(430));
+        }
+
+        /**
+         * The recorded evidence page names the fifth width and the test that verifies it.
+         *
+         * @throws IOException if the page cannot be read
+         */
+        @Test
+        @DisplayName("the recorded evidence names the fifth width and the test that verifies it, so the "
+                + "page and this suite cannot disagree about how many widths the contract has")
+        void theRecordedEvidenceNamesTheFifthWidth() throws IOException {
+            final String recorded =
+                    Files.readString(documentationFile(GATE_EVIDENCE), StandardCharsets.UTF_8);
+
+            assertThat(recorded)
+                    .as("the complete set is stated on the page, not only the golden-backed four")
+                    .contains("40, 80, 100, 133 and 430");
+            assertThat(recorded)
+                    .as("and the page names the test that verifies the width without a golden")
+                    .contains("CategoryBalanceReportJobConfigIT");
+        }
+
+        /**
+         * The four external sort specifications are four, and the fourth is named.
+         *
+         * @throws IOException if the architecture page cannot be read
+         */
+        @Test
+        @DisplayName("the architecture page records FOUR external sort specifications, because the "
+                + "category-balance report's three ascending keys are a specification of their own")
+        void theArchitecturePageRecordsFourSortSpecifications() throws IOException {
+            final String architecture =
+                    Files.readString(documentationFile(ARCHITECTURE), StandardCharsets.UTF_8);
+
+            assertThat(architecture)
+                    .as("the estate carries no internal sort verb, so every ordering is external and the "
+                            + "count of specifications is the count of comparators the batch tier owes")
+                    .contains("external, in **four** distinct specifications");
+            assertThat(architecture)
+                    .as("and the fourth is named rather than implied")
+                    .contains("category-balance report job sorts on **three** keys");
+        }
+    }
+
+    /**
      * The build-enforced gates, and the honest boundary of what a test in this tier can claim about them.
      *
      * <h2>Why the mechanism is asserted and the report is not required</h2>
@@ -2330,9 +3099,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gates 2, 7 and 8 - the build-enforced gates, asserted at their enforcing mechanism")
     class BuildEnforcedGates {
 
-        /** Creates the nested specification. */
         BuildEnforcedGates() {
-            // Intentionally empty.
         }
 
         /**
@@ -2343,20 +3110,18 @@ class GateVerificationTest extends AbstractPostgresIT {
         @Test
         @DisplayName("the compiler runs at release 25 with every lint category on and warnings promoted to "
                 + "errors")
-        void theCompilerFailsOnAnyWarning() throws IOException {
-            final String build = buildFile();
+        void theCompilerFailsOnAnyWarning() {
+            final Element compiler = activePlugin("maven-compiler-plugin");
 
-            assertThat(build)
-                    .as("the language and platform level the plan pins")
-                    .contains("<release>25</release>");
-            assertThat(build)
-                    .as("every lint category is enabled, or a warning in a category nobody switched on is "
-                            + "tolerated silently")
-                    .contains("-Xlint:all");
-            assertThat(build)
-                    .as("and a warning ends the build. Without this the gate is a claim about somebody's "
-                            + "attention rather than a property of the build")
-                    .contains("-Werror");
+            assertThat(configuredValue(compiler, "configuration", "release"))
+                    .as("the language and platform level the plan pins, read from the plugin's own "
+                            + "configuration element rather than from anywhere in the file")
+                    .isEqualTo("25");
+            assertThat(configuredList(compiler, "configuration", "compilerArgs"))
+                    .as("every lint category is enabled and a warning ends the build. Both are read as "
+                            + "argument elements of the active plugin, so a commented-out block cannot "
+                            + "satisfy this: a comment is not an element and the parse cannot see it")
+                    .contains("-Xlint:all", "-Werror");
         }
 
         /**
@@ -2371,23 +3136,42 @@ class GateVerificationTest extends AbstractPostgresIT {
         @Test
         @DisplayName("coverage is enforced as a failing check on the line counter, with branch coverage "
                 + "reported rather than gated")
-        void theCoverageFloorIsAFailingCheck() throws IOException {
-            final String build = buildFile();
+        void theCoverageFloorIsAFailingCheck() {
+            final Element coverage = activePlugin("jacoco-maven-plugin");
+            final Element check = executionOf(coverage, "jacoco-check-line-coverage");
 
-            assertThat(build).as("the coverage plugin is declared").contains("jacoco-maven-plugin");
-            assertThat(build)
-                    .as("and it runs a check goal, not merely a report goal - a report nobody reads "
-                            + "enforces nothing")
-                    .contains("check");
-            assertThat(build)
-                    .as("the gated counter is the line counter, as the plan states")
-                    .contains("LINE");
-            assertThat(build)
-                    .as("expressed as a covered ratio")
-                    .contains("COVEREDRATIO");
-            assertThat(build)
-                    .as("at the floor the plan sets")
-                    .contains("<jacoco.line.coverage.minimum>0.80");
+            assertThat(goalsOf(check))
+                    .as("the execution runs the check goal, not merely a report goal - a report nobody "
+                            + "reads enforces nothing")
+                    .containsExactly("check");
+            assertThat(phaseOf(check))
+                    .as("bound to a phase an ordinary build reaches")
+                    .isEqualTo("verify");
+            assertThat(configuredValue(check, "configuration", "haltOnFailure"))
+                    .as("and it halts, or the check reports a shortfall and the build succeeds anyway")
+                    .isEqualTo("true");
+
+            final List<Element> limits = elementsUnder(check,
+                    "configuration", "rules", "rule", "limits");
+            final Map<String, String> gated = new LinkedHashMap<>();
+            for (final Element limit : limits) {
+                final String counter = childValue(limit, "counter");
+                final String bound = childValue(limit, "minimum") != null
+                        ? "minimum=" + childValue(limit, "minimum")
+                        : "maximum=" + childValue(limit, "maximum");
+                gated.put(counter + "/" + childValue(limit, "value"), bound);
+            }
+
+            assertThat(gated)
+                    .as("the gated counter is the line counter expressed as a covered ratio, at the floor "
+                            + "the plan sets, and no class may be wholly untested - both limits read from "
+                            + "the execution's own rule rather than matched as text")
+                    .containsEntry("LINE/COVEREDRATIO", "minimum=0.80")
+                    .containsEntry("CLASS/MISSEDCOUNT", "maximum=0");
+            assertThat(gated)
+                    .as("branch coverage is reported for information and deliberately not gated; a branch "
+                            + "limit here would invent a standard the plan does not set")
+                    .doesNotContainKey("BRANCH/COVEREDRATIO");
         }
 
         /**
@@ -2398,24 +3182,234 @@ class GateVerificationTest extends AbstractPostgresIT {
         @Test
         @DisplayName("the vulnerability scan is bound to verify, enabled by default, and ends the build on "
                 + "a critical or high finding")
-        void theVulnerabilityScanIsBoundAndEnforcing() throws IOException {
-            final String build = buildFile();
+        void theVulnerabilityScanIsBoundAndEnforcing() {
+            final Element scan = activePlugin("dependency-check-maven");
+            final Element check = executionOf(scan, "owasp-dependency-check");
 
-            assertThat(build).as("the scan plugin is declared").contains("dependency-check-maven");
-            assertThat(build)
+            assertThat(goalsOf(check))
+                    .as("the execution runs the check goal, which is the one that enforces a threshold")
+                    .containsExactly("check");
+            assertThat(phaseOf(check))
                     .as("bound to a phase an ordinary build reaches")
-                    .contains("<phase>verify</phase>");
-            assertThat(build)
-                    .as("enabled by default: a gate that is skipped unless someone opts in is not a gate")
-                    .contains("<dependency-check.skip>false</dependency-check.skip>");
-            assertThat(build)
+                    .isEqualTo("verify");
+            assertThat(configuredValue(scan, "configuration", "skip"))
+                    .as("enabled by default: a gate that is skipped unless someone opts in is not a gate. "
+                            + "The value is resolved through the property it names, so a property flipped "
+                            + "to true would fail here")
+                    .isEqualTo("false");
+            assertThat(configuredValue(scan, "configuration", "skipTestScope"))
+                    .as("the test graph is scanned too, because a library reaches the build through it")
+                    .isEqualTo("false");
+            assertThat(configuredValue(scan, "configuration", "failBuildOnCVSS"))
                     .as("and it ends the build at the score that denotes a high finding, which is what "
                             + "makes zero critical and high a build property rather than a claim")
-                    .contains("<dependency-check.failBuildOnCVSS>7.0</dependency-check.failBuildOnCVSS>");
-            assertThat(build)
+                    .isEqualTo("7.0");
+            assertThat(configuredValue(scan, "configuration", "failBuildOnUnusedSuppressionRule"))
                     .as("an analyst determination that no longer applies is itself a failure, so a "
                             + "suppression cannot outlive the finding it was written for")
-                    .contains("<failBuildOnUnusedSuppressionRule>true</failBuildOnUnusedSuppressionRule>");
+                    .isEqualTo("true");
+            assertThat(configuredList(scan, "configuration", "formats"))
+                    .as("a machine-readable format is produced, which is what makes the report below "
+                            + "inspectable rather than merely readable")
+                    .contains("JSON");
+            assertThat(configuredList(scan, "configuration", "suppressionFiles"))
+                    .as("the determinations are read from this module's own file")
+                    .anySatisfy(location -> assertThat(location).endsWith(SUPPRESSION_FILE));
+            assertThat(Files.isRegularFile(Path.of(SUPPRESSION_FILE)))
+                    .as("and that file exists at %s, or the configuration names a file the scan cannot "
+                            + "read", Path.of(SUPPRESSION_FILE).toAbsolutePath())
+                    .isTrue();
+        }
+
+        /**
+         * Every analyst determination is narrow enough to expire by itself.
+         *
+         * <p>This is the half of the supply-chain gate a test in this tier <em>can</em> establish, and the
+         * half a reader is most likely to assume has been checked. A suppression is an accepted finding;
+         * an unscoped or wildcard one accepts findings nobody has looked at, including ones that do not
+         * exist yet. Each rule is therefore required to name at least one artefact scope and exactly one
+         * identifier, which is what keeps {@code failBuildOnUnusedSuppressionRule} able to retire it.
+         *
+         * @throws IOException if the determinations cannot be read
+         */
+        @Test
+        @DisplayName("every suppression names an artefact scope and exactly one identifier, so none can "
+                + "absorb a finding nobody has examined")
+        void everySuppressionIsScopedToOneIdentifier() throws IOException {
+            final List<SuppressionRule> rules = suppressionRules();
+
+            assertThat(rules)
+                    .as("the determination file is read and its rules are inspected rather than counted; "
+                            + "an empty file is legitimate and is reported as zero determinations")
+                    .isNotNull();
+            for (final SuppressionRule rule : rules) {
+                assertThat(rule.scopes())
+                        .as("determination %d names no artefact scope, so it would absorb the same "
+                                + "identifier reported against any dependency in the graph", rule.ordinal())
+                        .isNotEmpty();
+                assertThat(rule.identifiers())
+                        .as("determination %d must carry exactly one identifier, so what was accepted is "
+                                + "unambiguous and the unused-rule check can retire it", rule.ordinal())
+                        .hasSize(1);
+                assertThat(rule.wildcardScoped())
+                        .as("determination %d is scoped by a regular expression broad enough to match a "
+                                + "coordinate nobody has examined", rule.ordinal())
+                        .isFalse();
+            }
+        }
+
+        /**
+         * The gate's published claim is the invariant it enforces, and the one determination is scoped.
+         *
+         * <p>This is the assertion that stops the sign-off below from being a stronger statement than the
+         * build makes. The threshold ends the build on an <em>unsuppressed</em> qualifying finding, so
+         * "zero critical and high findings" is only true while the determination file is empty. It is not
+         * empty: one high-severity match against the embedded servlet container is carried, because the
+         * advisory names fixed releases that are published on no line. That is a defensible position and a
+         * different one from zero findings, and the difference has to be checkable rather than a matter of
+         * how the comment beside it is worded - which is why the withdrawn claim is asserted absent, by
+         * text, in both the build file and the manual.
+         *
+         * <p>Four properties are asserted of the determination itself, and each closes a way for a
+         * determination to become standing permission: exactly one rule, so the file cannot accumulate
+         * entries nobody reviewed; exactly one identifier and one artifact scope per rule, so a bare
+         * identifier cannot absorb a future finding against the same coordinate; no platform-record or
+         * coordinate-regex element, which are the two shapes broad enough to match something unexamined;
+         * and the false-match evidence present in the file, so the argument travels with the rule rather
+         * than living in somebody's memory.
+         *
+         * @throws IOException if the build file, the determination file or the manual cannot be read
+         */
+        @Test
+        @DisplayName("the published claim is zero unsuppressed critical or high findings, and the one "
+                + "determination is scoped to a single identifier on named artifacts with its evidence")
+        void theOneDeterminationIsScopedEvidencedAndPublishedAsWhatItIs() throws IOException {
+            final String declarations = withoutXmlComments(suppressionFile());
+
+            assertThat(countOf(declarations, "<suppress>"))
+                    .as("exactly one determination is carried. A file that grows silently is how a "
+                            + "threshold becomes advisory, so the count is asserted rather than the "
+                            + "presence")
+                    .isEqualTo(1);
+            assertThat(countOf(declarations, "<cve>"))
+                    .as("and it names one identifier, so it cannot cover a second finding against the "
+                            + "same artifacts")
+                    .isEqualTo(1);
+            assertThat(countOf(declarations, "<packageUrl"))
+                    .as("scoped to named artifacts: an identifier with no artifact scope suppresses that "
+                            + "identifier everywhere it is ever matched")
+                    .isEqualTo(1);
+            assertThat(declarations)
+                    .as("the identifier and the artifact scope are the documented ones, asserted "
+                            + "exactly so a later edit cannot loosen either")
+                    .contains("<cve>" + DETERMINED_IDENTIFIER + "</cve>")
+                    .contains(DETERMINED_ARTIFACT_SCOPE);
+            assertThat(declarations)
+                    .as("no wildcard platform record, no coordinate regex and no name match: these are "
+                            + "the element shapes broad enough to absorb a finding nobody has examined")
+                    .doesNotContain("<cpe>")
+                    .doesNotContain("<gav")
+                    .doesNotContain("<vulnerabilityName");
+
+            assertThat(suppressionFile())
+                    .as("the false-match argument travels with the rule - the unpublished fixed release, "
+                            + "the component that is absent from the resolved artifacts, and the decision "
+                            + "log entry carrying the measurement")
+                    .contains("10.1.58")
+                    .contains("webapps")
+                    .contains("DL-159");
+
+            for (final String published : List.of(buildFile(), operatorManual())) {
+                assertThat(published)
+                        .as("the determination is disclosed where the gate result is published, because a "
+                                + "determination recorded only in the file that applies it is a silent one")
+                        .contains(DETERMINED_IDENTIFIER)
+                        .contains(SUPPRESSION_FILE);
+                assertThat(published)
+                        .as("and the withdrawn claim cannot return: with a determination configured, "
+                                + "\"zero findings\" and \"no suppression file\" are both stronger than "
+                                + "what the build enforces")
+                        .doesNotContain("ZERO SUPPRESSIONS")
+                        .doesNotContain("There is no suppression file")
+                        .doesNotContain("Zero critical and zero high findings");
+            }
+        }
+
+        /**
+         * Any vulnerability report a build has already produced matches the invariant the gate enforces.
+         *
+         * <p>Read when present, and never used to infer a pass when absent. The absence case is reported in
+         * the sign-off summary as "enforced by the build at a later phase", which is the truthful statement:
+         * the plugin above ends the build on a qualifying finding whether or not this test ever sees its
+         * report.
+         *
+         * <p><strong>Both halves of the report are read, and that is the point.</strong> Checking only the
+         * ordinary findings array would let a suppressed high-severity entry sit behind a green row: the
+         * scanner moves a suppressed finding out of {@code vulnerabilities} and into
+         * {@code suppressedVulnerabilities}, so a rule widened by one character would empty the array this
+         * test used to read and change nothing it used to assert. So the unsuppressed qualifying findings
+         * must be none, and every suppressed qualifying finding must be the one determination this module
+         * has examined, on an artifact inside its documented scope. Anything else - a second identifier, the
+         * same identifier on a coordinate nobody looked at - fails here, which is what makes the sign-off
+         * row below a statement about the report rather than about the threshold alone.
+         *
+         * @throws IOException if the report cannot be read
+         */
+        @Test
+        @DisplayName("a vulnerability report left by a previous build carries no unsuppressed critical or "
+                + "high finding, and every suppressed one is the examined determination")
+        void anyExistingVulnerabilityReportMatchesTheEnforcedInvariant() throws IOException {
+            final Optional<Path> report = existingVulnerabilityReport();
+
+            if (report.isEmpty()) {
+                // Not a skip and not a pass by default: the enforcing mechanism is asserted
+                // unconditionally by the two tests above, which is what actually holds this gate. This
+                // assertion exists to check a report when the build has produced one, and the scan is
+                // bound to a later phase than this tier.
+                assertThat(buildFile())
+                        .as("no report exists yet because the scan runs at verify, after this tier. The "
+                                + "gate is held by the binding, the threshold and the determination scope, "
+                                + "which are asserted unconditionally rather than inferred from this "
+                                + "absence")
+                        .contains("dependency-check-maven");
+                return;
+            }
+
+            final JsonNode findings = new ObjectMapper()
+                    .readTree(Files.readAllBytes(report.orElseThrow()));
+            final List<String> qualifying = new ArrayList<>();
+            final List<String> unexamined = new ArrayList<>();
+            for (final JsonNode dependency : findings.path("dependencies")) {
+                final String artefact = dependency.path("fileName").asText();
+                for (final JsonNode vulnerability : dependency.path("vulnerabilities")) {
+                    final double score = highestScoreOf(vulnerability);
+                    if (score >= QUALIFYING_SCORE) {
+                        qualifying.add(artefact + " -> " + vulnerability.path("name").asText()
+                                + " (" + score + ")");
+                    }
+                }
+                for (final JsonNode suppressed : dependency.path("suppressedVulnerabilities")) {
+                    final double score = highestScoreOf(suppressed);
+                    final String identifier = suppressed.path("name").asText();
+                    if (score >= QUALIFYING_SCORE
+                            && !(DETERMINED_IDENTIFIER.equals(identifier)
+                                    && artefact.contains(DETERMINED_ARTIFACT_FAMILY))) {
+                        unexamined.add(artefact + " -> " + identifier + " (" + score + ")");
+                    }
+                }
+            }
+
+            assertThat(qualifying)
+                    .as("zero unsuppressed critical and zero unsuppressed high findings in %s",
+                            report.orElseThrow())
+                    .isEmpty();
+            assertThat(unexamined)
+                    .as("every suppressed critical or high finding in %s must be %s on a %s artefact - the "
+                            + "one determination this module has examined. Each entry above is a "
+                            + "qualifying finding that a rule hid without anybody arguing that it does not "
+                            + "apply, which is exactly the state the threshold exists to prevent",
+                            report.orElseThrow(), DETERMINED_IDENTIFIER, DETERMINED_ARTIFACT_FAMILY)
+                    .isEmpty();
         }
 
         /**
@@ -2429,40 +3423,30 @@ class GateVerificationTest extends AbstractPostgresIT {
          * @throws IOException if the report cannot be read
          */
         @Test
-        @DisplayName("a vulnerability report left by a previous build carries no critical or high finding")
-        void anyExistingVulnerabilityReportIsClean() throws IOException {
-            final Optional<Path> report = existingVulnerabilityReport();
+        @DisplayName("a vulnerability report, when one exists, is current and carries no critical or high "
+                + "finding, and a stale one fails rather than passing")
+        void anyExistingVulnerabilityReportIsCurrentAndClean() throws IOException {
+            final VulnerabilityEvidence evidence = vulnerabilityEvidence();
 
-            if (report.isEmpty()) {
-                // Not a skip and not a pass by default: the enforcing mechanism is asserted
-                // unconditionally by the test above, which is what actually holds this gate. This
-                // assertion exists to check a report when the build has produced one, and the scan is
-                // bound to a later phase than this tier.
-                assertThat(buildFile())
-                        .as("no report exists yet because the scan runs at verify, after this tier. The "
-                                + "gate is held by the binding and the threshold, which are asserted "
-                                + "unconditionally rather than inferred from this absence")
-                        .contains("dependency-check-maven");
-                return;
-            }
-
-            final JsonNode findings = new ObjectMapper()
-                    .readTree(Files.readAllBytes(report.orElseThrow()));
-            final List<String> qualifying = new ArrayList<>();
-            for (final JsonNode dependency : findings.path("dependencies")) {
-                for (final JsonNode vulnerability : dependency.path("vulnerabilities")) {
-                    final double score = highestScoreOf(vulnerability);
-                    if (score >= 7.0d) {
-                        qualifying.add(dependency.path("fileName").asText()
-                                + " -> " + vulnerability.path("name").asText()
-                                + " (" + score + ")");
-                    }
-                }
-            }
-
-            assertThat(qualifying)
-                    .as("zero critical and zero high findings in %s", report.orElseThrow())
+            assertThat(evidence.stale())
+                    .as("%s was produced before the current dependency declaration, so it describes a "
+                            + "resolved graph that is no longer the one being built. It is NOT read as a "
+                            + "pass: re-run ./mvnw -B clean verify. %s",
+                            evidence.reportLocation(), evidence.narrative())
+                    .isFalse();
+            assertThat(evidence.qualifyingFindings())
+                    .as("zero critical and zero high findings. %s", evidence.narrative())
                     .isEmpty();
+            assertThat(evidence.undocumentedSuppressions())
+                    .as("every finding the scan suppressed must be covered by a determination in %s, or "
+                            + "a finding was set aside by something other than a reviewed rule. %s",
+                            SUPPRESSION_FILE, evidence.narrative())
+                    .isEmpty();
+            assertThat(evidence.satisfied())
+                    .as("the supply-chain row is satisfied by the parsed enforcing mechanism together "
+                            + "with the inspected determinations, and by a current clean report when one "
+                            + "exists. It is never satisfied by an absent report. %s", evidence.narrative())
+                    .isTrue();
         }
 
         /**
@@ -2477,18 +3461,21 @@ class GateVerificationTest extends AbstractPostgresIT {
         @Test
         @DisplayName("the integration tier includes this class by package pattern and the unit tier excludes "
                 + "it, so it runs exactly once and where the server is")
-        void theIntegrationTierReachesThisClassExactlyOnce() throws IOException {
-            final String build = buildFile();
+        void theIntegrationTierReachesThisClassExactlyOnce() {
+            final List<String> integrationIncludes = configuredList(
+                    activePlugin("maven-failsafe-plugin"), "configuration", "includes");
+            final List<String> unitExcludes = configuredList(
+                    activePlugin("maven-surefire-plugin"), "configuration", "excludes");
 
-            assertThat(build).as("the integration tier's suffix pattern").contains("**/*IT.java");
-            assertThat(build).as("its end-to-end suffix pattern").contains("**/*E2ETest.java");
-            assertThat(build)
-                    .as("and the package pattern that reaches a gate-named class like this one")
-                    .contains("**/e2e/**/*Test.java");
-            assertThat(build)
+            assertThat(integrationIncludes)
+                    .as("the integration tier's two suffix patterns and the package pattern that reaches "
+                            + "a gate-named class like this one, read as include elements of the active "
+                            + "plugin rather than matched anywhere in the file")
+                    .contains("**/*IT.java", "**/*E2ETest.java", "**/e2e/**/*Test.java");
+            assertThat(unitExcludes)
                     .as("the unit tier excludes the same package, so the two sets do not overlap and this "
                             + "class cannot run twice - once without a server, which would fail")
-                    .contains("<exclude>**/e2e/**/*.java</exclude>");
+                    .contains("**/e2e/**/*.java");
         }
 
         /**
@@ -2524,15 +3511,38 @@ class GateVerificationTest extends AbstractPostgresIT {
                             + "genuine spread rather than one width repeated")
                     .isEqualTo(7L);
 
-            assertThat(13 + 4 + 9 + 1)
-                    .as("inter-program linkage: 27 static call sites - 13 to the statement helper, 4 to "
-                            + "the date utility, 9 to the abort service and 1 to the date service - became "
-                            + "injected collaborators")
+            final Map<String, Integer> calls = staticCallCensus();
+            assertThat(calls)
+                    .as("inter-program linkage, MEASURED from the estate rather than restated: 13 calls to "
+                            + "the statement helper, 4 to the date utility, 9 to the abort service and 1 "
+                            + "to the date service, each of which became an injected collaborator. A "
+                            + "target the estate calls and this map omits fails here rather than being "
+                            + "absorbed into a total")
+                    .containsExactlyInAnyOrderEntriesOf(EXPECTED_CALL_TARGETS);
+            assertThat(calls.values().stream().mapToInt(Integer::intValue).sum())
+                    .as("which is 27 call sites in all")
                     .isEqualTo(27);
-            assertThat(25 + 19)
-                    .as("plus 25 transfer-control transitions and 19 pseudo-conversational re-arms, which "
-                            + "became routing decisions returned to the caller")
-                    .isEqualTo(44);
+
+            final VerbCensus transfers = cicsVerbCensus("EXEC CICS XCTL");
+            final VerbCensus rearms = cicsVerbCensus("EXEC CICS RETURN TRANSID");
+            assertThat(transfers.total())
+                    .as("plus %d transfer-control transitions, measured. A statement continued onto a "
+                            + "second line is one transition, which is why the census reads each member "
+                            + "as a whole rather than line by line - a line-wise count finds 9",
+                            EXPECTED_TRANSFER_CONTROL_SITES)
+                    .isEqualTo(EXPECTED_TRANSFER_CONTROL_SITES);
+            assertThat(rearms.total())
+                    .as("and %d pseudo-conversational re-arms, which became routing decisions returned to "
+                            + "the caller", EXPECTED_REARM_SITES)
+                    .isEqualTo(EXPECTED_REARM_SITES);
+            assertThat(transfers.members())
+                    .as("distributed across the %d online programs, so the figure is a property of the "
+                            + "online tier rather than of one member", ONLINE_PROGRAM_COUNT)
+                    .hasSize(ONLINE_PROGRAM_COUNT);
+            assertThat(rearms.members().keySet())
+                    .as("and every program that re-arms is one that transfers control, which is what "
+                            + "makes the two sets one tier")
+                    .isEqualTo(transfers.members().keySet());
 
             assertThat(countByExtension("app/jcl", ".jcl") + countByExtension("app/jcl", ".JCL"))
                     .as("job orchestration: 29 job members, counted case-inclusively")
@@ -2580,6 +3590,187 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
+     * Gate 3, which establishes the first Java baseline and asserts no threshold.
+     *
+     * <h2>What is verified here, and what would be a mistake to verify</h2>
+     * No numeric latency, throughput, availability or capacity figure exists anywhere in the estate - not
+     * in the programs, the job control, the resource definitions or the specification - so there is
+     * nothing for a measurement to be compared against. This gate is discharged by having <em>measured</em>
+     * and <em>recorded</em> a baseline, and inventing a threshold to test it against is expressly
+     * forbidden.
+     *
+     * <p>What that leaves is nonetheless checkable, and it is the part that was previously taken on trust:
+     * a recorded baseline has to be a measurement rather than a heading. Each row is therefore required to
+     * carry a concrete date, a named machine, a run label and four positive figures, and its published
+     * rate has to agree with its own record count and elapsed time. A row whose rate does not follow from
+     * its own two figures was not copied out of a run.
+     */
+    @Nested
+    @DisplayName("Gate 3 - the recorded performance baseline, as measured figures rather than headings")
+    class RecordedPerformanceBaseline {
+
+        /** Creates the nested specification. */
+        RecordedPerformanceBaseline() {
+            // Intentionally empty.
+        }
+
+        /**
+         * The evidence page carries at least one measured row, and every row is a measurement.
+         *
+         * @throws IOException if the recorded evidence cannot be read
+         */
+        @Test
+        @DisplayName("at least one run is recorded with a concrete date, a named machine and four positive "
+                + "figures, and none is left as a placeholder")
+        void theBaselineIsRecordedAsMeasuredFigures() throws IOException {
+            final List<PerformanceRow> rows = recordedPerformanceRows();
+
+            assertThat(rows)
+                    .as("Gate 3 is discharged by a recorded measurement, so the table under 'Measured "
+                            + "runs' in %s must carry at least one row. A heading is not a baseline",
+                            documentationFile(GATE_EVIDENCE))
+                    .isNotEmpty();
+            for (final PerformanceRow row : rows) {
+                assertThat(row.date())
+                        .as("row '%s' must name the date it was taken, as a strictly resolved calendar "
+                                + "date rather than a placeholder", row.run())
+                        .isNotNull();
+                // A placeholder in this table is written as emphasised prose, so the check is that the
+                // cell is not emphasised text - not that it carries no underscore, which a processor
+                // architecture legitimately does.
+                assertThat(row.machine())
+                        .as("row '%s' must name the machine: a figure without a host, a processor and a "
+                                + "runtime is not comparable with anything, and an emphasised placeholder "
+                                + "is not a machine", row.run())
+                        .isNotBlank()
+                        .doesNotStartWith("_")
+                        .doesNotEndWith("_")
+                        .hasSizeGreaterThan(10);
+                assertThat(row.run()).as("every row names the run it measured").isNotBlank();
+                assertThat(row.records()).as("row '%s': records processed", row.run()).isPositive();
+                assertThat(row.elapsedMillis()).as("row '%s': elapsed time", row.run()).isPositive();
+                assertThat(row.peakHeapBytes()).as("row '%s': peak heap", row.run()).isPositive();
+                assertThat(row.recordsPerSecond())
+                        .as("row '%s': throughput", row.run())
+                        .isGreaterThan(BigDecimal.ZERO);
+            }
+        }
+
+        /**
+         * Each recorded rate follows from that row's own two figures.
+         *
+         * <p>This is what separates a transcribed measurement from a plausible-looking number: records
+         * divided by elapsed seconds is arithmetic anyone can repeat, and a row that fails it was not
+         * copied from a run. The tolerance exists because the published elapsed time is whole
+         * milliseconds while the recorder divides nanoseconds.
+         *
+         * @throws IOException if the recorded evidence cannot be read
+         */
+        @Test
+        @DisplayName("every recorded rate is that row's own records divided by that row's own elapsed "
+                + "time, so a row cannot be written without having been measured")
+        void everyRecordedRateFollowsFromItsOwnFigures() throws IOException {
+            for (final PerformanceRow row : recordedPerformanceRows()) {
+                final BigDecimal derived = BigDecimal.valueOf(row.records())
+                        .multiply(BigDecimal.valueOf(1000L))
+                        .divide(BigDecimal.valueOf(row.elapsedMillis()), MEASUREMENT_PRECISION);
+                final BigDecimal tolerance = derived.multiply(RATE_TOLERANCE);
+
+                assertThat(row.recordsPerSecond().subtract(derived).abs())
+                        .as("row '%s' publishes %s records per second, but %d records over %d ms is %s. "
+                                + "A rate that does not follow from its own two figures was not measured",
+                                row.run(), row.recordsPerSecond(), row.records(), row.elapsedMillis(),
+                                derived)
+                        .isLessThanOrEqualTo(tolerance);
+            }
+        }
+
+        /**
+         * Whatever the build has measured in this run is itself well formed.
+         *
+         * <p>The generated files are the source the recorded rows are copied from, so they are checked in
+         * the same shape. They are read when present and their absence is not a failure: the tiers that
+         * take the measurements are separate classes, and requiring their output here would make this
+         * class depend on the order the tier happened to run in.
+         *
+         * @throws IOException if a generated file cannot be read
+         */
+        @Test
+        @DisplayName("any run-scoped evidence this build produced carries the same four figures in the "
+                + "same shape, so the recorded rows and the generated ones cannot diverge")
+        void anyGeneratedEvidenceCarriesTheSameFigures() throws IOException {
+            final List<GeneratedBaseline> generated = generatedPerformanceEvidence();
+
+            for (final GeneratedBaseline baseline : generated) {
+                assertThat(baseline.rows())
+                        .as("%s exists, so it must carry at least one measured row", baseline.location())
+                        .isNotEmpty();
+                for (final GeneratedRow row : baseline.rows()) {
+                    assertThat(row.records()).as("%s: records", baseline.location()).isPositive();
+                    assertThat(row.elapsedMillis()).as("%s: elapsed", baseline.location()).isPositive();
+                    assertThat(row.peakHeapBytes()).as("%s: peak heap", baseline.location()).isPositive();
+                    assertThat(row.recordsPerSecond())
+                            .as("%s: throughput", baseline.location())
+                            .isGreaterThan(BigDecimal.ZERO);
+                }
+                assertThat(baseline.namesItsFixtureVolumes())
+                        .as("%s must state the fixture volumes its figures were measured over; a number "
+                                + "without them is not a baseline", baseline.location())
+                        .isTrue();
+            }
+        }
+
+        /**
+         * Every measured run names the fixture volumes its figures were taken over.
+         *
+         * <p>A figure without the input it was taken over cannot be compared with a later one, so the
+         * volumes are part of the measurement rather than commentary beside it. The bullet is looked up by
+         * the run and the record count together, because the page records the same job at more than one
+         * volume and a lookup on the job alone would let one bullet stand in for every row.
+         *
+         * @throws IOException if the page cannot be read
+         */
+        @Test
+        @DisplayName("every measured run names the fixture volumes behind it, because a figure without its "
+                + "volumes is not a baseline")
+        void everyMeasuredRunNamesItsFixtureVolumes() throws IOException {
+            final String recorded =
+                    Files.readString(documentationFile(GATE_EVIDENCE), StandardCharsets.UTF_8);
+            final List<PerformanceRow> measured = recordedPerformanceRows();
+
+            assertThat(measured).as("there is a measurement to name volumes for").isNotEmpty();
+            for (final PerformanceRow row : measured) {
+                final String heading = "**`" + row.run() + "`, " + row.records() + " records**";
+                assertThat(recorded)
+                        .as("the volumes behind %s at %d records are named on the page, so the figure can "
+                                + "be compared to a later run over the same input", row.run(),
+                                row.records())
+                        .contains(heading);
+            }
+        }
+
+        /**
+         * The page states that these figures are measurements, which is the boundary of the gate.
+         *
+         * @throws IOException if the page cannot be read
+         */
+        @Test
+        @DisplayName("the recorded baseline states that it is a measurement and not a threshold, because "
+                + "no service level exists anywhere in the estate to test against")
+        void theRecordedBaselineIsLabelledAMeasurementAndNotAThreshold() throws IOException {
+            final String recorded =
+                    Files.readString(documentationFile(GATE_EVIDENCE), StandardCharsets.UTF_8);
+
+            assertThat(recorded)
+                    .as("a reader who quotes one of these rows must be told what it is not")
+                    .contains("measurements, not thresholds");
+            assertThat(recorded)
+                    .as("and why: the estate documents no service level of any kind")
+                    .contains("establishes the first Java baseline");
+        }
+    }
+
+    /**
      * The sign-off checklist, emitted as an auditable record.
      *
      * <p>One row per checklist item, each naming the artefact that satisfies it and the state that artefact
@@ -2592,9 +3783,7 @@ class GateVerificationTest extends AbstractPostgresIT {
     @DisplayName("Gate 8 - the sign-off checklist, emitted as an auditable record with no assumed pass")
     class SignOffChecklist {
 
-        /** Creates the nested specification. */
         SignOffChecklist() {
-            // Intentionally empty.
         }
 
         /**
@@ -2613,47 +3802,72 @@ class GateVerificationTest extends AbstractPostgresIT {
                     "src/test/resources/fixtures/expected/ + e2e/BatchPipelineE2ETest",
                     goldenArtefactsPresent(),
                     "four goldens at 430, 133, 80 and 100 bytes, compared as byte arrays"));
+            final InterfaceContractEvidence contracts = interfaceContractEvidence();
             rows.add(rowFor("Interface contract verification",
-                    "e2e/OnlineTransactionE2ETest + service/JobSubmissionServiceIT",
-                    true,
-                    "sign-on texts over a real port; the card image drained from a real queue"));
+                    "e2e/OnlineTransactionE2ETest + service/JobSubmissionServiceIT; card image built here "
+                            + "from " + JclCardImageBuilder.class.getSimpleName(),
+                    contracts.satisfied(),
+                    contracts.narrative()));
             // The satisfying artefact is the recorded page, not the build directory the recorder writes
             // into. That directory is removed by a clean build and is repopulated by whichever tier runs
             // the measured jobs, so keying the row off it would make this row's state depend on test
             // ordering rather than on whether the baseline was ever recorded.
+            final List<PerformanceRow> measured = recordedPerformanceRows();
+            final StringBuilder baselines = new StringBuilder(160);
+            for (final PerformanceRow row : measured) {
+                baselines.append(baselines.length() == 0 ? "" : "; ").append(row.run()).append(' ')
+                        .append(row.records()).append(" records in ").append(row.elapsedMillis())
+                        .append(" ms at ").append(row.recordsPerSecond()).append("/s, peak heap ")
+                        .append(row.peakHeapBytes()).append(" B on ").append(row.date());
+            }
             rows.add(rowFor("Performance baseline",
                     DOCUMENTATION_DIRECTORY + "/" + GATE_EVIDENCE
                             + " (measured by support/RunScopedPerformanceRecorder)",
                     recordedEvidenceCoversPerformanceBaseline(),
-                    "elapsed, records per second and peak heap recorded against named fixture volumes; "
-                            + "no service level is invented, because none is documented anywhere"));
+                    measured.isEmpty()
+                            ? "NO MEASURED RUN IS RECORDED - the baseline is outstanding work"
+                            : baselines + ". No service level is asserted anywhere, because none is "
+                                    + "documented anywhere"));
+            // "warning suppressions" rather than "suppressions": this row counts @SuppressWarnings in the
+            // production tree, and the row below counts analyst determinations against vulnerability
+            // findings. Two unrelated things share the word, and a checklist that lets them share it too
+            // invites a reader to carry one row's zero across to the other.
+            final UnsafeCodeCensus unsafe = unsafeCodeCensus();
             rows.add(rowFor("Unsafe and low-level code audit",
                     PRODUCTION_TREE + " (scoped: migrations and test sources excluded)",
-                    occurrencesIn(PRODUCTION_TREE, "java.lang.reflect") == 0L,
-                    "reflection 0, process execution 0, native query 0, suppressions 0"));
+                    unsafe.withinBudget(),
+                    unsafe.narrative()));
+            final VulnerabilityEvidence supplyChain = vulnerabilityEvidence();
             rows.add(rowFor("Line coverage at or above 80%",
                     BUILD_FILE + " jacoco check goal, merged unit and integration data",
-                    buildFile().contains("<jacoco.line.coverage.minimum>0.80"),
-                    "ENFORCED BY BUILD at verify, a later phase than this tier"));
-            rows.add(rowFor("Zero critical or high vulnerabilities",
-                    BUILD_FILE + " dependency-check bound to verify"
-                            + existingVulnerabilityReport().map(path -> "; report " + path).orElse(""),
-                    buildFile().contains(
-                            "<dependency-check.failBuildOnCVSS>7.0</dependency-check.failBuildOnCVSS>"),
-                    existingVulnerabilityReport().isPresent()
-                            ? "report read and carries no qualifying finding"
-                            : "ENFORCED BY BUILD at verify; no report exists at this phase and none is "
-                                    + "inferred"));
+                    coverageFloorIsEnforced(),
+                    "ENFORCED BY BUILD at verify, a later phase than this tier: check goal, LINE "
+                            + "COVEREDRATIO minimum 0.80 and CLASS MISSEDCOUNT maximum 0, halting"));
+            // Worded as the invariant the build enforces, not as the stronger one. The threshold ends the
+            // build on an UNSUPPRESSED qualifying finding, and one examined determination is configured,
+            // so a row reading "zero critical or high" would claim more than the mechanism delivers. The
+            // row's state therefore depends on the determination's scope as well as on the threshold: a
+            // rule widened past one identifier on the named artefacts turns this row MISSING.
+            rows.add(rowFor("Zero unsuppressed critical or high vulnerabilities, every determination "
+                            + "scoped and disclosed",
+                    BUILD_FILE + " dependency-check bound to verify, threshold " + QUALIFYING_SCORE
+                            + " over compile, runtime and test scope; " + SUPPRESSION_FILE
+                            + supplyChain.reportSuffix(),
+                    supplyChain.satisfied() && determinationIsScopedToOneExaminedFinding(),
+                    "1 determination: " + DETERMINED_IDENTIFIER + " on the three "
+                            + DETERMINED_ARTIFACT_FAMILY + " artefacts, self-expiring; "
+                            + supplyChain.narrative()));
             rows.add(rowFor("Traceability at 100% of procedure units",
                     DOCUMENTATION_DIRECTORY + "/" + TRACEABILITY_MATRIX,
                     matrixRows().size() == TOTAL_PROCEDURE_UNITS,
                     TOTAL_PROCEDURE_UNITS + " rows = " + PROGRAM_PARAGRAPHS + " + "
                             + DATE_COPYBOOK_PARAGRAPHS + " + " + PFKEY_COPYBOOK_PARAGRAPHS));
+            final NamedArtefactEvidence artefacts = namedArtefactEvidence();
             rows.add(rowFor("Named validation artefacts",
                     "src/test/resources" + TestDataFactory.FIXTURE_DIRECTORY + " and "
                             + ENCODED_DATASET_DIRECTORY,
-                    true,
-                    "nine line-delimited fixtures, ten identities, twelve encoded datasets"));
+                    artefacts.satisfied(),
+                    artefacts.narrative()));
             rows.add(rowFor("Schema parity on a real server",
                     "src/main/resources/db/migration + " + POSTGRES_IMAGE,
                     applicationTableNames().size() == APPLICATION_TABLE_COUNT,
@@ -2794,6 +4008,68 @@ class GateVerificationTest extends AbstractPostgresIT {
                         + "module", build.toAbsolutePath())
                 .isTrue();
         return Files.readString(build, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Reads the module's analyst-determination file.
+     *
+     * @return the determination file's text
+     * @throws IOException if it cannot be read
+     */
+    private static String suppressionFile() throws IOException {
+        final Path determinations = Path.of(SUPPRESSION_FILE);
+        assertThat(Files.isRegularFile(determinations))
+                .as("the build configures the scan to read this file, so a missing file is a scan that "
+                        + "cannot start rather than a scan with nothing to skip; expected at %s",
+                        determinations.toAbsolutePath())
+                .isTrue();
+        return Files.readString(determinations, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Reads the module's operator manual.
+     *
+     * @return the manual's text
+     * @throws IOException if it cannot be read
+     */
+    private static String operatorManual() throws IOException {
+        final Path manual = Path.of(OPERATOR_MANUAL);
+        assertThat(Files.isRegularFile(manual))
+                .as("the manual is where the gate results are published, and it is expected at %s",
+                        manual.toAbsolutePath())
+                .isTrue();
+        return Files.readString(manual, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Strips XML comments from a document so declarations can be counted without counting prose.
+     *
+     * <p>Necessary because the determination file documents the element types it forbids, and those
+     * prohibitions are written as the element names themselves. Counting tokens across the whole text
+     * would read a prohibition as an instance of the thing prohibited.
+     *
+     * @param  xml the document text
+     * @return the same text with every comment removed
+     */
+    private static String withoutXmlComments(final String xml) {
+        return xml.replaceAll("(?s)<!--.*?-->", "");
+    }
+
+    /**
+     * Counts non-overlapping occurrences of a literal within a text.
+     *
+     * @param  text    the text to scan
+     * @param  literal the literal to count
+     * @return the number of occurrences
+     */
+    private static int countOf(final String text, final String literal) {
+        int found = 0;
+        int at = text.indexOf(literal);
+        while (at >= 0) {
+            found++;
+            at = text.indexOf(literal, at + literal.length());
+        }
+        return found;
     }
 
     // ===================================================================================================
@@ -3259,6 +4535,35 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
+     * Resolves a class named relative to the base package into its source file.
+     *
+     * @param  tree      the module-relative source tree the class lives in
+     * @param  className the class name, relative to {@code com.carddemo}
+     * @return the resolved path, which the caller asserts on
+     */
+    private static Path moduleFile(final String tree, final String className) {
+        return Path.of(tree).resolve(BASE_PACKAGE_PATH)
+                .resolve(className.replace('.', '/') + ".java");
+    }
+
+    /**
+     * Reads a source file, failing the assertion rather than the harness when it cannot be read.
+     *
+     * <p>Used from inside a map-computing lambda, where a checked exception cannot be declared.
+     *
+     * @param  file the file to read
+     * @return its text
+     */
+    private static String readOrFail(final Path file) {
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (final IOException failure) {
+            throw new AssertionError("the matrix cites " + file.toAbsolutePath()
+                    + ", which cannot be read: " + failure.getMessage(), failure);
+        }
+    }
+
+    /**
      * Extracts the matrix data rows carrying one marker.
      *
      * @param  marker the marker to select on
@@ -3432,6 +4737,1366 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     // ===================================================================================================
+    // HELPERS :: the build model
+    //
+    // Every gate whose enforcement lives in the build is read from the PARSED model rather than from the
+    // build file's text. The distinction is the whole point: a comment is not an element, so a
+    // commented-out plugin, execution or configuration value is invisible to a parse and cannot satisfy an
+    // assertion the way it satisfies a substring search. Property references are resolved through the
+    // project's own property block, so a value that has been redirected to a property somebody flipped is
+    // read at its effective value rather than at its declaration.
+    //
+    // Only the ACTIVE build is consulted. A plugin declared under plugin management or inside a profile is
+    // not what an ordinary build runs, so a lookup that found one there would report a gate as enforced
+    // when nothing enforces it.
+    // ===================================================================================================
+
+    /** The parsed build model, read once. */
+    private static Document parsedBuildModel;
+
+    /** The project's own properties, resolved once, for expanding a configuration reference. */
+    private static Map<String, String> buildModelProperties;
+
+    /**
+     * Parses the module's build file, once, with external entity resolution switched off.
+     *
+     * @return the parsed model
+     */
+    private static Document buildModel() {
+        if (parsedBuildModel != null) {
+            return parsedBuildModel;
+        }
+        final Path build = Path.of(BUILD_FILE);
+        assertThat(Files.isRegularFile(build))
+                .as("the build file is expected at %s, because the build's working directory is the "
+                        + "module", build.toAbsolutePath())
+                .isTrue();
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        try {
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setNamespaceAware(false);
+            factory.setExpandEntityReferences(false);
+            final DocumentBuilder parser = factory.newDocumentBuilder();
+            parsedBuildModel = parser.parse(build.toFile());
+        } catch (final ParserConfigurationException | SAXException malformed) {
+            throw new IllegalStateException("the build file at " + build.toAbsolutePath()
+                    + " could not be parsed, so no gate that lives in the build can be verified",
+                    malformed);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("the build file at " + build.toAbsolutePath()
+                    + " could not be read", unreadable);
+        }
+        return parsedBuildModel;
+    }
+
+    /**
+     * Reads the project's property block, so a configuration reference can be resolved to its value.
+     *
+     * @return the declared properties
+     */
+    private static Map<String, String> modelProperties() {
+        if (buildModelProperties != null) {
+            return buildModelProperties;
+        }
+        final Map<String, String> properties = new LinkedHashMap<>();
+        final Element project = buildModel().getDocumentElement();
+        for (final Element block : childElements(project, "properties")) {
+            for (final Element property : childElements(block)) {
+                properties.put(property.getTagName(), property.getTextContent().strip());
+            }
+        }
+        buildModelProperties = Map.copyOf(properties);
+        return buildModelProperties;
+    }
+
+    /**
+     * Resolves a configuration value through the project's properties.
+     *
+     * <p>Bounded rather than recursive without limit, so a property that referred to itself produces a
+     * diagnostic instead of an endless expansion.
+     *
+     * @param  value the declared value, possibly a property reference
+     * @return the resolved value
+     */
+    private static String resolveModelValue(final String value) {
+        String resolved = value;
+        for (int pass = 0; pass < 8 && resolved.contains("${"); pass++) {
+            final int open = resolved.indexOf("${");
+            final int close = resolved.indexOf('}', open);
+            if (close < 0) {
+                break;
+            }
+            final String name = resolved.substring(open + 2, close);
+            final String replacement = modelProperties().get(name);
+            if (replacement == null) {
+                break;
+            }
+            resolved = resolved.substring(0, open) + replacement + resolved.substring(close + 1);
+        }
+        return resolved.strip();
+    }
+
+    /**
+     * Locates one plugin in the ACTIVE build, failing when it is absent or declared more than once.
+     *
+     * @param  artifactId the plugin's artefact identifier
+     * @return its element
+     */
+    private static Element activePlugin(final String artifactId) {
+        final Element project = buildModel().getDocumentElement();
+        final List<Element> builds = childElements(project, "build");
+        assertThat(builds)
+                .as("the project must declare exactly one build section for an active plugin to live in")
+                .hasSize(1);
+        final List<Element> found = new ArrayList<>();
+        for (final Element plugins : childElements(builds.get(0), "plugins")) {
+            for (final Element plugin : childElements(plugins, "plugin")) {
+                if (artifactId.equals(childText(plugin, "artifactId"))) {
+                    found.add(plugin);
+                }
+            }
+        }
+        assertThat(found)
+                .as("%s must be declared exactly once in project/build/plugins. A declaration under "
+                        + "pluginManagement or inside a profile is not what an ordinary build runs, so "
+                        + "finding one there would report a gate as enforced when nothing enforces it",
+                        artifactId)
+                .hasSize(1);
+        return found.get(0);
+    }
+
+    /**
+     * Locates one named execution of a plugin.
+     *
+     * @param  plugin      the plugin
+     * @param  executionId the execution's identifier
+     * @return its element
+     */
+    private static Element executionOf(final Element plugin, final String executionId) {
+        final List<Element> found = new ArrayList<>();
+        for (final Element executions : childElements(plugin, "executions")) {
+            for (final Element execution : childElements(executions, "execution")) {
+                if (executionId.equals(childText(execution, "id"))) {
+                    found.add(execution);
+                }
+            }
+        }
+        assertThat(found)
+                .as("execution '%s' must be declared exactly once, or the goal it binds runs a different "
+                        + "number of times than the gate assumes", executionId)
+                .hasSize(1);
+        return found.get(0);
+    }
+
+    /**
+     * Reads the goals one execution binds.
+     *
+     * @param  execution the execution
+     * @return its goals, in declaration order
+     */
+    private static List<String> goalsOf(final Element execution) {
+        final List<String> goals = new ArrayList<>();
+        for (final Element block : childElements(execution, "goals")) {
+            for (final Element goal : childElements(block, "goal")) {
+                goals.add(goal.getTextContent().strip());
+            }
+        }
+        return List.copyOf(goals);
+    }
+
+    /**
+     * Reads the phase one execution is bound to.
+     *
+     * @param  execution the execution
+     * @return the phase, or {@code null} when it inherits one
+     */
+    private static String phaseOf(final Element execution) {
+        return childText(execution, "phase");
+    }
+
+    /**
+     * Reads one configuration value, resolved, from a path of nested element names.
+     *
+     * @param  scope the plugin or execution the configuration belongs to
+     * @param  path  the element names to walk
+     * @return the resolved value, or {@code null} when the path does not exist
+     */
+    private static String configuredValue(final Element scope, final String... path) {
+        Element cursor = scope;
+        for (int index = 0; index < path.length - 1; index++) {
+            final List<Element> next = childElements(cursor, path[index]);
+            if (next.isEmpty()) {
+                return null;
+            }
+            cursor = next.get(0);
+        }
+        return childText(cursor, path[path.length - 1]);
+    }
+
+    /**
+     * Reads the resolved text of every child of a configuration element.
+     *
+     * @param  scope the plugin or execution the configuration belongs to
+     * @param  path  the element names to walk to the containing element
+     * @return each child's resolved text, in declaration order
+     */
+    private static List<String> configuredList(final Element scope, final String... path) {
+        final List<Element> containers = elementsAt(scope, path);
+        final List<String> values = new ArrayList<>();
+        for (final Element container : containers) {
+            for (final Element child : childElements(container)) {
+                values.add(resolveModelValue(child.getTextContent().strip()));
+            }
+        }
+        return List.copyOf(values);
+    }
+
+    /**
+     * Reads every child element of the element a path walks to.
+     *
+     * @param  scope the plugin or execution the configuration belongs to
+     * @param  path  the element names to walk
+     * @return the children of the element the path names
+     */
+    private static List<Element> elementsUnder(final Element scope, final String... path) {
+        final List<Element> containers = elementsAt(scope, path);
+        final List<Element> children = new ArrayList<>();
+        for (final Element container : containers) {
+            children.addAll(childElements(container));
+        }
+        return List.copyOf(children);
+    }
+
+    /**
+     * Walks a path of element names and returns whatever it lands on.
+     *
+     * @param  scope the element to start from
+     * @param  path  the element names to walk
+     * @return the elements the path names, which may be empty
+     */
+    private static List<Element> elementsAt(final Element scope, final String... path) {
+        List<Element> cursor = List.of(scope);
+        for (final String name : path) {
+            final List<Element> next = new ArrayList<>();
+            for (final Element element : cursor) {
+                next.addAll(childElements(element, name));
+            }
+            cursor = next;
+        }
+        return List.copyOf(cursor);
+    }
+
+    /**
+     * Reads one child element's resolved text.
+     *
+     * @param  parent the containing element
+     * @param  name   the child's element name
+     * @return the resolved text, or {@code null} when there is no such child
+     */
+    private static String childValue(final Element parent, final String name) {
+        return childText(parent, name);
+    }
+
+    /**
+     * Reads one child element's resolved text.
+     *
+     * @param  parent the containing element
+     * @param  name   the child's element name
+     * @return the resolved text, or {@code null} when there is no such child
+     */
+    private static String childText(final Element parent, final String name) {
+        final List<Element> children = childElements(parent, name);
+        return children.isEmpty() ? null : resolveModelValue(children.get(0).getTextContent().strip());
+    }
+
+    /**
+     * Reads the element children of one element carrying a given name.
+     *
+     * @param  parent the containing element
+     * @param  name   the element name to select
+     * @return the matching children, in document order
+     */
+    private static List<Element> childElements(final Element parent, final String name) {
+        final List<Element> selected = new ArrayList<>();
+        for (final Element child : childElements(parent)) {
+            if (name.equals(child.getTagName())) {
+                selected.add(child);
+            }
+        }
+        return selected;
+    }
+
+    /**
+     * Reads every element child of one element.
+     *
+     * @param  parent the containing element
+     * @return its element children, in document order
+     */
+    private static List<Element> childElements(final Element parent) {
+        final List<Element> children = new ArrayList<>();
+        final NodeList nodes = parent.getChildNodes();
+        for (int index = 0; index < nodes.getLength(); index++) {
+            final Node node = nodes.item(index);
+            if (node.getNodeType() == Node.ELEMENT_NODE) {
+                children.add((Element) node);
+            }
+        }
+        return List.copyOf(children);
+    }
+
+    /**
+     * Reports whether the coverage floor is enforced as a halting check on the gated counters.
+     *
+     * @return {@code true} when the check goal, the phase, the halt and both limits are all in place
+     */
+    private static boolean coverageFloorIsEnforced() {
+        final Element check = executionOf(activePlugin("jacoco-maven-plugin"),
+                "jacoco-check-line-coverage");
+        if (!goalsOf(check).contains("check") || !"verify".equals(phaseOf(check))
+                || !"true".equals(configuredValue(check, "configuration", "haltOnFailure"))) {
+            return false;
+        }
+        boolean lineFloor = false;
+        boolean noUntestedClass = false;
+        for (final Element limit : elementsUnder(check, "configuration", "rules", "rule", "limits")) {
+            final String counter = childValue(limit, "counter");
+            final String value = childValue(limit, "value");
+            if ("LINE".equals(counter) && "COVEREDRATIO".equals(value)
+                    && "0.80".equals(childValue(limit, "minimum"))) {
+                lineFloor = true;
+            }
+            if ("CLASS".equals(counter) && "MISSEDCOUNT".equals(value)
+                    && "0".equals(childValue(limit, "maximum"))) {
+                noUntestedClass = true;
+            }
+        }
+        return lineFloor && noUntestedClass;
+    }
+
+    // ===================================================================================================
+    // HELPERS :: the supply-chain evidence
+    // ===================================================================================================
+
+    /**
+     * One analyst determination, reduced to the three properties that decide whether it is narrow enough.
+     *
+     * @param ordinal        its position in the file, one-based, so a failure names a place
+     * @param scopes         the artefact scopes it names
+     * @param identifiers    the identifiers it accepts
+     * @param wildcardScoped whether any scope is a regular expression broad enough to match anything
+     */
+    private record SuppressionRule(int ordinal, List<String> scopes, List<String> identifiers,
+            boolean wildcardScoped) { }
+
+    /**
+     * Reads the analyst determinations the vulnerability scan is configured with.
+     *
+     * @return one entry per determination, in file order
+     * @throws IOException if the file cannot be read
+     */
+    private static List<SuppressionRule> suppressionRules() throws IOException {
+        final Path file = Path.of(SUPPRESSION_FILE);
+        assertThat(Files.isRegularFile(file))
+                .as("the determination file the scan is configured with must exist at %s",
+                        file.toAbsolutePath())
+                .isTrue();
+
+        final Document parsed;
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        try {
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setNamespaceAware(false);
+            factory.setExpandEntityReferences(false);
+            parsed = factory.newDocumentBuilder().parse(file.toFile());
+        } catch (final ParserConfigurationException | SAXException malformed) {
+            throw new IllegalStateException(file.toAbsolutePath()
+                    + " could not be parsed, so its determinations cannot be inspected", malformed);
+        }
+
+        final List<String> scopeNames = List.of("packageUrl", "gav", "filePath", "sha1", "cpe");
+        final List<String> identifierNames = List.of("cve", "vulnerabilityName", "cwe", "cpe",
+                "notes");
+        final List<SuppressionRule> rules = new ArrayList<>();
+        final NodeList declared = parsed.getElementsByTagName("suppress");
+        for (int index = 0; index < declared.getLength(); index++) {
+            final Element rule = (Element) declared.item(index);
+            final List<String> scopes = new ArrayList<>();
+            final List<String> identifiers = new ArrayList<>();
+            boolean wildcard = false;
+            for (final Element child : childElements(rule)) {
+                final String name = child.getTagName();
+                final String text = child.getTextContent().strip();
+                if (scopeNames.contains(name)) {
+                    scopes.add(name + "=" + text);
+                    if (".*".equals(text) || ".*.*".equals(text) || "*".equals(text)) {
+                        wildcard = true;
+                    }
+                }
+                if (identifierNames.contains(name) && !"notes".equals(name)) {
+                    identifiers.add(name + "=" + text);
+                }
+            }
+            rules.add(new SuppressionRule(index + 1, List.copyOf(scopes), List.copyOf(identifiers),
+                    wildcard));
+        }
+        return List.copyOf(rules);
+    }
+
+    /**
+     * What can honestly be established about the supply-chain gate from this tier.
+     *
+     * @param reportLocation          where a machine-readable report was looked for
+     * @param reportPresent           whether one was found
+     * @param stale                   whether the report predates the current declaration or bytes
+     * @param qualifyingFindings      findings at or above the threshold, each named
+     * @param undocumentedSuppressions findings the scan set aside with no determination covering them
+     * @param determinations          how many determinations were inspected
+     * @param mechanismEnforced       whether the parsed model actually enforces the gate
+     */
+    private record VulnerabilityEvidence(Path reportLocation, boolean reportPresent, boolean stale,
+            List<String> qualifyingFindings, List<String> undocumentedSuppressions, int determinations,
+            boolean mechanismEnforced) {
+
+        /**
+         * Reports whether the gate is discharged as far as this phase can discharge it.
+         *
+         * <p>An absent report never contributes a pass. What satisfies the row is the enforcing mechanism
+         * read out of the parsed build model together with the inspected determinations; a report, when one
+         * exists, must additionally be current and clean, and a stale one fails.
+         *
+         * @return {@code true} when nothing outstanding was found
+         */
+        boolean satisfied() {
+            return mechanismEnforced() && !stale() && qualifyingFindings().isEmpty()
+                    && undocumentedSuppressions().isEmpty();
+        }
+
+        /**
+         * Renders what was actually established, for the sign-off row and for a failure message.
+         *
+         * @return the narrative
+         */
+        String narrative() {
+            final StringBuilder rendered = new StringBuilder(256);
+            rendered.append(mechanismEnforced()
+                    ? "mechanism verified in the parsed build model (check at verify, CVSS 7.0, "
+                            + "unused-rule failure on)"
+                    : "MECHANISM NOT ENFORCED in the parsed build model");
+            rendered.append("; ").append(determinations())
+                    .append(" determination(s) inspected, each scoped to named artefacts");
+            if (reportPresent()) {
+                rendered.append("; report ").append(reportLocation())
+                        .append(stale() ? " is STALE and is not read as a pass"
+                                : " read: " + qualifyingFindings().size()
+                                        + " finding(s) at or above 7.0");
+            } else {
+                rendered.append("; no report at this phase - the scan is bound to verify, which is later, "
+                        + "and no pass is inferred from its absence");
+            }
+            return rendered.toString();
+        }
+
+        /**
+         * Names the report in the artefact column when one exists.
+         *
+         * @return the suffix to append, or an empty string
+         */
+        String reportSuffix() {
+            return reportPresent() ? "; report " + reportLocation() : "";
+        }
+    }
+
+    /**
+     * Locates a vulnerability report a previous build has already produced, if there is one.
+     *
+     * <p>Absence is never a pass. The scan is bound to a later phase than this tier, so a run of this
+     * class alone legitimately finds no report; the enforcing mechanism is asserted unconditionally
+     * elsewhere and the sign-off row records the absence as "enforced by the build at a later phase".
+     *
+     * @return the report, or empty when this phase has not produced one
+     */
+    private static Optional<Path> existingVulnerabilityReport() {
+        final Path report = Path.of("target", "dependency-check-report.json");
+        return Files.isRegularFile(report) ? Optional.of(report) : Optional.empty();
+    }
+
+    /**
+     * Assembles what this tier can establish about the supply-chain gate.
+     *
+     * @return the evidence
+     * @throws IOException if the determinations or a report cannot be read
+     */
+    private static VulnerabilityEvidence vulnerabilityEvidence() throws IOException {
+        final Element scan = activePlugin("dependency-check-maven");
+        final Element check = executionOf(scan, "owasp-dependency-check");
+        final boolean mechanism = goalsOf(check).contains("check")
+                && "verify".equals(phaseOf(check))
+                && "false".equals(configuredValue(scan, "configuration", "skip"))
+                && "7.0".equals(configuredValue(scan, "configuration", "failBuildOnCVSS"))
+                && "true".equals(configuredValue(scan, "configuration",
+                        "failBuildOnUnusedSuppressionRule"));
+
+        final List<SuppressionRule> determinations = suppressionRules();
+        final Set<String> documented = new LinkedHashSet<>();
+        for (final SuppressionRule rule : determinations) {
+            for (final String identifier : rule.identifiers()) {
+                documented.add(identifier.substring(identifier.indexOf('=') + 1));
+            }
+        }
+
+        final Path location = Path.of("target", "dependency-check-report.json");
+        if (!Files.isRegularFile(location)) {
+            return new VulnerabilityEvidence(location, false, false, List.of(), List.of(),
+                    determinations.size(), mechanism);
+        }
+
+        final boolean stale = isStale(location);
+        final JsonNode report = new ObjectMapper().readTree(Files.readAllBytes(location));
+        final List<String> qualifying = new ArrayList<>();
+        final List<String> undocumented = new ArrayList<>();
+        for (final JsonNode dependency : report.path("dependencies")) {
+            final String artefact = dependency.path("fileName").asText();
+            for (final JsonNode vulnerability : dependency.path("vulnerabilities")) {
+                final double score = highestScoreOf(vulnerability);
+                if (score >= QUALIFYING_SCORE) {
+                    qualifying.add(artefact + " -> " + vulnerability.path("name").asText()
+                            + " (" + score + ")");
+                }
+            }
+            for (final JsonNode suppressed : dependency.path("suppressedVulnerabilities")) {
+                final String name = suppressed.path("name").asText();
+                if (!documented.contains(name)) {
+                    undocumented.add(artefact + " -> " + name);
+                }
+            }
+        }
+        return new VulnerabilityEvidence(location, true, stale, List.copyOf(qualifying),
+                List.copyOf(undocumented), determinations.size(), mechanism);
+    }
+
+    /**
+     * Reports whether an artefact predates the dependency declaration it is supposed to describe.
+     *
+     * <p>The declaration is the one input that decides what a vulnerability scan is a scan OF. Every
+     * coordinate in this module is pinned exactly - no range, no {@code LATEST}, no {@code RELEASE} - so a
+     * report produced after the current build file describes the same resolved graph that is being built,
+     * and one produced before it describes a different graph and must not read as a pass.
+     *
+     * <p>The compiled-class tree is deliberately NOT an input here, and the reason is worth stating because
+     * the opposite is the intuitive choice. Recompiling unchanged sources rewrites those files and moves
+     * their timestamps without altering one coordinate of the graph, so including them would report a
+     * perfectly valid report as stale on the second build in a row - turning a correctness check into a
+     * project that cannot be built twice without {@code clean}. That is a false negative about the
+     * evidence rather than a true finding about the graph.
+     *
+     * @param  artefact the file to judge
+     * @return {@code true} when it is older than the build file
+     * @throws IOException if a timestamp cannot be read
+     */
+    private static boolean isStale(final Path artefact) throws IOException {
+        final Path build = Path.of(BUILD_FILE);
+        if (!Files.exists(build)) {
+            return false;
+        }
+        return Files.getLastModifiedTime(artefact).compareTo(Files.getLastModifiedTime(build)) < 0;
+    }
+
+    // ===================================================================================================
+    // HELPERS :: the recorded and generated performance baseline
+    // ===================================================================================================
+
+    /** Strict calendar-date parser, so an impossible date fails rather than being normalised. */
+    private static final DateTimeFormatter RECORDED_DATE = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd", Locale.ROOT).withResolverStyle(ResolverStyle.STRICT);
+
+    /**
+     * One recorded measurement, as the evidence page publishes it.
+     *
+     * @param date             the day it was taken
+     * @param machine          the host, processor and runtime it was taken on
+     * @param run              the run it measured
+     * @param records          records the run processed
+     * @param elapsedMillis    wall-clock milliseconds
+     * @param peakHeapBytes    summed peak heap occupancy
+     * @param recordsPerSecond the published quotient
+     */
+    private record PerformanceRow(LocalDate date, String machine, String run, long records,
+            long elapsedMillis, long peakHeapBytes, BigDecimal recordsPerSecond) { }
+
+    /**
+     * Reads the measured rows out of the recorded evidence page.
+     *
+     * <p>A placeholder row - one whose figures are dashes or whose date is not a date - is not returned as
+     * a row with zeroes in it. It is not returned at all, which is what makes "at least one measured row"
+     * an assertion about a measurement rather than about a table having lines in it.
+     *
+     * @return the measured rows, in page order
+     * @throws IOException if the page cannot be read
+     */
+    private static List<PerformanceRow> recordedPerformanceRows() throws IOException {
+        final Path evidence = documentationFile(GATE_EVIDENCE);
+        final List<String> lines =
+                List.of(Files.readString(evidence, StandardCharsets.UTF_8).split("\n", -1));
+
+        final List<PerformanceRow> rows = new ArrayList<>();
+        for (int index = 0; index < lines.size(); index++) {
+            if (!PERFORMANCE_ROW_HEADER.equals(lines.get(index).strip())
+                    || index + 1 >= lines.size() || !isAlignmentRow(lines.get(index + 1))) {
+                continue;
+            }
+            int cursor = index + 2;
+            while (cursor < lines.size() && lines.get(cursor).startsWith("|")
+                    && !isAlignmentRow(lines.get(cursor))) {
+                final List<String> cells = cellsOf(lines.get(cursor));
+                cursor++;
+                if (cells.size() != 7) {
+                    continue;
+                }
+                final LocalDate date = parsedDate(cells.get(0));
+                final Long records = parsedCount(cells.get(3));
+                final Long elapsed = parsedCount(cells.get(4));
+                final Long peak = parsedCount(cells.get(5));
+                final BigDecimal rate = parsedRate(cells.get(6));
+                if (date == null || records == null || elapsed == null || peak == null
+                        || rate == null) {
+                    continue;
+                }
+                rows.add(new PerformanceRow(date, cells.get(1), unquoted(cells.get(2)),
+                        records.longValue(), elapsed.longValue(), peak.longValue(), rate));
+            }
+            index = cursor - 1;
+        }
+        return List.copyOf(rows);
+    }
+
+    /**
+     * Reports whether the recorded evidence carries a measured performance baseline.
+     *
+     * @return {@code true} when at least one measured row is recorded and every one is well formed
+     * @throws IOException if the page cannot be read
+     */
+    private static boolean recordedEvidenceCoversPerformanceBaseline() throws IOException {
+        final List<PerformanceRow> rows = recordedPerformanceRows();
+        if (rows.isEmpty()) {
+            return false;
+        }
+        for (final PerformanceRow row : rows) {
+            if (row.records() <= 0L || row.elapsedMillis() <= 0L || row.peakHeapBytes() <= 0L
+                    || row.recordsPerSecond().compareTo(BigDecimal.ZERO) <= 0
+                    || row.machine().isBlank() || row.run().isBlank()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Parses a strictly resolved calendar date, or reports its absence.
+     *
+     * @param  cell the cell's text
+     * @return the date, or {@code null} when the cell is not one
+     */
+    private static LocalDate parsedDate(final String cell) {
+        try {
+            return LocalDate.parse(cell.strip(), RECORDED_DATE);
+        } catch (final DateTimeParseException notADate) {
+            return null;
+        }
+    }
+
+    /**
+     * Parses a whole-number figure, or reports its absence.
+     *
+     * @param  cell the cell's text
+     * @return the figure, or {@code null} when the cell carries no figure
+     */
+    private static Long parsedCount(final String cell) {
+        final String candidate = cell.strip().replace(",", "");
+        if (candidate.isEmpty() || !candidate.chars().allMatch(Character::isDigit)) {
+            return null;
+        }
+        return Long.valueOf(candidate);
+    }
+
+    /**
+     * Parses a decimal rate, or reports its absence.
+     *
+     * @param  cell the cell's text
+     * @return the rate, or {@code null} when the cell carries no rate
+     */
+    private static BigDecimal parsedRate(final String cell) {
+        final String candidate = cell.strip().replace(",", "");
+        if (candidate.isEmpty()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(candidate);
+        } catch (final NumberFormatException notARate) {
+            return null;
+        }
+    }
+
+    /** One row of a generated baseline, in the shape the recorder writes it. */
+    private record GeneratedRow(String run, long records, long elapsedMillis, long peakHeapBytes,
+            BigDecimal recordsPerSecond) { }
+
+    /**
+     * One generated baseline file this build produced.
+     *
+     * @param location               where it was written
+     * @param rows                   the rows it carries
+     * @param namesItsFixtureVolumes whether it states the volumes its figures were measured over
+     */
+    private record GeneratedBaseline(Path location, List<GeneratedRow> rows,
+            boolean namesItsFixtureVolumes) { }
+
+    /**
+     * Reads whatever run-scoped baselines the build has written into its output directory.
+     *
+     * @return one entry per generated file, which may be empty
+     * @throws IOException if a generated file cannot be read
+     */
+    private static List<GeneratedBaseline> generatedPerformanceEvidence() throws IOException {
+        if (!Files.isDirectory(EVIDENCE_DIRECTORY)) {
+            return List.of();
+        }
+        final List<Path> generated;
+        try (Stream<Path> entries = Files.list(EVIDENCE_DIRECTORY)) {
+            generated = entries.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().startsWith("gate3-"))
+                    .sorted()
+                    .toList();
+        }
+
+        final List<GeneratedBaseline> baselines = new ArrayList<>(generated.size());
+        for (final Path file : generated) {
+            final String content = Files.readString(file, StandardCharsets.UTF_8);
+            final List<GeneratedRow> rows = new ArrayList<>();
+            for (final String line : content.split("\n", -1)) {
+                if (!line.startsWith("|") || isAlignmentRow(line)) {
+                    continue;
+                }
+                final List<String> cells = cellsOf(line);
+                if (cells.size() != 5) {
+                    continue;
+                }
+                final Long records = parsedCount(cells.get(1));
+                final Long elapsed = parsedCount(cells.get(2));
+                final Long peak = parsedCount(cells.get(3));
+                final BigDecimal rate = parsedRate(cells.get(4));
+                if (records == null || elapsed == null || peak == null || rate == null) {
+                    continue;
+                }
+                rows.add(new GeneratedRow(cells.get(0), records.longValue(), elapsed.longValue(),
+                        peak.longValue(), rate));
+            }
+            baselines.add(new GeneratedBaseline(file, List.copyOf(rows),
+                    content.contains("Fixture volumes")));
+        }
+        return List.copyOf(baselines);
+    }
+
+    // ===================================================================================================
+    // HELPERS :: the production-tree audit
+    // ===================================================================================================
+
+    /** Recognises a string literal that opens a statement rather than a sentence. */
+    private static final Pattern QUERY_VERB = Pattern.compile(
+            "^\\s*(SELECT|INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|CREATE)\\b");
+
+    /** Recognises a clause keyword, which is what distinguishes a query from an English sentence. */
+    private static final Pattern QUERY_CLAUSE = Pattern.compile(
+            "\\b(FROM|INTO|SET|WHERE|TABLE|VALUES|INDEX|SEQUENCE)\\b");
+
+    /** Recognises a cast whose target is a parameterised type. */
+    private static final Pattern PARAMETERISED_CAST = Pattern.compile(
+            "\\(\\s*[A-Za-z_$][\\w.$]*\\s*<[^<>()]*>\\s*\\)\\s*[A-Za-z_$(]");
+
+    /** Recognises a cast whose target is a single-letter type variable. */
+    private static final Pattern TYPE_VARIABLE_CAST = Pattern.compile(
+            "\\(\\s*[A-Z][0-9]?\\s*\\)\\s*[A-Za-z_$(]");
+
+    /**
+     * What the query-string audit measured.
+     *
+     * @param queryLiterals  how many query strings the production tree carries at all
+     * @param assembledSites those assembled from something that is not a literal, each named
+     */
+    private record QueryStringCensus(int queryLiterals, List<String> assembledSites) { }
+
+    /**
+     * Censuses the production tree's query strings and how each is built.
+     *
+     * @return the census
+     * @throws IOException if the tree cannot be walked
+     */
+    private static QueryStringCensus queryStringCensus() throws IOException {
+        int literals = 0;
+        final List<String> assembled = new ArrayList<>();
+        for (final Path file : productionSources()) {
+            final String text = readSource(file);
+            for (final int[] span : stringLiteralSpans(text)) {
+                final String body = text.substring(span[2], span[3]);
+                if (!QUERY_VERB.matcher(body).find() || !QUERY_CLAUSE.matcher(body).find()) {
+                    continue;
+                }
+                literals++;
+                if (concatenatesNonLiteral(text, span[0], span[1])) {
+                    assembled.add(file + ":" + (1 + countLineFeeds(text, span[0])));
+                }
+            }
+        }
+        return new QueryStringCensus(literals, List.copyOf(assembled));
+    }
+
+    /**
+     * Reports whether the expression around a literal joins it to something that is not a literal.
+     *
+     * @param  text  the whole source
+     * @param  start index of the literal's opening quote
+     * @param  end   index just past its closing quote
+     * @return {@code true} when a non-literal is concatenated on either side
+     */
+    private static boolean concatenatesNonLiteral(final String text, final int start, final int end) {
+        int after = end;
+        while (after < text.length() && Character.isWhitespace(text.charAt(after))) {
+            after++;
+        }
+        if (after < text.length() && text.charAt(after) == '+') {
+            int operand = after + 1;
+            while (operand < text.length() && Character.isWhitespace(text.charAt(operand))) {
+                operand++;
+            }
+            if (operand < text.length() && text.charAt(operand) != '"') {
+                return true;
+            }
+        }
+        int before = start - 1;
+        while (before >= 0 && Character.isWhitespace(text.charAt(before))) {
+            before--;
+        }
+        if (before >= 0 && text.charAt(before) == '+') {
+            int operand = before - 1;
+            while (operand >= 0 && Character.isWhitespace(text.charAt(operand))) {
+                operand--;
+            }
+            return operand >= 0 && text.charAt(operand) != '"';
+        }
+        return false;
+    }
+
+    /**
+     * Finds every string literal in a Java source, skipping comments.
+     *
+     * <p>Text blocks are recognised as one literal, so a multi-line statement is examined whole rather
+     * than line by line. Comments are skipped because a construct named in prose is not a use of it.
+     *
+     * @param  text the source
+     * @return one entry per literal: opening index, index past the close, and the body's bounds
+     */
+    private static List<int[]> stringLiteralSpans(final String text) {
+        final List<int[]> spans = new ArrayList<>();
+        int index = 0;
+        while (index < text.length()) {
+            final char character = text.charAt(index);
+            if (text.startsWith("//", index)) {
+                final int newline = text.indexOf('\n', index);
+                index = newline < 0 ? text.length() : newline;
+            } else if (text.startsWith("/*", index)) {
+                final int close = text.indexOf("*/", index);
+                index = close < 0 ? text.length() : close + 2;
+            } else if (text.startsWith("\"\"\"", index)) {
+                final int close = text.indexOf("\"\"\"", index + 3);
+                if (close < 0) {
+                    break;
+                }
+                spans.add(new int[] {index, close + 3, index + 3, close});
+                index = close + 3;
+            } else if (character == '"') {
+                int cursor = index + 1;
+                while (cursor < text.length()) {
+                    if (text.charAt(cursor) == '\\') {
+                        cursor += 2;
+                        continue;
+                    }
+                    if (text.charAt(cursor) == '"') {
+                        break;
+                    }
+                    cursor++;
+                }
+                spans.add(new int[] {index, cursor + 1, index + 1, Math.min(cursor, text.length())});
+                index = cursor + 1;
+            } else if (character == '\'') {
+                int cursor = index + 1;
+                while (cursor < text.length() && text.charAt(cursor) != '\'') {
+                    cursor += text.charAt(cursor) == '\\' ? 2 : 1;
+                }
+                index = cursor + 1;
+            } else {
+                index++;
+            }
+        }
+        return List.copyOf(spans);
+    }
+
+    /**
+     * Counts line feeds before an index, so a finding can name a line.
+     *
+     * @param  text  the source
+     * @param  limit the index to count up to
+     * @return the number of line feeds
+     */
+    private static int countLineFeeds(final String text, final int limit) {
+        int count = 0;
+        for (int index = 0; index < limit; index++) {
+            if (text.charAt(index) == '\n') {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Finds every cast to a parameterised type or a type variable in the production tree.
+     *
+     * <p>String literals and comments are removed from each line first, because the module's diagnostics
+     * carry text like {@code RECORD(S)} that a cast pattern matches and that is not a cast.
+     *
+     * @return one entry per site
+     * @throws IOException if the tree cannot be walked
+     */
+    private static List<String> genericCastSites() throws IOException {
+        final List<String> sites = new ArrayList<>();
+        for (final Path file : productionSources()) {
+            final String[] lines = readSource(file).split("\n", -1);
+            for (int index = 0; index < lines.length; index++) {
+                final String stripped = lines[index].strip();
+                if (stripped.startsWith("*") || stripped.startsWith("//")
+                        || stripped.startsWith("/*")) {
+                    continue;
+                }
+                final String code = withoutLiterals(lines[index]);
+                if (PARAMETERISED_CAST.matcher(code).find()
+                        || TYPE_VARIABLE_CAST.matcher(code).find()) {
+                    sites.add(file.getFileName() + ":" + (index + 1));
+                }
+            }
+        }
+        return List.copyOf(sites);
+    }
+
+    /**
+     * Removes string and character literals, and any trailing line comment, from one line.
+     *
+     * @param  line the line
+     * @return the code that remains
+     */
+    private static String withoutLiterals(final String line) {
+        final StringBuilder code = new StringBuilder(line.length());
+        int index = 0;
+        while (index < line.length()) {
+            final char character = line.charAt(index);
+            if (line.startsWith("//", index)) {
+                break;
+            }
+            if (character == '"' || character == '\'') {
+                int cursor = index + 1;
+                while (cursor < line.length() && line.charAt(cursor) != character) {
+                    cursor += line.charAt(cursor) == '\\' ? 2 : 1;
+                }
+                index = cursor + 1;
+                continue;
+            }
+            code.append(character);
+            index++;
+        }
+        return code.toString();
+    }
+
+    /**
+     * Lists every production source, which is the tree the audit is scoped to.
+     *
+     * @return the sources, sorted
+     * @throws IOException if the tree cannot be walked
+     */
+    private static List<Path> productionSources() throws IOException {
+        final Path root = Path.of(PRODUCTION_TREE);
+        assertThat(Files.isDirectory(root))
+                .as("the audited tree is expected at %s", root.toAbsolutePath())
+                .isTrue();
+        try (Stream<Path> tree = Files.walk(root)) {
+            return tree.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    /**
+     * Every measured figure of the unsafe-code audit, with its budget.
+     *
+     * @param reflection      references to the reflection package
+     * @param processes       process-execution sites
+     * @param nativeQueries   native-query construction sites
+     * @param assembledSql    query strings assembled from a non-literal
+     * @param genericCasts    casts to a parameterised type or type variable
+     * @param suppressions    suppressed warnings
+     */
+    private record UnsafeCodeCensus(long reflection, long processes, long nativeQueries,
+            int assembledSql, int genericCasts, long suppressions) {
+
+        /**
+         * Reports whether every measured category is inside its budget.
+         *
+         * <p>The conjunction is the point: a row that reported only one category would read as an audit
+         * and cover a fraction of one.
+         *
+         * @return {@code true} when all six hold
+         */
+        boolean withinBudget() {
+            return reflection() == 0L && processes() == 0L && nativeQueries() == 0L
+                    && assembledSql() == 0 && genericCasts() <= GENERIC_CAST_BUDGET
+                    && suppressions() <= SUPPRESSION_BUDGET;
+        }
+
+        /**
+         * Renders every measured figure, so the row records what was counted.
+         *
+         * @return the narrative
+         */
+        String narrative() {
+            return "reflection " + reflection() + ", process execution " + processes()
+                    + ", native query " + nativeQueries() + ", assembled SQL " + assembledSql()
+                    + ", casts to a parameterised type " + genericCasts() + " (budget "
+                    + GENERIC_CAST_BUDGET + "), warning suppressions " + suppressions() + " (budget "
+                    + SUPPRESSION_BUDGET + ")";
+        }
+    }
+
+    /**
+     * Measures every category of the unsafe-code audit over the scoped production tree.
+     *
+     * @return the census
+     * @throws IOException if the tree cannot be walked
+     */
+    private static UnsafeCodeCensus unsafeCodeCensus() throws IOException {
+        return new UnsafeCodeCensus(
+                occurrencesIn(PRODUCTION_TREE, "java.lang.reflect")
+                        + occurrencesIn(PRODUCTION_TREE, "Class.forName"),
+                occurrencesIn(PRODUCTION_TREE, "Runtime.getRuntime")
+                        + occurrencesIn(PRODUCTION_TREE, "ProcessBuilder"),
+                occurrencesIn(PRODUCTION_TREE, "createNativeQuery"),
+                queryStringCensus().assembledSites().size(),
+                genericCastSites().size(),
+                occurrencesIn(PRODUCTION_TREE, "@SuppressWarnings"));
+    }
+
+    // ===================================================================================================
+    // HELPERS :: the legacy linkage census
+    // ===================================================================================================
+
+    /**
+     * How often one command appears, and in which members.
+     *
+     * @param total   occurrences across the estate
+     * @param members occurrences per member, for the members that carry it
+     */
+    private record VerbCensus(int total, Map<String, Integer> members) { }
+
+    /**
+     * Censuses the static calls the programs make, by target.
+     *
+     * @return one entry per called subprogram
+     * @throws IOException if the estate cannot be read
+     */
+    private static Map<String, Integer> staticCallCensus() throws IOException {
+        final Map<String, Integer> census = new TreeMap<>();
+        for (final Path member : programMembers()) {
+            final Matcher call = STATIC_CALL.matcher(executableText(member));
+            while (call.find()) {
+                census.merge(call.group(1).toUpperCase(Locale.ROOT), Integer.valueOf(1),
+                        (first, second) -> Integer.valueOf(first.intValue() + second.intValue()));
+            }
+        }
+        assertThat(census)
+                .as("the linkage census must find calls; an empty one means the estate was not read")
+                .isNotEmpty();
+        return Map.copyOf(census);
+    }
+
+    /**
+     * Censuses one command across the programs.
+     *
+     * <p>The member is read as one blank-normalised stream rather than line by line, because a command
+     * continued onto a second line is one command: a line-wise count of the transfer-control command finds
+     * nine of the twenty-five that exist.
+     *
+     * @param  command the command text, as one or more words
+     * @return its census
+     * @throws IOException if the estate cannot be read
+     */
+    private static VerbCensus cicsVerbCensus(final String command) throws IOException {
+        final Pattern occurrence = Pattern.compile(
+                command.replace(" ", "\\s+"), Pattern.CASE_INSENSITIVE);
+        final Map<String, Integer> members = new TreeMap<>();
+        int total = 0;
+        for (final Path member : programMembers()) {
+            final Matcher found = occurrence.matcher(executableText(member));
+            int inMember = 0;
+            while (found.find()) {
+                inMember++;
+            }
+            if (inMember > 0) {
+                members.put(member.getFileName().toString(), Integer.valueOf(inMember));
+                total += inMember;
+            }
+        }
+        return new VerbCensus(total, Map.copyOf(members));
+    }
+
+    /**
+     * Lists the program members, case-inclusively.
+     *
+     * @return every program in the estate
+     * @throws IOException if the directory cannot be listed
+     */
+    private static List<Path> programMembers() throws IOException {
+        final List<Path> members = new ArrayList<>(filesByExtension("app/cbl", ".cbl"));
+        members.addAll(filesByExtension("app/cbl", ".CBL"));
+        return List.copyOf(members);
+    }
+
+    /**
+     * Reads one member's executable text as a single blank-normalised stream.
+     *
+     * <p>Comment and continuation-indicator lines are dropped by column, so a command named in a comment
+     * is not counted, and the sequence area is kept out of the stream. Carriage returns are stripped first
+     * because five members in this estate use a two-character terminator.
+     *
+     * @param  member the member to read
+     * @return its executable text
+     * @throws IOException if the member cannot be read
+     */
+    private static String executableText(final Path member) throws IOException {
+        final StringBuilder stream = new StringBuilder(4096);
+        for (String line : Files.readString(member, StandardCharsets.ISO_8859_1).split("\n", -1)) {
+            if (line.endsWith("\r")) {
+                line = line.substring(0, line.length() - 1);
+            }
+            if (line.length() < 8 || line.charAt(6) == '*' || line.charAt(6) == '/') {
+                continue;
+            }
+            stream.append(' ').append(line.substring(7));
+        }
+        return stream.toString().replaceAll("\\s+", " ");
+    }
+
+    // ===================================================================================================
+    // HELPERS :: resolving a traceability citation
+    // ===================================================================================================
+
+    /**
+     * Strips the code fencing a matrix cell renders an identifier in.
+     *
+     * @param  cell the cell's text
+     * @return the identifier
+     */
+    private static String unquoted(final String cell) {
+        return cell.replace("`", "").strip();
+    }
+
+    /**
+     * Reads the line a matrix row cites.
+     *
+     * @param  row the row's cells
+     * @return the cited line number
+     */
+    private static int citedLine(final List<String> row) {
+        final String cell = unquoted(row.get(2));
+        assertThat(cell)
+                .as("row for %s cites '%s' as a line number, which is not one", row.get(0), cell)
+                .matches("\\d+");
+        return Integer.parseInt(cell);
+    }
+
+    /**
+     * Reads one legacy member's lines, with carriage returns removed.
+     *
+     * @param  relativePath the member's repository-relative path
+     * @return its lines
+     */
+    private static List<String> readMember(final String relativePath) {
+        final Path member = repositoryFile(relativePath);
+        final String content;
+        try {
+            content = Files.readString(member, StandardCharsets.ISO_8859_1);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("the cited member at " + member + " could not be read",
+                    unreadable);
+        }
+        final List<String> lines = new ArrayList<>();
+        for (final String line : content.split("\n", -1)) {
+            lines.add(line.endsWith("\r") ? line.substring(0, line.length() - 1) : line);
+        }
+        return List.copyOf(lines);
+    }
+
+    /**
+     * Reads the paragraph label declared on one line, if that line declares one.
+     *
+     * @param  lines  the member's lines
+     * @param  number the one-based line number
+     * @return the label, or {@code null} when the line declares none
+     */
+    private static String paragraphLabelAt(final List<String> lines, final int number) {
+        if (number < 1 || number > lines.size()) {
+            return null;
+        }
+        final String line = lines.get(number - 1);
+        if (line.length() < 8 || line.charAt(6) == '*' || line.charAt(6) == '/'
+                || line.charAt(7) == ' ') {
+            return null;
+        }
+        final String statement = withoutTrailingBlanks(line.substring(7));
+        return isParagraphLabel(statement) ? statement.substring(0, statement.length() - 1) : null;
+    }
+
+    /**
+     * Reads one Java source whole.
+     *
+     * @param  file the source to read
+     * @return its text
+     */
+    private static String readSource(final Path file) {
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (final IOException unreadable) {
+            throw new UncheckedIOException("the cited source at " + file.toAbsolutePath()
+                    + " could not be read", unreadable);
+        }
+    }
+
+    /**
+     * Reports whether a source declares a method of the given name.
+     *
+     * <p>Resolved by reading the source rather than by loading the type. That is deliberate: the reflection
+     * budget for this module is zero, and an instrument that audited that budget by reflecting would be
+     * hard to take seriously. A name followed by an opening parenthesis counts as a declaration when
+     * everything before it on the line is type and modifier text - so an invocation, which is preceded by
+     * a dot or a method reference, does not.
+     *
+     * @param  source the source text
+     * @param  method the method name
+     * @return {@code true} when the source declares it
+     */
+    private static boolean declaresMethod(final String source, final String method) {
+        return !declarationLinesOf(source, method).isEmpty();
+    }
+
+    /**
+     * Finds the lines on which a source declares a method of the given name.
+     *
+     * @param  source the source text
+     * @param  method the method name
+     * @return the zero-based line indices
+     */
+    private static List<Integer> declarationLinesOf(final String source, final String method) {
+        final Pattern call = Pattern.compile("\\b" + Pattern.quote(method) + "\\s*\\(");
+        final String[] lines = source.split("\n", -1);
+        final List<Integer> declarations = new ArrayList<>();
+        for (int index = 0; index < lines.length; index++) {
+            final String stripped = lines[index].strip();
+            if (stripped.startsWith("*") || stripped.startsWith("//") || stripped.startsWith("/*")) {
+                continue;
+            }
+            final Matcher found = call.matcher(lines[index]);
+            while (found.find()) {
+                final String prefix = lines[index].substring(0, found.start()).strip();
+                if (prefix.isEmpty() || prefix.endsWith(".") || prefix.endsWith("::")
+                        || prefix.endsWith("new") || !prefix.matches("[\\w.<>\\[\\],?@\\s]*")) {
+                    continue;
+                }
+                declarations.add(Integer.valueOf(index));
+            }
+        }
+        return List.copyOf(declarations);
+    }
+
+    /**
+     * Reads the statements in a method's body, so an empty one can be shown to be empty.
+     *
+     * <p>Braces are balanced from the declaration's own opening brace, and comment lines are dropped.
+     * What remains is the statements, which is what "implements nothing" has to mean if it is to be
+     * asserted rather than asserted about.
+     *
+     * @param  source the source text
+     * @param  method the method name
+     * @return the body's statements, each stripped
+     */
+    private static List<String> methodBodyStatements(final String source, final String method) {
+        final List<Integer> declarations = declarationLinesOf(source, method);
+        if (declarations.isEmpty()) {
+            return List.of();
+        }
+        final String[] lines = source.split("\n", -1);
+        final List<String> statements = new ArrayList<>();
+        int depth = 0;
+        boolean opened = false;
+        for (int index = declarations.get(0).intValue(); index < lines.length; index++) {
+            final String line = lines[index];
+            final String stripped = line.strip();
+            for (int cursor = 0; cursor < line.length(); cursor++) {
+                if (line.charAt(cursor) == '{') {
+                    depth++;
+                    opened = true;
+                } else if (line.charAt(cursor) == '}') {
+                    depth--;
+                }
+            }
+            if (opened && !stripped.startsWith("*") && !stripped.startsWith("//")
+                    && !stripped.startsWith("/*")) {
+                final String content = stripped.replace("{", "").replace("}", "").strip();
+                if (!content.isEmpty() && index > declarations.get(0).intValue()) {
+                    statements.add(content);
+                }
+            }
+            if (opened && depth == 0) {
+                break;
+            }
+        }
+        return List.copyOf(statements);
+    }
+
+    /**
+     * Counts the invocations of a method within one source.
+     *
+     * @param  source the source text
+     * @param  method the method name
+     * @return how many times it is called
+     */
+    private static int invocationCountOf(final String source, final String method) {
+        final Pattern call = Pattern.compile("(?<![\\w.])" + Pattern.quote(method) + "\\s*\\(");
+        int invocations = 0;
+        for (final String line : source.split("\n", -1)) {
+            final String stripped = line.strip();
+            if (stripped.startsWith("*") || stripped.startsWith("//") || stripped.startsWith("/*")) {
+                continue;
+            }
+            final Matcher found = call.matcher(line);
+            while (found.find()) {
+                final String prefix = line.substring(0, found.start()).strip();
+                if (prefix.isEmpty() || !prefix.matches("[\\w.<>\\[\\],?@\\s]*")
+                        || prefix.endsWith("void") || prefix.endsWith("private")) {
+                    invocations++;
+                }
+            }
+        }
+        return invocations;
+    }
+
+    // ===================================================================================================
     // HELPERS :: the sign-off record
     // ===================================================================================================
 
@@ -3445,7 +6110,13 @@ class GateVerificationTest extends AbstractPostgresIT {
      */
     private record ChecklistRow(String item, String artefact, boolean satisfied, String evidence) {
 
-        /** Renders the row for the evidence page. */
+        /**
+         * Renders the row for the evidence page.
+         *
+         * @return one Markdown table row, {@code "| item | artefact | status | evidence |"}, where the
+         *         status cell is {@code PRESENT} when the artefact was found and {@code **MISSING**}
+         *         when it was not
+         */
         @Override
         public String toString() {
             return "| " + item + " | " + artefact + " | " + (satisfied ? "PRESENT" : "**MISSING**")
@@ -3484,28 +6155,122 @@ class GateVerificationTest extends AbstractPostgresIT {
     }
 
     /**
-     * Reports whether the recorded evidence page carries a performance baseline with measured figures.
+     * Reports whether the analyst determinations are still exactly the one examined, scoped finding.
      *
-     * <p>Checked against the recorded page rather than against the build directory, because the baseline is
-     * discharged by having been measured and written down, not by a transient artefact of the current run.
+     * <p>Read by the sign-off row for the supply-chain item, so that the row's state depends on what may be
+     * suppressed and not only on the threshold. Written as one predicate rather than as assertions because a
+     * checklist row records a state; the assertions that explain <em>why</em> that state is required live in
+     * the build-enforced gate specification above.
      *
-     * @return {@code true} when the page carries the baseline section and its units
-     * @throws IOException if the page cannot be read
+     * @return {@code true} while one rule names one examined identifier on the documented artifacts
+     * @throws IOException if the determination file cannot be read
      */
-    private static boolean recordedEvidenceCoversPerformanceBaseline() throws IOException {
-        final String recorded =
-                Files.readString(documentationFile(GATE_EVIDENCE), StandardCharsets.UTF_8);
-        return recorded.contains("Gate 3") && recorded.contains("Measured runs");
+    private static boolean determinationIsScopedToOneExaminedFinding() throws IOException {
+        final String declarations = withoutXmlComments(suppressionFile());
+        return countOf(declarations, "<suppress>") == 1
+                && countOf(declarations, "<cve>") == 1
+                && countOf(declarations, "<packageUrl") == 1
+                && declarations.contains("<cve>" + DETERMINED_IDENTIFIER + "</cve>")
+                && declarations.contains(DETERMINED_ARTIFACT_SCOPE)
+                && !declarations.contains("<cpe>")
+                && !declarations.contains("<gav")
+                && !declarations.contains("<vulnerabilityName");
     }
 
     /**
-     * Locates a machine-readable vulnerability report a previous build may have produced.
+     * What was established about the external interface contracts, and how.
      *
-     * @return the report, when one exists
+     * @param satisfied whether every contract examined here holds
+     * @param narrative what was examined, for the sign-off row
      */
-    private static Optional<Path> existingVulnerabilityReport() {
-        final Path report = Path.of("target", "dependency-check-report.json");
-        return Files.isRegularFile(report) ? Optional.of(report) : Optional.empty();
+    private record InterfaceContractEvidence(boolean satisfied, String narrative) { }
+
+    /**
+     * Exercises the two external contracts this class can reach in process, and reports what it found.
+     *
+     * <h4>Why this is not a restatement of the end-to-end suite</h4>
+     * The sign-off row for interface contracts used to be a literal pass, on the strength of two named
+     * classes existing. Those classes are the right place for the contracts that need a bound port and a
+     * live queue, and they are named in the artefact column - but a checklist row has to be the result of
+     * something, so the two halves that need neither are exercised here through the shipped code: the
+     * batch-trigger card image, built by the production builder, and the sign-on message texts, read from
+     * the production constants. A contract that had drifted would fail the row rather than being reported
+     * as verified because a test file exists.
+     *
+     * @return the evidence
+     */
+    private static InterfaceContractEvidence interfaceContractEvidence() {
+        final List<String> cards = JclCardImageBuilder.build("2022-01-01", "2022-07-06");
+        boolean satisfied = cards.size() == JclCardImageBuilder.CARD_COUNT;
+        for (final String card : cards) {
+            satisfied = satisfied && card.getBytes(StandardCharsets.US_ASCII).length
+                    == JclCardImageBuilder.CARD_IMAGE_WIDTH;
+        }
+        satisfied = satisfied
+                && cards.get(cards.size() - 1).startsWith(JclCardImageBuilder.EOF_SENTINEL_CARD);
+
+        final List<String> signOnTexts = List.of(SignOnResponse.MSG_PROMPT_USERID,
+                SignOnResponse.MSG_PROMPT_PASSWD, SignOnResponse.MSG_WRONG_PASSWD,
+                SignOnResponse.MSG_USER_NOT_FOUND, SignOnResponse.MSG_UNABLE_TO_VERIFY);
+        for (final String text : signOnTexts) {
+            satisfied = satisfied && !text.isBlank()
+                    && text.getBytes(StandardCharsets.US_ASCII).length
+                            <= SignOnResponse.MESSAGE_LENGTH;
+        }
+        final List<String> commonTexts = List.of(MessageCatalogService.CCDA_MSG_THANK_YOU,
+                MessageCatalogService.CCDA_MSG_INVALID_KEY);
+        for (final String text : commonTexts) {
+            satisfied = satisfied && !text.isBlank()
+                    && text.getBytes(StandardCharsets.US_ASCII).length
+                            == MessageCatalogService.COMMON_MESSAGE_WIDTH;
+        }
+
+        return new InterfaceContractEvidence(satisfied, cards.size() + " card images of "
+                + JclCardImageBuilder.CARD_IMAGE_WIDTH + " bytes built here from the shipped builder, "
+                + "terminal sentinel transmitted; " + signOnTexts.size() + " sign-on texts within the "
+                + SignOnResponse.MESSAGE_LENGTH + "-byte message field and "
+                + commonTexts.size() + " common messages at exactly "
+                + MessageCatalogService.COMMON_MESSAGE_WIDTH + " bytes; the queue and the bound port are "
+                + "exercised by the two classes named beside this row");
+    }
+
+    /**
+     * What was established about the named validation artefacts.
+     *
+     * @param satisfied whether every named artefact is present at its measured geometry
+     * @param narrative what was examined, for the sign-off row
+     */
+    private record NamedArtefactEvidence(boolean satisfied, String narrative) { }
+
+    /**
+     * Confirms the named artefacts are present at the geometry they were measured at.
+     *
+     * @return the evidence
+     * @throws IOException if an artefact cannot be read
+     */
+    private static NamedArtefactEvidence namedArtefactEvidence() throws IOException {
+        boolean satisfied = true;
+        int fixtures = 0;
+        for (final Map.Entry<String, Integer> expected : NAMED_FIXTURE_SIZES.entrySet()) {
+            final byte[] content =
+                    classpathBytes(TestDataFactory.FIXTURE_DIRECTORY + expected.getKey());
+            satisfied = satisfied && content.length == expected.getValue().intValue();
+            fixtures++;
+        }
+
+        int encoded = 0;
+        for (final Path dataset : filesByExtension(ENCODED_DATASET_DIRECTORY, ".PS")) {
+            encoded += Files.isRegularFile(dataset) ? 1 : 0;
+        }
+        for (final Path dataset : filesByExtension(ENCODED_DATASET_DIRECTORY, ".INIT")) {
+            encoded += Files.isRegularFile(dataset) ? 1 : 0;
+        }
+        satisfied = satisfied && encoded == ENCODED_DATASET_COUNT
+                && TestDataFactory.SEEDED_IDENTITIES.size() == TestDataFactory.SEEDED_USER_COUNT;
+
+        return new NamedArtefactEvidence(satisfied, fixtures + " line-delimited fixtures at their "
+                + "measured byte counts, " + TestDataFactory.SEEDED_IDENTITIES.size() + " identities, "
+                + encoded + " encoded datasets");
     }
 
     /**

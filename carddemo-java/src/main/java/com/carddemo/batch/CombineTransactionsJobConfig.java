@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -398,12 +399,11 @@ public final class CombineTransactionsJobConfig {
 
 
     /*
-     * There is deliberately no launch-parameter name for either configured input. Two such names were
-     * once published on the launch contract as "typed-launch compatibility" spellings, and no job ever
-     * accepted either, so every request carrying one was refused while the published document invited
-     * it. Naming them here would reopen the question the two properties above have already answered:
-     * the locations are the deployment's to name and not a caller's, which is what keeps an untrusted
-     * value away from a resource loader. The names are therefore absent rather than unused.
+     * There is deliberately no launch-parameter name for either configured input, and none may be added.
+     * Publishing one on the launch contract would invite a request the job then refuses, and it would
+     * reopen the question the two properties above have already answered: the locations are the
+     * deployment's to name and not a caller's, which is what keeps an untrusted value away from a
+     * resource loader. The names are absent rather than unused.
      */
 
     /**
@@ -413,19 +413,22 @@ public final class CombineTransactionsJobConfig {
      * in the data definition of the step that loads it, so the name is the estate's rather than this
      * translation's. Naming it here is what puts the combined generation in the same generation group,
      * under the same one canonical key shape, and inside the same retention pass as every other artefact
-     * this package publishes. An earlier revision staged it under a job-scoped key of its own invention,
-     * which the generation retention scan could not see at all. See {@code docs/decision-log.md} entry
-     * DL-212.
+     * this package publishes. A job-scoped key of this job's own invention would not do: the generation
+     * retention scan looks for the estate's key shape and could not see such a key at all. See
+     * {@code docs/decision-log.md} entry DL-212.
      */
     public static final String COMBINED_DATASET_BASE = "AWS.M2.CARDDEMO.TRANSACT.COMBINED";
 
     /**
-     * Property naming the one directory a supplied location may name a relative name beneath.
+     * Property naming the one directory a <em>configured</em> location may name a relative name beneath.
      *
-     * <p>The local half of the staged-input allow-list, and the same key shape the other staged-dataset
-     * jobs of this package use for their own staging directory. Published so that a deployment, a test and
-     * a diagnostic all spell it once. It defaults to the platform's temporary location, so no configuration
-     * document has to name it for the job to be launchable.
+     * <p>The local half of the staged-input resolution rule, and the same key shape the other
+     * staged-dataset jobs of this package use for their own staging directory. Configured rather than
+     * submitted: this job accepts no launch parameter, so the only locations that reach the rule are the
+     * two bound from {@value #BACKUP_RESOURCE_PROPERTY} and {@value #SYNTHESIZED_RESOURCE_PROPERTY}.
+     * Published so that a deployment, a test and a diagnostic all spell it once. It defaults to the
+     * platform's temporary location, so no configuration document has to name it for the job to be
+     * launchable.
      */
     public static final String STAGING_DIRECTORY_PROPERTY =
             "carddemo.batch.combine-transactions.staging-directory";
@@ -834,13 +837,25 @@ public final class CombineTransactionsJobConfig {
      * with the same cards. The boundary listener emits the job-level start and end diagnostics, so the
      * two step-level lines this class emits sit inside a job-level frame.
      *
-     * <p><strong>A parameter validator is attached, and this job is the reason the staged-input contract
-     * exists.</strong> Its two parameters are locations, and a location is afterwards handed to a resource
-     * resolver, so it is the one kind of launch parameter that decides what the process reads rather than
-     * merely what it computes with. The rule is the allow-list owned by {@link JobParameterValidators},
-     * built from the configured staging bucket and {@value #STAGING_DIRECTORY_PROPERTY}, so a launch naming
-     * anything else is refused as an invalid parameter set before any step opens anything - and refused
-     * again at resolution, because a boundary that can be reached around is not a boundary.
+     * <p><strong>No parameter validator is attached here, because this job takes no launch parameter at
+     * all.</strong> Its two inputs are locations, and a location does decide what the process reads rather
+     * than merely what it computes with - but here both are <em>configuration</em>, bound at construction
+     * from {@value #BACKUP_RESOURCE_PROPERTY} and {@value #SYNTHESIZED_RESOURCE_PROPERTY}, and a caller
+     * launching the job cannot supply or override either. A validator would therefore have nothing to
+     * validate: {@link JobParameterValidators} guards <em>submitted</em> parameters, and a launch of this
+     * job carries none. The framework's own permissive default validator remains in place, which requires
+     * no key and so accepts the empty parameter set a launch of this job presents - that is what
+     * {@code BatchLaunchCoordinator} finds when it demands a non-null validator before reserving an
+     * execution. The boundary that matters here is the resolution one, and it is enforced where the
+     * location is actually turned into a resource: a configured value must be present and non-blank, must
+     * pass {@link StagedResourceNames#requireSimpleName} when it is a simple name, and is resolved against
+     * the staged generations and {@value #STAGING_DIRECTORY_PROPERTY} rather than being handed to a
+     * resource loader unexamined.
+     *
+     * <p>An earlier revision of this comment described an attached validator and "two parameters", which
+     * was doubly wrong - it named a collaborator this class does not inject and a launch contract this job
+     * does not have - and it would have led a reader to believe a submitted location was being checked when
+     * no location can be submitted.
      *
      * <p>Nothing launches this job automatically. It is registered under {@value #JOB_NAME} and
      * launched on demand; it is not chained to another job and no aggregate job exists that would run
@@ -917,12 +932,12 @@ public final class CombineTransactionsJobConfig {
      *
      * <p>No filesystem path is composed and no caller-supplied path is honoured: every rung above
      * resolves from a whitelisted logical base or from an already-validated simple name, which is the
-     * property that made the previous refusal safe and is preserved here. What has changed is only that
-     * an unnamed input is now the dataset the legacy member itself declares rather than nothing at all -
-     * a default that is faithful precisely because it is the legacy DSN. A base that holds no generation
-     * still refuses: reading one input instead of two produces a perfectly well-formed result that is
-     * missing half its records, and that outcome is exactly what must not be allowed to look like
-     * success. See {@code docs/decision-log.md} entry DL-214.
+     * property that makes the refusal below safe. An unnamed input falls back to the dataset the legacy
+     * member itself declares rather than to nothing at all - a default that is faithful precisely
+     * because it is the legacy DSN. A base that holds no generation still refuses: reading one input
+     * instead of two produces a perfectly well-formed result that is missing half its records, and that
+     * outcome is exactly what must not be allowed to look like success. See
+     * {@code docs/decision-log.md} entry DL-214.
      *
      * @param  location     the configured location, possibly blank
      * @param  propertyName the property that names it, reported in both the diagnostic and the refusal
@@ -956,8 +971,22 @@ public final class CombineTransactionsJobConfig {
                 return this.stagingArea.stagedInput(currentDurable.get());
             }
             final Path localCandidate = this.stagingDirectory.resolve(logicalName).normalize();
-            if (Files.exists(localCandidate)) {
+            // Existence alone is not the test, and it used to be. A file under the staging root named
+            // like the configured dataset is only this deployment's staged output if it is a real
+            // regular file this process owns, in a root nothing else can write to, reached without
+            // following a link - and a local actor who can write the root can satisfy the name without
+            // satisfying any of those. Refused rather than repaired: the next rung, and finally the
+            // configured refusal, is the right answer for an input that cannot be trusted.
+            if (SecureStagedFiles.isTrustedStagedArtifact(this.stagingDirectory, localCandidate)) {
                 return new FileSystemResource(localCandidate);
+            }
+            if (Files.exists(localCandidate, LinkOption.NOFOLLOW_LINKS)) {
+                LOGGER.warn("{} {}: {} names {} beneath the local staging root, but that entry is not a"
+                                + " regular file this process owns in an owner-only root, so it is not"
+                                + " accepted as the {}",
+                        CombineTransactionsProcessor.LEGACY_JOB,
+                        CombineTransactionsProcessor.LEGACY_SORT_STEP, propertyName, logicalName,
+                        streamName);
             }
             final Optional<Path> currentLocal = StagedGenerationStore
                     .currentLocalGeneration(this.stagingDirectory, logicalName);
@@ -1501,10 +1530,10 @@ public final class CombineTransactionsJobConfig {
          * directory cannot be removed until it is empty.
          *
          * <p>Nothing is thrown from here, and nothing is swallowed. Each failure is collected and every
-         * later step still runs, because the alternative - returning at the first failure, as this
-         * method's predecessor did - leaves the ordered file on disk holding every posted transaction
-         * from both inputs, indefinitely, with no diagnostic naming it. Every handle is cleared whether
-         * its release succeeded or not, so a second call cannot attempt the same release twice.
+         * later step still runs, because the alternative - returning at the first failure - would leave
+         * the ordered file on disk holding every posted transaction from both inputs, indefinitely, with
+         * no diagnostic naming it. Every handle is cleared whether its release succeeded or not, so a
+         * second call cannot attempt the same release twice.
          *
          * @return the failures, in the order they occurred, empty when everything was released
          */
@@ -1584,6 +1613,7 @@ public final class CombineTransactionsJobConfig {
          * correspondingly broad; narrowing it would leave the parse failures the mapper raises
          * undiagnosed.
          *
+         * @param  sorter     the external sorter every record of this input is appended to
          * @param  input      the input to read in full
          * @param  streamName the stream's role, used in diagnostics
          * @return how many records this input contributed

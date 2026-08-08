@@ -53,8 +53,8 @@ import com.carddemo.util.JclCardImageBuilder;
  * Every paragraph resolves to one named method, so the traceability matrix has one row per paragraph:
  * <ul>
  *   <li>{@code MAIN-PARA} line 163 &rarr; {@code mainPara}, reached from
- *       {@code processReportRequest}, which also carries the terminal
- *       {@code EXEC CICS RETURN TRANSID} at lines 199 to 202;</li>
+ *       {@code processReportRequest}, which also carries the terminal re-arm of this
+ *       transaction at lines 199 to 202;</li>
  *   <li>{@code PROCESS-ENTER-KEY} line 208 &rarr; {@code processEnterKey}, whose three period
  *       branches invoke submission at lines 238 and 255 and, for the operator-supplied range, at
  *       line 435, and whose acknowledgement is composed at line 450;</li>
@@ -133,8 +133,8 @@ import com.carddemo.util.JclCardImageBuilder;
  *       zero;</li>
  *   <li>this member declares no clear-key arm, so the clear key reaches the catch-all and produces the
  *       invalid-key message; no arm the source lacks was added;</li>
- *   <li>the send paragraph ends the turn, because the legacy's jumps to the return and the return issues
- *       {@code EXEC CICS RETURN}; so the <em>first</em> failed validation is the last thing that happens
+ *   <li>the send paragraph ends the turn, because the legacy's send jumps to the return paragraph and
+ *       that paragraph ends the task; so the <em>first</em> failed validation is the last thing that happens
  *       in the turn, with the summary message and the cursor position latched from it, and no later
  *       normalisation, validation, report-name assignment or submission runs;</li>
  *   <li>consequently the operator-supplied cascade reports at most one field failure per turn, which is
@@ -270,7 +270,7 @@ public final class ReportRequestService {
     // Screen field identifiers and widths, from app/cpy-bms/CORPT00.CPY
     // ==========================================================================================
 
-    /** {@code MONTHLY}, the cursor target of every {@code MOVE -1 TO MONTHLYL} in the member. */
+    /** {@code MONTHLY}, the field whose length item the member makes negative to place the cursor. */
     private static final String FIELD_MONTHLY = "MONTHLY";
 
     /** {@code SDTMM}, the start-month field and the cursor target at lines 264, 334 and 403. */
@@ -391,26 +391,22 @@ public final class ReportRequestService {
     private static final int YEAR_SHORT_FORM_OFFSET = 2;
 
     /*
-     * The emitting loop's own two constants - the one-based first slot at line 498 and the card-slot
-     * ceiling that line also tests, which comes from the JOB-LINES OCCURS 1000 TIMES redefinition at
-     * line 127 - used to be declared here, because the loop was iterated here. It is not: the whole
-     * card stream is now handed to the bridge in one call, so the loop, its guard, its slot index and
-     * its ceiling all live in the bridge, which is also where the sentinel test and the write-error
-     * flag already lived. The full-width sentinel record this file also declared, and the predicate
-     * that compared against it, went with them for the same reason.
+     * The emitting loop's own two constants are deliberately NOT declared here: the one-based first
+     * slot at line 498 and the card-slot ceiling that line also tests, which comes from the
+     * thousand-element card-array redefinition at line 127. The whole card stream is handed to the
+     * bridge in one call, so the loop, its guard, its slot index, its ceiling, the sentinel test and
+     * the write-error flag all belong to the bridge, and the full-width sentinel record and the
+     * predicate that compares against it belong there with them.
      *
-     * Nothing about the legacy bound or the sentinel is lost: JclCardImageBuilder still publishes the
-     * first slot, the ceiling, the sentinel card and the card width, and the bridge still applies the
-     * sentinel test to a card before writing it, which is what transmits the sentinel. Only the second,
-     * now unreachable, declarations are gone. See writeJobSubmissionTdq for why the stream is published
-     * as one submission.
-     */
-
-    /*
-     * The separator between the two date slots of a submission identity used to be declared here, and it
-     * is gone rather than left unused: the identity is now minted by the bridge, which owns the queue's
-     * composition and length rules, and a constant restating half of a rule this class no longer applies
-     * is the shape a rule drifts out of agreement in. See newSubmissionIdentity.
+     * Nothing about the legacy bound or the sentinel is lost: JclCardImageBuilder publishes the first
+     * slot, the ceiling, the sentinel card and the card width, and the bridge applies the sentinel
+     * test to a card before writing it, which is what transmits the sentinel. A second declaration
+     * here would restate a rule this class does not apply, which is the shape two copies of one rule
+     * drift apart in. See writeJobSubmissionTdq for why the stream is published as one submission.
+     *
+     * The separator between the two date slots of a submission identity is absent here for the same
+     * reason: the identity is minted by the bridge, which owns the queue's composition and length
+     * rules. See newSubmissionIdentity.
      */
 
     /** Digest used to turn an opaque retry token into a bounded printable identity component. */
@@ -493,7 +489,7 @@ public final class ReportRequestService {
     /** The shared date-validation subprogram, invoked at lines 392 and 412. */
     private final DateValidationService dateValidationService;
 
-    /** The queue bridge that replaces {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at line 517. */
+    /** The queue bridge that replaces the transient-data-queue write to {@code JOBS} at line 517. */
     private final JobSubmissionService jobSubmissionService;
 
     /** The common-message catalogue supplying the invalid-key text and the two screen titles. */
@@ -648,9 +644,9 @@ public final class ReportRequestService {
      * @param navigationContext       the navigation state the turn hands back, standing in for the
      *                                communication area the return and the transfer both carry.
      *                                Never {@code null}
-     * @param reArmedTransactionId    the transaction identifier the turn re-armed, from {@code
-     *                                EXEC CICS RETURN TRANSID}; empty on the two transfer paths,
-     *                                which transfer control instead of returning. Never {@code null}
+     * @param reArmedTransactionId    the transaction identifier the turn re-armed on the return;
+     *                                empty on the two transfer paths, which transfer control instead
+     *                                of returning. Never {@code null}
      * @param reportPeriod            the period the ordered evaluation resolved, or {@code null}
      *                                when the catch-all arm at line 437 fired because no report type
      *                                was marked
@@ -684,8 +680,8 @@ public final class ReportRequestService {
      * @param messageHighlightedGreen {@code true} only where the source recolours the message field
      *                                at line 448, which is the successful-submission path
      * @param focusField              the screen field the cursor is positioned on, from the
-     *                                corresponding {@code MOVE -1} to that field's length item.
-     *                                Never {@code null}
+     *                                corresponding negative length item the source writes for that
+     *                                field. Never {@code null}
      * @param errorFlag               the state of {@code WS-ERR-FLG}. The explicit flag rather than
      *                                an inference from the message, because the declined-confirmation
      *                                path raises the flag and sets no message
@@ -720,7 +716,37 @@ public final class ReportRequestService {
          *
          * <p>Production turns use the canonical constructor and always carry a token. This overload keeps
          * manually assembled non-submission results concise and makes the absence explicit rather than
-         * manufacturing a token outside the service.
+         * manufacturing a token outside the service. Every component is passed straight through and
+         * {@code submissionToken} is supplied as {@code null}; the canonical constructor's contract for
+         * each component is the authority and is not restated here.
+         *
+         * @param route                   the destination the turn leads to; never {@code null}
+         * @param navigationContext       the navigation state the turn hands back; never {@code null}
+         * @param reArmedTransactionId    the transaction identifier the turn re-armed, empty on a
+         *                                transfer path; never {@code null}
+         * @param reportPeriod            the period the ordered evaluation resolved, or {@code null}
+         *                                when no report type was marked
+         * @param reportName              the report name the acknowledgement is composed from; never
+         *                                {@code null}
+         * @param startDate               the resolved start date, or the empty field when none
+         *                                resolved; never {@code null}
+         * @param endDate                 the resolved end date, or the empty field when none resolved;
+         *                                never {@code null}
+         * @param cardsPublished          how many cards of the canonical image reached the queue, zero
+         *                                on a turn that submitted nothing
+         * @param confirmationBlocked     whether the turn stopped at the confirmation prompt
+         * @param message                 the summary message the screen carries; never {@code null}
+         * @param messageHighlightedGreen whether the message field is recoloured, which is the
+         *                                successful-submission path alone
+         * @param focusField              the screen field the cursor is positioned on; never
+         *                                {@code null}
+         * @param errorFlag               the state of the turn's error flag
+         * @param fieldErrors             one entry per faulted field, in the order the source checks
+         *                                them; never {@code null}
+         * @param header                  the screen header as the header paragraph populated it; never
+         *                                {@code null}
+         * @param screen                  the ten screen fields as the turn leaves them; never
+         *                                {@code null}
          */
         public ReportRequestResult(final NavigationService.Route route,
                 final ConversationState navigationContext,
@@ -762,10 +788,9 @@ public final class ReportRequestService {
      * Runs one turn of the report-request screen.
      *
      * <p>This is the procedure division: it establishes the working storage the legacy declares at
-     * lines 36 to 79, runs the main paragraph, and then performs the terminal
-     * {@code EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)} at lines 199 to 202 by
-     * re-arming the transaction. Nothing is retained between calls, so two concurrent turns are
-     * wholly independent.
+     * lines 36 to 79, runs the main paragraph, and then performs the terminal return at lines 199 to
+     * 202, which re-arms this transaction and hands the communication area back. Nothing is retained
+     * between calls, so two concurrent turns are wholly independent.
      *
      * <p>The turn always completes normally. A failed queue write is reported through the returned
      * value rather than raised, matching the queue's ignore-on-error definition, and no exception of
@@ -834,9 +859,9 @@ public final class ReportRequestService {
         state.submissionPrincipal = submissionPrincipal;
         mainPara(state, input);
 
-        // EXEC CICS RETURN TRANSID(WS-TRANID) at lines 199 to 202. The main paragraph's transfer
-        // paths have already ended the turn by transferring control, and re-arming is idempotent, so
-        // this reproduces the unconditional return without overriding a transfer.
+        // The unconditional return at lines 199 to 202, which re-arms this transaction. The main
+        // paragraph's transfer paths have already ended the turn by transferring control, and
+        // re-arming is idempotent, so this reproduces the return without overriding a transfer.
         returnToCics(state);
 
         LOG.debug("Report-request turn complete: route={} period={} cardsPublished={} errorFlag={}"
@@ -875,28 +900,30 @@ public final class ReportRequestService {
      * @param input the transmitted screen and echoed navigation state
      */
     private void mainPara(final TurnState state, final ReportScreenInput input) {
-        // SET ERR-FLG-OFF, TRANSACT-NOT-EOF and SEND-ERASE-YES at lines 165 to 167, and blank both
-        // WS-MESSAGE and ERRMSGO at lines 169 and 170. The state is constructed in exactly that
-        // condition, and the erase flag is never reset anywhere in the member, which is why the two
-        // arms of the send at lines 562 to 578 differ only in a 3270 attribute with no equivalent
-        // here. The end-of-file flag belongs to a file this member never opens.
+        // Lines 165 to 170 open the paragraph by clearing the error flag, clearing the end-of-file
+        // flag, raising the erase flag and blanking both the message work field and the outbound
+        // message field. The state is constructed in exactly that condition, and the erase flag is
+        // never reset anywhere in the member, which is why the two arms of the send at lines 562 to
+        // 578 differ only in a 3270 attribute with no equivalent here. The end-of-file flag belongs
+        // to a file this member never opens.
         if (navigationService.isConversationStateAbsent(input.navigationContext())) {
-            // IF EIBCALEN = 0 at line 172, then MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM at line 173. The
-            // destination is the one the navigation rules hold for a turn carrying no state, so no
-            // program name is written here.
+            // A turn arriving with no communication area at all, tested at line 172, is nominated to
+            // the sign-on destination at line 173. That destination is the one the navigation rules
+            // hold for a turn carrying no state, so no program name is written here.
             state.context = withNominatedProgram(ConversationState.empty(),
                     navigationService.resolveAbsentContextRoute().getLegacyProgramName());
             returnToPrevScreen(state);
             return;
         }
 
-        // MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA at line 176.
+        // Line 176 restores the whole communication area the client echoed back.
         state.context = input.navigationContext();
 
         if (state.context.firstEntry()) {
-            // IF NOT CDEMO-PGM-REENTER at line 177: set the gate at line 178, clear the outbound map
-            // at line 179 and position the cursor at line 180. The outbound map is assembled from
-            // this state, which is blank on a first entry, so clearing it needs no separate step.
+            // A first entry, tested against the re-entry gate at line 177: the gate is set at line
+            // 178, the outbound map cleared at line 179 and the cursor positioned at line 180. The
+            // outbound map is assembled from this state, which is blank on a first entry, so clearing
+            // it needs no separate step.
             state.context = state.context.withReEntry();
             state.focusField = FIELD_MONTHLY;
             sendTrnrptScreen(state);
@@ -905,14 +932,14 @@ public final class ReportRequestService {
 
         receiveTrnrptScreen(state, input);
 
-        // EVALUATE EIBAID at lines 184 to 195. Clause order is preserved and the catch-all maps to
-        // the default arm. A key that was never decoded reaches the same arm, because an absent key
-        // is not one of the two the source names.
+        // The attention-key dispatch at lines 184 to 195. Clause order is preserved and the
+        // catch-all maps to the default arm. A key that was never decoded reaches the same arm,
+        // because an absent key is not one of the two the source names.
         switch (input.keyAction()) {
             case ENTER -> processEnterKey(state);
             case PFK03 -> {
-                // MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM at line 188: this screen's own exit
-                // destination, named through the navigation vocabulary rather than as a literal.
+                // Line 188 nominates this screen's own exit destination, named through the
+                // navigation vocabulary rather than as a literal.
                 state.context = withNominatedProgram(state.context,
                         NavigationService.Route.USER_MENU.getLegacyProgramName());
                 returnToPrevScreen(state);
@@ -962,7 +989,7 @@ public final class ReportRequestService {
         } else if (isSupplied(state.customSelection)) {
             operatorSuppliedPeriod(state);
         } else {
-            // WHEN OTHER at lines 437 to 442.
+            // The catch-all arm at lines 437 to 442, reached when no report type was marked.
             state.raiseError(MSG_SELECT_REPORT_TYPE, FIELD_MONTHLY);
             state.recordFieldError(PROPERTY_REPORT_TYPE, FIELD_MONTHLY,
                     ValidationException.FieldState.MISSING, MSG_SELECT_REPORT_TYPE);
@@ -1002,7 +1029,7 @@ public final class ReportRequestService {
         state.reportPeriod = ReportPeriod.MONTHLY;
         state.reportName = moveToField(ReportPeriod.MONTHLY.getValue(), REPORT_NAME_WIDTH);
 
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 215.
+        // Line 215 takes the current date once, here from the injected clock.
         final LocalDate currentDate = LocalDate.now(clock);
 
         // Lines 217 to 221: the current year and month with the first of the month as the day.
@@ -1021,8 +1048,8 @@ public final class ReportRequestService {
             month = FIRST_MONTH;
         }
 
-        // COMPUTE WS-CURDATE-N = FUNCTION DATE-OF-INTEGER(FUNCTION INTEGER-OF-DATE(WS-CURDATE-N) - 1)
-        // at lines 229 and 230.
+        // Lines 229 and 230 step back exactly one day from the first of the following month, through
+        // the integer-date conversion the source applies in both directions.
         final LocalDate periodEnd =
                 dateOfInteger(integerOfDate(LocalDate.of(year, month, day)) - ONE_DAY);
 
@@ -1046,7 +1073,7 @@ public final class ReportRequestService {
         state.reportPeriod = ReportPeriod.YEARLY;
         state.reportName = moveToField(ReportPeriod.YEARLY.getValue(), REPORT_NAME_WIDTH);
 
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 241.
+        // Line 241 takes the current date once, here from the injected clock.
         final String year = numericField(LocalDate.now(clock).getYear(), YEAR_WIDTH);
 
         // Lines 243 to 253: the same year on both ends of the range.
@@ -1071,9 +1098,9 @@ public final class ReportRequestService {
      * 436.
      *
      * <p><strong>The first failure ends the turn, and that is true between stages and within
-     * them.</strong> Every failure site in this arm performs the send, and the send closes with
-     * {@code GO TO RETURN-TO-CICS}, which ends the task - so in the source the very first failing test
-     * is the last thing the turn does. Nothing later is normalised, no later bound is compared, neither
+     * them.</strong> Every failure site in this arm performs the send, and the send jumps out of the
+     * performed range to the return paragraph, which ends the task - so in the source the very first
+     * failing test is the last thing the turn does. Nothing later is normalised, no later bound is compared, neither
      * subprogram is called, no substitution slot is written, the report name is not set and no
      * submission is attempted. Each stage below is therefore entered only while the turn is still
      * running, and the stages that hold several independent tests stop at the first one that fires
@@ -1118,9 +1145,9 @@ public final class ReportRequestService {
         state.reportPeriod = ReportPeriod.CUSTOM;
         state.reportName = moveToField(ReportPeriod.CUSTOM.getValue(), REPORT_NAME_WIDTH);
 
-        // IF NOT ERR-FLG-ON PERFORM SUBMIT-JOB-TO-INTRDR at lines 434 to 436. The flag cannot be
-        // raised at this point without the send having ended the turn above, so the test is the
-        // source's own and is kept rather than assumed away.
+        // The guarded submission at lines 434 to 436: submission is attempted only while the error
+        // flag is clear. The flag cannot be raised at this point without the send having ended the
+        // turn above, so the test is the source's own and is kept rather than assumed away.
         if (!state.errorFlag) {
             submitJobToIntrdr(state);
         }
@@ -1155,8 +1182,8 @@ public final class ReportRequestService {
             faultField(state, MSG_END_DATE_YEAR_EMPTY, PROPERTY_END_YEAR, FIELD_END_YEAR,
                     ValidationException.FieldState.MISSING);
         }
-        // WHEN OTHER at lines 301 and 302 is an explicit CONTINUE, so there is nothing to do and the
-        // absence of a final else arm below is faithful rather than an omission.
+        // The catch-all arm at lines 301 and 302 explicitly does nothing, so the absence of a final
+        // else arm below is faithful rather than an omission.
     }
 
     /**
@@ -1315,8 +1342,8 @@ public final class ReportRequestService {
      * <p><strong>Part one, lines 464 to 474 &mdash; the confirmation prompt.</strong> A blank
      * confirmation field raises the error flag, composes the prompt from the space-delimited report
      * name, positions the cursor on the confirmation field and sends. Because the whole of the rest of
-     * the paragraph sits inside the {@code IF NOT ERR-FLG-ON} at line 476, this returns without
-     * submitting anything at all.
+     * the paragraph sits inside the error-flag guard at line 476, this returns without submitting
+     * anything at all.
      *
      * <p><strong>Part two, lines 477 to 494 &mdash; the three-way gate, clause order contractual.</strong>
      * An affirmative confirmation continues. A negative one clears the screen and raises the error
@@ -1348,28 +1375,28 @@ public final class ReportRequestService {
         }
 
         // The send above ends the task, so nothing below it is reachable once the confirmation was
-        // blank. IF NOT ERR-FLG-ON at line 476 is the source's own guard over both remaining parts and
-        // is kept alongside it.
+        // blank. The error-flag guard at line 476 is the source's own guard over both remaining parts
+        // and is kept alongside it.
         if (state.screenSent || state.errorFlag) {
             return;
         }
 
-        // Part two, lines 477 to 494: EVALUATE TRUE with its clause order preserved and its
+        // Part two, lines 477 to 494: the three-way gate, with its clause order preserved and its
         // catch-all mapped to the final arm.
         if (CONFIRM_YES_UPPER.equals(state.confirm) || CONFIRM_YES_LOWER.equals(state.confirm)) {
-            // WHEN 'Y' OR 'y' at lines 478 and 479 is an explicit CONTINUE: fall through to part
+            // The affirmative arm at lines 478 and 479 explicitly does nothing: fall through to part
             // three with nothing set.
             LOG.debug("Report submission confirmed for period {}", state.reportPeriod);
         } else if (CONFIRM_NO_UPPER.equals(state.confirm)
                 || CONFIRM_NO_LOWER.equals(state.confirm)) {
-            // WHEN 'N' OR 'n' at lines 480 to 483. No message text is set: the reset paragraph
+            // The negative arm at lines 480 to 483. No message text is set: the reset paragraph
             // blanks the message field and nothing writes one afterwards.
             initializeAllFields(state);
             state.errorFlag = true;
             state.confirmationBlocked = true;
             sendTrnrptScreen(state);
         } else {
-            // WHEN OTHER at lines 484 to 493.
+            // The catch-all arm at lines 484 to 493.
             state.confirmationBlocked = true;
             state.raiseError(FRAGMENT_INVALID_CONFIRM_PREFIX + delimitedBySpace(state.confirm)
                     + FRAGMENT_INVALID_CONFIRM_SUFFIX, FIELD_CONFIRM);
@@ -1384,7 +1411,7 @@ public final class ReportRequestService {
             return;
         }
 
-        // SET END-LOOP-NO TO TRUE at line 496.
+        // Line 496 opens the emitting loop with its terminator flag clear.
         state.endLoop = false;
 
         // The emitting loop's guard at lines 498 and 499 tests the error flag, and the guard is
@@ -1407,8 +1434,8 @@ public final class ReportRequestService {
 
         // Lines 498 to 509, the emitting loop - published as ONE SUBMISSION rather than card by card.
         //
-        // An earlier revision iterated the slots here and called the bridge's single-card entry point
-        // once per card. Every card of every submission carries one stable message group, which is what
+        // Iterating the slots here and calling the bridge's single-card entry point once per card is
+        // not safe. Every card of every submission carries one stable message group, which is what
         // preserves the append order the legacy queue's disposition guarantees, so a first-in-first-out
         // queue records whatever order the sends arrive in. This service is a singleton and two request
         // threads reaching this paragraph concurrently interleave their sends, after which the queue
@@ -1443,8 +1470,8 @@ public final class ReportRequestService {
      * on the first report-type field and sends.
      *
      * <p><strong>It writes the whole stream in one call rather than one call per card, and that is a
-     * correctness requirement rather than a tidiness one.</strong> An earlier revision called the
-     * bridge's single-card entry point once per slot from the emitting loop. Every card of every
+     * correctness requirement rather than a tidiness one.</strong> Calling the bridge's single-card
+     * entry point once per slot from the emitting loop would not be safe. Every card of every
      * submission carries one stable message group - which is what preserves the append order the legacy
      * queue's disposition guarantees - so a first-in-first-out queue records whatever order the sends
      * arrive in. This is a singleton service, so two request threads reaching this paragraph
@@ -1484,10 +1511,10 @@ public final class ReportRequestService {
             final List<String> cardImages) {
         final JobSubmissionService.SubmissionResult submission;
         try {
-            // EXEC CICS WRITEQ TD QUEUE('JOBS') FROM(JCL-RECORD) LENGTH(LENGTH OF JCL-RECORD)
-            // RESP(WS-RESP-CD) RESP2(WS-REAS-CD) at lines 517 to 523, once per card. The queue name,
-            // the record width, the message grouping and the one-submission-at-a-time exclusion all
-            // belong to the bridge, not here.
+            // Lines 517 to 523 write one eighty-character record to the named queue per card while
+            // capturing the response and reason codes. The queue name, the record width, the message
+            // grouping and the one-submission-at-a-time exclusion all belong to the bridge, not
+            // here.
             submission = jobSubmissionService.submitCanonicalJobImage(submissionIdentity, cardImages);
         } catch (final JobSubmissionException publishFailure) {
             // Defensive: the bridge reports a publish failure as a value. Should it ever raise
@@ -1502,18 +1529,18 @@ public final class ReportRequestService {
             return;
         }
 
-        // MOVE: the loop's own post-condition, restored from the outcome the bridge reports.
+        // The loop's own post-condition, restored from the outcome the bridge reports.
         state.cardsPublished = submission.cardsPublished();
 
-        // EVALUATE WS-RESP-CD at lines 525 to 535.
+        // The response-code evaluation at lines 525 to 535.
         if (submission.failed()) {
             refuseSubmission(state, submission.cardsPublished());
             return;
         }
 
-        // WHEN DFHRESP(NORMAL) at lines 526 and 527: CONTINUE. The loop ended because the sentinel card
-        // was reached and written, which is the only other way out of the legacy guard.
-        // SET END-LOOP-YES TO TRUE at lines 503 to 505.
+        // The normal-response arm at lines 526 and 527 does nothing. The loop ended because the
+        // sentinel card was reached and written, which is the only other way out of the legacy guard.
+        // The loop terminator the source raises at lines 503 to 505.
         state.endLoop = true;
     }
 
@@ -1562,13 +1589,14 @@ public final class ReportRequestService {
         final NavigationService.Route destination = navigationService
                 .resolveNominatedDestination(state.context, NavigationService.Route.SIGN_ON);
 
-        // Lines 545 to 547: MOVE WS-TRANID TO CDEMO-FROM-TRANID, MOVE WS-PGMNAME TO
-        // CDEMO-FROM-PROGRAM, MOVE ZEROS TO CDEMO-PGM-CONTEXT.
+        // Lines 545 to 547 stamp this turn's own transaction and program as the originator and clear
+        // the program-context flag.
         state.context = withOriginatingProgram(
                 withNominatedProgram(state.context, destination.getLegacyProgramName()))
                 .withFirstEntry();
 
-        // EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA) at lines 548 to 551.
+        // The transfer of control at lines 548 to 551, carrying the communication area to the
+        // nominated destination.
         state.route = destination;
         state.transferred = true;
         LOG.debug("Transferring control from the report-request screen to route {}",
@@ -1589,30 +1617,30 @@ public final class ReportRequestService {
      * reachable and the attribute itself has no equivalent in a machine contract, which is why it is
      * documented here rather than modelled.
      *
-     * <p><strong>The paragraph ends at line 580 with {@code GO TO RETURN-TO-CICS}, and that makes the
-     * send terminal.</strong> The paragraph it jumps to issues {@code EXEC CICS RETURN TRANSID} at
-     * lines 587 to 590, which ends the task, so the performing paragraph never resumes and nothing
+     * <p><strong>The paragraph ends at line 580 by jumping to the return paragraph, and that makes
+     * the send terminal.</strong> The paragraph it jumps to returns at lines 587 to 590, which ends
+     * the task, so the performing paragraph never resumes and nothing
      * after the first send executes: no later validation stage runs, no later field is normalised, no
      * later output field is written and no submission is attempted. The jump leaves the performed range
      * rather than reaching an exit label within it, so a {@code return} from this method could not
      * express it - every caller up the chain has to see that the turn is over. This method therefore
      * populates the outbound result, as a rendering step must, and additionally <strong>latches the
-     * turn-ended state</strong> that its callers test. An earlier revision let control continue past a
-     * send so that a re-submission could report every faulted field; that reported field errors the
-     * legacy never evaluated and returned normalised values it never produced, so it is withdrawn. The
-     * operator-visible pair is unchanged either way, because the summary text and the cursor position
-     * were already latched at the first failure.
+     * turn-ended state</strong> that its callers test. Control must not be allowed to continue past a
+     * send so that a re-submission can report every faulted field: that would report field errors the
+     * legacy never evaluated and return normalised values it never produced. The operator-visible pair
+     * is unchanged either way, because the summary text and the cursor position are already latched at
+     * the first failure.
      *
      * @param state the turn's working storage
      */
     private void sendTrnrptScreen(final TurnState state) {
         populateHeaderInfo(state);
 
-        // MOVE WS-MESSAGE TO ERRMSGO OF CORPT0AO at line 560.
+        // Line 560 copies the message work field into the outbound message field.
         state.errorMessageField = moveToField(state.message, ERROR_MESSAGE_WIDTH);
 
-        // GO TO RETURN-TO-CICS at line 580: the task ends here, so the turn is over for every
-        // paragraph that is still notionally on the stack.
+        // The jump to the return paragraph at line 580: the task ends here, so the turn is over for
+        // every paragraph that is still notionally on the stack.
         state.screenSent = true;
         returnToCics(state);
     }
@@ -1622,8 +1650,8 @@ public final class ReportRequestService {
     // ==========================================================================================
 
     /**
-     * The return paragraph at lines 585 to 591: {@code EXEC CICS RETURN TRANSID(WS-TRANID)
-     * COMMAREA(CARDDEMO-COMMAREA)}.
+     * The return paragraph at lines 585 to 591, which re-arms this transaction and hands the
+     * communication area back.
      *
      * <p>This member has its own return paragraph, reached both by the jump at the end of the send and
      * as the terminal statement of the procedure division, so it gets its own method rather than being
@@ -1684,7 +1712,7 @@ public final class ReportRequestService {
      * @param state the turn's working storage
      */
     private void populateHeaderInfo(final TurnState state) {
-        // MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA at line 611.
+        // Line 611 takes the current date and time once, here from the injected clock.
         final LocalDateTime now = LocalDateTime.now(clock);
 
         state.title01 = messageCatalogService.screenTitle01();
@@ -1723,10 +1751,10 @@ public final class ReportRequestService {
      * @param state the turn's working storage
      */
     private void initializeAllFields(final TurnState state) {
-        // MOVE -1 TO MONTHLYL OF CORPT0AI at line 635.
+        // Line 635 positions the cursor on the first report-type field.
         state.focusField = FIELD_MONTHLY;
 
-        // INITIALIZE the ten screen fields and WS-MESSAGE at lines 636 to 646.
+        // Lines 636 to 646 blank the ten screen fields and the message work field.
         state.monthlySelection = blankField(SELECTION_WIDTH);
         state.yearlySelection = blankField(SELECTION_WIDTH);
         state.customSelection = blankField(SELECTION_WIDTH);
@@ -1772,8 +1800,8 @@ public final class ReportRequestService {
 
     /**
      * Reports whether a report-type marker was supplied, reproducing the abbreviated combined
-     * relation {@code NOT = SPACES AND LOW-VALUES} at lines 213, 239 and 256, which expands to "is
-     * neither all spaces nor all low values".
+     * relation at lines 213, 239 and 256, which tests that the field is neither all spaces nor all
+     * low values.
      *
      * @param field the marker field
      * @return {@code true} when the field carries something other than spaces and low values
@@ -1783,8 +1811,8 @@ public final class ReportRequestService {
     }
 
     /**
-     * Reports whether a fixed-width field is blank in the legacy sense, reproducing
-     * {@code = SPACES OR LOW-VALUES} at lines 259, 266, 273, 280, 287, 294, 464 and 503.
+     * Reports whether a fixed-width field is blank in the legacy sense - all spaces or all low
+     * values - as tested at lines 259, 266, 273, 280, 287, 294, 464 and 503.
      *
      * <p>Blank means every character position is a space or a low value. An absent value and an empty
      * value are both blank, because a field the terminal did not transmit arrives as low values and
@@ -1936,8 +1964,8 @@ public final class ReportRequestService {
     }
 
     /**
-     * Reproduces {@code STRING ... DELIMITED BY SPACE}, which stops assembling at the first space, as
-     * used on the report name at lines 449 and 468 and on the confirmation field at line 487.
+     * Reproduces the source's space-delimited assembly, which stops at the first space, as applied to
+     * the report name at lines 449 and 468 and to the confirmation field at line 487.
      *
      * @param field the fixed-width field to consume
      * @return the part of the field before its first space, or the whole field when it holds none
@@ -2003,14 +2031,15 @@ public final class ReportRequestService {
      * with the same token reissues exactly the identifiers the first pass used, so the queue collapses the
      * cards that already landed and the stream is completed rather than doubled behind itself.
      *
-     * <p><strong>The operator is part of the identity, and leaving it out was a defect.</strong> The token
-     * is a value a caller chooses, and a caller naturally chooses something meaningful to itself - a period
-     * name, a run label - so two operators can arrive at the same token without either knowing about the
-     * other. An identity composed from the dates and the token alone made those two submissions the same
-     * submission: the queue collapsed the second operator's cards as a duplicate of the first's and the
-     * second operator was told the request had been submitted, having published nothing. Naming the
-     * authenticated operator inside the identity keeps one caller's token from reaching another caller's
-     * submission, while a retry by the <em>same</em> operator still repeats its own identifiers exactly.
+     * <p><strong>The operator is part of the identity, and it has to be.</strong> The token is a value a
+     * caller chooses, and a caller naturally chooses something meaningful to itself - a period name, a run
+     * label - so two operators can arrive at the same token without either knowing about the other. An
+     * identity composed from the dates and the token alone would make those two submissions the same
+     * submission: the queue would collapse the second operator's cards as a duplicate of the first's and
+     * the second operator would be told the request had been submitted, having published nothing. Naming
+     * the authenticated operator inside the identity keeps one caller's token from reaching another
+     * caller's submission, while a retry by the <em>same</em> operator still repeats its own identifiers
+     * exactly.
      *
      * <p><strong>The operator is the authenticated principal, never an echoed field.</strong> It arrives
      * from the security context by way of the controller, not from the navigation state the client sends
@@ -2109,7 +2138,7 @@ public final class ReportRequestService {
 
     /**
      * Returns a copy of the navigation state whose nominated-destination program is the one supplied,
-     * reproducing a move into {@code CDEMO-TO-PROGRAM} at lines 173, 188 and 543.
+     * reproducing how the member nominates its destination at lines 173, 188 and 543.
      *
      * <p>Every other component is carried across unchanged. The sixteen components are restated
      * explicitly because the state is an immutable record; the alternative, a mutable copy, would let
@@ -2134,8 +2163,8 @@ public final class ReportRequestService {
     private static ConversationState withOriginatingProgram(final ConversationState context) {
         // Lines 545 to 547 stamp the originator and clear the program-context flag together, which is
         // exactly what the carried state's own origin derivation does. The eleven identity and
-        // cardholder members the earlier form copied through are absent from the service-tier state,
-        // so the copy that let an echoed identity survive a turn no longer exists to make.
+        // cardholder members of the legacy area are absent from the service-tier state, so there is no
+        // copy here that could let an echoed identity survive a turn.
         return context.withOrigin(WS_TRANID, WS_PGMNAME);
     }
 
@@ -2232,7 +2261,7 @@ public final class ReportRequestService {
         /** {@code CURTIMEO} as assembled at lines 624 to 628. */
         private String currentTime = NO_MESSAGE;
 
-        /** The cursor position, from the corresponding {@code MOVE -1} to a field's length item. */
+        /** The cursor position, from the negative length item the source writes for that field. */
         private String focusField = NO_MESSAGE;
 
         /** Whether the message field was recoloured at line 448. */
@@ -2267,9 +2296,9 @@ public final class ReportRequestService {
         /**
          * Whether the screen has been sent, which in the legacy is the end of the task.
          *
-         * <p>The send paragraph closes with {@code GO TO RETURN-TO-CICS} at line 580, and the
-         * paragraph it jumps to issues {@code EXEC CICS RETURN TRANSID} at lines 587 to 590, so the
-         * task ends at the <strong>first</strong> send: the paragraph that performed it never resumes,
+         * <p>The send paragraph closes by jumping to the return paragraph at line 580, and that
+         * paragraph returns at lines 587 to 590, so the task ends at the <strong>first</strong>
+         * send: the paragraph that performed it never resumes,
          * and no statement after that point in the procedure division executes at all. That jump is a
          * genuine transfer out of a performed range rather than an exit label, so it cannot be
          * translated as a {@code return} from one method - every caller in the chain has to observe it.

@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
 
 import com.carddemo.domain.CardCrossReference;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -173,6 +174,17 @@ import org.springframework.transaction.annotation.Transactional;
  * legacy artefact is transcribed and none is copied into this module: the estate is cited by member
  * name, record width, field offset, key length, table name, column name, index name and constraint
  * name alone.
+ *
+ * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
+ *
+ * <p>This class writes through the shipped entity and repository, so the rules it observes are
+ * enforced twice over: once by the entity before the write and once by a named {@code CHECK}
+ * constraint in {@code V1__create_schema.sql}. That means a specification at this level passes
+ * whether or not the database guard exists, and deleting the guard would break nothing here.
+ * ck_card_xref_card_num_width, ck_card_xref_cust_id_digits and ck_card_xref_acct_id_digits are therefore exercised by RAW JDBC in
+ * {@code SchemaConstraintNegativeProofIT}, which bypasses the entity layer entirely and asserts the
+ * exact constraint name PostgreSQL reports. That is the shape of the writer these constraints exist
+ * to catch - a bulk load or a migration script that never constructs a record image.
  */
 @SpringBootTest(classes = CardCrossReferenceRepositoryIT.PersistenceUnderTest.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -181,7 +193,6 @@ import org.springframework.transaction.annotation.Transactional;
         + "three foreign keys that originate here")
 final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
 
-    /** The table the schema migration creates for this record layout. */
     private static final String TABLE = "card_cross_reference";
 
     /**
@@ -196,22 +207,16 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     /** The column that index leads on, which is the column the declared finder matches. */
     private static final String ACCOUNT_COLUMN = "xref_acct_id";
 
-    /** The foreign key from this table to the card master. */
     private static final String FOREIGN_KEY_TO_CARD = "fk_card_xref_card";
 
-    /** The foreign key from this table to the account master. */
     private static final String FOREIGN_KEY_TO_ACCOUNT = "fk_card_xref_account";
 
-    /** The foreign key from this table to the customer master. */
     private static final String FOREIGN_KEY_TO_CUSTOMER = "fk_card_xref_customer";
 
-    /** The card master, parent of the business key. */
     private static final String CARD_TABLE = "card";
 
-    /** The account master, parent of the account identifier. */
     private static final String ACCOUNT_TABLE = "account";
 
-    /** The customer master, parent of the customer identifier. */
     private static final String CUSTOMER_TABLE = "customer";
 
     /** The primary key of this table, so the index roster assertion can be exhaustive. */
@@ -253,7 +258,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
      */
     private static final String SEEDED_CARD_NUMBER = "0500024453765740";
 
-    /** The customer identifier that row resolves to. */
     private static final String SEEDED_CUSTOMER_ID = "000000050";
 
     /** The account identifier that row resolves to, and the alternate key every lookup below uses. */
@@ -268,16 +272,13 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     /** The same account identifier with its leading zeros removed, which must match nothing. */
     private static final String UNPADDED_ACCOUNT_ID = "50";
 
-    /** The character every padded identifier of the seeded row begins with. */
     private static final String LEADING_ZERO = "0";
 
     /** A card number present in no row of any table, taken from the shared fixture vocabulary. */
     private static final String ABSENT_CARD_NUMBER = TestDataFactory.UNKNOWN_CARD_NUMBER;
 
-    /** An account identifier present in no row of any table. */
     private static final String ABSENT_ACCOUNT_ID = TestDataFactory.UNKNOWN_ACCOUNT_ID;
 
-    /** A customer identifier present in no row of any table. */
     private static final String ABSENT_CUSTOMER_ID = TestDataFactory.UNKNOWN_CUSTOMER_ID;
 
     /** Rows the seeded account carries before any fixture of this class is applied. */
@@ -303,13 +304,11 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     /** Verification code of a reserved card row: three synthetic digits protecting nothing. */
     private static final String RESERVED_VERIFICATION_CODE = "000";
 
-    /** Embossed name of a reserved card row, chosen to be recognisably a fixture. */
     private static final String RESERVED_EMBOSSED_NAME = "CROSS REFERENCE FIXTURE";
 
     /** Expiry of a reserved card row, far enough out that no window check can be surprised by it. */
     private static final String RESERVED_EXPIRATION_DATE = "2099-12-31";
 
-    /** Active indicator of a reserved card row. */
     private static final String RESERVED_ACTIVE_STATUS = "Y";
 
     /** The fragment every PostgreSQL plan node that descends an index carries in its description. */
@@ -337,25 +336,21 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                  VALUES (?, ?, ?)
             """;
 
-    /** Counts seeded rows whose business key names no row of the card master. */
     private static final String ROWS_WITH_NO_CARD_PARENT = """
             SELECT count(*) FROM card_cross_reference x
              WHERE NOT EXISTS (SELECT 1 FROM card p WHERE p.card_num = x.xref_card_num)
             """;
 
-    /** Counts seeded rows whose account identifier names no row of the account master. */
     private static final String ROWS_WITH_NO_ACCOUNT_PARENT = """
             SELECT count(*) FROM card_cross_reference x
              WHERE NOT EXISTS (SELECT 1 FROM account p WHERE p.acct_id = x.xref_acct_id)
             """;
 
-    /** Counts seeded rows whose customer identifier names no row of the customer master. */
     private static final String ROWS_WITH_NO_CUSTOMER_PARENT = """
             SELECT count(*) FROM card_cross_reference x
              WHERE NOT EXISTS (SELECT 1 FROM customer p WHERE p.cust_id = x.xref_cust_id)
             """;
 
-    /** Reads back, by name, every foreign key declared on one table. */
     private static final String FOREIGN_KEY_NAMES = """
             SELECT tc.constraint_name
               FROM information_schema.table_constraints tc
@@ -365,7 +360,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
              ORDER BY tc.constraint_name
             """;
 
-    /** Reads back the table one named foreign key points at. */
     private static final String FOREIGN_KEY_PARENT_TABLE = """
             SELECT DISTINCT ccu.table_name
               FROM information_schema.constraint_column_usage ccu
@@ -373,14 +367,12 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                AND ccu.constraint_name = ?
             """;
 
-    /** Reads back, by name, every index present on one table. */
     private static final String INDEX_NAMES = """
             SELECT indexname FROM pg_indexes
              WHERE schemaname = 'public' AND tablename = ?
              ORDER BY indexname
             """;
 
-    /** Reads back whether one named index enforces uniqueness. */
     private static final String INDEX_ENFORCES_UNIQUENESS = """
             SELECT i.indisunique
               FROM pg_index i
@@ -389,7 +381,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
              WHERE n.nspname = 'public' AND c.relname = ?
             """;
 
-    /** Reads back the name of the column one named index is ordered on first. */
     private static final String INDEX_LEADING_COLUMN = """
             SELECT a.attname
               FROM pg_index i
@@ -399,11 +390,25 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
              WHERE n.nspname = 'public' AND c.relname = ?
             """;
 
-    /** Reads back the stored width of each mapped field of one row, measured by the server. */
+    /**
+     * Reads back the stored width of each mapped field of one row, measured by the server in BOTH
+     * characters and encoded bytes.
+     *
+     * <p>Both measurements are taken because they are different numbers and only one of them is the
+     * contractual one. {@code char_length} counts characters; under UTF8 a character occupies up to four
+     * bytes, so a character count alone says nothing about the width of the record image this row belongs
+     * to. {@code octet_length} is the encoded byte count, which is what the 36 mapped bytes of the layout
+     * are. The tests below assert that the two agree, which is the guarantee
+     * {@code ck_card_xref_single_byte_text} in {@code V1__create_schema.sql} enforces and which
+     * {@code SchemaConstraintNegativeProofIT} proves by having the server refuse a multibyte value.
+     */
     private static final String STORED_FIELD_WIDTHS = """
-            SELECT char_length(xref_card_num) AS card_number_width,
-                   char_length(xref_cust_id)  AS customer_id_width,
-                   char_length(xref_acct_id)  AS account_id_width
+            SELECT char_length(xref_card_num)  AS card_number_width,
+                   char_length(xref_cust_id)   AS customer_id_width,
+                   char_length(xref_acct_id)   AS account_id_width,
+                   octet_length(xref_card_num) AS card_number_bytes,
+                   octet_length(xref_cust_id)  AS customer_id_bytes,
+                   octet_length(xref_acct_id)  AS account_id_bytes
               FROM card_cross_reference
              WHERE xref_card_num = ?
             """;
@@ -424,7 +429,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     private static final String COUNT_CROSS_REFERENCE_ROWS =
             "SELECT count(*) FROM card_cross_reference";
 
-    /** Counts the rows of the card master, for the same purpose. */
     private static final String COUNT_CARD_ROWS = "SELECT count(*) FROM card";
 
     /** Removes the whole-table alternative for the session, so the plan answers a question of kind. */
@@ -441,7 +445,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    /** Creates the test class. */
     CardCrossReferenceRepositoryIT() {
     }
 
@@ -471,7 +474,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = CardCrossReference.class)
     static class PersistenceUnderTest {
 
-        /** Creates the configuration. */
         PersistenceUnderTest() {
         }
     }
@@ -487,7 +489,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the seeded shape, the business key and the width arithmetic")
     final class SeededShapeAndLayout {
 
-        /** Creates the nest. */
         SeededShapeAndLayout() {
         }
 
@@ -519,19 +520,21 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the three mapped fields measure sixteen, nine and eleven characters and account "
-                + "for every one of the thirty-six data bytes")
+        @DisplayName("the three mapped fields measure sixteen, nine and eleven CHARACTERS, which sum to "
+                + "the mapped portion of the record")
         void theThreeMappedFieldsAccountForEveryDataByte() {
             final CardCrossReference row = repository.findById(SEEDED_CARD_NUMBER).orElseThrow();
 
-            assertThat(row.getXrefCardNum())
+            assertThat(row.getXrefCardNum().length())
                     .as("the key occupies its whole field")
-                    .hasSize(CARD_NUMBER_WIDTH);
+                    .isEqualTo(CARD_NUMBER_WIDTH);
             assertThat(row.getXrefCustId()).hasSize(CUSTOMER_ID_WIDTH);
             assertThat(row.getXrefAcctId()).hasSize(ACCOUNT_ID_WIDTH);
             assertThat(row.getXrefCardNum().length() + row.getXrefCustId().length()
                     + row.getXrefAcctId().length())
-                    .as("the three stored widths sum to the mapped portion of the record and no more")
+                    .as("the three stored CHARACTER counts sum to the mapped portion of the record and no "
+                            + "more; the byte measurement is asserted by the next test, because a Java "
+                            + "string length is a character count and not an encoded width")
                     .isEqualTo(DATA_WIDTH);
             assertThat(CARD_NUMBER_WIDTH + CUSTOMER_ID_WIDTH + ACCOUNT_ID_WIDTH)
                     .as("and the declared widths agree with the stored ones")
@@ -539,8 +542,8 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the server measures the same three widths on a row it holds, so the widths are a "
-                + "property of the schema and not of the mapping")
+        @DisplayName("the server measures the same three widths on a row it holds, in BYTES as well as in "
+                + "characters, so the thirty-six mapped bytes are a property of the schema")
         void theServerMeasuresTheSameThreeWidths() {
             final StoredFieldWidths widths = storedFieldWidthsOf(SEEDED_CARD_NUMBER);
 
@@ -549,6 +552,19 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
             assertThat(widths.accountId()).isEqualTo(ACCOUNT_ID_WIDTH);
             assertThat(widths.total())
                     .as("bounded variable-length columns hold the full field, never a shortened form")
+                    .isEqualTo(DATA_WIDTH);
+
+            // THE BYTE MEASUREMENT. This is the assertion that makes the 36-byte claim of this class true
+            // rather than merely plausible: a row of the right CHARACTER counts could still occupy more
+            // than 36 bytes, and the layout is about bytes. ck_card_xref_single_byte_text is what makes
+            // the two numbers coincide, and SchemaConstraintNegativeProofIT is where the server is shown
+            // refusing a value that would separate them.
+            assertThat(widths.cardNumberBytes()).isEqualTo(CARD_NUMBER_WIDTH);
+            assertThat(widths.customerIdBytes()).isEqualTo(CUSTOMER_ID_WIDTH);
+            assertThat(widths.accountIdBytes()).isEqualTo(ACCOUNT_ID_WIDTH);
+            assertThat(widths.totalBytes())
+                    .as("the ENCODED width of the three mapped fields is the thirty-six data bytes of the "
+                            + "record image, which is the number the layout fixes")
                     .isEqualTo(DATA_WIDTH);
         }
 
@@ -610,7 +626,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("leading zeros are part of the identity, on all three identifiers")
     final class PaddingFidelity {
 
-        /** Creates the nest. */
         PaddingFidelity() {
         }
 
@@ -619,10 +634,12 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         void allThreeIdentifiersComeBackExactlyAsStored() {
             final CardCrossReference row = repository.findById(SEEDED_CARD_NUMBER).orElseThrow();
 
-            assertThat(row.getXrefCardNum())
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum()))
                     .as("the key is returned untrimmed and unaltered")
-                    .isEqualTo(SEEDED_CARD_NUMBER)
-                    .startsWith(LEADING_ZERO);
+                    .isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUMBER));
+            assertThat(row.getXrefCardNum().startsWith(LEADING_ZERO))
+                    .as("including its leading zero, which a numeric round trip would have dropped")
+                    .isTrue();
             assertThat(row.getXrefCustId())
                     .isEqualTo(SEEDED_CUSTOMER_ID)
                     .startsWith(LEADING_ZERO);
@@ -634,9 +651,9 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
         @Test
         @DisplayName("the unpadded spelling of the key matches no row, because it is a different key")
         void theUnpaddedKeyMatchesNoRow() {
-            assertThat(UNPADDED_CARD_NUMBER)
+            assertThat(UNPADDED_CARD_NUMBER.length())
                     .as("the unpadded spelling is one character short of the field width")
-                    .hasSize(CARD_NUMBER_WIDTH - 1);
+                    .isEqualTo(CARD_NUMBER_WIDTH - 1);
             assertThat(repository.findById(UNPADDED_CARD_NUMBER))
                     .as("a shortened key is not a near miss; it identifies nothing")
                     .isEmpty();
@@ -672,7 +689,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the non-unique account access path")
     final class AccountAccessPath {
 
-        /** Creates the nest. */
         AccountAccessPath() {
         }
 
@@ -710,7 +726,7 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
                             + "occupies with nothing removed")
                     .isEqualTo(SEEDED_ACCOUNT_ID)
                     .hasSize(ACCOUNT_ID_WIDTH);
-            assertThat(only.getXrefCardNum()).isEqualTo(SEEDED_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(only.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUMBER));
         }
 
         @Test
@@ -794,7 +810,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the index that backs the account path")
     final class IndexBackingTheAccountPath {
 
-        /** Creates the nest. */
         IndexBackingTheAccountPath() {
         }
 
@@ -865,7 +880,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("the three foreign keys that originate from this table")
     final class ForeignKeysOriginatingHere {
 
-        /** Creates the nest. */
         ForeignKeysOriginatingHere() {
         }
 
@@ -965,7 +979,6 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     @DisplayName("a purpose-built row through the inherited save and keyed read")
     final class RoundTripThroughInheritedMethods {
 
-        /** Creates the nest. */
         RoundTripThroughInheritedMethods() {
         }
 
@@ -979,9 +992,8 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
 
             final CardCrossReference reread = repository.findById(RESERVED_CARD_ONE).orElseThrow();
 
-            assertThat(reread.getXrefCardNum())
-                    .isEqualTo(RESERVED_CARD_ONE)
-                    .hasSize(CARD_NUMBER_WIDTH);
+            assertThat(SensitiveValues.fingerprint(reread.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(RESERVED_CARD_ONE));
+            assertThat(reread.getXrefCardNum().length()).isEqualTo(CARD_NUMBER_WIDTH);
             assertThat(reread.getXrefCustId())
                     .isEqualTo(SEEDED_CUSTOMER_ID)
                     .hasSize(CUSTOMER_ID_WIDTH);
@@ -994,6 +1006,10 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
             assertThat(widths.total())
                     .as("measured by the server on the row it now holds, not by the mapping that wrote "
                             + "it")
+                    .isEqualTo(DATA_WIDTH);
+            assertThat(widths.totalBytes())
+                    .as("and the ENCODED width of what was written is the mapped portion of the record, "
+                            + "which is what a fixed-width emitter would have to reproduce")
                     .isEqualTo(DATA_WIDTH);
             assertThat(repository.findByXrefAcctId(SEEDED_ACCOUNT_ID))
                     .as("and the new row is reachable through the alternate-key path as well as by key")
@@ -1053,7 +1069,8 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
     private StoredFieldWidths storedFieldWidthsOf(final String cardNumber) {
         return jdbcTemplate.queryForObject(STORED_FIELD_WIDTHS,
                 (row, rowNumber) -> new StoredFieldWidths(
-                        row.getInt(1), row.getInt(2), row.getInt(3)),
+                        row.getInt(1), row.getInt(2), row.getInt(3),
+                        row.getInt(4), row.getInt(5), row.getInt(6)),
                 cardNumber);
     }
 
@@ -1157,15 +1174,28 @@ final class CardCrossReferenceRepositoryIT extends AbstractPostgresIT {
      * @param customerId width of the stored customer identifier
      * @param accountId  width of the stored account identifier
      */
-    private record StoredFieldWidths(int cardNumber, int customerId, int accountId) {
+    private record StoredFieldWidths(int cardNumber, int customerId, int accountId,
+            int cardNumberBytes, int customerIdBytes, int accountIdBytes) {
 
         /**
-         * Returns the mapped portion of the record these three fields account for.
+         * Returns the mapped portion of the record these three fields account for, in characters.
          *
-         * @return the sum of the three widths
+         * @return the sum of the three character widths
          */
         int total() {
             return cardNumber + customerId + accountId;
+        }
+
+        /**
+         * Returns the mapped portion of the record these three fields account for, in ENCODED BYTES.
+         *
+         * <p>This is the number the 36-byte layout is about. It equals {@link #total()} only while every
+         * stored character encodes to one byte, which is what the schema constrains.
+         *
+         * @return the sum of the three encoded byte widths
+         */
+        int totalBytes() {
+            return cardNumberBytes + customerIdBytes + accountIdBytes;
         }
     }
 }

@@ -18,7 +18,9 @@ package com.carddemo.support;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.Timeout;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -71,6 +73,16 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * <p>A subclass declares only what is specific to itself: its own {@code @SpringBootTest} and profile,
  * its own fixtures, and its own restoration of whatever it staged.
  *
+ * <h2>Why the call bound is restated here rather than inherited</h2>
+ * {@link AbstractLocalStackIT} bounds every test method of its own subclasses at
+ * {@link AbstractLocalStackIT#EXTERNAL_BOUNDARY_TIMEOUT_SECONDS} seconds, for the reasons its
+ * documentation sets out: a stalled transport is not a failure, it is a silence, and the asynchronous
+ * operations behind these helpers are consumed with {@code join}, which no interruption ends. A subclass
+ * of <em>this</em> type reaches that same emulator by delegation rather than by inheritance, so the
+ * annotation there does not reach it. The bound is therefore declared again here, referencing the one
+ * constant so the two entry points into the emulator cannot drift apart, and the per-client call budgets
+ * that make each individual call finite are inherited with the clients themselves.
+ *
  * <h2>Restoring the shared state</h2>
  * The emulator is shared, so an object a subclass stages outlives its test unless the subclass removes
  * it. {@link #deleteStagedObject(String, String)} is provided for exactly that, and a subclass calls it
@@ -78,6 +90,7 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * specification as surely as a fully staged one, and the failure then belongs to a test that already
  * passed.
  */
+@Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
 public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT {
 
     /**

@@ -16,14 +16,22 @@
  */
 package com.carddemo.service;
 
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
@@ -57,6 +65,7 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -85,11 +94,14 @@ import static org.mockito.Mockito.when;
  * nothing - and it is the single largest translation in the migration at 16.1% of the estate's
  * paragraph total.
  *
- * <p>The paragraph figure is <strong>88</strong>, being three {@code IDENTIFICATION DIVISION}
- * paragraphs plus 85 {@code PROCEDURE DIVISION} paragraphs. The action plan's 85 counted only the
- * procedure division, so both figures are correct and this class covers all 88: the three
- * identification paragraphs through the named accessors, the 85 procedural ones through the flow the
- * two entry points drive.
+ * <p>The paragraph figure is <strong>85</strong>, and it is the member's {@code PROCEDURE DIVISION}
+ * paragraph count. That is what the action plan records, what the traceability matrix carries 85 rows
+ * for, and what this class covers through the flow the two entry points drive. This suite previously
+ * published 88 by adding the member's three {@code IDENTIFICATION DIVISION} entries to it; those three
+ * are program metadata rather than procedure units, the matrix carries no row for any of them, and a
+ * suite that counts them has silently redefined the frozen 544-row model. They are still surfaced by
+ * name through {@code programIdParagraph()}, {@code dateWrittenParagraph()} and
+ * {@code dateCompiledParagraph()} and are still asserted below - as metadata, and not as matrix rows.
  *
  * <p>{@code COACTUPC} is the sole includer of four copybooks - the lookup tables, the three-token
  * field-decoration macro, the date cascade and the date work fields - so the estate's entire
@@ -296,6 +308,10 @@ class AccountUpdateServiceTest {
     private static final String SUFFIX_MUST_BE_SUPPLIED = " must be supplied.";
     private static final String SUFFIX_MUST_BE_Y_OR_N = " must be Y or N.";
     private static final String SUFFIX_ALPHABETS_ONLY = " can have alphabets only.";
+
+    /** Source lines 1999 and 2095, claimed only by the two alphanumeric edits the driver never reaches. */
+    private static final String SUFFIX_NUMBERS_OR_ALPHABETS_ONLY = " can have numbers or alphabets only.";
+
     private static final String SUFFIX_MUST_BE_ALL_NUMERIC = " must be all numeric.";
     private static final String SUFFIX_IS_NOT_VALID = " is not valid";
     private static final String SUFFIX_FICO_OUT_OF_RANGE = ": should be between 300 and 850";
@@ -315,6 +331,13 @@ class AccountUpdateServiceTest {
     private static final String LABEL_ACCOUNT_STATUS = "Account Status";
     private static final String LABEL_FICO_SCORE = "FICO Score";
     private static final String LABEL_FIRST_NAME = "First Name";
+
+    /** Source line 1568, the label the one live call site of the optional alphabetic edit moves. */
+    private static final String LABEL_MIDDLE_NAME = "Middle Name";
+
+    /** Source line 1614, where the label move is commented out and no edit follows it. */
+    private static final String LABEL_ADDRESS_LINE_2 = "Address Line 2";
+
     private static final String LABEL_STATE = "State";
     private static final String LABEL_ZIP = "Zip";
     private static final String LABEL_PHONE_NUMBER_1 = "Phone Number 1";
@@ -349,6 +372,7 @@ class AccountUpdateServiceTest {
     private static final String ROUTE_USER_MENU = "user-menu";
     private static final String LEGACY_TRANSACTION_ID = "CAUP";
     private static final String LEGACY_PROGRAM_ID = "COACTUPC";
+    private static final String LEGACY_MEMBER = "COACTUPC.cbl";
     private static final String LEGACY_MAP = "CACTUPA";
     private static final String LEGACY_MAPSET = "COACTUP";
     private static final String RESOURCE_ACCOUNT_MASTER = "ACCTDAT";
@@ -934,6 +958,132 @@ class AccountUpdateServiceTest {
                         "no field error was reported against screen field " + screenFieldId));
     }
 
+    /* ==========================================================================================
+     * Reaching the three edits no production call site routes to.
+     * ========================================================================================== */
+
+    /**
+     * The observable result of running one of the three never-reached character-class edits.
+     *
+     * @param flag       the three-state field flag the edit left behind
+     * @param message    the composed per-field text, or {@code null} when the edit reported no failure
+     * @param inputError whether the edit set the member's own input-error condition
+     */
+    private record UnreachedEdit(AccountUpdateService.FieldFlag flag, String message,
+            boolean inputError) {
+    }
+
+    /**
+     * Runs one of the three edits the member translates but never reaches, and answers what it left in
+     * the per-turn edit state.
+     *
+     * <p>The edit state is the service's own private nested carrier, and the three edits are private
+     * methods with no caller, so both are reached reflectively. That is deliberate and it is confined
+     * here: the alternative is to widen the visibility of the nested class, its constructor, its flag
+     * reader and six methods so that a test can call them, which would add production surface whose only
+     * consumer is a test. The module's unsafe-code audit is scoped to {@code src/main/java}, so nothing
+     * here moves a reflection count, and no production behaviour changes - the edit driver still routes
+     * neither of the two never-edited fields to any validation at all.
+     *
+     * @param  editMethodName the declared name of the edit to run
+     * @param  field          the screen field to run it against, which supplies the composed label
+     * @param  value          the keyed value, which may be {@code null} for an untransmitted field
+     * @return what the edit left in the state
+     * @throws ReflectiveOperationException if the service's shape has changed, which is a real failure
+     *                                      rather than something to swallow
+     */
+    private UnreachedEdit unreachedEdit(final String editMethodName,
+            final AccountUpdateService.ScreenField field, final String value)
+            throws ReflectiveOperationException {
+        final Class<?> editStateClass =
+                Class.forName(AccountUpdateService.class.getName() + "$EditState");
+        final Constructor<?> stateConstructor = editStateClass.getDeclaredConstructor();
+        stateConstructor.setAccessible(true);
+        final Object state = stateConstructor.newInstance();
+
+        final Method edit = AccountUpdateService.class.getDeclaredMethod(editMethodName,
+                editStateClass, AccountUpdateService.ScreenField.class, String.class);
+        edit.setAccessible(true);
+        edit.invoke(this.service, state, field, value);
+
+        return new UnreachedEdit((AccountUpdateService.FieldFlag) mapMember(editStateClass, state,
+                        "flags").get(field),
+                (String) mapMember(editStateClass, state, "fieldMessages").get(field),
+                booleanMember(editStateClass, state, "inputError"));
+    }
+
+    /**
+     * One map-valued member of the edit state, read without a generic cast so no warning is suppressed.
+     *
+     * @param  declaring the class declaring the member
+     * @param  instance  the state instance to read from
+     * @param  name      the member's declared name
+     * @return the member's value
+     * @throws ReflectiveOperationException if the member is absent or unreadable
+     */
+    private static Map<?, ?> mapMember(final Class<?> declaring, final Object instance,
+            final String name) throws ReflectiveOperationException {
+        final Field member = declaring.getDeclaredField(name);
+        member.setAccessible(true);
+        return (Map<?, ?>) member.get(instance);
+    }
+
+    /**
+     * One boolean member of the edit state.
+     *
+     * @param  declaring the class declaring the member
+     * @param  instance  the state instance to read from
+     * @param  name      the member's declared name
+     * @return the member's value
+     * @throws ReflectiveOperationException if the member is absent or unreadable
+     */
+    private static boolean booleanMember(final Class<?> declaring, final Object instance,
+            final String name) throws ReflectiveOperationException {
+        final Field member = declaring.getDeclaredField(name);
+        member.setAccessible(true);
+        return (boolean) member.get(instance);
+    }
+
+    /** The service's own source text, read so that a production call site cannot appear unnoticed. */
+    private static String serviceSource() {
+        final Path source = Path.of("src", "main", "java", "com", "carddemo", "service",
+                "AccountUpdateService.java");
+        try {
+            return Files.readString(source, StandardCharsets.UTF_8);
+        } catch (final IOException unreadable) {
+            throw new AssertionError("the service's own source must be readable at " + source,
+                    unreadable);
+        }
+    }
+
+    /**
+     * How many times the named method is invoked in the given source, excluding its own declaration.
+     *
+     * <p>Counted against the source rather than against the bytecode because the question is whether a
+     * <em>call site</em> exists, and a method that exists but is never called is exactly what these three
+     * are. The method is also asserted to exist, so a rename cannot make the count zero by accident.
+     *
+     * @param  source     the service's source text
+     * @param  methodName the declared name of the method
+     * @return the number of call sites
+     */
+    private static int callSitesOf(final String source, final String methodName) {
+        assertThat(Arrays.stream(AccountUpdateService.class.getDeclaredMethods())
+                .map(Method::getName)
+                .toList())
+                .as("%s must still be declared, so a zero call count means unreached and not renamed",
+                        methodName)
+                .contains(methodName);
+
+        int found = 0;
+        int at = source.indexOf(methodName + "(");
+        while (at >= 0) {
+            found++;
+            at = source.indexOf(methodName + "(", at + 1);
+        }
+        return found - 1;
+    }
+
     /** Every logged line the service emitted during the turn, in emission order. */
     private List<String> loggedMessages() {
         final List<String> rendered = new ArrayList<>();
@@ -1319,6 +1469,190 @@ class AccountUpdateServiceTest {
             assertAll(
                     () -> assertThat(written.getValue().getMiddleName()).isEqualTo("9"),
                     () -> assertThat(written.getValue().getAddrLine2()).isEqualTo("#7"));
+        }
+    }
+
+    /* ==========================================================================================
+     * The three edits the member translates and never reaches.
+     * ========================================================================================== */
+
+    /**
+     * The three character-class edits no call site in {@code COACTUPC} routes to, exercised directly.
+     *
+     * <p><strong>Why this suite exists at all.</strong> Six of the member's 85 paragraph units -
+     * {@code 1230-EDIT-ALPHANUM-REQD} and its exit, {@code 1235-EDIT-ALPHA-OPT} and its exit, and
+     * {@code 1240-EDIT-ALPHANUM-OPT} and its exit - are translated into methods the edit driver never
+     * calls. Two different reasons put them there and both are recorded rather than tidied away. The two
+     * alphanumeric edits have <em>no call site in the source</em>: the driver reaches the required
+     * alphabetic, the optional alphabetic, the required numeric, the mandatory and the signed edits and
+     * never those. The optional alphabetic edit does have a live source call site, on the middle name, but
+     * the migration directive forbids attaching any constraint to that field - the screen-attribute block
+     * describes it as carrying no edits - so wiring it would reject input the legacy is documented to
+     * accept.
+     *
+     * <p><strong>Why the coverage is taken here rather than through the driver.</strong> The traceability
+     * matrix names this class as the covering test for all six units, and a named test that never executes
+     * the method it cites is not coverage. The only two ways to make the citation true are to wire the
+     * driver - which the directive forbids - or to reach the methods directly. So they are reached
+     * directly, and the choice is deliberately made in the test rather than in the service: relaxing the
+     * visibility of the nested edit state, its constructor, its flag reader and the six methods would add
+     * nine pieces of production surface to make a test convenient, and surface that exists for a test is
+     * the same defect as surface that exists for an operation nobody calls.
+     *
+     * <p><strong>Reflection is confined to this class and moves no audit count.</strong> The module's
+     * unsafe-code audit is scoped to {@code src/main/java}, and the sibling suites already reach an
+     * unreachable private member the same way. Nothing here changes what production code does: the driver
+     * still bypasses both never-edited fields, which the suite immediately above proves.
+     *
+     * <p>Legacy authority {@code app/cbl/COACTUPC.cbl} paragraphs {@code 1230-EDIT-ALPHANUM-REQD}
+     * (L1955-L2007), {@code 1235-EDIT-ALPHA-OPT} (L2012-L2055) and {@code 1240-EDIT-ALPHANUM-OPT}
+     * (L2061-L2103), read as read-only reference. No source text is transcribed.
+     */
+    @Nested
+    @DisplayName("the three character-class edits the member translates but never reaches: exercised "
+            + "directly, because a named covering test that never runs the method is not coverage")
+    class EditsTranslatedButNeverReached {
+
+        /** The required alphanumeric edit, {@code 1230-EDIT-ALPHANUM-REQD}. */
+        private static final String EDIT_ALPHANUMERIC_REQUIRED = "editAlphanumericRequired";
+
+        /** The optional alphabetic edit, {@code 1235-EDIT-ALPHA-OPT}. */
+        private static final String EDIT_ALPHA_OPTIONAL = "editAlphaOptional";
+
+        /** The optional alphanumeric edit, {@code 1240-EDIT-ALPHANUM-OPT}. */
+        private static final String EDIT_ALPHANUMERIC_OPTIONAL = "editAlphanumericOptional";
+
+        @Test
+        @DisplayName("the required alphanumeric edit fails a blank as missing and composes the label "
+                + "against the supplied suffix, exactly as the required alphabetic edit does")
+        void theRequiredAlphanumericEditFailsABlankAsMissing() throws Exception {
+            final UnreachedEdit edit = unreachedEdit(EDIT_ALPHANUMERIC_REQUIRED,
+                    AccountUpdateService.ScreenField.FIRST_NAME, "   ");
+
+            assertAll(
+                    () -> assertThat(edit.flag()).isEqualTo(AccountUpdateService.FieldFlag.BLANK),
+                    () -> assertThat(edit.message())
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED),
+                    () -> assertThat(edit.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the required alphanumeric edit admits a digit, which is the whole difference from "
+                + "the alphabetic edit: it converts the 62-character table and not the 52-character one")
+        void theRequiredAlphanumericEditAdmitsADigit() throws Exception {
+            final UnreachedEdit admitted = unreachedEdit(EDIT_ALPHANUMERIC_REQUIRED,
+                    AccountUpdateService.ScreenField.FIRST_NAME, "A1B2C3");
+            final UnreachedEdit refusedByTheAlphabeticEdit = unreachedEdit(EDIT_ALPHA_OPTIONAL,
+                    AccountUpdateService.ScreenField.MIDDLE_NAME, "A1B2C3");
+
+            assertAll(
+                    () -> assertThat(admitted.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(admitted.inputError()).isFalse(),
+                    () -> assertThat(refusedByTheAlphabeticEdit.flag())
+                            .as("the same value under the 52-character table is refused")
+                            .isEqualTo(AccountUpdateService.FieldFlag.NOT_OK));
+        }
+
+        @Test
+        @DisplayName("the required alphanumeric edit refuses punctuation under its own suffix, so the "
+                + "two character-class refusals stay distinguishable in the summary")
+        void theRequiredAlphanumericEditRefusesPunctuation() throws Exception {
+            final UnreachedEdit edit = unreachedEdit(EDIT_ALPHANUMERIC_REQUIRED,
+                    AccountUpdateService.ScreenField.FIRST_NAME, "O'Brien");
+
+            assertAll(
+                    () -> assertThat(edit.flag()).isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(edit.message())
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_NUMBERS_OR_ALPHABETS_ONLY),
+                    () -> assertThat(edit.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("both optional edits declare a blank valid and leave early, which is the whole "
+                + "difference between the optional and the required shape")
+        void bothOptionalEditsDeclareABlankValid() throws Exception {
+            final UnreachedEdit alphabetic = unreachedEdit(EDIT_ALPHA_OPTIONAL,
+                    AccountUpdateService.ScreenField.MIDDLE_NAME, "   ");
+            final UnreachedEdit alphanumeric = unreachedEdit(EDIT_ALPHANUMERIC_OPTIONAL,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, null);
+
+            assertAll(
+                    () -> assertThat(alphabetic.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(alphabetic.message()).isNull(),
+                    () -> assertThat(alphabetic.inputError()).isFalse(),
+                    () -> assertThat(alphanumeric.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(alphanumeric.message()).isNull(),
+                    () -> assertThat(alphanumeric.inputError()).isFalse());
+        }
+
+        @Test
+        @DisplayName("the optional alphabetic edit refuses a digit under the alphabets-only suffix, so "
+                + "the live source call site on the middle name really would have rejected one")
+        void theOptionalAlphabeticEditRefusesADigit() throws Exception {
+            final UnreachedEdit edit = unreachedEdit(EDIT_ALPHA_OPTIONAL,
+                    AccountUpdateService.ScreenField.MIDDLE_NAME, "9");
+
+            assertAll(
+                    () -> assertThat(edit.flag()).isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(edit.message())
+                            .isEqualTo(LABEL_MIDDLE_NAME + SUFFIX_ALPHABETS_ONLY),
+                    () -> assertThat(edit.inputError()).isTrue());
+        }
+
+        @Test
+        @DisplayName("the optional alphanumeric edit admits a digit despite the source comment claiming "
+                + "letters and spaces only, because the converted table governs and the comment does not")
+        void theOptionalAlphanumericEditAdmitsADigit() throws Exception {
+            final UnreachedEdit admitted = unreachedEdit(EDIT_ALPHANUMERIC_OPTIONAL,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, "Apt 4B");
+            final UnreachedEdit refused = unreachedEdit(EDIT_ALPHANUMERIC_OPTIONAL,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, "Apt. 4/B");
+
+            assertAll(
+                    () -> assertThat(admitted.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(refused.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(refused.message())
+                            .isEqualTo("Address Line 2" + SUFFIX_NUMBERS_OR_ALPHABETS_ONLY));
+        }
+
+        @ParameterizedTest(name = "{0} accepts an embedded space")
+        @ValueSource(strings = {EDIT_ALPHANUMERIC_REQUIRED, EDIT_ALPHA_OPTIONAL,
+                                EDIT_ALPHANUMERIC_OPTIONAL})
+        @DisplayName("all three edits accept an embedded space, because the estate's idiom blanks every "
+                + "table character and then trims, and a space was already a space")
+        void allThreeEditsAcceptAnEmbeddedSpace(final String edit) throws Exception {
+            final UnreachedEdit outcome = unreachedEdit(edit,
+                    AccountUpdateService.ScreenField.FIRST_NAME, "MARY ANN");
+
+            assertAll(
+                    () -> assertThat(outcome.flag())
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(outcome.inputError()).isFalse());
+        }
+
+        @Test
+        @DisplayName("all three remain unreached from production, so this suite is the only caller and "
+                + "the never-edited fields keep bypassing validation")
+        void allThreeRemainUnreachedFromProduction() {
+            final String source = serviceSource();
+
+            assertAll(
+                    () -> assertThat(callSitesOf(source, EDIT_ALPHANUMERIC_REQUIRED))
+                            .as("%s must keep its single declaration and no call",
+                                    EDIT_ALPHANUMERIC_REQUIRED)
+                            .isZero(),
+                    () -> assertThat(callSitesOf(source, EDIT_ALPHA_OPTIONAL))
+                            .as("wiring %s would reject a middle name the legacy accepts",
+                                    EDIT_ALPHA_OPTIONAL)
+                            .isZero(),
+                    () -> assertThat(callSitesOf(source, EDIT_ALPHANUMERIC_OPTIONAL))
+                            .as("%s has no call site in the source either", EDIT_ALPHANUMERIC_OPTIONAL)
+                            .isZero());
         }
     }
 
@@ -1833,6 +2167,225 @@ class AccountUpdateServiceTest {
 
             assertThat(outcome.fieldErrors()).isEmpty();
         }
+    }
+
+    /* ==========================================================================================
+     * The three edits the driver deliberately never reaches, called directly through the seam.
+     * ========================================================================================== */
+
+    /**
+     * The three translated-but-unwired edits: {@code 1230-EDIT-ALPHANUM-REQD} at source line 1955,
+     * {@code 1235-EDIT-ALPHA-OPT} at 2012 and {@code 1240-EDIT-ALPHANUM-OPT} at 2061.
+     *
+     * <p>Each is package-private on the service for exactly this suite, and each is called here by name:
+     * {@code editAlphanumericRequired}, {@code editAlphaOptional} and {@code editAlphanumericOptional}.
+     * Nothing reflective is used - the seam is ordinary package access, because the production tree is
+     * held to a reflection count of zero and a reflective call would prove nothing about a call the
+     * driver could make.
+     *
+     * <p><strong>Why calling them directly is the only honest way to cover them.</strong> No production
+     * caller exists, by decision rather than by oversight: the required alphanumeric edit and its optional
+     * sibling have no call site in the legacy member either, and the optional alphabetic edit does have one
+     * - the middle name at source lines 1568 to 1574 - but the migration directive forbids attaching any
+     * constraint to that field, so the driver must not route to it. Driving the entry point can therefore
+     * never execute these paragraphs, and a suite that only drove the entry point would leave six of the
+     * member's 85 procedure paragraphs - these three and their three paired exits - claimed as covered
+     * while nothing executed them. The three exits need no call of their own: each head calls its own exit
+     * on every arm, so proving the arms proves {@code editAlphanumericRequiredExit},
+     * {@code editAlphaOptionalExit} and {@code editAlphanumericOptionalExit} with it.
+     *
+     * <p>Every expected value below is a literal taken from the legacy member, never from the service:
+     * the label the edit moves into the message-composition slot, and the suffix its failing arm claims.
+     *
+     * <p>That the driver still reaches none of them is asserted separately, and stays asserted, by
+     * {@link FieldsTheLegacyNeverEdits}: a turn keying a middle name or a second address line that all
+     * three of these edits would refuse produces no field error at all, which is the assertion that fails
+     * the moment one of them is wired in.
+     */
+    @Nested
+    @DisplayName("the three edits the driver deliberately never reaches, exercised through the "
+            + "package-private seam so that no paragraph is claimed as covered without being executed")
+    class DeliberatelyUnwiredEdits {
+
+        /** {@code 1230-EDIT-ALPHANUM-REQD}: an unsupplied value is the blank arm, not the class arm. */
+        @Test
+        @DisplayName("1230-EDIT-ALPHANUM-REQD: an unsupplied value flags BLANK and claims the supplied "
+                + "text")
+        void theRequiredAlphanumericEditFlagsAnUnsuppliedValueBlank() {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericRequired(state, AccountUpdateService.ScreenField.FIRST_NAME, "   ");
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isEqualTo(AccountUpdateService.FieldFlag.BLANK),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED));
+        }
+
+        /**
+         * {@code 1230-EDIT-ALPHANUM-REQD}: the 62-character table, so a digit passes where the alphabetic
+         * edit would have refused it. That difference is the whole reason both paragraphs exist.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] passes the required alphanumeric edit")
+        @ValueSource(strings = {"M4RY", "MARY ANN", "Mary Jane 2nd", "0", "A1 B2"})
+        @DisplayName("1230-EDIT-ALPHANUM-REQD: digits and embedded spaces both pass, unlike the "
+                + "alphabetic edit")
+        void theRequiredAlphanumericEditAcceptsDigitsAndSpaces(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericRequired(state, AccountUpdateService.ScreenField.FIRST_NAME, keyed);
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isNull());
+        }
+
+        /**
+         * {@code 1230-EDIT-ALPHANUM-REQD}: anything outside the table fails with its own suffix, which is
+         * the text no other edit in the member claims.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] fails the required alphanumeric edit")
+        @ValueSource(strings = {"Mary-Ann", "Mary.Ann", "M@RY", "221B_Baker"})
+        @DisplayName("1230-EDIT-ALPHANUM-REQD: a value outside the table flags NOT_OK and claims the "
+                + "numbers-or-alphabets text")
+        void theRequiredAlphanumericEditRefusesEverythingOutsideItsTable(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericRequired(state, AccountUpdateService.ScreenField.FIRST_NAME, keyed);
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.FIRST_NAME))
+                            .isEqualTo(LABEL_FIRST_NAME + SUFFIX_NUMBERS_OR_ALPHABETS_ONLY));
+        }
+
+        /**
+         * {@code 1235-EDIT-ALPHA-OPT}: the arm that distinguishes it from the required alphabetic edit is
+         * the blank one, which leaves early at source lines 2024 to 2025 declaring the field valid.
+         */
+        @Test
+        @DisplayName("1235-EDIT-ALPHA-OPT: an unsupplied value is valid, which is the one arm that "
+                + "differs from the required alphabetic edit")
+        void theOptionalAlphabeticEditAcceptsAnUnsuppliedValue() {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphaOptional(state, AccountUpdateService.ScreenField.MIDDLE_NAME, "   ");
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.MIDDLE_NAME))
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.MIDDLE_NAME))
+                            .isNull());
+        }
+
+        /**
+         * {@code 1235-EDIT-ALPHA-OPT}: the same blank-the-letters-then-trim idiom as the required edit, so
+         * an embedded space survives.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] passes the optional alphabetic edit")
+        @ValueSource(strings = {"MARY ANN", "Aniya Von", "Smith", " Leading", "Trailing "})
+        @DisplayName("1235-EDIT-ALPHA-OPT: letters and spaces pass, embedded spaces included")
+        void theOptionalAlphabeticEditAcceptsLettersAndSpaces(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphaOptional(state, AccountUpdateService.ScreenField.MIDDLE_NAME, keyed);
+
+            assertThat(state.flag(AccountUpdateService.ScreenField.MIDDLE_NAME))
+                    .isEqualTo(AccountUpdateService.FieldFlag.ISVALID);
+        }
+
+        /**
+         * {@code 1235-EDIT-ALPHA-OPT}: a supplied value still faces the character-class test, which is
+         * why wiring this paragraph would reject a middle name carrying a digit - the behaviour the
+         * migration directive forbids.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] fails the optional alphabetic edit")
+        @ValueSource(strings = {"Mary1", "M4RY", "Mary-Ann", "0"})
+        @DisplayName("1235-EDIT-ALPHA-OPT: a supplied non-alphabetic value flags NOT_OK and claims the "
+                + "alphabets-only text, which is what wiring it would inflict on the middle name")
+        void theOptionalAlphabeticEditRefusesASuppliedNonAlphabeticValue(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphaOptional(state, AccountUpdateService.ScreenField.MIDDLE_NAME, keyed);
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.MIDDLE_NAME))
+                            .isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.MIDDLE_NAME))
+                            .isEqualTo(LABEL_MIDDLE_NAME + SUFFIX_ALPHABETS_ONLY));
+        }
+
+        /** {@code 1240-EDIT-ALPHANUM-OPT}: blank leaves early at source lines 2072 to 2073. */
+        @Test
+        @DisplayName("1240-EDIT-ALPHANUM-OPT: an unsupplied value is valid")
+        void theOptionalAlphanumericEditAcceptsAnUnsuppliedValue() {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericOptional(state,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, "   ");
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.ADDRESS_LINE_2))
+                            .isEqualTo(AccountUpdateService.FieldFlag.ISVALID),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.ADDRESS_LINE_2))
+                            .isNull());
+        }
+
+        /**
+         * {@code 1240-EDIT-ALPHANUM-OPT}: the source comment above it claims letters and spaces only, and
+         * the statement converts the 62-character table, so a digit passes. The code governs.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] passes the optional alphanumeric edit")
+        @ValueSource(strings = {"221B Baker Street", "APT 4", "4", "Flat 2B"})
+        @DisplayName("1240-EDIT-ALPHANUM-OPT: a digit passes although the comment above the paragraph "
+                + "says otherwise, because the statement converts the alphanumeric table")
+        void theOptionalAlphanumericEditAcceptsDigitsDespiteItsComment(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericOptional(state,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, keyed);
+
+            assertThat(state.flag(AccountUpdateService.ScreenField.ADDRESS_LINE_2))
+                    .isEqualTo(AccountUpdateService.FieldFlag.ISVALID);
+        }
+
+        /**
+         * {@code 1240-EDIT-ALPHANUM-OPT}: the failing arm, which claims the same suffix as its required
+         * sibling because both convert the same table.
+         *
+         * @param keyed the value the screen transmitted
+         */
+        @ParameterizedTest(name = "[{0}] fails the optional alphanumeric edit")
+        @ValueSource(strings = {"221B-Baker", "Apt #4", "P.O. Box"})
+        @DisplayName("1240-EDIT-ALPHANUM-OPT: a value outside the table flags NOT_OK and claims the "
+                + "numbers-or-alphabets text")
+        void theOptionalAlphanumericEditRefusesEverythingOutsideItsTable(final String keyed) {
+            final AccountUpdateService.EditState state = new AccountUpdateService.EditState();
+
+            service.editAlphanumericOptional(state,
+                    AccountUpdateService.ScreenField.ADDRESS_LINE_2, keyed);
+
+            assertAll(
+                    () -> assertThat(state.flag(AccountUpdateService.ScreenField.ADDRESS_LINE_2))
+                            .isEqualTo(AccountUpdateService.FieldFlag.NOT_OK),
+                    () -> assertThat(state.messageFor(AccountUpdateService.ScreenField.ADDRESS_LINE_2))
+                            .isEqualTo(LABEL_ADDRESS_LINE_2 + SUFFIX_NUMBERS_OR_ALPHABETS_ONLY));
+        }
+
     }
 
     /* ==========================================================================================
@@ -3072,13 +3625,13 @@ class AccountUpdateServiceTest {
 
     @Nested
     @DisplayName("member coverage and paragraph traceability: every public member exercised and all "
-            + "88 paragraph units accounted for")
+            + "85 paragraph units accounted for")
     class MemberCoverageAndTraceability {
 
         @Test
-        @DisplayName("the three identification-division paragraphs are surfaced by name, which is what "
-                + "completes the 88 against the 85 of the procedure division")
-        void theThreeIdentificationParagraphsAreSurfacedByName() {
+        @DisplayName("the three identification-division entries are surfaced by name as program "
+                + "metadata, which is not a paragraph unit and owes no matrix row")
+        void theThreeIdentificationEntriesAreSurfacedByName() {
             assertAll(
                     () -> assertThat(service.programIdParagraph()).isEqualTo(LEGACY_PROGRAM_ID),
                     () -> assertThat(service.dateWrittenParagraph()).isEqualTo("July 2022."),
@@ -3086,15 +3639,18 @@ class AccountUpdateServiceTest {
         }
 
         @Test
-        @DisplayName("the paragraph arithmetic reconciles: 3 identification plus 85 procedure is the "
-                + "88 this class contributes to the traceability matrix")
-        void theParagraphArithmeticReconciles() {
-            final int identificationParagraphs = 3;
-            final int procedureParagraphs = 85;
-
-            assertAll(
-                    () -> assertThat(identificationParagraphs + procedureParagraphs).isEqualTo(88),
-                    () -> assertThat(identificationParagraphs).isEqualTo(3));
+        @DisplayName("the unit count this member contributes is the 85 the published matrix carries, "
+                + "read from the matrix rather than restated here")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            // Read, not written down. The figure is taken from the matrix three independent ways - the
+            // census subtotal, the member section's own declaration and the rows citing the member - and
+            // the reader fails if those three disagree. An earlier revision asserted 3 + 85 == 88 over
+            // constants this file authored itself, which could not fail and did not measure anything.
+            assertThat(TraceabilityMatrixCensus.unitsOf(LEGACY_MEMBER))
+                    .as("the frozen model is 528 program paragraphs plus 16 procedural-copybook "
+                            + "paragraphs; a member that reports more than the matrix carries has "
+                            + "redefined it")
+                    .isEqualTo(85);
         }
 
         @Test

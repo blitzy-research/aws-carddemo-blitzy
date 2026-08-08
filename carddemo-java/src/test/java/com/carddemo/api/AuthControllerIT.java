@@ -32,6 +32,7 @@ import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresIT;
 import com.carddemo.support.TestDataFactory;
@@ -39,7 +40,6 @@ import com.carddemo.util.ApiRoutePaths;
 import com.carddemo.util.CobolStringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Clock;
@@ -118,24 +118,18 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  * a comment, an identifier, a display name or an assertion message.
  *
  * <p>Where the credential is needed it is obtained at run time, by offset, from the class-path fixture,
- * through {@link TestDataFactory#fixtureCredentialWindow()}. Two measured facts recorded on that method
- * govern how it is used here, and both are the reason this specification writes its own identities rather
- * than signing on as a delivered one:
- * <ol>
- *   <li>The fixture's credential window carries a synthetic eight-character stand-in, deliberately not the
- *       legacy value, so the window is exercised at its full declared width without the legacy value
- *       existing inside this module.</li>
- *   <li>The ten digests the credential seed applies were produced from the legacy provisioning value, so
- *       they accept that value and refuse the window's. A delivered identity therefore cannot be
- *       authenticated from anything this module holds.</li>
- * </ol>
- * The honest consequence is the arrangement below. Every end-to-end credential assertion runs against an
- * identity this specification writes, whose stored digest the shipped {@link CredentialDigestService}
- * produced from the window value; every assertion about a <em>delivered</em> identity is limited to what a
- * module which does not hold the legacy value can answer - the stored role code, the digest's shape, and
- * the digest's refusal of a value it was not derived from. The divergence between this specification's
- * arrangement and the simpler one an earlier reading assumed belongs in {@code docs/decision-log.md},
- * which is owned elsewhere and is not edited from here.
+ * through {@link TestDataFactory#fixtureCredentialWindow()}. That window reproduces the delivered
+ * provisioning value, so a delivered identity CAN be authenticated from what this module holds; the
+ * acceptance of all ten delivered digests is asserted in the credential-seed specifications and end to
+ * end in {@code OnlineTransactionE2ETest}, and is not restated here.
+ *
+ * <p>This specification nevertheless writes its own identities under a reserved prefix, and that is a
+ * choice about ISOLATION rather than a limitation about credentials. The cases below need identities with
+ * role codes the seed does not carry - an undeclared role, a lower-case role code - and identities whose
+ * stored digest was deliberately produced from the wrong form, none of which may be created by mutating a
+ * delivered row that a neighbouring specification asserts about. Every owned identity's digest is produced
+ * by the shipped {@link CredentialDigestService} at the shipped cost factor, so nothing about the
+ * verification is simulated.
  *
  * <p>No signing secret is written here either. The active profile supplies the suite fixture under the
  * {@code carddemo.security.jwt} prefix, and the two values restated in the annotation below are the
@@ -330,9 +324,19 @@ public class AuthControllerIT extends AbstractPostgresIT {
      *
      * <p>It exists to prove that the fold is unconditional rather than incidental: because the shipped
      * path folds every submission before it compares, this identity is refused even when the exact
-     * characters its digest was derived from are submitted.
+     * characters its digest was derived from are submitted. Its digest is made from the UNFOLDED form of
+     * {@link #FOLD_PROBE_VALUE} rather than of the credential, for the reason that constant records.
      */
     private static final String UNFOLDED_DIGEST_IDENTITY = RESERVED_PREFIX + "05";
+
+    /**
+     * The companion identity whose digest was made from the FOLDED form of the same probe.
+     *
+     * <p>It exists to be ADMITTED by the very submission the identity above is refused for, which is what
+     * makes the pair conclusive: the two differ in nothing but which form of one probe their digest was
+     * derived from, so a refusal cannot be explained by the probe being unusable.
+     */
+    private static final String FOLDED_DIGEST_IDENTITY = RESERVED_PREFIX + "06";
 
     /** An identifier inside the reserved range that is never written, for the not-found arm. */
     private static final String ABSENT_IDENTITY = RESERVED_PREFIX + "99";
@@ -381,16 +385,51 @@ public class AuthControllerIT extends AbstractPostgresIT {
      * Digest of the folded window value: what an owned identity stores so that it can genuinely be signed
      * on with.
      *
-     * <p>Folded rather than raw because the shipped path folds every submission before it compares, so a
-     * digest of the raw characters could never be matched by any submission at all. Producing this from
-     * the folded form is what makes the owned identities usable and is not a workaround for the fold - the
-     * fold is separately asserted, by {@link #UNFOLDED_DIGEST_IDENTITY}, which stores the raw form and is
-     * therefore refused.
+     * <p>Folded rather than raw because the shipped path folds every submission before it compares. The
+     * delivered credential happens to contain no lower-case character, so for it the fold is the identity
+     * and folding here changes nothing - but folding unconditionally is what keeps this arrangement
+     * correct whatever the window carries, and it costs nothing.
      */
     private static final String DIGEST_OF_FOLDED_WINDOW = digestOfFoldedCredentialWindow();
 
-    /** Digest of the unfolded window value, stored by the one identity that exists to be refused. */
-    private static final String DIGEST_OF_UNFOLDED_WINDOW = digestOfRawCredentialWindow();
+    /**
+     * A mixed-case probe that is <strong>not</strong> a credential, used to demonstrate that the fold runs
+     * on every submission.
+     *
+     * <h4>Why the credential cannot be used for this</h4>
+     * The fold's unconditionality was once shown by storing a digest of the UNFOLDED credential and
+     * observing that submitting exactly that value was refused. That worked only because the fixture then
+     * carried a fabricated mixed-case window. The fixture now reproduces the delivered provisioning value,
+     * which contains no lower-case character - so a folded and an unfolded digest of it are the SAME
+     * digest, the identity that was meant to be refused would be admitted, and the demonstration would
+     * silently invert into its opposite.
+     *
+     * <p>The property is about the fold, not about the credential, so it is demonstrated on a value chosen
+     * for the purpose: eight characters of mixed case whose folded form differs from its raw form. Nothing
+     * here is secret, so it may be a literal and may appear in a diagnostic.
+     */
+    private static final String FOLD_PROBE_VALUE = "aBcDeFgH";
+
+    /**
+     * Digest of the probe's UNFOLDED form, stored by the one identity that exists to be refused.
+     *
+     * <p>A submission of the probe is folded before comparison and therefore cannot match this digest. If
+     * the fold were skipped, or applied conditionally, the submission would match and the identity would
+     * be admitted - which is exactly what {@code theFoldIsUnconditional} watches for.
+     */
+    private static final String DIGEST_OF_UNFOLDED_PROBE =
+            OWNED_DIGEST_SOURCE.encode(FOLD_PROBE_VALUE);
+
+    /**
+     * Digest of the probe's FOLDED form, stored by the identity that exists to be admitted.
+     *
+     * <p>The companion of the constant above, and the reason the pair is conclusive: the two identities
+     * differ in nothing but which form of one probe their digest was made from, and one submission
+     * distinguishes them. Without this half, a refusal could be explained by the probe being unusable for
+     * some unrelated reason.
+     */
+    private static final String DIGEST_OF_FOLDED_PROBE =
+            OWNED_DIGEST_SOURCE.encode(CobolStringUtils.asciiUpperFold(FOLD_PROBE_VALUE));
 
     /** The shipped servlet boundary, with the shipped filter chain in front of it. */
     @Autowired
@@ -451,13 +490,17 @@ public class AuthControllerIT extends AbstractPostgresIT {
         // The administrator letter in lower case. The role vocabulary matches exactly and folds nothing,
         // so this must not be read as the administrative code.
         writeOwnedIdentity(LOWER_CASE_ROLE_IDENTITY, "a", DIGEST_OF_FOLDED_WINDOW);
-        writeOwnedIdentity(UNFOLDED_DIGEST_IDENTITY, USER_ROLE_CODE, DIGEST_OF_UNFOLDED_WINDOW);
+        // The fold pair. Both digests are made from one mixed-case probe that is not a credential - one
+        // from its raw form, one from its folded form - so a single submission of the raw probe
+        // distinguishes a path that folds from one that does not.
+        writeOwnedIdentity(UNFOLDED_DIGEST_IDENTITY, USER_ROLE_CODE, DIGEST_OF_UNFOLDED_PROBE);
+        writeOwnedIdentity(FOLDED_DIGEST_IDENTITY, USER_ROLE_CODE, DIGEST_OF_FOLDED_PROBE);
     }
 
     /**
      * Removes only the rows this specification wrote.
      *
-     * <p>Scoped to the five reserved identifiers by name, so the ten delivered identities survive every
+     * <p>Scoped to the six reserved identifiers by name, so the ten delivered identities survive every
      * method and every specification that runs after this one finds exactly the seed.
      */
     @AfterEach
@@ -472,13 +515,13 @@ public class AuthControllerIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     /**
-     * The five identifiers this specification writes, in the order it writes them.
+     * The six identifiers this specification writes, in the order it writes them.
      *
      * @return the reserved identifiers
      */
     private static List<String> ownedIdentities() {
         return List.of(ADMIN_IDENTITY, USER_IDENTITY, UNDECLARED_ROLE_IDENTITY,
-                LOWER_CASE_ROLE_IDENTITY, UNFOLDED_DIGEST_IDENTITY);
+                LOWER_CASE_ROLE_IDENTITY, UNFOLDED_DIGEST_IDENTITY, FOLDED_DIGEST_IDENTITY);
     }
 
     /**
@@ -516,20 +559,6 @@ public class AuthControllerIT extends AbstractPostgresIT {
         final char[] window = TestDataFactory.fixtureCredentialWindow();
         try {
             return OWNED_DIGEST_SOURCE.encode(CobolStringUtils.asciiUpperFold(new String(window)));
-        } finally {
-            Arrays.fill(window, ' ');
-        }
-    }
-
-    /**
-     * Produces a digest of the unfolded contents of the same window.
-     *
-     * @return a digest no submission can match, because every submission is folded before comparison
-     */
-    private static String digestOfRawCredentialWindow() {
-        final char[] window = TestDataFactory.fixtureCredentialWindow();
-        try {
-            return OWNED_DIGEST_SOURCE.encode(CharBuffer.wrap(window));
         } finally {
             Arrays.fill(window, ' ');
         }
@@ -847,20 +876,40 @@ public class AuthControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the fold is unconditional: an identity whose digest was produced from the unfolded "
-                + "value is refused even when exactly that value is submitted")
+        @DisplayName("the fold is unconditional: of two identities differing only in which form of one "
+                + "mixed-case probe their digest was made from, the folded one is admitted and the "
+                + "unfolded one is refused by the SAME submission")
         void theFoldIsUnconditional() throws Exception {
             // The strongest available statement that the fold at lines 132 to 136 genuinely runs on every
-            // submission. This identity's digest was derived from the unfolded characters, so a path that
-            // compared what the client sent would admit it; the shipped path folds first and refuses.
-            final MvcResult result =
-                    submit(UNFOLDED_DIGEST_IDENTITY, keyedCredential(), KeyAction.ENTER);
-            final JsonNode body = bodyOf(result);
+            // submission, and it needs both halves to be conclusive.
+            //
+            // WHY A PROBE AND NOT THE CREDENTIAL. This case used to submit the credential against an
+            // identity whose digest was made from the credential's unfolded form. That worked only while
+            // the fixture carried a fabricated mixed-case window; the fixture now reproduces the delivered
+            // provisioning value, which has no lower-case character, so its folded and unfolded digests
+            // are the same digest and the "refused" identity would be admitted. The demonstration would
+            // have inverted into its opposite while still looking like a passing test. The property is
+            // about the fold, so it is demonstrated on a value chosen for it.
+            final MvcResult refused =
+                    submit(UNFOLDED_DIGEST_IDENTITY, FOLD_PROBE_VALUE, KeyAction.ENTER);
 
-            assertThat(textOf(body, "message"))
-                    .as("the fold happens before the comparison, so the unfolded digest cannot match")
+            assertThat(textOf(bodyOf(refused), "message"))
+                    .as("the fold happens before the comparison, so a digest of the raw probe cannot be "
+                            + "matched by any submission of it")
                     .isEqualTo(WRONG_CREDENTIAL_MESSAGE);
-            assertThat(result.getResponse().getHeader(HttpHeaders.AUTHORIZATION)).isNull();
+            assertThat(refused.getResponse().getHeader(HttpHeaders.AUTHORIZATION)).isNull();
+
+            final MvcResult admitted =
+                    submit(FOLDED_DIGEST_IDENTITY, FOLD_PROBE_VALUE, KeyAction.ENTER);
+
+            assertThat(generalErrorOf(bodyOf(admitted)))
+                    .as("and the companion identity, whose digest was made from the FOLDED probe, is "
+                            + "admitted by that same submission - so the refusal above is caused by the "
+                            + "fold and by nothing else about the probe")
+                    .isFalse();
+            assertThat(admitted.getResponse().getHeader(HttpHeaders.AUTHORIZATION))
+                    .as("admitted, not merely un-errored")
+                    .isNotNull();
         }
 
         @Test
@@ -927,20 +976,33 @@ public class AuthControllerIT extends AbstractPostgresIT {
         void theRequestTypeRedactsTheCredentialWhenRendered() throws Exception {
             // The request type overrides its rendering for exactly this reason: a diagnostic, a log line or
             // a failure report must be able to name the attempt without disclosing what was attempted with.
+            //
+            // THE WHOLE RENDERING IS PINNED, rather than probed with a set of doesNotContain checks. Two
+            // reasons, and the second was measured rather than anticipated.
+            //
+            // An equality is simply stronger: it catches the value appearing in ANY position, catches a
+            // prefix or a length leaking, and catches the placeholder itself being changed or dropped -
+            // none of which a fixed set of probes covers.
+            //
+            // And a case-insensitive probe over the credential is not usable here at all. The delivered
+            // credential's lower-cased form is the eight letters that also spell the NAME of the property
+            // being redacted, so `doesNotContain(submitted.toLowerCase())` reports the label
+            // "password=" as a leak while nothing has leaked. The probe was refusing the redaction rather
+            // than the disclosure.
             final String submitted = keyedCredential();
             final SignOnRequest request =
                     new SignOnRequest(ADMIN_IDENTITY, submitted, KeyAction.ENTER);
 
             assertThat(request.toString())
-                    .as("the identifier and the attention key are retained, because neither is a secret")
-                    .contains(ADMIN_IDENTITY)
-                    .contains(KeyAction.ENTER.name());
-            assertThat(request.toString())
-                    .as("the credential is replaced by a fixed placeholder, so nothing about it - not its "
-                            + "value, not a prefix and not its length - survives the rendering")
-                    .doesNotContain(submitted)
-                    .doesNotContain(submitted.toUpperCase(Locale.ROOT))
-                    .doesNotContain(submitted.toLowerCase(Locale.ROOT));
+                    .as("the rendering is exactly this: the identifier and the attention key retained "
+                            + "because neither is a secret, and the credential replaced by a fixed "
+                            + "placeholder that carries none of its value, prefix or length")
+                    .isEqualTo("SignOnRequest[userId=" + ADMIN_IDENTITY
+                            + ", password=***REDACTED***, keyAction=" + KeyAction.ENTER.name() + "]");
+            assertThat(request.toString().contains(submitted))
+                    .as("and the submitted value appears nowhere in it, asserted as a boolean so a "
+                            + "failure cannot itself print the credential")
+                    .isFalse();
         }
 
         @Test
@@ -1702,6 +1764,7 @@ public class AuthControllerIT extends AbstractPostgresIT {
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
     @Import({AuthController.class, ModuleErrorController.class, SignOnContractAdapter.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, AuthenticationService.class,
+        SignOnAttemptGovernor.class,
         NavigationService.class, MessageCatalogService.class, CredentialDigestService.class,
         SignOnStateService.class, SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
     @EnableConfigurationProperties(JwtProperties.class)

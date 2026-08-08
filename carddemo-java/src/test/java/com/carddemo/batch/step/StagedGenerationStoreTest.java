@@ -39,6 +39,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -856,44 +857,100 @@ class StagedGenerationStoreTest {
     class TheAbnormalDisposition {
 
         @Test
-        @DisplayName("removes this execution's sealed generations and working files, and nothing else")
-        void removesOnlyThisExecutionsOwnArtifacts() throws Exception {
+        @DisplayName("removes the sealed generations and working files THIS EXECUTION REGISTERED, and "
+                + "nothing else")
+        void removesOnlyThisExecutionsOwnRegisteredArtifacts() throws Exception {
             final JobExecution failed = failedJob(4);
             final Path ownGeneration =
                     StagedGenerationStore.generationPath(stagingDirectory, BASE, 4);
-            final Path ownWorking = StagedGenerationStore.workingPath(
-                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 4));
+            final Path secondGeneration =
+                    StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 4);
+            final Path ownWorking = StagedGenerationStore.workingPath(secondGeneration);
             final Path anotherExecutionsGeneration =
                     StagedGenerationStore.generationPath(stagingDirectory, BASE, 5);
             final Path unrelatedInput = stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS");
             Files.writeString(ownGeneration, "sealed", StandardCharsets.US_ASCII);
+            Files.writeString(secondGeneration, "sealed too", StandardCharsets.US_ASCII);
             Files.writeString(ownWorking, "half composed", StandardCharsets.US_ASCII);
             Files.writeString(anotherExecutionsGeneration, "not mine", StandardCharsets.US_ASCII);
             Files.writeString(unrelatedInput, "an input", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(failed, BASE, ownGeneration,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            StagedGenerationStore.register(failed, OTHER_BASE, secondGeneration,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
             assertThat(StagedGenerationStore.discardLocalArtifactsOf(failed, stagingDirectory))
-                    .isEqualTo(2);
+                    .as("two registered generations and the one working sibling the store names for "
+                            + "the second of them")
+                    .isEqualTo(3);
 
             assertThat(ownGeneration).doesNotExist();
-            assertThat(ownWorking).doesNotExist();
+            assertThat(secondGeneration).doesNotExist();
+            assertThat(ownWorking)
+                    .as("the working sibling is named by the store from the registered path, so it is "
+                            + "removed without ever being matched by name")
+                    .doesNotExist();
             assertThat(anotherExecutionsGeneration)
-                    .as("a concurrently running execution's generation carries a different token and"
-                            + " must survive")
+                    .as("a concurrently running execution registered its own generation on its own "
+                            + "context, so this sweep cannot see it")
                     .exists();
             assertThat(unrelatedInput)
-                    .as("a staged input carries no generation token at all and is not this sweep's"
-                            + " business")
+                    .as("a staged input was never registered and is not this sweep's business")
                     .exists();
         }
 
         @Test
-        @DisplayName("an execution with nothing of its own to discard removes nothing and reports so")
-        void anExecutionWithNothingToDiscardRemovesNothing() throws Exception {
+        @DisplayName("A PLANTED DECOY IS NOT DELETED: a file whose name merely CONTAINS this execution's "
+                + "token survives, because selection is by registration and never by substring")
+        void aFileMerelyContainingTheTokenIsNotDeleted() throws Exception {
+            final JobExecution failed = failedJob(4);
+            final Path registered =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 4);
+            Files.writeString(registered, "sealed", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(failed, BASE, registered,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            // Three shapes that the withdrawn substring rule would each have deleted. The token is
+            // derived from a monotonically increasing framework identifier, so its value is guessable
+            // and a name carrying it is trivial to construct.
+            final Path prefixDecoy =
+                    stagingDirectory.resolve("something-else.G0000000004V00");
+            final Path suffixDecoy =
+                    stagingDirectory.resolve(BASE + ".G0000000004V00.keep-this");
+            final Path embeddedDecoy =
+                    stagingDirectory.resolve("audit-G0000000004V00-report.txt");
+            for (final Path decoy : List.of(prefixDecoy, suffixDecoy, embeddedDecoy)) {
+                Files.writeString(decoy, "not the store's to delete", StandardCharsets.US_ASCII);
+            }
+
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failed, stagingDirectory))
+                    .as("exactly the one registered path")
+                    .isEqualTo(1);
+
+            assertThat(registered).doesNotExist();
+            assertThat(prefixDecoy)
+                    .as("THE DEFECT THIS PINS. The withdrawn rule deleted every regular file whose name "
+                            + "contained the token, so a cleanup path could be aimed by choosing a "
+                            + "filename")
+                    .exists();
+            assertThat(suffixDecoy).exists();
+            assertThat(embeddedDecoy).exists();
+        }
+
+        @Test
+        @DisplayName("an execution that registered nothing removes nothing, even when a well-named file "
+                + "carrying its exact token is sitting in the root")
+        void anExecutionWithNoRegistrationsRemovesNothing() throws Exception {
+            final Path wellNamed = StagedGenerationStore.generationPath(stagingDirectory, BASE, 88);
+            Files.writeString(wellNamed, "allocated by something else", StandardCharsets.US_ASCII);
             Files.writeString(stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS"), "input",
                     StandardCharsets.US_ASCII);
 
             assertThat(StagedGenerationStore.discardLocalArtifactsOf(failedJob(88),
                     stagingDirectory)).isZero();
+            assertThat(wellNamed)
+                    .as("registration happens at completion, so an execution with no registrations has "
+                            + "no claim on any file whatever it is called")
+                    .exists();
             assertThat(stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS")).exists();
         }
 
@@ -908,6 +965,36 @@ class StagedGenerationStoreTest {
             assertThat(StagedGenerationStore.discardLocalArtifactsOf(failedJob(6), stagingDirectory))
                     .isZero();
             assertThat(directory).exists();
+        }
+
+        @Test
+        @DisplayName("a registered path replaced by a symbolic link since registration is not followed, "
+                + "so the deletion cannot be redirected onto the link's target")
+        void aRegisteredPathReplacedByALinkIsNotFollowed() throws Exception {
+            final JobExecution failed = failedJob(9);
+            final Path registered =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 9);
+            Files.writeString(registered, "sealed", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(failed, BASE, registered,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            final Path elsewhere = stagingDirectory.resolve("valuable-unrelated-file");
+            Files.writeString(elsewhere, "must survive", StandardCharsets.US_ASCII);
+            Files.delete(registered);
+            try {
+                Files.createSymbolicLink(registered, elsewhere);
+            } catch (final UnsupportedOperationException | IOException linksUnavailable) {
+                return;
+            }
+
+            assertThat(StagedGenerationStore.discardLocalArtifactsOf(failed, stagingDirectory))
+                    .as("the registered name is no longer a regular file this process owns, so nothing "
+                            + "is removed under it")
+                    .isZero();
+
+            assertThat(elsewhere)
+                    .as("and the link's target is untouched, which is the property that matters: a "
+                            + "delete that followed the link would have removed it")
+                    .exists();
         }
 
         @Test
@@ -930,6 +1017,149 @@ class StagedGenerationStoreTest {
                     new JobParameters());
             execution.setStatus(BatchStatus.FAILED);
             return execution;
+        }
+    }
+
+    /**
+     * Resolving the current local generation of a base, which is resolution <em>by name</em> and is
+     * therefore the point where the filesystem could otherwise decide the answer.
+     *
+     * <p>The highest generation token wins, and a token is part of a filename. On a shared host that
+     * makes a name a thing an attacker can choose: a local actor able to write the staging root can
+     * plant a file, or a symbolic link, named with a generation higher than any this store has
+     * allocated, and the next job to consume that base then reads the planted records as its own input.
+     * These are the tests of the two controls that stand between the name and the answer - the anchored
+     * grammar, and the trust predicate that asks whether the entry is really a staged artefact of this
+     * deployment.
+     */
+    @Nested
+    @DisplayName("the current local generation is resolved by name, so the name is not enough")
+    class TheCurrentLocalGeneration {
+
+        @Test
+        @DisplayName("the highest trusted generation of the base is the answer, and a generation of a "
+                + "different base is not a candidate for it")
+        void theHighestTrustedGenerationWins() throws Exception {
+            Files.writeString(StagedGenerationStore.generationPath(stagingDirectory, BASE, 3),
+                    "third", StandardCharsets.US_ASCII);
+            Files.writeString(StagedGenerationStore.generationPath(stagingDirectory, BASE, 11),
+                    "eleventh", StandardCharsets.US_ASCII);
+            Files.writeString(StagedGenerationStore.generationPath(stagingDirectory, OTHER_BASE, 99),
+                    "another base entirely", StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .get()
+                    .extracting(path -> path.getFileName().toString())
+                    .isEqualTo(BASE + ".G0000000011V00");
+        }
+
+        @Test
+        @DisplayName("A PLANTED SYMBOLIC LINK WITH A HIGHER GENERATION IS NOT THE ANSWER: the genuine "
+                + "generation below it is, so the link cannot substitute the job's input")
+        void aPlantedLinkWithAHigherGenerationIsRefused() throws Exception {
+            final Path genuine = StagedGenerationStore.generationPath(stagingDirectory, BASE, 7);
+            Files.writeString(genuine, "the job's own records", StandardCharsets.US_ASCII);
+            final Path attackerContent = stagingDirectory.resolve("attacker-records");
+            Files.writeString(attackerContent, "records the attacker chose",
+                    StandardCharsets.US_ASCII);
+            final Path plantedLink =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 9_999);
+            try {
+                Files.createSymbolicLink(plantedLink, attackerContent);
+            } catch (final UnsupportedOperationException | IOException linksUnavailable) {
+                return;
+            }
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .as("THE DEFECT THIS PINS. The withdrawn check followed the link and reported it as "
+                            + "a regular file, so the highest-numbered name won and the job read the "
+                            + "attacker's records")
+                    .get()
+                    .isEqualTo(genuine);
+        }
+
+        @Test
+        @DisplayName("a planted directory with a higher generation is not the answer either, because a "
+                + "directory is not an artifact this store hands out")
+        void aPlantedDirectoryWithAHigherGenerationIsRefused() throws Exception {
+            final Path genuine = StagedGenerationStore.generationPath(stagingDirectory, BASE, 2);
+            Files.writeString(genuine, "the job's own records", StandardCharsets.US_ASCII);
+            Files.createDirectory(
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 4_242));
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .get()
+                    .isEqualTo(genuine);
+        }
+
+        @Test
+        @DisplayName("a candidate anybody may write is refused however well it is named, because a file "
+                + "that can be rewritten in place after it is checked is not evidence of what the job "
+                + "produced")
+        void aWorldWritableCandidateIsRefused() throws Exception {
+            final Path genuine = StagedGenerationStore.generationPath(stagingDirectory, BASE, 5);
+            Files.writeString(genuine, "the job's own records", StandardCharsets.US_ASCII);
+            final Path loose = StagedGenerationStore.generationPath(stagingDirectory, BASE, 6);
+            Files.writeString(loose, "anybody could have written this", StandardCharsets.US_ASCII);
+            try {
+                Files.setPosixFilePermissions(loose,
+                        PosixFilePermissions.fromString("rw-rw-rw-"));
+            } catch (final UnsupportedOperationException noPosixView) {
+                return;
+            }
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .get()
+                    .isEqualTo(genuine);
+        }
+
+        @Test
+        @DisplayName("a name that is not the store's own canonical spelling of a generation is not a "
+                + "candidate, so a short or over-padded token cannot outrank a real one")
+        void onlyTheCanonicalGenerationSpellingIsACandidate() throws Exception {
+            final Path genuine = StagedGenerationStore.generationPath(stagingDirectory, BASE, 8);
+            Files.writeString(genuine, "the job's own records", StandardCharsets.US_ASCII);
+            for (final String nonCanonical : List.of(
+                    // Over-padded: eleven digits for a value the store pads to ten.
+                    BASE + ".G00000000009V00",
+                    // Under-padded: the same value with no padding at all.
+                    BASE + ".G9V00",
+                    // A version suffix this store never writes.
+                    BASE + ".G0000000009V01",
+                    // The working suffix, which names a file that was never completed.
+                    BASE + ".G0000000009V00.part",
+                    // A separator this store never writes between the base and the token.
+                    BASE + "-G0000000009V00")) {
+                Files.writeString(stagingDirectory.resolve(nonCanonical), "not a generation",
+                        StandardCharsets.US_ASCII);
+            }
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .as("each of the five spells a higher number than the genuine generation and none is "
+                            + "the spelling this store would have written for it, so none is a "
+                            + "candidate: the grammar is anchored by round trip through the writer "
+                            + "rather than by a pattern that could drift from it")
+                    .get()
+                    .isEqualTo(genuine);
+        }
+
+        @Test
+        @DisplayName("a root holding no generation of the base answers empty, which is what makes the "
+                + "consuming job refuse rather than read half its input")
+        void aRootHoldingNoGenerationAnswersEmpty() throws Exception {
+            Files.writeString(stagingDirectory.resolve("AWS.M2.CARDDEMO.DALYTRAN.PS"), "an input",
+                    StandardCharsets.US_ASCII);
+
+            assertThat(StagedGenerationStore.currentLocalGeneration(stagingDirectory, BASE))
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a staging root that is not a directory answers empty rather than raising")
+        void aMissingRootAnswersEmpty() {
+            assertThat(StagedGenerationStore.currentLocalGeneration(
+                    stagingDirectory.resolve("no-such-directory"), BASE))
+                    .isEmpty();
         }
     }
 }

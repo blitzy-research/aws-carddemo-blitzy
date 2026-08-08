@@ -77,12 +77,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * where two stored values are cut back to the widths the map declares. Every one of those is a
  * decision taken here and nowhere else, so every one is asserted here.
  *
- * <p>The regulated components deserve the closest reading. This boundary holds no privileged purpose:
- * it presents the view screen to whichever operator is signed on, so it asks the adapter for an
- * unprivileged reveal and the adapter answers masked values. A change that quietly promoted that
- * authorization would still compile and would still pass every service test, so the masking is
- * asserted directly, and the absent-customer path is asserted to yield absent rather than masked
- * values because a mask would tell an operator a record exists.
+ * <p>The regulated components deserve the closest reading. The authority the boundary presents to the
+ * adapter is derived from the established identity, by one derivation both routes read: an administrator
+ * reveals and every other caller receives masks. That is asserted in both directions here, because a
+ * change in either direction would still compile and would still pass every service test. The boundary
+ * previously held a <em>constant</em> unprivileged authority on the view route, which masked the values for
+ * an administrator while the update route revealed them - the two screens disagreeing about the same four
+ * values of the same record - so the administrative reveal on the view route is asserted directly and not
+ * merely on the update route. The absent-customer path is asserted to yield absent rather than masked
+ * values, because a mask would tell an operator a record exists.
  */
 @DisplayName("AccountController - the account view and update routes")
 class AccountControllerTest {
@@ -711,12 +714,13 @@ class AccountControllerTest {
     }
 
     @Nested
-    @DisplayName("The regulated components, which this boundary is not licensed to reveal")
+    @DisplayName("The regulated components, which this boundary reveals only to the authority the "
+            + "established identity carries")
     class RegulatedComponents {
 
         @Test
         @DisplayName("the birth date, the government-issued identifier and the funds identifier arrive "
-                + "masked, because the view screen holds no privileged purpose")
+                + "masked for an ordinary signed-on caller")
         void theRegulatedComponentsArriveMasked() {
             when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
 
@@ -727,6 +731,40 @@ class AccountControllerTest {
             assertThat(body.eftAccountId()).isEqualTo("*".repeat(EFT_ACCOUNT_ID.length()));
             assertThat(body.dateOfBirth()).doesNotContain("1984");
             assertThat(body.eftAccountId()).isNotEqualTo(EFT_ACCOUNT_ID);
+        }
+
+        @Test
+        @DisplayName("and arrive revealed for an administrative identity, because the view screen and the "
+                + "update screen are the same regulated data behind the same policy")
+        void theRegulatedComponentsArriveRevealedForAnAdministrator() {
+            // The view route used to present a CONSTANT unprivileged authority regardless of who asked,
+            // so an administrator was masked here and revealed on the update route. Both routes now read
+            // one derivation of the authority; this is the assertion that fails if the constant returns.
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, identityOf(UserType.ADMIN)).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.dateOfBirth())
+                    .as("the stored value, not a stand-in of the same width")
+                    .isEqualTo(BIRTH_DATE)
+                    .isNotEqualTo("*".repeat(BIRTH_DATE.length()));
+            assertThat(body.eftAccountId())
+                    .isEqualTo(EFT_ACCOUNT_ID)
+                    .isNotEqualTo("*".repeat(EFT_ACCOUNT_ID.length()));
+        }
+
+        @Test
+        @DisplayName("an absent identity reveals nothing, so a route the chain did not authenticate "
+                + "cannot become the way the values are read")
+        void anAbsentIdentityRevealsNothing() {
+            when(accountViewService.viewAccount(any(), any(), any())).thenReturn(presentedResult());
+
+            AccountViewResponse body = controller.viewAccount(ACCOUNT_ID, null, null, null).getBody();
+
+            assertThat(body).isNotNull();
+            assertThat(body.dateOfBirth()).isEqualTo("*".repeat(BIRTH_DATE.length()));
+            assertThat(body.eftAccountId()).isEqualTo("*".repeat(EFT_ACCOUNT_ID.length()));
         }
 
         @Test

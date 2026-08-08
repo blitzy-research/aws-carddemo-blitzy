@@ -54,7 +54,7 @@ cd carddemo-java && ./mvnw clean verify
 | [Architecture and layering](#architecture-and-layering) | find your way around the packages |
 | [Behavioural fidelity](#behavioural-fidelity--read-this-before-changing-anything) | **change anything** — read this first |
 | [Directory layout](#directory-layout) | locate a file |
-| [Documentation](#documentation) | find the decision log, or check which pages are still pending |
+| [Documentation](#documentation) | find the decision log or the traceability matrix, or check what is still pending |
 | [Continuous integration](#continuous-integration) | understand what CI enforces |
 | [Troubleshooting](#troubleshooting) | something will not start |
 | [Contributing](#contributing) / [Licence](#licence) | open a pull request |
@@ -113,9 +113,10 @@ measurement of one commit and not a standing property.
 
 Both identifiers below are the durable link between this module and the estate it was derived from,
 and they are the only correct way to answer "which COBOL did this Java come from?". They are carried
-in the Provenance section of [`../docs/decision-log.md`](../docs/decision-log.md), and they are to be
-carried in the header of the traceability matrix — `docs/traceability-matrix.md`, which is **not yet
-published**; see [Documentation](#documentation) for the full list of pending pages.
+in the Provenance section of [`../docs/decision-log.md`](../docs/decision-log.md) and in the header of
+[`../docs/traceability-matrix.md`](../docs/traceability-matrix.md), which is **published** and where
+`GateVerificationTest` asserts both of them; see [Documentation](#documentation) for what is delivered and
+what is still pending.
 
 | Identifier | Value |
 |---|---|
@@ -149,7 +150,7 @@ string appears in the POM.
 | Generated symbolic-map copybooks | 17 | the field-level screen contract |
 | JCL members | 29 | batch job definitions and dataset provisioning |
 | Cataloged procedures | 2 | the reporting procedure and the copy procedure |
-| CICS resource definition | 1 | 18 transactions, 17 mapsets, 18 programs, 10 files, 1 transient data queue |
+| CICS resource definition | 1 | 18 transactions, 18 programs, 17 mapsets, 8 files, 2 libraries, 1 transient data queue — counted mechanically from its own `DEFINE` statements |
 | Utility control cards | 1 | the copy-utility control statements |
 | Catalog listing | 1 | dataset attributes, consulted for key offsets and record sizes |
 | Sample datasets | 21 | 9 ASCII fixtures + 12 EBCDIC sequential datasets |
@@ -166,11 +167,15 @@ git ls-tree -r --name-only 7756d895ffeb65f7ea72aaa609e356d9899afcec | grep -vc g
 git ls-tree -r --name-only 7756d895ffeb65f7ea72aaa609e356d9899afcec app/ | grep -vc gitkeep   # 145
 ```
 
-Each of those 544 units is to be mapped to a named Java method in `docs/traceability-matrix.md`,
-which is **not yet published** — so the row-by-row mapping is a stated obligation at this milestone,
-not an artifact you can open today. Coverage of the *estate* is nonetheless exhaustive rather than
-sampled, which means two artifacts that a naive scope pass would silently drop are handled
-explicitly:
+Each of those 544 units is mapped to a named Java method in
+[`../docs/traceability-matrix.md`](../docs/traceability-matrix.md), one row per unit, and
+`e2e/GateVerificationTest` checks that page against the estate and against this module's own source:
+the row count — asserted against the paragraph labels the members **actually declare**, member by member,
+rather than against itself — each member's subtotal, both provenance anchors, and, for every row, that the
+target class exists, declares the named method, and names a covering test that exists — so the mapping is an artifact you can open and an Coverage of the
+assertion that fails if it drifts, rather than a stated obligation.
+*estate* is exhaustive rather than sampled, which means two artifacts that a naive scope pass would
+silently drop are handled explicitly:
 
 - **`CBTRN01C`** is a complete 491-line, 18-paragraph batch program that **no JCL member, no
   cataloged procedure and no CICS definition invokes**. It is migrated anyway, as
@@ -353,12 +358,17 @@ JaCoCo coverage check and the OWASP dependency-check entirely**. `verify` is the
 | `spring-boot-maven-plugin` | Repackages the executable, layered artifact and writes build info |
 | `maven-failsafe-plugin` | The integration and end-to-end tier — `**/*IT.java`, `**/*E2ETest.java`, `**/e2e/**/*Test.java`, against real containers, reporting failures at `verify` so containers are always torn down |
 | `jacoco-maven-plugin` | Merges the unit and integration execution data and **fails the build** below the line-coverage floor |
-| `dependency-check-maven` | Scans the **compile and runtime** dependency graph — test scope is deliberately excluded, see [Gate 8](#gate-8--integration-sign-off) — and **fails the build** at CVSS 7.0, which catches every critical and high CVE in that scope |
+| `dependency-check-maven` | Scans the **compile, runtime and test** dependency graph — `dependency-check.skipTestScope` is `false`, see [Gate 8](#gate-8--integration-sign-off) — and **fails the build** at CVSS 7.0, which catches every critical and high CVE in that scope |
 
 The two test tiers are strictly complementary — the include and exclude sets are written so no test
-class is collected twice and none falls through the gap between them. Note that the `*E2ETest.java` and
-`e2e/` patterns are **configured but currently match nothing**: the end-to-end tier is reserved, not
-populated, which is part of why Gates 1 and 5 are recorded below as partial.
+class is collected twice and none falls through the gap between them. The `*E2ETest.java` and `e2e/`
+patterns match **three classes**, all in `src/test/java/com/carddemo/e2e/`:
+
+| End-to-end class | What it drives |
+|---|---|
+| `BatchPipelineE2ETest` | the committed 300-record daily input through the delivered pipeline on a Testcontainers PostgreSQL instance, comparing every artefact the run produced against its golden file |
+| `OnlineTransactionE2ETest` | the sign-on contract and the batch-trigger contract over the real booted boundary and a real LocalStack FIFO queue |
+| `GateVerificationTest` | the named Gate 4 artefacts, the Gate 6 audit, the 544-unit coverage invariant and the Gate 8 sign-off record |
 
 #### The CVE scan covers everything the artifact ships
 
@@ -371,10 +381,11 @@ scanned; 178 of 179 bundled libraries resolved and exactly one did not.
 It is now declared at `runtime` scope with the plugin's own extraction turned off, so the graph is the
 single source of the library and the shipped bytes are the scanned bytes — the two sources are digest-
 identical, which `DeployableSupplyChainIT` asserts rather than assumes. **Coverage is 180 of 180 packaged
-JARs.** One HIGH finding is currently reported against that graph and is recorded as an examined
-determination rather than fixed, because no patched release of the affected library is published yet; it
-is set out in full under [Gate 8](#gate-8--integration-sign-off) and in
-[`owasp-suppressions.xml`](owasp-suppressions.xml). Reproduce it:
+JARs.** Exactly one HIGH finding against that graph is **carried by a scoped determination rather than
+fixed**, because no patched release of the affected library is published yet: it is represented by a single
+rule in [`owasp-suppressions.xml`](owasp-suppressions.xml) with unused-suppression enforcement left on, so
+the build fails the moment the rule stops matching. It is set out in full under
+[Gate 8](#gate-8--integration-sign-off). Reproduce it:
 
 ```bash
 ./mvnw -B dependency-check:check   # writes target/dependency-check-report.{html,json,xml}
@@ -383,7 +394,7 @@ is set out in full under [Gate 8](#gate-8--integration-sign-off) and in
 then compare the union of `dependencies[].fileName` and `dependencies[].relatedDependencies[].fileName` in
 the JSON report against the `BOOT-INF/lib` listing of `target/carddemo-java-1.0.0.jar`. `dependency-check`
 merges identical artifacts, so the related entries are part of the covered set and a top-level count alone
-understates it. See [`../docs/decision-log.md`](../docs/decision-log.md) DL-145, which also records why the
+understates it. See [`../docs/decision-log.md`](../docs/decision-log.md) DL-228, which also records why the
 loader's redundant bundled copy is accepted rather than excluded.
 
 ### Zero warnings is a build failure, not a report
@@ -609,9 +620,11 @@ curl -s http://localhost:8080/actuator/health           # {"status":"UP"}
 curl -s http://localhost:8080/actuator/prometheus       # the metric surface
 ```
 
-The local profile publishes exactly `health`, `info`, `metrics` and `prometheus`. It does **not**
-publish `env`, `configprops`, `beans`, `flyway`, `mappings` or `loggers`; loopback binding narrows
-reachability but is not a reason to expose resolved configuration or mutable diagnostics. Anonymous
+**Every** profile publishes exactly `health`, `info`, `metrics` and `prometheus` — the local one included,
+and `local`, `test` and `prod` each restate that same list so a widened baseline cannot reach them by
+inheritance. No profile publishes `env`, `configprops`, `beans`, `flyway`, `mappings` or `loggers`;
+loopback binding narrows reachability but is not a reason to expose resolved configuration or mutable
+diagnostics. Anonymous
 health checks receive aggregate status only. Component and detail data use
 `show-details: when-authorized` and `show-components: when-authorized`.
 
@@ -620,15 +633,25 @@ the standard-user role. Their password is the single sample literal carried in t
 user-provisioning job's in-stream cards, and it is stored **only as a BCrypt hash** by the seed
 migration. These identifiers exist in the local and test profiles only.
 
-The REST surface publishes **19 operations**: 17 derived from the screen transactions and two
-administrator-only batch-management operations. The batch routes have their own explicit
+The REST surface publishes **20 operations over 19 paths**: 18 derived from the 17 screen transactions
+— sign-on's two turns share one path, first entry with no communication area and a submitted turn — plus
+two administrator-only batch-management operations. The batch routes have their own explicit
 `/api/batch/**` administrative-authority gate; they are not admitted by the authenticated-user
-catch-all. [`OpenApiRouteContractTest`](src/test/java/com/carddemo/config/OpenApiRouteContractTest.java)
-fetches the served `/v3/api-docs` document and pins this exact method-and-path inventory:
+catch-all.
+
+This table is not the authority for the surface, and it is not allowed to drift from it either.
+[`DeliveredApiSurfaceOracleTest`](src/test/java/com/carddemo/api/DeliveredApiSurfaceOracleTest.java)
+holds one **independent literal** method-and-path oracle for all twenty operations — no controller
+constant appears in it, and the test fails if one is introduced — and compares that oracle against the
+router's own inventory, the served `/v3/api-docs` document, the entitlement each path is gated by, and
+the rows of the table below. [`OpenApiRouteContractTest`](src/test/java/com/carddemo/config/OpenApiRouteContractTest.java)
+additionally fetches the served document and pins each operation's typed request, typed success and
+reachable error statuses:
 
 | Method and path | Legacy transaction or purpose | Access |
 |---|---|---|
-| `POST /api/auth/signon` | CC00 sign-on | Anonymous entry point |
+| `GET /api/auth/signon` | CC00 sign-on, first entry — the turn the legacy transaction ran with no communication area, which over HTTP is a request with no body | Anonymous entry point |
+| `POST /api/auth/signon` | CC00 sign-on, submitted turn | Anonymous entry point |
 | `POST /api/menu` | CM00 user menu | Authenticated |
 | `POST /api/admin/menu` | CA00 administrator menu | Administrator |
 | `POST /api/accounts/view` | CAVW account view | Authenticated |
@@ -699,8 +722,9 @@ README does not print it. These identifiers exist in the local and test profiles
 [where local and test values live](#where-local-and-test-values-actually-live) for exactly which files
 carry which value.
 
-The REST surface publishes **19 operations: 17 derived from the 17 screen transactions, plus 2
-batch-management operations** on [`BatchJobController`](src/main/java/com/carddemo/api/BatchJobController.java).
+The REST surface publishes **20 operations: 18 derived from the 17 screen transactions — sign-on has two
+turns on one path — plus 2 batch-management operations** on
+[`BatchJobController`](src/main/java/com/carddemo/api/BatchJobController.java).
 
 #### Signing on, and keeping the token
 
@@ -794,9 +818,18 @@ this surface does not own.
 
 A defaulted secret violates "no hardcoded credentials" just as surely as a literal one does, so
 `application-prod.yml` resolves each of these from the environment **with no fallback**. A missing
-variable **fails startup** rather than silently binding a placeholder. Note the scope of the claim: it is
-about *secrets*, not about every variable — five non-secret variables further down deliberately do carry
-defaults:
+variable **fails startup** rather than silently binding a placeholder. The list is **thirteen** entries and
+is the complete set of no-fallback references in that file — check it against the file rather than trusting
+the table:
+
+```bash
+cd carddemo-java
+# 14 lines: the 13 below, plus ${VARIABLE} from an explanatory comment
+grep -oE '\$\{[A-Z_0-9]+\}' src/main/resources/application-prod.yml | sort -u | wc -l
+```
+
+Note the scope of the claim: it is about *secrets*, not about every variable — five non-secret variables
+further down deliberately do carry defaults:
 
 | Variable | What it configures |
 |---|---|
@@ -805,6 +838,7 @@ defaults:
 | `CARDDEMO_DB_PASSWORD` | Database password |
 | `CARDDEMO_JWT_SECRET` | Signing secret for the session token that replaced the pseudo-conversational state area |
 | `CARDDEMO_FIELD_ENCRYPTION_KEY` | Key for the field-level encryption applied to sensitive customer data |
+| `CARDDEMO_MANAGEMENT_TOKEN` | Bearer credential the management filter chain requires for the `ROLE_MONITORING` rules that guard the Actuator path |
 | `CARDDEMO_SQS_QUEUE` | FIFO queue name for the job-submission bridge; the required value is `JOBS.fifo` |
 | `AWS_REGION` | Region for the S3, SQS and SNS clients |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | OTLP trace collector endpoint |
@@ -851,7 +885,7 @@ ceiling* — not the location list — is the profile scoping mechanism:
 | Migration | Applied in | Content |
 |---|---|---|
 | `V1__create_schema.sql` | every profile | **11 tables**, one per verified record layout |
-| `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and foreign keys — **and `job_submission_outbox`**, which is delivery state rather than a record layout (see below) |
+| `V2__create_indexes.sql` | every profile | The three alternate-index equivalents as B-tree indexes, plus primary and **six** foreign keys. It **creates no table** — the migration says so at its head — and it records there which three relationships are deliberately left unconstrained and why |
 | `V3__seed_reference_data.sql` | `local`, `test` | Reference and sample data at the measured fixture counts |
 | `V4__seed_user_security.sql` | `local`, `test` | The ten seed users — five administrator, five standard — stored as **BCrypt hashes** |
 
@@ -865,20 +899,34 @@ outside `local`, and `validate-on-migrate` is on everywhere.
 The third alternate-index equivalent is defined even though no online endpoint depends on it: the
 report job's date-range filter would otherwise scan the whole transaction table.
 
-**Counting tables in a running database will give you nineteen, not eleven, and all eight extras are
+**Counting tables in a running database will give you eighteen, not eleven, and all seven extras are
 accounted for.** The eleven are the migrated record layouts — `account`, `card`, `card_cross_reference`,
 `customer`, `daily_transaction`, `disclosure_group`, `transaction`, `transaction_category`,
 `transaction_category_balance`, `transaction_type`, `user_security`. Beside them sit the **six** Spring
 Batch metadata tables the framework's own PostgreSQL schema creates — `batch_job_instance`,
 `batch_job_execution`, `batch_job_execution_params`, `batch_job_execution_context`,
 `batch_step_execution`, `batch_step_execution_context`, plus its three sequences, which are sequences
-rather than tables and so do not enter this count — Flyway's own `flyway_schema_history`, and
-**`job_submission_outbox`**.
-The last one is the only application-authored table that is *not* a record layout: it holds the
-online-to-batch bridge's delivery progress, so the eighty-character cards of one submission cannot be
-interleaved with another's after a retry — the legacy queue's append disposition, preserved. Keeping it
-out of the eleven is deliberate; `V2__create_indexes.sql` says so at the table itself, and the reasoning
-is recorded in the decision log with the coordination semantics it supports.
+rather than tables and so do not enter this count — and Flyway's own `flyway_schema_history`.
+
+**Eleven of those eighteen are this module's, there is no `job_submission_outbox` and there is no durable
+resume.** An earlier revision of the bridge persisted delivery progress in a `job_submission_outbox` table
+so that a partial card stream could be completed by a later call, and this section described it. It was
+removed as feature expansion before delivery: the estate defines eleven record layouts, the legacy queue
+definition carries `ERROROPTION(IGNORE)`, and the emitting program abandons a refused write rather than
+deferring it — so there is no delivery state to persist. What the bridge actually does is reproduce that. It
+publishes each of its own cards once, in list order, into a single first-in-first-out message group; it
+**stops at the first refusal**; the refusal is non-fatal and is reported by a warning naming how many cards
+were published against how many were requested; and it keeps no memory for a later attempt. A submission
+that stopped part way therefore left a prefix of its cards on the queue, which is the legacy behaviour
+rather than a gap in this one. The delivered coordination is a transaction-scoped PostgreSQL advisory lock
+that persists nothing. `V2__create_indexes.sql` records the removal at its head, and the reasoning is in
+[`../docs/decision-log.md`](../docs/decision-log.md) DL-148. Count for yourself:
+
+```bash
+docker compose exec -T postgres \
+  psql -U carddemo -d carddemo -Atc \
+  "select count(*) from information_schema.tables where table_schema='public'"   # 18
+```
 
 ### AWS resources
 
@@ -924,8 +972,8 @@ provision an external resource.
 |---|---|---|
 | `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` | anonymous | Aggregate health; process-only liveness (the group the container probe reads); and readiness requiring the datasource plus the S3 staging bucket and the SQS job queue. **The SNS completion topic is deliberately not in the readiness group** — it carries a notice that a job has already finished, so its absence loses a notice and prevents no work, and taking an instance out of service for it would be the wrong remedy. The `awsSns` contributor is still published, so its state remains readable; what it no longer does is decide this instance's fitness to receive traffic. |
 | `/actuator/prometheus` | anonymous | Micrometer timers on every REST endpoint and every batch step — the measurement surface the performance baseline is read from. Anonymous deliberately, so the collector can scrape it; closed in `prod`. |
-| `/actuator/metrics`, `/actuator/info`, and in `local` also `env`, `configprops`, `beans`, `flyway`, `mappings`, `loggers` | authenticated | Individual meters, build info and the wider diagnostic surface |
-| `/v3/api-docs` | open in `local`, **disabled in `prod`** | The machine-readable description of the 19 published operations. **There is no interactive viewer**, in any profile — see below |
+| `/actuator/metrics`, `/actuator/info` | authenticated | Individual meters and build info. **These four endpoints — health, info, metrics, prometheus — are the whole published surface in every profile.** `env`, `configprops`, `beans`, `flyway`, `mappings` and `loggers` are exposed by no profile and answer not-found; exposure and authentication are different questions, and narrowing one is not widening the other |
+| `/v3/api-docs` | open in `local`, **disabled in `prod`** | The machine-readable description of the 20 published operations. **There is no interactive viewer**, in any profile — see below |
 | Jaeger UI on 16686 | anonymous (local stack) | OTLP traces, once an endpoint or a job has been exercised |
 
 **The metrics endpoint is never closed by profile, only gated.** One property,
@@ -945,15 +993,17 @@ cannot reopen a path that would answer not-found. The contract is fetched as JSO
 ```bash
 curl -s http://localhost:8080/v3/api-docs | python3 -m json.tool | head -40
 
-# count what is actually published — 19 paths, 19 operations
+# count what is actually published — 19 paths, 20 operations
 curl -s http://localhost:8080/v3/api-docs | python3 -c \
   'import json,sys; d=json.load(sys.stdin); p=d["paths"]; \
    print(len(p), "paths,", sum(len(v) for v in p.values()), "operations")'
 ```
 
 Structured JSON logging with correlation identifiers — [`logback-spring.xml`](src/main/resources/logback-spring.xml)
-plus `logstash-logback-encoder` — replaces the **217 `DISPLAY` statements** that were the legacy
-system's only diagnostic channel.
+plus `logstash-logback-encoder` — replaces the **215 statement-initial `DISPLAY` lines** that were the
+legacy system's only diagnostic channel. The specification's figure is 217; the counting method and
+why 215 is the measured figure are recorded as DL-253 in
+[`../docs/decision-log.md`](../docs/decision-log.md).
 
 Observability configuration lives beside the code, not in an operations repository:
 
@@ -1024,9 +1074,9 @@ because the context started.
 | `PostTransactionJobConfig` | `postTransactionJob` | `app/jcl/POSTTRAN.jcl` — daily transaction posting with the reject writer |
 | `InterestCalculationJobConfig` | `interestCalculationJob` | `app/jcl/INTCALC.jcl` — disclosure-group driven interest accrual |
 | `CombineTransactionsJobConfig` | `combineTransactionsJob` | `app/jcl/COMBTRAN.jcl` — two concatenated inputs ordered by transaction id, then written as one dataset |
-| `CreateStatementJobConfig` | `createStatementJob` | `app/jcl/CREASTMT.JCL` — **four steps with three condition-code gates**, reproduced as `FAILED`-outcome transitions that end the job |
+| `CreateStatementJobConfig` | `createStatementJob` | `app/jcl/CREASTMT.JCL` — **four steps with three condition-code gates**, reproduced as failure-*propagating* transitions: a gate still bypasses the steps behind it, and the job itself ends `FAILED` when any step it ran abended (DL-208) |
 | `TransactionReportJobConfig` | `transactionReportJob` | `app/jcl/TRANREPT.jcl` + `app/proc/TRANREPT.prc` — date-range filtered, card-ordered, 133-byte report line |
-| `BackupTransactionJobConfig` | `backupTransactionJob` | `app/jcl/TRANBKP.jcl` — one condition-code gated backup step; the generation-data-group becomes a timestamped object |
+| `BackupTransactionJobConfig` | `backupTransactionJob` | `app/jcl/TRANBKP.jcl` — one condition-code gated backup step, delivered at the strict-zero ceiling all four gates share (DL-145); the generation-data-group becomes a numbered generation key allocated **by the object store**, one above the highest already present beneath the base, never from the framework's execution identifier (DL-210) |
 | `CategoryBalanceReportJobConfig` | `categoryBalanceReportJob` | `app/jcl/PRTCATBL.jcl` — category balance listing |
 | `FileProbeJobConfig` | `fileProbeJob` | `READACCT.jcl`, `READCARD.jcl`, `READCUST.jcl`, `READXREF.jcl` collapsed into **one parameterised job** with four modes |
 | `DailyTransactionReadJobConfig` | `dailyTransactionReadJob` | `CBTRN01C` — **defined but deliberately not in the default pipeline**, because no legacy job stream invokes it |
@@ -1068,11 +1118,13 @@ instance, so an execution's status, its step results and its exit codes are quer
 the equivalent of reading a job's condition codes, and considerably easier.
 
 The eight jobs that consume or produce staged datasets cross the **S3 staging bucket**
-(`carddemo-batch-staging` on LocalStack). `BatchStagingArea` owns fixed logical inputs and direct
-publications, while `StagedGenerationStore` owns completed generation publication and durable
-retention. Staging readers prefer an existing S3 object and retain their documented local or
-classpath fallback where the translated job requires one. Dataset-producing jobs may write an
-execution-local file while Spring Batch needs file-backed restart state, but that file is a working
+(`carddemo-batch-staging` on LocalStack). The two collaborators divide cleanly, and **only one of them
+publishes**: `BatchStagingArea` resolves fixed logical inputs — it exposes the bucket name, whether an
+object is present, and the object as a readable resource, and **no publication method at all** — while
+`StagedGenerationStore` owns every write to the durable store, allocating the generation key and
+publishing the completed artefact (DL-212). Staging readers prefer an existing S3 object and retain their
+documented local or classpath fallback where the translated job requires one. Dataset-producing jobs may
+write an execution-local file while Spring Batch needs file-backed restart state, but that file is a working
 buffer rather than the external staging contract; a completed artifact is published to S3 only after
 successful close or job completion. The repository-only file-probe job produces no staged dataset.
 This is what replaces sequential-dataset and generation-data-group staging. Per-step timers appear on
@@ -1107,18 +1159,19 @@ evidence, the artefact the evidence lands in, and the part of the outcome that i
 rather than of the machine that ran it. This section documents each gate's *mechanism and current
 coverage* — including, gate by gate, what is proven today and what is still outstanding. For anything that
 is a per-run measurement, run the command and read the result rather than reading a status out of either
-file.
+file. Two things genuinely remain outstanding and are marked as such throughout: the 40-byte golden fixture,
+and golden coverage of four of the five reject reason codes.
 
 | Gate | What it proves | How to run it | Coverage today |
 |---|---|---|---|
-| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **partial** — four widths compared against golden files; the full multi-job pipeline run and the fifth width are outstanding |
+| 1 | Byte equivalence of the emitted records | `./mvnw -B verify` (fails on any golden-file mismatch) | **complete for the four widths this gate names** — all four goldens compared as byte arrays from one seeded pipeline pass; the fifth 40-byte width has no golden by design and is verified in-job. Four of the five reject reason codes are still uncovered by a golden record |
 | 2 | Zero-warning build | `./mvnw -B clean verify` | **complete** — enforced by the compiler |
-| 3 | Performance baseline **established** | launch the jobs through the running application, read `/actuator/prometheus` | **procedure defined**; figures not yet recorded |
-| 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted |
-| 5 | Interface contract verification | `./mvnw -B verify` (against a real queue) | **partial** — the queue contract is exercised against a real queue; the booted sign-on interface is outstanding |
+| 3 | Performance baseline **established** | `./mvnw -B verify`, then read `target/gate-evidence/gate3-*.md`; `/actuator/prometheus` corroborates | **complete** — six measured rows recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md), each dated, attributed to a named machine and quoted with its fixture volumes. Measurements, never thresholds |
+| 4 | Named real-world validation artifacts | `./mvnw -B verify` (seeded and asserted) | **complete** — every named fixture measured and asserted, by name rather than by directory listing |
+| 5 | Interface contract verification | `./mvnw -B verify` (against a real queue and a real port) | **complete** — the card image drained back out of a real queue, and the sign-on texts and routing asserted against a booted context on a random port |
 | 6 | Unsafe and low-level code audit | the scoped grep list below | **complete** — mechanically re-runnable |
 | 7 | Scope matching + coverage floor | `./mvnw -B verify` (JaCoCo check) | **complete** — a failing check, not a report |
-| 8 | Integration sign-off | `./mvnw -B verify` + the traceability matrix | **partial** — the matrix and the recorded evidence page are outstanding |
+| 8 | Integration sign-off | `./mvnw -B verify` + the traceability matrix | **complete** — every checklist row is computed from an artefact and written to `target/gate-evidence/gate8-sign-off.md`; the matrix and the evidence page are both published |
 
 ### Gate 1 — end-to-end byte equivalence
 
@@ -1129,26 +1182,36 @@ is executed is worse than one described narrowly:
 
 | Golden file | What executes it | How far it goes |
 |---|---|---|
-| `expected/daily-reject.txt` | `support/ExpectedOutputFixtureContractTest` | **End to end.** The 38 rejected records are selected out of the committed 300-record daily-transaction input, mapped by the production mapper, written by the production `RejectRecordWriter` to a real file, and that file's bytes are compared. Nothing mocked, nothing stubbed. |
-| `expected/transaction-report.txt` | `support/ExpectedOutputFixtureContractTest` | **Line exact, not yet pipeline driven.** Every one of the 519 committed records is classified by its own structure and re-emitted through the production formatter that owns that record type, and the bytes are compared. The classification is asserted total, so an unrecognised record fails rather than being skipped. Page and grand totals are checked against sums this test computes for itself — including the legacy end-of-file double-count, pinned as the contract it is rather than "corrected". |
-| `expected/statement.txt` | `support/ExpectedOutputFixtureContractTest` | **Line exact, not yet pipeline driven.** All 1,262 records re-emitted through the production templates and compared; every statement's total expenditure checked against the sum of its own detail amounts. |
-| `expected/statement-html.txt` | `support/ExpectedHtmlStatementFixtureContractTest` | **Line exact, not yet pipeline driven.** Fifty concatenated documents asserted in strict write order, including the malformed literals reproduced rather than repaired. |
+| `expected/daily-reject.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedOutputFixtureContractTest` | **End to end, from the pipeline run.** The committed 300-record input is staged, the delivered pipeline runs against a Testcontainers PostgreSQL instance and a real object store, and the reject dataset **that run produced** is compared byte for byte. The contract test re-emits the same records through the production writer independently. |
+| `expected/transaction-report.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedOutputFixtureContractTest` | **End to end, from the same run.** The report the run produced is compared byte for byte. The contract test additionally classifies every one of the 519 committed records by its own structure and re-emits it through the production formatter that owns that record type; the classification is asserted total, so an unrecognised record fails rather than being skipped, and page and grand totals are checked against sums it computes for itself — including the legacy end-of-file double-count, pinned as the contract it is rather than "corrected". |
+| `expected/statement.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedOutputFixtureContractTest` | **End to end, from the same run.** The text statement the run produced is compared byte for byte. The contract test independently re-emits all 1,262 records through the production templates and checks every statement's total expenditure against the sum of its own detail amounts. |
+| `expected/statement-html.txt` | `e2e/BatchPipelineE2ETest`, and `support/ExpectedHtmlStatementFixtureContractTest` | **End to end, from the same run.** The HTML statement the run produced is compared byte for byte. The contract test independently asserts fifty concatenated documents in strict write order, including the malformed literals reproduced rather than repaired. |
 
 In every case **the expected side is the committed fixture bytes and nothing else** — no snapshotting,
 no regeneration, and no expected value produced by calling the code under test.
 
-**What Gate 1 does not yet prove, stated plainly:**
+**What Gate 1 proves, and the two things it still does not:**
 
-- **A single pipeline run.** There is no test that drives posting → interest → consolidation →
-  statement against a Testcontainers PostgreSQL instance seeded from the fixtures and compares all four
-  files from that one run. The reject path is end-to-end; the other three are re-emissions of committed
-  records by the production formatters, because the driver services that will decide page breaks,
-  accumulate totals and order records are not part of the delivered surface yet. That pipeline test is
-  **outstanding**, and `./mvnw -B clean verify` does not discharge it.
+`e2e/BatchPipelineE2ETest` stages the committed input, runs posting → interest → backup → consolidation →
+statement in the plan's own order against a Testcontainers PostgreSQL instance seeded from the fixtures and
+a real object store, and compares **all four** artefacts the one run produced against their goldens as byte
+arrays, writing the comparison to `target/gate-evidence/gate1-byte-equivalence.md` — one row per contract,
+naming the input, the expected file, the width, the expected and actual record and byte counts, and the
+match status. It also asserts that no artefact carries a record separator, that the landing dataset is left
+exactly as staged, and it launches the extract job no legacy stream invokes. `./mvnw -B clean verify`
+discharges that. The per-record tests in the table above remain, because they localise a failure to a
+single record where the pipeline test localises it to a stream.
+
+Two gaps remain, and neither is closed by the run above:
+
 - **Four of the five reject reason codes.** `daily-reject.txt` carries 38 records and every one of them
   is the over-limit code `0102`; the other four codes are defined and unit-tested, but no golden record
-  exercises them. Cases for them are **outstanding**.
-- **The fifth output width.** No 40-byte golden file exists yet — see the table below.
+  exercises them. Cases for them are **outstanding**, and the end-to-end suite measures that as a fact
+  rather than assuming it.
+- **The fifth output width has no golden.** No 40-byte golden file exists, and none is planned: Gate 1
+  names four expected outputs, so minting a fifth would assert a baseline the gate does not define. The
+  width, the edited-balance formatting and the three-key ascending ordering are asserted in-job by
+  `batch/CategoryBalanceReportJobConfigIT` — see the table below.
 
 Five output widths are contractual. Four have a golden file whose every line is exactly that wide; the
 fifth does not yet, and is marked so rather than omitted:
@@ -1413,17 +1476,21 @@ Three contracts, with the executing test named and its reach stated:
    the one behaviour a healthy service cannot be asked to produce — failure on the twelfth card — which
    is how the legacy ignore-on-error semantics are proven: the eleven cards before it travel through the
    real queue and are read back from it, and the six after it are proven never sent.
-3. **The sign-on message and routing contract — partially discharged.** The **seven** distinct message
-   texts the sign-on transaction emits are reproduced character for character, because operators and
-   downstream tooling match on them: the two field prompts, the wrong-password message, the
-   user-not-found message, the unable-to-verify message, the thank-you message on the exit key and the
-   invalid-key message. The routing rule is equally contractual — an administrator user type routes to
-   the administrative menu, any other type routes to the main menu. Both are asserted today by
-   `api/AuthControllerTest`, which drives the controller through **standalone MockMvc with mocked
-   collaborators** — enough to pin the strings and the routing decision, but *not* a booted application
-   answering over HTTP through the real security filter chain and a real datasource. **A booted
-   interface test for this contract is outstanding**; until it exists, this third contract is verified
-   at the controller boundary only, and this gate is not fully discharged.
+3. **The sign-on message and routing contract — discharged against a booted application.** The
+   **seven** distinct message texts the sign-on transaction emits are reproduced character for
+   character, because operators and downstream tooling match on them: the two field prompts, the
+   wrong-password message, the user-not-found message, the unable-to-verify message, the thank-you
+   message on the exit key and the invalid-key message. The two texts the shared message copybook
+   publishes are compared at their **full padded fifty characters**, because the padding is part of a
+   fixed-width field and trimming it would assert a narrower contract than the one that ships. The
+   routing rule is equally contractual — an administrator user type routes to the administrative menu,
+   any other type routes to the main menu — and the legacy branch is an `ELSE` rather than a second
+   equality test, so the destination is asserted for **all ten** delivered identities rather than for
+   one of each kind. `e2e/OnlineTransactionE2ETest` asserts all of it against a **booted context on a
+   random port with a real datasource**, through the real security filter chain;
+   `api/AuthControllerIT` covers the same contract on a booted context at the MVC boundary, and
+   `api/AuthControllerTest` pins it at the controller boundary with mocked collaborators, where a
+   failure is localised to the controller. Three boundaries, one contract.
 
 ### Gate 6 — unsafe and low-level code audit
 
@@ -1503,26 +1570,47 @@ from an actual run.
 
 | Checklist item | Satisfying artifact | Check | Status |
 |---|---|---|---|
-| End-to-end verification | golden fixtures at 80, 100, 133 and 430 bytes; no 40-byte fixture yet | `ExpectedOutputFixtureContractTest`, `ExpectedHtmlStatementFixtureContractTest` | **partial** — reject path end-to-end, the other three re-emitted; single-pipeline run outstanding |
-| Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `JobSubmissionServiceIT` | **met** for the queue contract |
-| Interface contract verification | the seven sign-on literals and the admin/user routing rule | `AuthControllerTest` (standalone MockMvc, mocked collaborators) | **partial** — booted interface test outstanding |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `InterestCalculationJobIT`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **mechanism met and run-scoped**; no baseline row recorded yet, because a figure belongs to one machine on one date |
+| End-to-end verification | golden fixtures at 80, 100, 133 and 430 bytes, driven through one seeded pipeline pass; the fifth 40-byte width has no golden and is verified in-job | `e2e/BatchPipelineE2ETest`, plus `ExpectedOutputFixtureContractTest` and `ExpectedHtmlStatementFixtureContractTest` for the per-record re-emissions, and `batch/CategoryBalanceReportJobConfigIT` for the 40-byte line | **met** — posting, accrual, consolidation and statement run against a Testcontainers PostgreSQL instance seeded from the fixtures, and all four goldens are compared as byte arrays from that one run. The comparison report is written to `target/gate-evidence/gate1-byte-equivalence.md` |
+| Interface contract verification | 17-card image with four slots and the transmitted sentinel, against a real SQS FIFO queue | `service/JobSubmissionServiceIT`, and `e2e/OnlineTransactionE2ETest` driving the submission endpoint over HTTP and draining the queue | **met** for the queue contract |
+| Interface contract verification | the seven sign-on literals and the admin/user routing rule | `e2e/OnlineTransactionE2ETest` — a booted context on a random port with a real datasource — backed by `api/AuthControllerIT` and `api/AuthControllerTest` at the narrower boundaries | **met** — the five direct texts compared character for character, the two shared texts at their full padded width, and the destination asserted for all ten delivered identities, because the legacy branch is an `ELSE` rather than a second equality test |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, driven from `batch/InterestCalculationJobIT` and `e2e/BatchPipelineE2ETest`, writing to `target/gate-evidence/`; Micrometer timers at `/actuator/prometheus` for corroboration | `./mvnw -B clean verify`, then the measured-runs table in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | **met** — six measured rows are recorded there, each dated, attributed to a named machine and quoted with the fixture volumes it was measured over. They are **measurements, not thresholds**: no service level exists anywhere in the estate to test against, so re-measure on your own hardware rather than quoting a row |
 | Unsafe code audit | the scoped grep list above | re-run the list; it is mechanical | **met**; the counts are recorded in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) under Gate 6 |
 | Line coverage ≥ 80% | JaCoCo failing check rule | `./mvnw -B clean verify` | **met** — a failing check |
-| Zero critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included | `./mvnw -B clean verify` | **met** — with one HIGH carried as an examined determination, set out below |
-| Traceability 100% | `docs/traceability-matrix.md` (**not yet published**) and the row-count assertion that will check it | — | **outstanding** |
+| Zero **unsuppressed** critical or high CVEs **across the whole build graph** | `dependency-check-maven` 12.1.3 bound to `verify`, threshold 7.0, test scope included, reading exactly one analyst determination from [`owasp-suppressions.xml`](owasp-suppressions.xml) | `./mvnw -B clean verify`; `GateVerificationTest` asserts the determination's scope and reads both halves of the report | **met as stated, and the statement is the narrower one** — zero *unsuppressed* qualifying findings, plus **one** scoped HIGH determination that is part of the audited result rather than a silence. Set out below. Not "zero findings" |
+| Traceability 100% | [`../docs/traceability-matrix.md`](../docs/traceability-matrix.md), 544 rows | `e2e/GateVerificationTest` — the row count asserted against the paragraph labels the members actually declare rather than against itself, each member's subtotal against the estate, both provenance anchors, the marker distribution, and per row that the target class exists, declares the named method and names a covering test that exists | **met** — 544 rows published, one per procedure unit (528 program paragraphs + 14 + 2 from the two procedural copybooks) |
 
 **The supply-chain result covers the whole build graph, and exactly one finding inside it is carried
 rather than fixed.** The scan is bound to `verify` and actually executed, not merely declared; it fails
-the build at a CVSS threshold of 7.0, which catches every critical and high finding; it emits HTML, JSON
-and XML reports that CI uploads as artifacts; and `dependency-check.skipTestScope` is **`false`**, so the
-result covers the compile, runtime **and test** graph — 168 dependencies. An earlier revision of this
-section described a narrower scope and two unfixable HIGH findings in an excluded test graph. Both
-statements are withdrawn: the shaded transport that carried those findings was **replaced** by the
-visible Apache HTTP client 5 transport rather than excluded, which is what made the full-scope claim
-enforceable, and the scope was widened to match.
+the build at a CVSS threshold of 7.0, which catches every critical and high finding **that no analyst
+determination covers**; it emits HTML, JSON and XML reports that CI uploads as artifacts; and
+`dependency-check.skipTestScope` is **`false`**, so the result covers the compile, runtime **and test**
+graph — 168 dependencies. An earlier revision of this section described a narrower scope and two
+unfixable HIGH findings in an excluded test graph. Both statements are withdrawn: the shaded transport
+that carried those findings was **replaced** by the visible Apache HTTP client 5 transport rather than
+excluded, which is what made the full-scope claim enforceable, and the scope was widened to match.
 
-What remains is one HIGH and one MEDIUM, and neither is left implicit:
+**One vocabulary is used for this gate everywhere it is stated — here, in [`pom.xml`](pom.xml), in
+[`owasp-suppressions.xml`](owasp-suppressions.xml), in the sign-off record `GateVerificationTest` emits,
+and in [`../docs/gate-evidence.md`](../docs/gate-evidence.md) — because a gate described three ways is a
+gate nobody can falsify.** A finding is in exactly one of three states, and the states are not
+interchangeable:
+
+| State | What it means | What the build does |
+|---|---|---|
+| **Fixed** | a patched version exists and the version moved to it | the finding is gone from the report; no rule is written |
+| **Carried as a determination** | no patched artifact exists on any line, and the finding is demonstrably a false match against the bytes this module resolves | the finding is suppressed by **one** named, scoped, evidenced, self-expiring rule and is **disclosed** here, in the build file and in the decision log |
+| **Reported below threshold** | the score is under 7.0 | the finding is printed on every run, no rule names it, and the build passes |
+
+So the claim this gate makes is **zero unsuppressed critical or high findings, plus exactly one carried
+determination** — never "zero findings", and never "zero suppressions". An earlier revision of this
+section, and of the comment in the build file, made that stronger claim; it was true before the
+determination existed and became an overstatement the moment the determination was configured.
+Overstating a gate is the same defect as softening one, so the wording is corrected here, in the build
+file and on the evidence page, and **nothing in the configuration was relaxed** to make the wording true:
+the threshold is still 7.0, the scope is still the whole graph, and `failBuildOnUnusedSuppressionRule` is
+still `true`.
+
+What remains is one carried HIGH and one reported MEDIUM, and neither is left implicit:
 
 - **CVE-2026-66299, CVSS 7.5 HIGH, against the embedded Tomcat 10.1.57 jars — carried as a
   determination in [`owasp-suppressions.xml`](owasp-suppressions.xml), not fixed.** The advisory is
@@ -1543,6 +1631,15 @@ What remains is one HIGH and one MEDIUM, and neither is left implicit:
 - **The gate is still armed for everything else.** Also verified rather than asserted: re-running the
   scan with the threshold lowered to 5.0 fails the build on the MEDIUM below, proving the determination
   excludes one named identifier on named artifacts and nothing more.
+- **The determination's scope is asserted by a test, so it cannot widen quietly, and neither can this
+  page.** `BuildAndCiContractTest` pins the rule's shape — one rule, one identifier, one artifact scope,
+  no wildcard platform record, no coordinate regex — and `GateVerificationTest` additionally reads **both
+  halves** of the machine-readable report: the ordinary findings must carry nothing at or above 7.0, and
+  every *suppressed* finding at or above 7.0 must be this one identifier on a `tomcat-embed` artifact.
+  That second half is what closes the gap a suppression otherwise opens, because a widened rule empties
+  the array a report check would normally read. The same test asserts that the withdrawn "zero findings"
+  wording is absent from both the build file and this page, so the overstatement cannot come back by
+  edit.
 - **CVE-2026-41178, CVSS 5.3 MEDIUM, against `opentelemetry-semconv` — reported, under threshold, and
   deliberately not suppressed.** It describes baggage-header parsing in OpenTelemetry **Go**; the CPE
   carries `go` as its target software and has been matched to a Java artifact. It is left visible in the
@@ -1555,21 +1652,36 @@ What remains is one HIGH and one MEDIUM, and neither is left implicit:
   repackaged jar and fails if any test-scoped artifact appears among its bundled libraries, so the
   boundary between the build's surface and the product's surface stays checked on every run.
 
-The traceability matrix is the largest single deliverable of this gate, and it is **not yet published**.
-Its specified shape is exact — **544 rows**, one per paragraph unit, each naming the source member, the
-paragraph, the source line, the target Java class, the target method and the covering test, with both
-provenance identifiers in its header — and a row-count assertion is to check it, but neither the matrix
-nor that assertion exists at this milestone, so **this checklist item is outstanding rather than met**.
-Three of the 544 rows are to be marked as documented non-implementations rather than translations, so
-that the count stays honest when it is published:
+The traceability matrix is the largest single deliverable of this gate, and it is
+**[published](../docs/traceability-matrix.md)**. An earlier revision of this section described the page as
+pending; that status is withdrawn. Its shape is exact — **544 rows**, one per procedure
+unit, each naming the source member, the paragraph, the source line, the target Java class, the target
+method and the covering test, with both provenance identifiers in its header. The row count is asserted by
+`e2e/GateVerificationTest`, and asserted the only way that means anything: the 544 is checked against the
+paragraph labels the members **actually declare**, member by member, rather than against itself, so a row
+invented for a paragraph that does not exist fails the build. Twenty-eight of the 544 rows are marked
+rather than plain — documented non-implementations and deliberately unrouted paragraphs rather than
+translations — so that the count stays honest.
 
-1. the fee-computation paragraph that is genuinely invoked but implements nothing;
-2. the duplicated exit paragraph in the account-view program, where two identically-named paragraphs
-   exist and collapse to one method;
-3. the paragraphs of the orphaned extract program, which no job stream invokes.
+**A row count alone would not have been enough, and the gate does more than count.**
+`e2e/GateVerificationTest` asserts the 544, each member's subtotal against the paragraphs that member
+actually declares, both provenance anchors, the marker distribution, and — for every row — that the target
+class exists under `src/main/java`, that it *declares* the named method, and that the covering test file
+exists under `src/test/java`. Rows whose method no delivered call site reaches carry a stronger obligation
+still: their covering test must name the method, and for a paragraph head must actually call it.
+
+Marked rows keep the count honest, and the four markers sum to the total — 1 + 3 + 18 + 6 + 516 = 544:
+
+1. `†` the fee-computation paragraph that is genuinely invoked but implements nothing;
+2. `‡` three preserved source anomalies, including the duplicated exit paragraph in the account-view
+   program where two identically-named paragraphs collapse to one method;
+3. `§` the eighteen paragraphs of the orphaned extract program, which no job stream invokes;
+4. `¶` six account-update paragraphs the delivered driver deliberately never routes to — three edits and
+   their three paired exits — each exercised directly, by name, by the test its row names.
 
 A fourth artifact completes the audit trail without contributing a row: the unreferenced copybook,
-recorded in the decision log as consciously excluded dead code.
+recorded in the decision log as consciously excluded dead code and asserted absent from the matrix,
+because a row for it would make the total 545.
 
 ### What has been demonstrated locally
 
@@ -1580,7 +1692,7 @@ validation status of this code:
 | Gate area | Current evidence |
 |---|---|
 | Zero-warning build, byte equivalence, named fixtures, interface contracts and coverage | **Executed and passed** by `./mvnw -B clean verify`, including the unit and container-backed integration/end-to-end tiers and the enforced JaCoCo rule. |
-| Dependency supply chain | **Executed and passed** across production and test scope with zero HIGH/CRITICAL findings; the remaining non-gating finding is retained unsuppressed in the report. |
+| Dependency supply chain | **Executed and passed** across production and test scope. One HIGH is carried by the single scoped determination in `owasp-suppressions.xml`, with unused-suppression enforcement on so it expires by itself; the sub-threshold MEDIUM is left visible and unsuppressed. Nothing else at HIGH or CRITICAL is reported. |
 | Container and monitoring runtime | **Executed and passed** against the hardened six-service stack: application health, Grafana provisioning and datasource pruning, Prometheus target/query execution and the Jaeger API. |
 | Reproducibility and image supply chain | **Executed and passed** with two byte-identical clean jars, verified OCI identity labels, and strict scans of the application image and both runtime bases. |
 | Performance baseline | The measurement path is operational and query-tested. Elapsed time, peak memory and records per second remain run-specific evidence and belong in `../docs/gate-evidence.md`, not as frozen numbers in this operator manual. |
@@ -1646,18 +1758,32 @@ These are checkable by inspection, which is the point:
 | Composite-key classes | **3** | category balance, disclosure group, transaction category |
 | Enums | **9** | user type, account status, card status, transaction source, key action, file status, reject reason, date format, report period |
 | Spring Data repositories | **11** | including the two derived finders that replace the online alternate indexes |
-| Service implementations | **32** | 26 translation-bearing services, one per program or program family, plus six focused support services; service-owned records and interfaces are not counted here |
+| Service implementations | **36** | every concrete `*Service.java` in the `service` package: the translation-bearing services, one per program or program family, plus the focused support services. The package holds 71 files in total; service-owned records, enums and interfaces are not `*Service.java` and are not counted here |
 | Batch job configurations | **9** | plus eight step components and the shared step template |
-| Hand-written record mappers | **11** | one per verified layout, explicit offsets, no reflection |
-| Request/response DTOs | 28 | derived from the 17 symbolic maps |
+| Hand-written record mappers | **12** | every `*RecordMapper.java` in `util`: one per verified record layout plus the statement work-area mapper, all explicit offsets, no reflection |
+| Request/response DTO files | **32** | every file in `api/dto`, derived from the 17 symbolic maps plus the shared transport types they need |
 
-Optimistic locking is applied where the legacy code compared a before-image with an after-image:
-`@Version` on the account and card entities replaces that comparison, and the estate's single rollback
-point becomes a transactional rollback raising a conflict exception.
+Count any of them yourself rather than trusting the table:
 
-The full layer diagram, the entity relationships and the batch pipeline ordering belong in
-`docs/architecture.md` rather than being duplicated here — that page is **not yet published**, so the
-table above plus `PackageLayeringTest` are the authority in the meantime.
+```bash
+cd carddemo-java
+ls src/main/java/com/carddemo/service/*Service.java | wc -l      # 36
+ls src/main/java/com/carddemo/util/*RecordMapper.java | wc -l     # 12
+ls src/main/java/com/carddemo/api/dto/ | wc -l                    # 32
+```
+
+Optimistic locking is applied where the legacy code compared a before-image with an after-image, and it
+takes **two** mechanisms because that comparison spanned two windows. `@Version` on the account and card
+entities guards the **in-transaction** interval between this transaction's read and its write.
+`AccountConcurrencyTokenService` and `CardConcurrencyTokenService` guard the **screen-to-confirm**
+interval — the legacy carried the old image with the conversation and compared it under lock on the
+confirming turn, which no single transaction spans. The estate's single rollback point becomes a
+transactional rollback raising a conflict exception, and either mechanism can raise it.
+
+The full layer diagram, the entity relationships and the batch pipeline ordering live in
+[`../docs/architecture.md`](../docs/architecture.md) rather than being duplicated here — that page is
+**published**, and the table above and `PackageLayeringTest` remain the enforced authority on the
+dependency direction, because a diagram documents a rule and a test holds it.
 
 ---
 
@@ -1730,9 +1856,13 @@ fails byte equivalence. The complete record is in
   form "every character is a letter" would reject data the legacy system accepts — and that data
   already exists.
 - **Two DTO fields carry no validation constraints**: the middle-name field and the second address
-  line. The source comments state plainly that no edits are coded for them; they are decorated for
-  error display but never actually validated. Adding constraints would reject input the legacy system
-  accepts, which is a behavioural regression dressed as an improvement.
+  line. They are not the same case, and the difference is recorded rather than smoothed over. The second
+  address line is genuinely unedited — its label assignment is commented out in the source and no edit runs
+  for it anywhere — so carrying no constraint is faithful. The middle name **is** edited in the legacy
+  program: the optional alphabetic edit is performed for it, even though the screen-attribute comment above
+  the field says otherwise. The migration directive forbids attaching a constraint to either field, so the
+  directive governs and the middle name carries none; **that is a deliberate divergence from the source's
+  behaviour and is logged as one.** Either way, do not add constraints here.
 
 ### The tie-break rule
 
@@ -1744,9 +1874,11 @@ but never checks.
 
 ### Source anomalies are documented, never propagated
 
-Fourteen defects and oddities were catalogued in the legacy source. All fourteen are recorded in the
-decision log; **none is propagated into new logic, and none is silently corrected where correcting it
-would alter a record layout or an external contract.** Three examples of how that resolves in practice:
+The source anomaly register in the decision log carries **31** entries as it stands — the fourteen the
+specification catalogued plus the ones found while translating — and it grows as reading the estate turns up
+more, so read the register rather than a number quoted here. **None is propagated into new logic, and none is
+silently corrected where correcting it would alter a record layout or an external contract.** Three
+examples of how that resolves in practice:
 
 - Two misspelled expiry-date field names keep their **position** in the layout so the record stays
   byte-compatible, while the Java property is spelled correctly and the mapper offset is unchanged.
@@ -1817,28 +1949,31 @@ The migration's documentation lives at the repository root rather than in the mo
 documentation site resolves its content directory there and the service catalog publishes from the
 repository root.
 
-**Published today — these you can open:**
+**Every document referenced from this README is published — these you can open:**
 
 | Document | What it is |
 |---|---|
-| [`../README.md`](../README.md) | The estate-level narrative: the mainframe application, its installation, its batch execution order and its screen inventory |
-| [`../docs/decision-log.md`](../docs/decision-log.md) | Every divergence between COBOL semantics and idiomatic Java, and all fourteen source anomalies, with both provenance identifiers in its own Provenance section |
+| [`../README.md`](../README.md) | The estate-level narrative: the mainframe application, its installation, its batch execution order and its screen inventory, and the migration summary that points here |
+| [`../docs/onboarding-guide.md`](../docs/onboarding-guide.md) | The first-run walkthrough: prerequisites, the build commands and what each one proves, stack bring-up, sign-on, and running the eight gates |
+| [`../docs/architecture.md`](../docs/architecture.md) | Layer map, package responsibilities, entity relationships and batch pipeline ordering — including why the batch tier carries nine job configurations rather than one per job step |
+| [`../docs/traceability-matrix.md`](../docs/traceability-matrix.md) | **544 rows** — every procedure unit mapped to its Java class, method and covering test, citing both provenance identifiers |
+| [`../docs/decision-log.md`](../docs/decision-log.md) | Every divergence between COBOL semantics and idiomatic Java, and the source anomaly register — 31 entries as it stands, of which the migration plan named the first fourteen plus a fifteenth observation — with both provenance identifiers in its own Provenance section |
+| [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | Per gate: the command that produces the evidence, the artefact it lands in, and the standing result. Carries the Gate 6 audit counts and the measured-runs table for the Gate 3 figures |
+| [`../docs/presentation/index.html`](../docs/presentation/index.html) | The migration summary deck: the estate, the mapping, the load-bearing translation decisions and the gate outcomes |
 | [`../docs/project-guide.md`](../docs/project-guide.md) | The prior delivery's completion record — the authoritative source for the historical test and coverage figures quoted under Gate 7 |
 | [`../docs/technical-specifications.md`](../docs/technical-specifications.md) | The migration's technical specification |
-| [`../docs/gate-evidence.md`](../docs/gate-evidence.md) | Per gate: the command that produces the evidence, the artefact it lands in, and the standing result. Carries the Gate 6 audit counts, and a measured-runs table for the Gate 3 figures that is filled in per machine and per date rather than frozen |
 
-**Not yet published — pending at this milestone.** Every reference to one of these anywhere in this
-README is a statement of what the page is *for*, never a claim that its contents or its evidence exist
-today. Do not cite one as evidence, and do not link one until it lands:
+Seven of them are registered in [`../mkdocs.yml`](../mkdocs.yml)'s explicit `nav` list, which is what makes
+them publish: a page on disk that the `nav` does not name is a page the documentation site does not build.
+The two that are not — the estate-level `README.md` and the summary deck — are not `nav` pages by design:
+the first is the repository landing page and the second is a standalone HTML deliverable.
 
-| Pending document | What it will be | What this README does instead |
-|---|---|---|
-| `docs/traceability-matrix.md` | **544 rows** — every paragraph unit mapped to its Java class, method and covering test, citing both provenance identifiers | Gate 8 marks the traceability checklist item **outstanding** |
-| `docs/architecture.md` | Layer diagram, package responsibilities, entity relationships, batch pipeline ordering | the package table here, plus `PackageLayeringTest` |
-| `docs/onboarding-guide.md` | First-run walkthrough: local build, stack bring-up, gate execution | the [Prerequisites](#prerequisites), [Build](#build) and [Run](#run) sections here |
-| `docs/presentation/index.html` | Migration summary deck | — |
+**Not yet published: nothing.** This line is the ledger a reader checks before trusting the table above,
+and it is kept even though it is empty, because an absent ledger and an empty one read the same and only
+one of them is a statement. While a page was outstanding it was listed here; the two that were — the
+first-run walkthrough and the summary deck — are delivered and appear in the table above.
 
-Confirm the split yourself rather than trusting this table; it prints one line per referenced path:
+Confirm that rather than trusting this table; it prints one line per referenced path:
 
 ```bash
 cd carddemo-java
@@ -1916,11 +2051,16 @@ instructions bear directly on this module:
   destroys the reviewability of the traceability matrix.
 
 If a change alters behaviour that the decision log covers, update
-[`../docs/decision-log.md`](../docs/decision-log.md) in the same pull request. Once
-`docs/traceability-matrix.md` is published, a change that adds or renames a method a row names must
-update that row in the same pull request too — it is **not published yet**, so today there is nothing to
-update, which is exactly why the reformatting instruction above matters: a sweep now would erase a
-mapping that has not been written down anywhere.
+[`../docs/decision-log.md`](../docs/decision-log.md) in the same pull request. A change that adds,
+renames or moves a method that a matrix row names must update that row in
+[`../docs/traceability-matrix.md`](../docs/traceability-matrix.md) in the same pull request too. Part of
+that is mechanical and part is not, and the difference is worth knowing: `GateVerificationTest` checks the
+row total, each member's row count against the paragraphs that member declares, both provenance anchors
+and the class-and-method cells of the marked rows — so a row added, dropped or reattributed to the wrong
+member is a **failing build**. It does not resolve all 544 target methods against the source tree, so a
+plain rename of an unmarked row's method is a stale row that no test catches. That asymmetry is exactly
+why the reformatting instruction above matters: a sweep would put rows out of date faster than review
+could find them.
 
 ## Licence
 
@@ -1962,7 +2102,7 @@ so a reviewer can check it rather than take it on trust.
 | 5 | **No production secret in source, and none defaulted** | `application-prod.yml` resolves every secret from the environment with **no fallback**, so a missing secret fails startup, and stored credentials are BCrypt hashes. Non-production throwaway values do exist in the tree — in `docker-compose.yml`, in the local and test overlays, and as a sample password in the read-only estate and in test constants — and they are inventoried under [Where local and test values actually live](#where-local-and-test-values-actually-live) rather than glossed over. |
 | 6 | **Versioned, forward-only schema evolution** | Flyway `V1`–`V4` flat in one `db/migration` location, with production pinned to schema version `2`, `clean` disabled and `validate-on-migrate` on. |
 | 7 | **A test pyramid with an enforced floor** | Unit tests over mappers, validators and services; integration tests against real containers; end-to-end tests over the full pipeline. JaCoCo fails the build below 80% line coverage; branch coverage is reported, not gated. |
-| 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile and runtime** graph, with reports emitted in three formats and uploaded by CI. The excluded test and build graph, its two HIGH findings and the test that stops them shipping are disclosed under [Gate 8](#gate-8--integration-sign-off) rather than left implicit. |
+| 8 | **Supply-chain hygiene** | `dependency-check-maven` bound to `verify` and **executed**, failing at CVSS 7.0 on the **compile, runtime and test** graph (`skipTestScope` is `false`), with reports emitted in three formats and uploaded by CI. The enforced invariant is zero **unsuppressed** critical or high findings plus **one** scoped, evidenced, self-expiring determination, disclosed with its three-state vocabulary under [Gate 8](#gate-8--integration-sign-off) rather than left implicit. An earlier revision of this row described a compile-and-runtime-only scan and two HIGH findings in an excluded test graph; both statements are withdrawn — the transport that carried them was replaced, not excluded. |
 | 9 | **Observability as a first-class concern** | Actuator health and metrics, Micrometer timers on every endpoint and every batch step, Prometheus and Grafana provisioned in the stack, OTLP tracing wired to Jaeger, structured JSON logging with correlation identifiers. |
 | 10 | **Licence continuity** | The Apache-2.0 header on every generated Java source, SQL migration and comment-capable configuration file, matching the header in every legacy member; strict JSON lookup resources inherit the repository licence without invalid comments. |
 | 11 | **Full auditability of translation decisions** | [`../docs/decision-log.md`](../docs/decision-log.md) plus the **544-row** [`../docs/traceability-matrix.md`](../docs/traceability-matrix.md), both citing the checkout SHA and the upstream release stamp. |

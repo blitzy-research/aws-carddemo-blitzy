@@ -68,6 +68,9 @@ import org.springframework.core.annotation.MergedAnnotations.SearchStrategy;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -78,6 +81,7 @@ import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.stereotype.Component;
 import org.springframework.test.web.servlet.MockMvc;
@@ -88,6 +92,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -282,6 +287,21 @@ class SecurityConfigTest {
 
     /** An ordinary protected business route, beneath no special prefix. */
     private static final String ORDINARY_ROUTE = "/api/accounts/00000000001";
+
+    /**
+     * Response header refusing content-type sniffing.
+     *
+     * <p>Named here rather than at each assertion because the framework's own {@code HttpHeaders} does not
+     * publish a constant for it, and a header name spelled at four call sites is a header name that can be
+     * misspelled at one of them - which would make the assertion pass by reading nothing.
+     */
+    private static final String CONTENT_TYPE_OPTIONS_HEADER = "X-Content-Type-Options";
+
+    /** Response header stating the framing policy, likewise unpublished by {@code HttpHeaders}. */
+    private static final String FRAME_OPTIONS_HEADER = "X-Frame-Options";
+
+    /** Response header stating the transport-security policy, likewise unpublished. */
+    private static final String TRANSPORT_SECURITY_HEADER = "Strict-Transport-Security";
 
     /** An administrative route, beneath the administrative prefix. */
     private static final String ADMIN_ROUTE = SecurityConfig.ADMIN_PATH_PREFIX + "/users";
@@ -840,6 +860,41 @@ class SecurityConfigTest {
     }
 
     /**
+     * Builds a client that drives the context's real chain with an identity supplied by the caller rather
+     * than minted from a token.
+     *
+     * <p><strong>Why a second client exists.</strong> The chain's own bearer filter can only ever establish
+     * one of the two authorities a sign-on record can carry, because it derives the authority from the
+     * record's user type and the estate declares exactly two. That makes it impossible to ask the one
+     * question the authorization rule exists to answer - what the chain does with an identity carrying
+     * something else - through a token, and the question is not hypothetical: this process already mints a
+     * third authority for the management surface. This client presents the identity directly, which is
+     * exactly the condition the rule defends against and the only way to observe the rule's answer rather
+     * than the filter's.
+     *
+     * @param context a started context carrying the chain
+     * @return a client whose requests pass through the chain and may carry a supplied identity
+     */
+    private static MockMvc identityClientFor(final AssertableWebApplicationContext context) {
+        final Filter chain = context.getBean("springSecurityFilterChain", Filter.class);
+        return MockMvcBuilders.standaloneSetup(new ProbeEndpoints())
+                .apply(SecurityMockMvcConfigurers.springSecurity(chain))
+                .build();
+    }
+
+    /**
+     * An established identity carrying exactly the authorities named, and nothing else.
+     *
+     * @param authorities the authority values the identity holds; none at all is a legitimate case, and it
+     *                    is the one bare {@code authenticated()} used to admit
+     * @return an authenticated principal for the request post-processor
+     */
+    private static Authentication identityCarrying(final String... authorities) {
+        return new TestingAuthenticationToken(STANDARD_USER_ID, null,
+                Stream.of(authorities).map(SimpleGrantedAuthority::new).toList());
+    }
+
+    /**
      * Mints a token for the given user type using the context's own provider.
      *
      * @param context a started context
@@ -1235,6 +1290,138 @@ class SecurityConfigTest {
                     .doesNotStartWith(SecurityConfig.ADMIN_PATH_PREFIX)
                     .isEqualTo("/api/batch/jobs/**");
             assertThat(BATCH_CONTROL_ROUTE).startsWith("/api/batch/jobs/");
+        }
+    }
+
+    @Nested
+    @DisplayName("The business surface is an allow-list of the two sign-on authorities, not merely a "
+            + "check that some identity exists")
+    class BusinessSurfaceAllowList {
+
+        @Test
+        @DisplayName("names the API root as the region it governs, so a business route added later is "
+                + "inside the allow-list from the moment it exists")
+        void namesTheApiRootAsTheRegionItGoverns() {
+            assertThat(SecurityConfig.API_PATH_PREFIX).isEqualTo("/api");
+            assertThat(ORDINARY_ROUTE).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
+            assertThat(ADMIN_ROUTE).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
+            assertThat(BATCH_CONTROL_ROUTE).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
+            assertThat(SecurityConfig.SIGN_ON_PATH).startsWith(SecurityConfig.API_PATH_PREFIX + "/");
+        }
+
+        @Test
+        @DisplayName("states the ordinary entitlement as a rule of its own rather than leaving it to the "
+                + "closing catch-all, which is the change that closes the over-grant")
+        void statesTheOrdinaryEntitlementAsARuleOfItsOwn() {
+            assertThat(SecurityConfig.Gating.AUTHENTICATED.enforcementPattern())
+                    .as("an entitlement with no pattern is an entitlement enforced by whatever the "
+                            + "closing rule happens to say, which was bare authentication")
+                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+            assertThat(Stream.of(SecurityConfig.Gating.values())
+                    .filter(gating -> gating.enforcementPattern().isEmpty()))
+                    .as("every entitlement now names the rule that enforces it")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("admits an ordinary route to an identity carrying the standard authority")
+        void admitsAnOrdinaryRouteToTheStandardAuthority() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(ORDINARY_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.USER_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("admits an ordinary route to an identity carrying the administrative authority, "
+                + "because the estate's administrative branch reaches every ordinary transaction too")
+        void admitsAnOrdinaryRouteToTheAdministrativeAuthority() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(ORDINARY_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.ADMIN_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200)));
+        }
+
+        @Test
+        @DisplayName("REFUSES an ordinary route to an identity carrying the operator authority, which "
+                + "bare authentication admitted - this is the finding, stated as a response")
+        void refusesAnOrdinaryRouteToTheOperatorAuthority() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(ORDINARY_ROUTE)
+                            .with(authentication(
+                                    identityCarrying(SecurityConfig.MANAGEMENT_AUTHORITY))))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus())
+                                .as("an identity that is not a sign-on record has no business reading an "
+                                        + "account; it is refused here by the rule and not merely by the "
+                                        + "accident that the management chain is matched first")
+                                .isEqualTo(403);
+                        assertThat(result.getResponse().getContentAsString())
+                                .as("the handler must not have run")
+                                .doesNotContain("ordinary");
+                    }));
+        }
+
+        @Test
+        @DisplayName("REFUSES an ordinary route to an identity carrying no authority at all, which is the "
+                + "weakest identity bare authentication accepted")
+        void refusesAnOrdinaryRouteToAnIdentityCarryingNoAuthority() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(ORDINARY_ROUTE).with(authentication(identityCarrying())))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+                        assertThat(result.getResponse().getContentAsString()).doesNotContain("ordinary");
+                    }));
+        }
+
+        @Test
+        @DisplayName("refuses a submission to an ordinary route on the same terms, so the rule is not a "
+                + "read-only gate")
+        void refusesASubmissionOnTheSameTerms() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(post(ORDINARY_ROUTE)
+                            .with(authentication(
+                                    identityCarrying(SecurityConfig.MANAGEMENT_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("does not shadow the anonymous permit, because it is registered after it - a caller "
+                + "with no identity at all still reaches the route that issues one")
+        void doesNotShadowTheAnonymousPermit() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(SecurityConfig.SIGN_ON_PATH))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+                        assertThat(result.getResponse().getContentAsString()).isEqualTo("sign-on");
+                    }));
+        }
+
+        @Test
+        @DisplayName("does not widen the administrative prefix, because that rule is registered ahead of "
+                + "it and decides first")
+        void doesNotWidenTheAdministrativePrefix() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(get(ADMIN_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.USER_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("does not widen the batch-control surface, for the same ordering reason")
+        void doesNotWidenTheBatchControlSurface() throws Exception {
+            plainTransport().run(context -> identityClientFor(context)
+                    .perform(post(BATCH_CONTROL_ROUTE)
+                            .with(authentication(identityCarrying(JwtTokenProvider.USER_AUTHORITY))))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(403)));
+        }
+
+        @Test
+        @DisplayName("still refuses an ordinary route presenting no identity at all as unauthorized "
+                + "rather than forbidden, so the allow-list did not collapse the two refusals")
+        void stillDistinguishesAnAbsentIdentityFromAnUnentitledOne() throws Exception {
+            plainTransport().run(context -> identityClientFor(context).perform(get(ORDINARY_ROUTE))
+                    .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(401)));
         }
     }
 
@@ -1699,6 +1886,135 @@ class SecurityConfigTest {
     }
 
     @Nested
+    @DisplayName("The response headers the chain writes, pinned because nothing else states them")
+    class ResponseHeaders {
+
+        /**
+         * The headers are the framework's defaults, and that is exactly why they need assertions.
+         *
+         * <p>This configuration calls no {@code headers(...)} customizer, so every value below arrives
+         * from the framework rather than from a line in this module that a reviewer could read. An edit
+         * that disabled the writers, narrowed the transport-security directive, or relaxed the frame
+         * policy would therefore change the delivered posture without changing anything a reader would
+         * notice. These tests are the statement of the posture: they read real responses, so they fail if
+         * a header stops being written for any reason - a disabled customizer, a framework default that
+         * moves, or a route that leaves the chain by a path that skips the writers.
+         */
+        ResponseHeaders() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("refuses content-type sniffing, so a response body cannot be re-interpreted as a "
+                + "document type the endpoint did not declare")
+        void refusesContentTypeSniffing() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse()
+                            .getHeader(CONTENT_TYPE_OPTIONS_HEADER)).isEqualTo("nosniff")));
+        }
+
+        @Test
+        @DisplayName("denies framing, so no other document can embed a response of this surface")
+        void deniesFraming() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse().getHeader(FRAME_OPTIONS_HEADER))
+                            .isEqualTo("DENY")));
+        }
+
+        @Test
+        @DisplayName("forbids caching of an authenticated response, so an account body cannot be replayed "
+                + "from an intermediary or from a shared browser cache")
+        void forbidsCachingOfAnAuthenticatedResponse() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getHeader(HttpHeaders.CACHE_CONTROL))
+                                .contains("no-store")
+                                .contains("no-cache");
+                        assertThat(result.getResponse().getHeader(HttpHeaders.PRAGMA))
+                                .isEqualTo("no-cache");
+                        assertThat(result.getResponse().getHeader(HttpHeaders.EXPIRES)).isEqualTo("0");
+                    }));
+        }
+
+        @Test
+        @DisplayName("requires transport security for a year including subdomains once a request arrives "
+                + "over a secure channel, which is when the directive can be honoured")
+        void requiresTransportSecurityOnASecureRequest() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).secure(true)
+                            .header(HttpHeaders.AUTHORIZATION,
+                                    "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse()
+                            .getHeader(TRANSPORT_SECURITY_HEADER))
+                            .as("a shorter window or a policy excluding subdomains would leave a first "
+                                    + "request, or a sibling host, reachable over plain transport")
+                            .contains("max-age=31536000")
+                            .contains("includeSubDomains")));
+        }
+
+        @Test
+        @DisplayName("omits the transport-security directive on a plain request, because a client that "
+                + "reached this response over plain transport has no secure origin to pin it to - the "
+                + "module's own answer to plain transport is the redirect asserted above")
+        void omitsTransportSecurityOnAPlainRequest() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(ORDINARY_ROUTE).header(HttpHeaders.AUTHORIZATION,
+                            "Bearer " + tokenFor(context, UserType.USER)))
+                    .andExpect(result -> assertThat(result.getResponse()
+                            .getHeader(TRANSPORT_SECURITY_HEADER)).isNull()));
+        }
+
+        @Test
+        @DisplayName("writes the same headers on a refusal, which is the path a regression is most likely "
+                + "to skip because no handler runs on it")
+        void writesTheSameHeadersOnARefusal() throws Exception {
+            plainTransport().run(context -> clientFor(context).perform(get(ORDINARY_ROUTE))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(401);
+                        assertThat(result.getResponse().getHeader(CONTENT_TYPE_OPTIONS_HEADER))
+                                .isEqualTo("nosniff");
+                        assertThat(result.getResponse().getHeader(FRAME_OPTIONS_HEADER)).isEqualTo("DENY");
+                        assertThat(result.getResponse().getHeader(HttpHeaders.CACHE_CONTROL))
+                                .contains("no-store");
+                    }));
+        }
+
+        @Test
+        @DisplayName("writes them on the anonymous route too, so the one surface reachable without a "
+                + "credential is not the one surface without a posture")
+        void writesThemOnTheAnonymousRoute() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(SecurityConfig.SIGN_ON_PATH))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+                        assertThat(result.getResponse().getHeader(CONTENT_TYPE_OPTIONS_HEADER))
+                                .isEqualTo("nosniff");
+                        assertThat(result.getResponse().getHeader(FRAME_OPTIONS_HEADER)).isEqualTo("DENY");
+                    }));
+        }
+
+        @Test
+        @DisplayName("writes them on the management chain as well, which is a separate chain and would "
+                + "otherwise be a separate posture nobody had stated")
+        void writesThemOnTheManagementChain() throws Exception {
+            plainTransport().run(context -> clientFor(context)
+                    .perform(get(MANAGEMENT_BASE + "/health"))
+                    .andExpect(result -> {
+                        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+                        assertThat(result.getResponse().getHeader(CONTENT_TYPE_OPTIONS_HEADER))
+                                .isEqualTo("nosniff");
+                        assertThat(result.getResponse().getHeader(FRAME_OPTIONS_HEADER)).isEqualTo("DENY");
+                    }));
+        }
+    }
+
+    @Nested
     @DisplayName("Statelessness")
     class Statelessness {
 
@@ -2027,9 +2343,9 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("leaves the remaining twelve identifiers to the closing rule, which is what makes an "
-                + "unnamed route protected rather than open")
-        void leavesTheRemainingTwelveToTheClosingRule() {
+        @DisplayName("leaves the remaining twelve identifiers to the ordinary business rule, which admits "
+                + "either sign-on authority by name and no other identity")
+        void leavesTheRemainingTwelveToTheOrdinaryBusinessRule() {
             assertThat(identifiersGated(SecurityConfig.Gating.AUTHENTICATED))
                     .isEqualTo(ORDINARY_TRANSACTION_IDS)
                     .hasSize(ORDINARY_COUNT);

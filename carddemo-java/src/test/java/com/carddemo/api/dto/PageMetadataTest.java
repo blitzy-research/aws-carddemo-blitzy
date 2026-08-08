@@ -244,19 +244,10 @@ class PageMetadataTest {
     private static final TypeReference<Map<String, Object>> WIRE_SHAPE =
             new TypeReference<Map<String, Object>>() { };
 
-    /**
-     * Supplies the mapper described by {@link #WIRE_MAPPER}.
-     *
-     * @return a mapper carrying the module's four declared serialisation settings
-     */
     private static ObjectMapper wireMapper() {
         return JsonContractSupport.declaredSettingsMapper();
     }
 
-    /**
-     * Serializes an instance and reads it straight back as a property map, so that assertions can be
-     * made about which property names cross the wire and in which order.
-     */
     private static Map<String, Object> wireProperties(PageMetadata metadata)
             throws JsonProcessingException {
         return WIRE_MAPPER.readValue(WIRE_MAPPER.writeValueAsString(metadata), WIRE_SHAPE);
@@ -559,7 +550,6 @@ class PageMetadataTest {
                             true,
                             CARD_MAP_INDICATOR);
 
-            // Only the two flags differ, and flipping one does not move the other.
             assertThat(moreFollows).isNotEqualTo(somethingPrecedes);
             assertThat(moreFollows.nextCursorKey()).isEqualTo(somethingPrecedes.nextCursorKey());
             assertThat(moreFollows.pageSize()).isEqualTo(somethingPrecedes.pageSize());
@@ -1200,8 +1190,6 @@ class PageMetadataTest {
             assertThat(forwardPage.direction()).isNotEqualTo(backwardPage.direction());
             assertThat(forwardPage).isNotEqualTo(backwardPage);
 
-            // Everything except the direction agrees, which is what makes the direction the single
-            // distinguishing component rather than a by-product of some other difference.
             assertThat(forwardPage.pageSize()).isEqualTo(backwardPage.pageSize());
             assertThat(forwardPage.nextCursorKey()).isEqualTo(backwardPage.nextCursorKey());
             assertThat(forwardPage.displayedPageNumber())
@@ -1973,12 +1961,6 @@ class PageMetadataTest {
             assertThat(cursorRequestWithPageNumber("123456789").retainedPageNumber()).isZero();
         }
 
-        /**
-         * Builds an inbound paging request carrying only the retained page number under test.
-         *
-         * @param retained the page number as it would arrive on the wire
-         * @return the request
-         */
         private static PageMetadata.PageCursorRequest cursorRequestWithPageNumber(
                 final String retained) {
             return new PageMetadata.PageCursorRequest(null, null, null, retained, false);

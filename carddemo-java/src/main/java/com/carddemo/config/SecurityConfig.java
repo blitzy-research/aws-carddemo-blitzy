@@ -335,6 +335,40 @@ public class SecurityConfig {
     public static final String SIGN_ON_PATH = ApiRoutePaths.SIGN_ON_PATH;
 
     /**
+     * The root of the business surface, over which one positive authority rule is installed.
+     *
+     * <p><strong>Why a rule over this root exists at all.</strong> The chain used to close with bare
+     * {@code authenticated()} and nothing else, which asks only whether the caller established
+     * <em>an</em> identity. That is not the question the estate asks. The estate declares exactly two user
+     * types, and both of them are sign-on records; a caller holding any other authority is, by
+     * construction, not a sign-on record and has no business reaching an account, a card, a transaction or
+     * a statement. Bare {@code authenticated()} could not express that difference, so any authority minted
+     * anywhere in this process would have inherited every ordinary business route by default -
+     * {@link #MANAGEMENT_AUTHORITY} being the one that already exists to demonstrate the point. It is
+     * refused on the management chain today only because that chain is matched first and this one never
+     * sees it; the business surface's own answer was "yes" and had to be changed to a named allow-list.
+     *
+     * <p><strong>The rule is positive, not a denial of the known other authority.</strong> Naming the two
+     * authorities that may pass means an authority added later is refused because nothing admitted it,
+     * rather than admitted because nobody remembered to exclude it. That is the whole difference between a
+     * deny-list and an allow-list, and it is the direction a security rule must fail in.
+     *
+     * <p><strong>Why the pattern is the whole root and not the ten ordinary addresses.</strong> Gating the
+     * root means a business route added later is inside the allow-list from the moment it exists. It is
+     * deliberately broader than the ordinary transactions alone - it also spans the sign-on route,
+     * {@link #ADMIN_PATH_PREFIX} and {@link #BATCH_CONTROL_PATH_PREFIX} - and the breadth is harmless
+     * because rule order decides: the anonymous permit and the two administrative rules are registered
+     * ahead of it, so this rule only ever answers what none of them claimed. Registering it the other way
+     * round would make the sign-on route unreachable, which is why the order is asserted by tests that
+     * exercise real responses.
+     *
+     * <p>Read from the neutral route contract in the base layer rather than restated, in the direction
+     * {@link #SIGN_ON_PATH} establishes, and published so a test can exercise the rule against a real
+     * response rather than inspect the configuration that declares it.
+     */
+    public static final String API_PATH_PREFIX = ApiRoutePaths.API_PATH_PREFIX;
+
+    /**
      * Path prefix beneath which every administrator-only route lives.
      *
      * <p>The legacy resource definitions bind eighteen transactions to programs, and five of those are
@@ -463,6 +497,16 @@ public class SecurityConfig {
      * address from the constant a controller binds against.</p>
      */
     private static final String BATCH_CONTROL_PATTERN = BATCH_CONTROL_PATH_PREFIX + ANY_DESCENDANT;
+
+    /**
+     * The one pattern the chain installs for the ordinary business surface: the API root and everything
+     * beneath it.
+     *
+     * <p>Assembled from {@link #API_PATH_PREFIX} rather than written out, so the allow-list cannot name a
+     * different root from the one the controllers bind beneath. See that constant for why the rule is a
+     * named allow-list rather than the bare authentication check it replaced.
+     */
+    private static final String BUSINESS_SURFACE_PATTERN = API_PATH_PREFIX + ANY_DESCENDANT;
 
     /**
      * Cost factor for password hashing, read from the service that owns the policy rather than
@@ -799,8 +843,11 @@ public class SecurityConfig {
      * it excuses the container's internal re-dispatch of an already-refused request, which carries no
      * authentication because the bearer filter does not run on it, and which a client cannot issue; the
      * permits follow and name individual surfaces; the administrative prefix follows; the batch-control
-     * prefix follows that; and the catch-all closes the chain. Reordering these changes behaviour, so the
-     * order is asserted by tests that exercise real responses rather than inspect the configuration.</p>
+     * prefix follows that; the business-surface allow-list follows that, requiring one of the two sign-on
+     * authorities of everything beneath the API root that no narrower rule claimed; and the catch-all
+     * closes the chain over what is left, which is everything outside the API root. Reordering these
+     * changes behaviour, so the order is asserted by tests that exercise real responses rather than inspect
+     * the configuration.</p>
      *
      * <p><strong>No management rule appears here, and its absence is deliberate.</strong> Every request
      * beneath the management base path is matched by {@link #managementSecurityFilterChain(HttpSecurity)},
@@ -810,17 +857,25 @@ public class SecurityConfig {
      * <p><strong>The two business rules are read out of {@link TransactionRoute} rather than written
      * here.</strong> The anonymous permit exists because exactly one registered transaction is classified
      * anonymous, and the administrative rule exists because five are classified administrative; both come
-     * from {@link TransactionRoute#enforcementPatternsFor(Gating)}. Everything else the table registers -
-     * the twelve ordinary transactions and the one whose bound program has no source member - is answered
-     * by the closing catch-all, which is why none of them needs a rule and why an unlisted route is
-     * refused rather than admitted.</p>
+     * from {@link TransactionRoute#enforcementPatternsFor(Gating)}. The twelve ordinary transactions and
+     * the one whose bound program has no source member are answered by the business-surface allow-list
+     * below; an address this module maps nothing to is answered by the closing catch-all. An unlisted route
+     * is therefore refused rather than admitted either way.</p>
      *
-     * <p><strong>One rule is written here rather than read from the table, and that is the point of
-     * it.</strong> {@link #BATCH_CONTROL_PATH_PATTERN} gates the batch control surface behind the same
+     * <p><strong>Two rules are written here rather than read from the table, and that is the point of
+     * them.</strong> {@link #BATCH_CONTROL_PATH_PATTERN} gates the batch control surface behind the same
      * administrative authority, because job submission was never a transaction in the estate and adding a
      * nineteenth table entry would misreport the census the table exists to publish. The rule sits between
-     * the administrative loop and the catch-all: placed after, so it cannot shadow a narrower rule; placed
-     * before, so the catch-all cannot admit an ordinary signed-on identity to it.</p>
+     * the administrative loop and the allow-list: placed after, so it cannot shadow a narrower rule; placed
+     * before, so no broader rule can admit an ordinary signed-on identity to it.</p>
+     *
+     * <p>{@link #BUSINESS_SURFACE_PATTERN} then requires one of the two authorities a sign-on token can
+     * carry - {@link JwtTokenProvider#ADMIN_AUTHORITY} or {@link JwtTokenProvider#USER_AUTHORITY} - of
+     * everything beneath the API root. It replaces a bare {@code authenticated()} answer that asked only
+     * whether an identity existed and not whose, and it is written unconditionally rather than read from
+     * the table for a reason the table cannot serve: a table-driven rule would withdraw itself if the last
+     * ordinary transaction were ever reclassified, widening the surface through an edit that reads as a
+     * narrowing. See {@link #API_PATH_PREFIX} for the full reasoning.</p>
      *
      * @param http the chain builder supplied by the framework
      * @return the configured application chain
@@ -901,6 +956,36 @@ public class SecurityConfig {
                     // posting, accrual and statement generation over the whole estate.
                     requests.requestMatchers(matcher(BATCH_CONTROL_PATH_PATTERN))
                             .hasAuthority(JwtTokenProvider.ADMIN_AUTHORITY);
+                    // The business surface, as a named allow-list of the two authorities a sign-on token
+                    // can carry, and NOT as the bare authentication check this rule replaced.
+                    //
+                    // The difference is the whole point. authenticated() asks whether an identity was
+                    // established; it does not ask whose. The estate declares exactly two user types and
+                    // both are sign-on records, so an authority that is neither - MANAGEMENT_AUTHORITY
+                    // exists in this very class to prove such an authority can be minted - satisfied the
+                    // old rule and reached every account, card, transaction and statement route. It is
+                    // refused today only because the management chain is matched first and this chain
+                    // never sees it, which is an accident of ordering rather than an answer.
+                    //
+                    // Positive, not a denial of the one other authority that happens to exist now: an
+                    // authority added later is refused because nothing admitted it. The root and its
+                    // descendants are both named, following the same convention as the batch rule above
+                    // and the management chain's own matcher, so the bare root cannot slip past on a
+                    // pattern-semantics detail.
+                    //
+                    // Placed after every narrower rule, so it shadows none of them - the sign-on permit,
+                    // the administrative loop and the two batch rules all decide first. Placed before the
+                    // catch-all, so nothing beneath the API root is left to a rule that would accept any
+                    // identity at all.
+                    requests.requestMatchers(matcher(API_PATH_PREFIX),
+                                    matcher(BUSINESS_SURFACE_PATTERN))
+                            .hasAnyAuthority(JwtTokenProvider.ADMIN_AUTHORITY,
+                                    JwtTokenProvider.USER_AUTHORITY);
+                    // The closing rule, and it now answers only what is OUTSIDE the API root: the
+                    // container's error path reached as an ordinary client request, and any address this
+                    // module maps nothing to. Requiring an identity of those is the right default - it
+                    // fails closed for an unmapped path without turning the framework's own 404 into a 403
+                    // - and it is no longer what protects a business route, because the rule above is.
                     requests.anyRequest().authenticated();
                 })
                 .exceptionHandling(handling -> handling
@@ -924,14 +1009,20 @@ public class SecurityConfig {
         // endpoint here - which was accurate when this chain carried those rules and became a second,
         // stale description of them the moment it did not.
         LOG.info("HTTP security configured: the anonymous surface is the sign-on route{}; every other "
-                        + "route requires a bearer token; the administrative prefix {} and the "
-                        + "batch-control prefix {} additionally require the {} authority; the management "
-                        + "base path {} is decided by managementSecurityFilterChain and not by this "
-                        + "chain; secure channel required: {}",
+                        + "route beneath {} requires one of the two sign-on authorities {} or {} by name, "
+                        + "rather than merely an established identity; the administrative prefix {} and the "
+                        + "batch-control prefix {} narrow that to {} alone; anything outside {} requires an "
+                        + "identity by the closing rule; the management base path {} is decided by "
+                        + "managementSecurityFilterChain and not by this chain; secure channel "
+                        + "required: {}",
                 this.apiDocsPublished ? ", plus the interface description" : "",
+                API_PATH_PREFIX,
+                JwtTokenProvider.ADMIN_AUTHORITY,
+                JwtTokenProvider.USER_AUTHORITY,
                 ADMIN_PATH_PREFIX,
                 BATCH_CONTROL_PATH_PREFIX,
                 JwtTokenProvider.ADMIN_AUTHORITY,
+                API_PATH_PREFIX,
                 this.managementBasePath,
                 this.requireHttps);
         // The census the rules were derived from, recorded once at start-up so that an operator reading a
@@ -1086,15 +1177,33 @@ public class SecurityConfig {
         ANONYMOUS(SIGN_ON_PATH),
 
         /**
-         * Reachable by any caller that has established an identity, whatever user type that identity
-         * carries.
+         * Reachable by a caller carrying either sign-on authority, whichever user type that identity
+         * carries, and by no other identity.
          *
-         * <p>No dedicated rule: these are answered by the chain's closing {@code anyRequest} rule, so the
-         * default for anything unnamed is to require a credential. This is the entitlement the estate gives
-         * every non-administrative transaction, because the sign-on program's alternative branch is
-         * unconditional - see {@code app/cbl/COSGN00C.cbl} L235.</p>
+         * <p>This is the entitlement the estate gives every non-administrative transaction, because the
+         * sign-on program's alternative branch is unconditional - see {@code app/cbl/COSGN00C.cbl}
+         * L235.</p>
+         *
+         * <p><strong>Enforced by one rule over {@link SecurityConfig#API_PATH_PREFIX} and everything
+         * beneath it, matching either {@link JwtTokenProvider#ADMIN_AUTHORITY} or
+         * {@link JwtTokenProvider#USER_AUTHORITY}.</strong> This entitlement previously named no pattern
+         * at all and was answered by the chain's closing {@code anyRequest().authenticated()} rule. That
+         * rule asks only whether an identity was established, which is a weaker question than the estate
+         * asks: the estate declares two user types and both are sign-on records, so an authority that is
+         * neither would have inherited every ordinary business route by default. Naming the two
+         * authorities that may pass makes a third one refused because nothing admitted it.</p>
+         *
+         * <p>The pattern is deliberately the whole root rather than the ordinary addresses individually,
+         * so a business route added later is inside the allow-list from the moment it exists. It therefore
+         * spans the anonymous and administrative surfaces too, which is harmless because their narrower
+         * rules are registered ahead of it and rule order decides - see
+         * {@link SecurityConfig#securityFilterChain(org.springframework.security.config.annotation.web.builders.HttpSecurity)}.
+         * The chain installs it unconditionally from the published constant rather than reading it out of
+         * {@link TransactionRoute#enforcementPatternsFor(Gating)}: were the last ordinary transaction ever
+         * reclassified, a table-driven rule would withdraw itself and the closing catch-all would widen the
+         * surface again, which is the wrong direction for that edit to fail in.</p>
          */
-        AUTHENTICATED(""),
+        AUTHENTICATED(API_PATH_PREFIX + ANY_DESCENDANT),
 
         /**
          * Reachable only by a caller whose identity carries the administrative authority.

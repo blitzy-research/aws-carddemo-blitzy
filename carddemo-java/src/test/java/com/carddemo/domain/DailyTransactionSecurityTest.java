@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.carddemo.domain.enums.TransactionSourceType;
+import com.carddemo.support.SensitiveValues;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -102,7 +103,7 @@ class DailyTransactionSecurityTest {
             assertThat(subject.getDalytranMerchantName()).isEqualTo(MERCHANT_NAME);
             assertThat(subject.getDalytranMerchantCity()).isEqualTo(MERCHANT_CITY);
             assertThat(subject.getDalytranMerchantZip()).isEqualTo(MERCHANT_ZIP);
-            assertThat(subject.getDalytranCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(subject.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(subject.getDalytranOrigTs()).isEqualTo(ORIGINATION_TIMESTAMP);
             assertThat(subject.getDalytranProcTs()).isEqualTo(PROCESSING_TIMESTAMP);
         }
@@ -187,7 +188,7 @@ class DailyTransactionSecurityTest {
         @Test
         @DisplayName("the card number is 16 characters, the width the sort specification addresses positionally")
         void theCardNumberIsSixteenCharacters() {
-            assertThat(transaction().getDalytranCardNum()).hasSize(16);
+            assertThat(transaction().getDalytranCardNum().length()).isEqualTo(16);
         }
 
         @Test
@@ -312,7 +313,7 @@ class DailyTransactionSecurityTest {
             assertThat(subject.getDalytranMerchantName()).isEqualTo(MERCHANT_NAME);
             assertThat(subject.getDalytranMerchantCity()).isEqualTo(MERCHANT_CITY);
             assertThat(subject.getDalytranMerchantZip()).isEqualTo(MERCHANT_ZIP);
-            assertThat(subject.getDalytranCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(subject.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(subject.getDalytranOrigTs()).isEqualTo(ORIGINATION_TIMESTAMP);
             assertThat(subject.getDalytranProcTs()).isEqualTo(PROCESSING_TIMESTAMP);
         }

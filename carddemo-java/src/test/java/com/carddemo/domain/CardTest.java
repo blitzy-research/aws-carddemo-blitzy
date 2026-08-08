@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -509,9 +510,9 @@ class CardTest {
         void theConstructorRoundTripsEveryBusinessField() {
             final Card card = seededRowZero();
 
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
             assertThat(card.getCardAcctId()).isEqualTo(SEED_ACCT_ID);
-            assertThat(card.getCardCvvCd()).isEqualTo(SEED_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SEED_CVV_CD));
             assertThat(card.getCardEmbossedName()).isEqualTo(seedEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo(SEED_EXPIRATION_DATE);
             assertThat(card.getCardActiveStatus()).isEqualTo(SEED_ACTIVE_STATUS);
@@ -525,9 +526,9 @@ class CardTest {
             // this record is a string, so the compiler cannot catch a swapped pair and only a test can.
             final Card card = new Card("one", "two", "three", "four", "five", "six");
 
-            assertThat(card.getCardNum()).isEqualTo("one");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint("one"));
             assertThat(card.getCardAcctId()).isEqualTo("two");
-            assertThat(card.getCardCvvCd()).isEqualTo("three");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("three"));
             assertThat(card.getCardEmbossedName()).isEqualTo("four");
             assertThat(card.getCardExpirationDate()).isEqualTo("five");
             assertThat(card.getCardActiveStatus()).isEqualTo("six");
@@ -566,9 +567,9 @@ class CardTest {
             card.setCardExpirationDate(SEED_EXPIRATION_DATE);
             card.setCardActiveStatus(SEED_ACTIVE_STATUS);
 
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
             assertThat(card.getCardAcctId()).isEqualTo(SEED_ACCT_ID);
-            assertThat(card.getCardCvvCd()).isEqualTo(SEED_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SEED_CVV_CD));
             assertThat(card.getCardEmbossedName()).isEqualTo(seedEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo(SEED_EXPIRATION_DATE);
             assertThat(card.getCardActiveStatus()).isEqualTo(SEED_ACTIVE_STATUS);
@@ -585,8 +586,8 @@ class CardTest {
             // replacement carries a leading zero so a failure to store it verbatim shows up immediately.
             card.setCardCvvCd(LEADING_ZERO_CVV_CD);
 
-            assertThat(card.getCardCvvCd()).isEqualTo(LEADING_ZERO_CVV_CD);
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(LEADING_ZERO_CVV_CD));
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
             assertThat(card.getCardAcctId()).isEqualTo(SEED_ACCT_ID);
             assertThat(card.getCardEmbossedName()).isEqualTo(seedEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo(SEED_EXPIRATION_DATE);
@@ -613,7 +614,7 @@ class CardTest {
 
             // Rejecting a null here would be a constraint the legacy record never carried, and the
             // column's nullability is the database's business rather than the entity's.
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
         }
 
         @Test
@@ -645,12 +646,12 @@ class CardTest {
         void theCardNumberKeepsItsLeadingZero() {
             final Card card = seededRowZero();
 
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
             assertThat(encodedWidth(card.getCardNum())).isEqualTo(CARD_NUM_WIDTH);
 
             // The value a numeric round trip would have produced, written out by hand. It is fifteen
             // characters, so it is not merely a different string but a different width.
-            assertThat(card.getCardNum()).isNotEqualTo(SEED_CARD_NUM_STRIPPED);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isNotEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM_STRIPPED));
             assertThat(encodedWidth(SEED_CARD_NUM_STRIPPED)).isEqualTo(CARD_NUM_WIDTH - 1);
         }
 
@@ -675,12 +676,12 @@ class CardTest {
         void aVerificationCodeBeginningWithZeroSurvives() {
             final Card card = seededLeadingZeroRow();
 
-            assertThat(card.getCardCvvCd()).isEqualTo(LEADING_ZERO_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(LEADING_ZERO_CVV_CD));
             assertThat(encodedWidth(card.getCardCvvCd())).isEqualTo(CVV_WIDTH);
 
             // The single-character value a numeric conversion would have produced, written out by hand.
             // Were this field ever parsed to a number, the three-byte field would collapse to one.
-            assertThat(card.getCardCvvCd()).isNotEqualTo(LEADING_ZERO_CVV_CD_STRIPPED);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isNotEqualTo(SensitiveValues.fingerprint(LEADING_ZERO_CVV_CD_STRIPPED));
             assertThat(encodedWidth(LEADING_ZERO_CVV_CD_STRIPPED)).isEqualTo(1);
 
             // The count is stated so the evidence is about the fixture rather than about this one row.
@@ -695,9 +696,9 @@ class CardTest {
 
             card.setCardCvvCd(SECOND_LEADING_ZERO_CVV_CD);
 
-            assertThat(card.getCardCvvCd()).isEqualTo(SECOND_LEADING_ZERO_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(SECOND_LEADING_ZERO_CVV_CD));
             assertThat(encodedWidth(card.getCardCvvCd())).isEqualTo(CVV_WIDTH);
-            assertThat(card.getCardCvvCd()).isNotEqualTo(SECOND_LEADING_ZERO_CVV_CD_STRIPPED);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isNotEqualTo(SensitiveValues.fingerprint(SECOND_LEADING_ZERO_CVV_CD_STRIPPED));
             assertThat(encodedWidth(SECOND_LEADING_ZERO_CVV_CD_STRIPPED)).isEqualTo(CVV_WIDTH - 1);
         }
 
@@ -825,8 +826,8 @@ class CardTest {
                     .isEqualTo(LEADING_ZERO_EXPIRATION_DATE).isNotEqualTo(SEED_EXPIRATION_DATE);
             assertThat(divergent.getCardActiveStatus())
                     .isEqualTo("N").isNotEqualTo(SEED_ACTIVE_STATUS);
-            assertThat(divergent.getCardNum()).isEqualTo(SEED_CARD_NUM);
-            assertThat(fromFixture.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(divergent.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
+            assertThat(SensitiveValues.fingerprint(fromFixture.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
 
             assertThat(fromFixture).isEqualTo(divergent);
             assertThat(divergent).isEqualTo(fromFixture);
@@ -848,8 +849,8 @@ class CardTest {
 
             // Both keys are pinned to their own hand-written literal, and the two literals are
             // different card numbers of the same fixture.
-            assertThat(first.getCardNum()).isEqualTo(SEED_CARD_NUM);
-            assertThat(second.getCardNum()).isEqualTo(LEADING_ZERO_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(first.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
+            assertThat(SensitiveValues.fingerprint(second.getCardNum())).isEqualTo(SensitiveValues.fingerprint(LEADING_ZERO_CARD_NUM));
             assertThat(SEED_CARD_NUM).isNotEqualTo(LEADING_ZERO_CARD_NUM);
 
             assertThat(first).isNotEqualTo(second);
@@ -915,7 +916,7 @@ class CardTest {
             card.setCardNum(LEADING_ZERO_CARD_NUM);
 
             assertThat(card).isNotEqualTo(seededRowZero());
-            assertThat(card.getCardNum()).isEqualTo(LEADING_ZERO_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(LEADING_ZERO_CARD_NUM));
         }
 
         @Test
@@ -979,7 +980,7 @@ class CardTest {
             assertThat(KEY_WIDTH).isEqualTo(CARD_NUM_WIDTH);
 
             card.setCardNum(SEED_CARD_NUM);
-            assertThat(card.getCardNum()).isEqualTo(SEED_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(SEED_CARD_NUM));
         }
     }
 

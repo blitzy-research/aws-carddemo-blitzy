@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -64,6 +65,7 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 /**
@@ -594,15 +596,55 @@ class BillPaymentServiceTest {
     /**
      * Arranges the keyed account read to return the same instance on every call.
      *
+     * <p>This is the unlocked read of the account-read paragraph, which every turn that resolves an account
+     * performs. A turn that goes on to confirm re-reads the same row under an exclusive lock, which is a
+     * separate finder and is arranged by {@link #stubHeldAccountRead(Account)}.
+     *
      * @param account the account the read resolves to
      */
     private void stubAccountRead(final Account account) {
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
     }
 
-    /** Arranges the keyed account read to return a fresh payable instance on every call. */
-    private void stubAccountReadReturningFreshInstances() {
+    /**
+     * Arranges the exclusive held read the confirmed span takes as its first statement.
+     *
+     * <p>Only a confirmed turn reaches it, so it is arranged separately from the unlocked read: a test that
+     * never confirms would otherwise carry an arrangement it does not use, and strict stubbing would - very
+     * properly - fail it for that.
+     *
+     * @param account the account the held read resolves to
+     */
+    private void stubHeldAccountRead(final Account account) {
+        when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.of(account));
+    }
+
+    /**
+     * Arranges both account reads to resolve to the same instance.
+     *
+     * @param account the account both reads resolve to
+     */
+    private void stubBothAccountReads(final Account account) {
+        stubAccountRead(account);
+        stubHeldAccountRead(account);
+    }
+
+    /**
+     * Arranges both account reads to return a fresh payable instance on every call.
+     *
+     * <p>What this buys is turn independence. A test that runs more than one turn against the same mocked
+     * repository would otherwise see the balance the first turn settled to zero, and the second turn would
+     * take the nothing-to-pay arm instead of the arm under test. Handing out a fresh row per read is what a
+     * real store does between two independent turns.
+     *
+     * <p>The two reads deliberately hand out <em>different</em> instances within a single turn, which also
+     * demonstrates that the row the rewrite stores is the one the held read granted rather than the one the
+     * display read returned.
+     */
+    private void stubAccountReadsReturningFreshInstances() {
         when(accountRepository.findById(ACCOUNT_ID))
+                .thenAnswer(invocation -> Optional.of(payableAccount()));
+        when(accountRepository.findByIdForUpdate(ACCOUNT_ID))
                 .thenAnswer(invocation -> Optional.of(payableAccount()));
     }
 
@@ -658,7 +700,7 @@ class BillPaymentServiceTest {
      * @param highestExisting the highest stored identifier, or {@code null} for an empty table
      */
     private void arrangeConfirmablePayment(final Account account, final String highestExisting) {
-        stubAccountRead(account);
+        stubBothAccountReads(account);
         stubAccountRewriteEchoesRow();
         stubCrossReferenceRow(CARD_NUMBER);
         stubHighestIdentifier(highestExisting);
@@ -1090,7 +1132,7 @@ class BillPaymentServiceTest {
         @DisplayName("a refused insert leaves the NEXT identifier unchanged, so a rollback consumes no "
                 + "permanent gap - which is the whole reason a sequence is prohibited")
         void aRefusedInsertConsumesNoIdentifierGap() {
-            stubAccountReadReturningFreshInstances();
+            stubAccountReadsReturningFreshInstances();
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -1122,7 +1164,7 @@ class BillPaymentServiceTest {
         @DisplayName("two successive turns against the same empty table both mint the first identifier, "
                 + "because nothing is cached between turns")
         void nothingIsCachedBetweenTurns() {
-            stubAccountReadReturningFreshInstances();
+            stubAccountReadsReturningFreshInstances();
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
@@ -1144,7 +1186,7 @@ class BillPaymentServiceTest {
         @DisplayName("a maximum that is not a well-formed sixteen-digit key is refused rather than "
                 + "incremented, and both refusal conditions reach the identical outcome, at lines 489 to 495")
         void readprevTransactFileRefusesAMalformedMaximum(final String malformedMaximum) {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(malformedMaximum);
@@ -1170,7 +1212,7 @@ class BillPaymentServiceTest {
         @DisplayName("a colliding identifier is reported under the already-exists text after a BOUNDED "
                 + "re-allocation of exactly two attempts, at lines 533 to 539")
         void resolveWriteResponseReportsADuplicateAfterABoundedReAllocation() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -1199,7 +1241,7 @@ class BillPaymentServiceTest {
         @DisplayName("a duplicate the STORE discovers - rather than the existence probe - reaches the "
                 + "same already-exists arm, because it is still a response to the write")
         void aStoreRaisedDuplicateReachesTheAlreadyExistsArm() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -1226,7 +1268,7 @@ class BillPaymentServiceTest {
         @DisplayName("a duplicate NESTED inside a wrapping failure is still recognised, because the "
                 + "classification walks the cause chain rather than matching a message")
         void aNestedDuplicateIsStillRecognised() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -1246,7 +1288,7 @@ class BillPaymentServiceTest {
         @DisplayName("a failure of the ALLOCATION LOCK is not a response to a write, so it has no arm in "
                 + "the source and is left to propagate rather than being reported as a write failure")
         void aFailureOfTheAllocationLockIsNotTranslatedIntoAWriteArm() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubBoundaryRunsUnit();
             stubCrossReferenceRow(CARD_NUMBER);
             Mockito.doThrow(new IllegalStateException("the allocation lock could not be taken"))
@@ -1425,7 +1467,7 @@ class BillPaymentServiceTest {
         @DisplayName("the account is still rewritten when the insert was refused, because the source "
                 + "tests no flag between the write at line 233 and the rewrite at line 235")
         void updateAcctdatFileRunsEvenWhenTheInsertWasRefused() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -1480,15 +1522,18 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("the rewrite paragraph reports its own not-found arm when the row has vanished, and "
-                + "the already-inserted transaction stands, at lines 390 to 395")
-        void updateAcctdatFileReportsAVanishedRow() {
-            when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(payableAccount()))
-                    .thenReturn(Optional.empty());
+        @DisplayName("a row that VANISHED between the display read and the confirmed span is caught by the "
+                + "held read, so nothing is minted and the not-found text reports the turn")
+        void aVanishedRowIsCaughtByTheHeldReadBeforeAnythingIsMinted() {
+            // The legacy could not reach its rewrite's own not-found arm at lines 390 to 395 while it held
+            // the record: the READ ... UPDATE at line 343 locked it, so no other task could delete it before
+            // the REWRITE at line 235. The held read is where that same disappearance is detected here - and
+            // detecting it there is strictly better than detecting it at the rewrite, because nothing has
+            // been minted or stored yet. The rewrite's not-found arm is preserved as the source's arm and is
+            // unreachable for the same reason the legacy's was.
+            stubAccountRead(payableAccount());
+            when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.empty());
             stubCrossReferenceRow(CARD_NUMBER);
-            stubHighestIdentifier(null);
-            stubInsertEchoesRecord();
             stubBoundaryRunsUnit();
 
             final BillPaymentService.BillPaymentResult result =
@@ -1497,11 +1542,9 @@ class BillPaymentServiceTest {
             assertAll(
                     () -> assertThat(result.errorFlag()).isTrue(),
                     () -> assertThat(result.message()).isEqualTo(MSG_ACCOUNT_ID_NOT_FOUND),
-                    // The transaction file is unrecoverable in the legacy, so the record written at line
-                    // 233 stands whatever happens to the rewrite at line 235.
-                    () -> assertThat(result.transaction()).isNotNull(),
-                    () -> assertThat(result.transaction().tranId())
-                            .isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE));
+                    () -> assertThat(result.transaction()).isNull(),
+                    () -> assertThat(result.paymentAccepted()).isFalse());
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
             verify(accountRepository, never()).saveAndFlush(any(Account.class));
         }
 
@@ -1570,7 +1613,7 @@ class BillPaymentServiceTest {
         @DisplayName("the confirmation flag is reset on every pass at line 156, so an affirmative answer "
                 + "counts only on the turn that carries it and confirmation is never remembered")
         void processEnterKeyResetsTheConfirmationFlagOnEveryPass() {
-            stubAccountReadReturningFreshInstances();
+            stubAccountReadsReturningFreshInstances();
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
@@ -1705,7 +1748,7 @@ class BillPaymentServiceTest {
                 + "distinct outcome - the order is the contract, because the language stops at the first "
                 + "matching clause")
         void allFourArmsAreEvaluatedInTheSourcesClauseOrder() {
-            stubAccountReadReturningFreshInstances();
+            stubAccountReadsReturningFreshInstances();
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
@@ -1734,11 +1777,11 @@ class BillPaymentServiceTest {
                     () -> assertThat(other.errorFlag()).isTrue(),
                     () -> assertThat(other.message()).isEqualTo(MSG_INVALID_CONFIRMATION));
             // Only the two reading arms consulted the account master, which is what distinguishes the
-            // clause order from a chain that happened to produce the same texts: three keyed reads in
-            // all, because the affirmative arm reads once for the read paragraph at line 343 and once
-            // more inside the rewrite's own unit of work, while the blank arm reads once and the other
-            // two arms read nothing.
-            verify(accountRepository, times(3)).findById(ACCOUNT_ID);
+            // clause order from a chain that happened to produce the same texts: two unlocked reads in all,
+            // one for the affirmative arm and one for the blank arm, while the other two arms read nothing.
+            // The affirmative arm additionally takes the locking read inside its confirmed unit.
+            verify(accountRepository, times(2)).findById(ACCOUNT_ID);
+            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
         }
 
         @Test
@@ -1935,7 +1978,7 @@ class BillPaymentServiceTest {
         @DisplayName("the card number is the value the cross-reference access path returned, verbatim and "
                 + "with no re-ordering, from the move at line 225")
         void theCardNumberIsTheResolvedValueVerbatim() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(HIGHER_CARD_NUMBER);
             stubHighestIdentifier(null);
@@ -1947,7 +1990,8 @@ class BillPaymentServiceTest {
 
             final Transaction inserted = capturedInsertedRecord();
             assertAll(
-                    () -> assertThat(inserted.getTranCardNum()).isEqualTo(HIGHER_CARD_NUMBER),
+                    () -> assertThat(SensitiveValues.fingerprint(inserted.getTranCardNum()))
+                            .isEqualTo(SensitiveValues.fingerprint(HIGHER_CARD_NUMBER)),
                     () -> assertThat(encodedByteCount(inserted.getTranCardNum())).isEqualTo(16),
                     () -> assertThat(result.transaction().tranCardNum())
                             .isEqualTo(HIGHER_CARD_NUMBER));
@@ -1984,7 +2028,7 @@ class BillPaymentServiceTest {
         @DisplayName("a record assembled but refused is deliberately NOT projected, so a refused payment "
                 + "cannot be mistaken for a completed one")
         void aRefusedRecordIsNotProjected() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);
@@ -2202,7 +2246,7 @@ class BillPaymentServiceTest {
         @DisplayName("both refusal conditions of the backward read reach the byte-identical outcome, and "
                 + "the transient lookup-failure text is superseded by the insert paragraph's own text")
         void bothRefusalConditionsOfTheBackwardReadReachTheIdenticalOutcome() {
-            stubAccountReadReturningFreshInstances();
+            stubAccountReadsReturningFreshInstances();
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubBoundaryRunsUnit();
@@ -2253,7 +2297,7 @@ class BillPaymentServiceTest {
         @DisplayName("the cross-reference catch-all text and the account catch-all text are distinct, so "
                 + "one failure is never reported as the other")
         void theCatchAllTextsAreDistinct() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubHighestIdentifier(null);
             stubBoundaryRunsUnit();
@@ -2279,76 +2323,157 @@ class BillPaymentServiceTest {
     }
 
     // ==============================================================================================
-    // The version check replacing the before-and-after image comparison, lines 377 to 403
+    // The exclusive held read that replaces the legacy READ ... UPDATE, lines 343 and 377 to 403
     // ==============================================================================================
 
     @Nested
-    @DisplayName("The optimistic version check that replaces the before-and-after image comparison, at "
-            + "lines 377 to 403")
-    class OptimisticLocking {
+    @DisplayName("The exclusive held read of the confirmed span, and the rewrite arms at lines 377 to 403")
+    class HeldReadAndRewriteArms {
 
         @Test
-        @DisplayName("a version that moved between the read and the rewrite raises the domain conflict "
-                + "and NEVER abends, and nothing is written")
-        void aVersionThatMovedRaisesTheDomainConflict() {
-            final Account moved = mock(Account.class);
-            when(moved.getVersion()).thenReturn(7L);
-            when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(payableAccount()))
-                    .thenReturn(Optional.of(moved));
+        @DisplayName("the confirmed span's FIRST store interaction is the exclusive held read, taken before "
+                + "the identifier is allocated and before anything is written")
+        void theHeldReadIsTakenBeforeAnythingIsAllocatedOrWritten() {
+            arrangeConfirmablePayment(payableAccount(), HIGHEST_KEY_NINE);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            // The legacy read at line 343 takes UPDATE against a file the region defines with
+            // UPDATEMODEL(LOCKING), so the row is held from that read until the rewrite at line 235
+            // releases it. The locking finder standing first is what reproduces the hold; everything the
+            // span goes on to do happens while the row is exclusively held.
+            final InOrder order = inOrder(accountRepository, transactionRepository);
+            order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(transactionRepository).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
+            order.verify(transactionRepository).findMaxId();
+            order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("the row the rewrite stores is the row the HELD read granted, not the row the earlier "
+                + "unlocked read returned")
+        void theRewriteStoresTheHeldRowRatherThanTheDisplayedRow() {
+            final Account displayed = payableAccount();
+            final Account held = payableAccount();
+            stubAccountRead(displayed);
+            stubHeldAccountRead(held);
+            stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
             stubInsertEchoesRecord();
             stubBoundaryRunsUnit();
 
-            assertThatExceptionOfType(OptimisticLockConflictException.class)
-                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")))
-                    .satisfies(conflict -> assertAll(
-                            () -> assertThat(conflict.conflictKind()).isEqualTo(
-                                    OptimisticLockConflictException.ConflictKind
-                                            .RECORD_CHANGED_BEFORE_UPDATE),
-                            () -> assertThat(conflict.entityName()).isEqualTo("Account"),
-                            () -> assertThat(conflict.key()).isEqualTo(ACCOUNT_ID),
-                            // "some one" is TWO WORDS in the legacy text, and it stays two words.
-                            () -> assertThat(conflict.getMessage())
-                                    .isEqualTo("Record changed by some one else. Please review"),
-                            () -> assertThat(conflict.getMessage()).contains("some one"),
-                            () -> assertThat(conflict.getMessage()).doesNotContain("someone")));
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            verify(accountRepository, never()).saveAndFlush(any(Account.class));
-            verify(moved, never()).setAcctCurrBal(any(BigDecimal.class));
+            // Identity, not equality: only the instance the lock granted may be settled, because only that
+            // instance is the row no other writer can be holding.
+            assertThat(capturedRewrittenAccount()).isSameAs(held);
+            assertThat(displayed.getAcctCurrBal()).isEqualByComparingTo(PAYABLE_BALANCE);
         }
 
         @Test
-        @DisplayName("the conflict is recoverable and explicitly non-abending: exactly the domain "
-                + "conflict type escapes and no abend collaborator exists to be involved")
-        void theConflictIsRecoverableAndNeverAnAbend() {
-            final Account moved = mock(Account.class);
-            when(moved.getVersion()).thenReturn(1L);
-            when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(payableAccount()))
-                    .thenReturn(Optional.of(moved));
-            stubCrossReferenceRow(CARD_NUMBER);
-            stubHighestIdentifier(null);
-            stubInsertEchoesRecord();
-            stubBoundaryRunsUnit();
-
-            assertThatExceptionOfType(OptimisticLockConflictException.class)
-                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")))
-                    .satisfies(conflict -> assertAll(
-                            () -> assertThat(conflict).isExactlyInstanceOf(
-                                    OptimisticLockConflictException.class),
-                            () -> assertThat(conflict).isInstanceOf(RuntimeException.class),
-                            () -> assertThat(conflict.getCause()).isNull()));
-        }
-
-        @Test
-        @DisplayName("a conflict the PERSISTENCE PROVIDER raises on flush is translated by the same arm, "
-                + "and the provider's failure travels with the domain conflict as its cause")
-        void aProviderRaisedConflictIsTranslatedByTheSameArm() {
-            // Composed field by field rather than through the shared arrangement, because the rewrite must
-            // fail here and a stub that echoed it first would be an arrangement this test never uses.
+        @DisplayName("a held read that resolves NOTHING takes the account-read paragraph's not-found arm, "
+                + "and nothing is allocated, written or rewritten")
+        void aHeldReadThatResolvesNothingTakesTheReadsNotFoundArm() {
             stubAccountRead(payableAccount());
+            when(accountRepository.findByIdForUpdate(ACCOUNT_ID)).thenReturn(Optional.empty());
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubBoundaryRunsUnit();
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertAll(
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_ACCOUNT_ID_NOT_FOUND),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.transaction()).isNull(),
+                    () -> assertThat(result.paymentAccepted()).isFalse());
+            verify(transactionRepository, never()).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+            verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a held read returning a row that carries NO USABLE BALANCE takes the account-read "
+                + "paragraph's catch-all arm, exactly as the display read does")
+        void aHeldRowCarryingNoBalanceTakesTheReadsCatchAllArm() {
+            // The same arm the display read has for the same condition, which is the point: the held read is
+            // that paragraph re-performed, so it must resolve to that paragraph's arms and not to an
+            // unrelated failure. The column is declared not-null, so this defends against a malformed row
+            // rather than describing an expected one.
+            stubAccountRead(payableAccount());
+            stubHeldAccountRead(accountCarryingVerbatimBalance(null));
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubBoundaryRunsUnit();
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertAll(
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_LOOKUP_ACCOUNT),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.transaction()).isNull());
+            verify(transactionRepository, never()).lockIdentifierAllocation(anyLong());
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+            verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("an account another operator SETTLED while this turn waited for the lock reaches the "
+                + "legacy nothing-to-pay arm, and mints NO second transaction")
+        void aRowSettledWhileWaitingForTheLockReachesTheNothingToPayArm() {
+            // The displayed balance was payable - this turn read it before the winner committed - and the
+            // held row is what the lock granted afterwards. That is precisely the legacy's second task:
+            // it waited at its own READ ... UPDATE, then saw the settled balance and took the arm at lines
+            // 197 to 206. One transaction is posted because a second is never minted, not because a second
+            // is rolled back.
+            stubAccountRead(payableAccount());
+            stubHeldAccountRead(accountCarryingVerbatimBalance(BigDecimal.ZERO));
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubBoundaryRunsUnit();
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertAll(
+                    () -> assertThat(result.errorFlag()).isTrue(),
+                    () -> assertThat(result.message()).isEqualTo(MSG_NOTHING_TO_PAY),
+                    () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.transaction()).isNull(),
+                    () -> assertThat(result.paymentAccepted()).isFalse(),
+                    // NOT an optimistic conflict: the turn answers with the legacy's own message.
+                    () -> assertThat(result.message()).doesNotContain("some one"));
+            verify(transactionRepository, never()).lockIdentifierAllocation(EXPECTED_ALLOCATION_LOCK_KEY);
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+            verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a NEGATIVE held balance reaches the same arm, because the legacy condition is "
+                + "not-positive rather than exactly zero")
+        void aNegativeHeldBalanceReachesTheSameArm() {
+            stubAccountRead(payableAccount());
+            stubHeldAccountRead(accountCarryingVerbatimBalance(new BigDecimal("-0.01")));
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubBoundaryRunsUnit();
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertThat(result.message()).isEqualTo(MSG_NOTHING_TO_PAY);
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+        }
+
+        @Test
+        @DisplayName("a conflict the PERSISTENCE PROVIDER raises on the held row is still translated by "
+                + "the same arm, and the provider's failure travels with it as its cause")
+        void aProviderRaisedConflictIsTranslatedByTheSameArm() {
+            // Unreachable through a lost version race now that the row is held, but a provider may report a
+            // conflict for a reason of its own, and the translation stays in place for that.
+            stubBothAccountReads(payableAccount());
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
             stubInsertEchoesRecord();
@@ -2364,8 +2489,14 @@ class BillPaymentServiceTest {
                                             .RECORD_CHANGED_BEFORE_UPDATE),
                             () -> assertThat(conflict.entityName()).isEqualTo("Account"),
                             () -> assertThat(conflict.key()).isEqualTo(ACCOUNT_ID),
+                            // "some one" is TWO WORDS in the legacy text, and it stays two words.
                             () -> assertThat(conflict.getMessage())
                                     .isEqualTo("Record changed by some one else. Please review"),
+                            () -> assertThat(conflict.getMessage()).contains("some one"),
+                            () -> assertThat(conflict.getMessage()).doesNotContain("someone"),
+                            () -> assertThat(conflict).isExactlyInstanceOf(
+                                    OptimisticLockConflictException.class),
+                            () -> assertThat(conflict).isInstanceOf(RuntimeException.class),
                             () -> assertThat(conflict.getCause())
                                     .isInstanceOf(OptimisticLockException.class)));
         }
@@ -2374,7 +2505,7 @@ class BillPaymentServiceTest {
         @DisplayName("any OTHER failure of the rewrite is the paragraph's catch-all arm, which reports the "
                 + "update-failure text rather than propagating, at lines 396 to 402")
         void anyOtherRewriteFailureReachesTheCatchAllArm() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
             stubInsertEchoesRecord();
@@ -2391,12 +2522,15 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.message()).endsWith("..."),
                     () -> assertThat(result.message()).doesNotEndWith("...."),
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
-                    // The rewrite shared the unit that inserted the transaction, so a failure here rolls
-                    // both writes back: the arm reports the update failure rather than abending, and it
-                    // reports NO stored record, because naming one would name a row the rollback removed.
-                    () -> assertThat(result.transaction()).isNull(),
-                    () -> assertThat(result.message())
-                            .doesNotContain(FIRST_IDENTIFIER_ON_EMPTY_TABLE));
+                    // THE STORED RECORD SURVIVES. The insert committed in a unit of its own, and a legacy
+                    // REWRITE failure over files defined RECOVERY(NONE) with JOURNAL(NO) does not undo a
+                    // WRITE that already happened - the source performs lines 234 and 235 whether or not
+                    // the write at 233 succeeded and tests no flag between them. So the turn reports the
+                    // update failure over a transaction master that carries the row.
+                    () -> assertThat(result.transaction()).isNotNull(),
+                    () -> assertThat(result.transaction().tranId())
+                            .isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE));
+            assertThat(capturedInsertedRecord().getTranId()).isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE);
         }
 
         @Test
@@ -2409,8 +2543,8 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("a successful rewrite reports the version the write left behind, which is what the "
-                + "next writer's check compares against")
+        @DisplayName("a successful rewrite reports the version the held row carried, which is what the "
+                + "next writer observes")
         void aSuccessfulRewriteReportsTheVersionTheWriteLeftBehind() {
             arrangeConfirmablePayment(payableAccount(), null);
 
@@ -2423,18 +2557,18 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("no pessimistic read is issued anywhere: the update intent is optimistic, which is "
-                + "STRICTLY STRONGER than the legacy uncommitted-read, no-recovery, no-journal baseline")
-        void noPessimisticReadIsIssued() {
+        @DisplayName("the held row is read ONCE inside the span and never re-read for comparison, because "
+                + "the lock - not an image comparison - is what makes the rewrite safe")
+        void theHeldRowIsReadOnceAndNeverReReadForComparison() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // The legacy rested on a locking update model plus the program's own image comparison, with
-            // uncommitted read integrity. Read-committed isolation plus a version column is a documented
-            // improvement, not a regression, and it is why no locking finder is consulted here.
-            verify(accountRepository, never()).findByIdForUpdate(any());
-            verify(accountRepository, times(2)).findById(ACCOUNT_ID);
+            // Exactly one locking read, and exactly one unlocked read: the display read of the account-read
+            // paragraph. A second unlocked read would be the before-and-after image comparison this design
+            // deliberately replaced, and it would be reading a row the lock already guarantees.
+            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            verify(accountRepository).findById(ACCOUNT_ID);
         }
     }
 
@@ -2465,7 +2599,8 @@ class BillPaymentServiceTest {
             verify(transactionRepository).existsById(SUCCESSOR_OF_NINE);
             verifyNoMoreInteractions(transactionRepository);
 
-            verify(accountRepository, times(2)).findById(ACCOUNT_ID);
+            verify(accountRepository).findById(ACCOUNT_ID);
+            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
             verifyNoMoreInteractions(accountRepository);
 
             verify(cardCrossReferenceRepository)
@@ -2489,18 +2624,20 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("both durable writes share ONE unit of work, which is what lets a refused rewrite "
-                + "discard the transaction the same turn inserted")
-        void bothDurableWritesShareOneUnitOfWork() {
+        @DisplayName("the insert runs in a unit of ITS OWN nested inside the unit holding the account row, "
+                + "which is what makes the stored record survive a rewrite that rolls back")
+        void theInsertRunsInAUnitOfItsOwnInsideTheUnitHoldingTheRow() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // The legacy held the account record from its read at line 343 until its rewrite at line 235
-            // released it, so a second operator confirming the same account could not interleave. This
-            // schema holds no record lock, so the exclusion comes from the unit of work instead: one unit
-            // over both writes is what makes the version check reach the insert.
-            verify(transactionBoundary).execute(any());
+            // Two units, not one. The outer unit is what holds the account row exclusively from the held
+            // read to the rewrite, reproducing the legacy hold from line 343 to line 235. The inner unit is
+            // the transaction insert, and it is separate precisely because the legacy transaction file is
+            // defined RECOVERY(NONE) with JOURNAL(NO): a record that was written is durable at once, and no
+            // later REWRITE failure can undo it. Sharing one unit between the two writes would make a
+            // failed rewrite discard a stored transaction, which no legacy mechanism does.
+            verify(transactionBoundary, times(2)).execute(any());
             verifyNoMoreInteractions(transactionBoundary);
         }
 
@@ -2510,7 +2647,7 @@ class BillPaymentServiceTest {
         void aHandledInsertRefusalStillRewritesInAUnitOfItsOwn() {
             // No cross-reference row, so the assembled record carries no card number and the insert is
             // never attempted: the catch-all arm at lines 540 to 546 reports it and nothing was stored.
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubHighestIdentifier(null);
             stubBoundaryRunsUnit();
@@ -2526,38 +2663,64 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.transaction())
                             .as("nothing was inserted")
                             .isNull());
-            // The refusal stored nothing, so the shared unit had nothing to protect and the unconditional
-            // rewrite of line 235 runs after it in a second unit - which is the only way it can commit.
-            verify(transactionBoundary, times(2)).execute(any());
+            // The refusal never reached the store, so no nested unit was opened at all: exactly one unit
+            // ran, the one holding the account row, and the unconditional rewrite of line 235 committed
+            // inside it. The account is settled behind a message saying the transaction could not be added,
+            // which is precisely what the source does by testing no flag between lines 233 and 235.
+            verify(transactionBoundary).execute(any());
             verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
             verify(accountRepository).saveAndFlush(any(Account.class));
+            assertThat(capturedRewrittenAccount().getAcctCurrBal()).isEqualByComparingTo(ZERO_BALANCE);
         }
 
         @Test
-        @DisplayName("a concurrent modification abandons the ONE unit both writes shared, so the account is "
-                + "never rewritten and the transaction the same turn inserted does not survive")
-        void aConcurrentModificationAbandonsTheSharedUnit() {
-            // The keyed read observes the seeded version; the re-read inside the unit observes a version
-            // another writer left behind, which is the conflict.
-            final Account moved = mock(Account.class);
-            when(moved.getVersion()).thenReturn(1L);
-            when(accountRepository.findById(ACCOUNT_ID))
-                    .thenReturn(Optional.of(payableAccount()))
-                    .thenReturn(Optional.of(moved));
+        @DisplayName("a refused rewrite leaves the stored transaction in place and reports BOTH arms in the "
+                + "source's order: the insert's, then the rewrite's")
+        void aRefusedRewriteLeavesTheStoredTransactionInPlace() {
+            stubBothAccountReads(payableAccount());
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(null);
             stubInsertEchoesRecord();
             stubBoundaryRunsUnit();
+            when(accountRepository.saveAndFlush(any(Account.class)))
+                    .thenThrow(new IllegalStateException("the rewrite failed"));
 
-            assertThatExceptionOfType(OptimisticLockConflictException.class)
-                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")));
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            // The whole point of the shared unit: the insert was issued inside the unit the conflict
-            // abandons, so the rollback is what removes it. Exactly one unit was opened, the insert was
-            // attempted inside it, and the account was never rewritten.
-            verify(transactionBoundary).execute(any());
+            assertAll(
+                    // The insert's normal arm ran first and named the stored record, then the rewrite's
+                    // catch-all wrote the text the operator actually sees. Both arms are applied, in that
+                    // order, because the source performs both evaluations in that order.
+                    () -> assertThat(result.transaction()).isNotNull(),
+                    () -> assertThat(result.transaction().tranId())
+                            .isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE),
+                    () -> assertThat(result.message()).isEqualTo(MSG_UNABLE_TO_UPDATE_ACCOUNT),
+                    () -> assertThat(result.errorFlag()).isTrue());
+            // The nested unit committed the record before the outer unit was asked to rewrite, so the
+            // rollback of the outer unit reaches only the account.
+            verify(transactionBoundary, times(2)).execute(any());
             verify(transactionRepository).insertAndFlush(any(Transaction.class));
-            verify(accountRepository, never()).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("the outer unit is opened BEFORE the row is held and the nested insert unit runs "
+                + "inside it, so the row stays held across the insert")
+        void theNestedInsertUnitRunsInsideTheUnitHoldingTheRow() {
+            arrangeConfirmablePayment(payableAccount(), null);
+
+            service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            // The order of the two boundary calls relative to the held read is the whole guarantee: if the
+            // insert's unit were opened first, or the row were held after the insert, a second operator
+            // could interleave between the read and the rewrite - which is exactly what the legacy's
+            // READ ... UPDATE prevented.
+            final InOrder order = inOrder(transactionBoundary, accountRepository, transactionRepository);
+            order.verify(transactionBoundary).execute(any());
+            order.verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
+            order.verify(transactionBoundary).execute(any());
+            order.verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            order.verify(accountRepository).saveAndFlush(any(Account.class));
         }
 
         @Test
@@ -2587,7 +2750,7 @@ class BillPaymentServiceTest {
         @DisplayName("an absent cross-reference row is the not-found path, and no index or absent-value "
                 + "failure escapes")
         void anAbsentRowIsTheNotFoundPath() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubHighestIdentifier(null);
             stubBoundaryRunsUnit();
@@ -2615,7 +2778,7 @@ class BillPaymentServiceTest {
         @DisplayName("a row carrying a blank card number reaches the path's catch-all, so a record the "
                 + "store would refuse is never offered to it")
         void aBlankCardNumberReachesTheCatchAll() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubHighestIdentifier(null);
             stubBoundaryRunsUnit();
@@ -2635,7 +2798,7 @@ class BillPaymentServiceTest {
         @DisplayName("a row carrying an ABSENT card number reaches the same catch-all, so an absent value "
                 + "and a blank one are handled identically and neither escapes")
         void anAbsentCardNumberReachesTheCatchAll() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubHighestIdentifier(null);
             stubBoundaryRunsUnit();
@@ -2658,7 +2821,7 @@ class BillPaymentServiceTest {
         @DisplayName("the list-returning sibling finder is NEVER consulted: the access path resolves the "
                 + "row and the turn re-orders nothing")
         void theListReturningSiblingFinderIsNeverConsulted() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(HIGHER_CARD_NUMBER);
             stubHighestIdentifier(null);
@@ -2673,7 +2836,7 @@ class BillPaymentServiceTest {
             verifyNoMoreInteractions(cardCrossReferenceRepository);
             // The resolved row's card number is written verbatim, even though it is not the lowest value
             // the fixture could have offered.
-            assertThat(capturedInsertedRecord().getTranCardNum()).isEqualTo(HIGHER_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(capturedInsertedRecord().getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(HIGHER_CARD_NUMBER));
         }
 
         @Test
@@ -2684,7 +2847,8 @@ class BillPaymentServiceTest {
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            verify(accountRepository, times(2)).findById(ACCOUNT_ID);
+            verify(accountRepository).findById(ACCOUNT_ID);
+            verify(accountRepository).findByIdForUpdate(ACCOUNT_ID);
             verify(cardCrossReferenceRepository)
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
         }
@@ -2806,7 +2970,7 @@ class BillPaymentServiceTest {
         @Test
         @DisplayName("a refused payment is never reported as accepted")
         void aRefusedPaymentIsNeverReportedAsAccepted() {
-            stubAccountRead(payableAccount());
+            stubBothAccountReads(payableAccount());
             stubAccountRewriteEchoesRow();
             stubCrossReferenceRow(CARD_NUMBER);
             stubHighestIdentifier(HIGHEST_KEY_NINE);

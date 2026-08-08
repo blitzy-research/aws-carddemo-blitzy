@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
@@ -359,9 +360,9 @@ class CardRuleComplianceTest {
         void theConstructorRoundTripsEveryBusinessFieldOfTheFirstFixtureRecord() {
             final Card card = firstFixtureCard();
 
-            assertThat(card.getCardNum()).isEqualTo(FIRST_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUM));
             assertThat(card.getCardAcctId()).isEqualTo(FIRST_CARD_ACCT_ID);
-            assertThat(card.getCardCvvCd()).isEqualTo(FIRST_CARD_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_CVV_CD));
             assertThat(card.getCardEmbossedName()).isEqualTo(paddedEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo(FIRST_EXPIRATION_DATE);
             assertThat(card.getCardActiveStatus()).isEqualTo(FIRST_ACTIVE_STATUS);
@@ -373,9 +374,9 @@ class CardRuleComplianceTest {
         void theConstructorAssignsEachArgumentToItsOwnField() {
             final Card card = new Card("num", "acct", "cvv", "embossed", "expiry", "status");
 
-            assertThat(card.getCardNum()).isEqualTo("num");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint("num"));
             assertThat(card.getCardAcctId()).isEqualTo("acct");
-            assertThat(card.getCardCvvCd()).isEqualTo("cvv");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("cvv"));
             assertThat(card.getCardEmbossedName()).isEqualTo("embossed");
             assertThat(card.getCardExpirationDate()).isEqualTo("expiry");
             assertThat(card.getCardActiveStatus()).isEqualTo("status");
@@ -418,7 +419,7 @@ class CardRuleComplianceTest {
             final Card card = new Card();
 
             card.setCardNum("A");
-            assertThat(card.getCardNum()).isEqualTo("A");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint("A"));
             assertThat(card.getCardAcctId()).isNull();
 
             card.setCardAcctId("B");
@@ -426,7 +427,7 @@ class CardRuleComplianceTest {
             assertThat(card.getCardCvvCd()).isNull();
 
             card.setCardCvvCd("C");
-            assertThat(card.getCardCvvCd()).isEqualTo("C");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("C"));
             assertThat(card.getCardEmbossedName()).isNull();
 
             card.setCardEmbossedName("D");
@@ -440,9 +441,9 @@ class CardRuleComplianceTest {
             card.setCardActiveStatus("F");
             assertThat(card.getCardActiveStatus()).isEqualTo("F");
 
-            assertThat(card.getCardNum()).isEqualTo("A");
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint("A"));
             assertThat(card.getCardAcctId()).isEqualTo("B");
-            assertThat(card.getCardCvvCd()).isEqualTo("C");
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("C"));
             assertThat(card.getCardEmbossedName()).isEqualTo("D");
             assertThat(card.getCardExpirationDate()).isEqualTo("E");
         }
@@ -455,9 +456,9 @@ class CardRuleComplianceTest {
             card.setCardActiveStatus("N");
 
             assertThat(card.getCardActiveStatus()).isEqualTo("N");
-            assertThat(card.getCardNum()).isEqualTo(FIRST_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(card.getCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUM));
             assertThat(card.getCardAcctId()).isEqualTo(FIRST_CARD_ACCT_ID);
-            assertThat(card.getCardCvvCd()).isEqualTo(FIRST_CARD_CVV_CD);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_CVV_CD));
             assertThat(card.getCardEmbossedName()).isEqualTo(paddedEmbossedName());
             assertThat(card.getCardExpirationDate()).isEqualTo(FIRST_EXPIRATION_DATE);
         }
@@ -568,7 +569,8 @@ class CardRuleComplianceTest {
 
             card.setCardCvvCd("007");
 
-            assertThat(card.getCardCvvCd()).isEqualTo("007").hasSize(CARD_CVV_CD_LENGTH);
+            assertThat(SensitiveValues.fingerprint(card.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("007"));
+            assertThat(card.getCardCvvCd().length()).isEqualTo(CARD_CVV_CD_LENGTH);
         }
 
         @Test

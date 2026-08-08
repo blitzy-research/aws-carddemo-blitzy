@@ -58,8 +58,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  *
  * <p><strong>MANDATE: every expectation in this file is derived independently of the
  * implementation.</strong> Each expected identifier token, each expected action, each expected
- * five-character value and each expected count below was transcribed by hand from the legacy
- * source and is declared as a literal in the oracle section of this class. No assertion calls a
+ * five-character value and each expected count below was derived by hand from the legacy source's
+ * measured metadata and is declared as a literal in the oracle section of this class. No assertion calls a
  * production method to produce its own expected value, no output is snapshotted, and no expected
  * fold is read back out of the class under test. That discipline is what makes the fold assertions
  * meaningful: an implementation that mapped a folded pair consistently but wrongly - say both
@@ -151,9 +151,11 @@ final class PfKeyTranslatorTest {
 
     // THE ORACLE.
     //
-    // Everything in this section was transcribed by hand from the legacy source and is the sole
-    // authority for every expectation in this file. Nothing here is read back from the class under
-    // test, and nothing here is computed from anything else here.
+    // Everything in this section is derived independently from the measured clause and action
+    // metadata of [app/cpy/CSSTRPFY.cpy] and [app/cpy/CVCRD01Y.cpy: CCARD-AID] - identifier,
+    // ordinal position, action and field width - and is the sole authority for every expectation in
+    // this file. Nothing here is read back from the class under test, and nothing here is computed
+    // from anything else here.
 
     /**
      * The width of the action field, from its declaration at
@@ -174,31 +176,20 @@ final class PfKeyTranslatorTest {
      */
     private static final int ORACLE_DISTINCT_ACTION_COUNT = 16;
 
-    /** The number of clauses that fold, being the twelve upper-bank program-function keys. */
     private static final int ORACLE_FOLDED_CLAUSE_COUNT = 12;
 
-    /** Clause 1 of the construct. Reused across several assertions, so it is named. */
     private static final String AID_ENTER = "DFHENTER";
 
-    /** Clause 2 of the construct. */
     private static final String AID_CLEAR = "DFHCLEAR";
 
-    /** Clause 3 of the construct. */
     private static final String AID_PA1 = "DFHPA1";
 
-    /** Clause 4 of the construct. */
     private static final String AID_PA2 = "DFHPA2";
 
-    /** Clause 11 of the construct, used as the recognised key in the statelessness sequence. */
     private static final String AID_PF7 = "DFHPF7";
 
-    /**
-     * The action value the ENTER clause stores. Five characters, no padding required.
-     * From {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}.
-     */
     private static final String VALUE_ENTER = "ENTER";
 
-    /** The action value the CLEAR clause stores. Five characters, no padding required. */
     private static final String VALUE_CLEAR = "CLEAR";
 
     /**
@@ -221,13 +212,8 @@ final class PfKeyTranslatorTest {
      */
     private static final String SHORTENED_VALUE_PA1 = "PA1";
 
-    /** The shortened form of the second program-attention value, present for the same reason. */
     private static final String SHORTENED_VALUE_PA2 = "PA2";
 
-    /**
-     * An identifier no clause names. Used wherever an assertion needs a key the legacy construct
-     * does not recognise, including the statelessness sequence.
-     */
     private static final String UNRECOGNISED_AID = "DFHPF25";
 
     /**
@@ -308,10 +294,10 @@ final class PfKeyTranslatorTest {
     /**
      * The twelve folded pairs, written out one per upper-bank key.
      *
-     * <p>This is a second, independent hand transcription of the same twelve clauses that rows 17
-     * through 28 of {@link #ORACLE_CLAUSES} describe, and the two are cross-checked against each
-     * other below. Transcribing the fold twice from the source is deliberate: a single transcription
-     * that had drifted would be believed by every assertion that used it.
+     * <p>This is a second, independent hand-written enumeration of the same twelve clauses that rows
+     * 17 through 28 of {@link #ORACLE_CLAUSES} describe, and the two are cross-checked against each
+     * other below. Deriving the fold twice is deliberate: a single derivation that had drifted would
+     * be believed by every assertion that used it.
      */
     private static final List<FoldPair> ORACLE_FOLD_PAIRS = List.of(
             new FoldPair("DFHPF1", "DFHPF13", KeyAction.PFK01),
@@ -329,7 +315,7 @@ final class PfKeyTranslatorTest {
 
     /**
      * The 16 action values in the declaration order of the condition names beneath
-     * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, each transcribed verbatim.
+     * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, each stated at its full declared width.
      *
      * <p>Every value is exactly five characters. Two of them reach that width only because of
      * trailing spaces; the twelve program-function values reach it because their key number is
@@ -354,9 +340,8 @@ final class PfKeyTranslatorTest {
             new ActionValue(KeyAction.PFK12, "PFK12"));
 
     /**
-     * The names of the 16 constants, in declaration order, transcribed from the condition names
-     * beneath {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]} with the copybook's field-name prefix
-     * dropped.
+     * The names of the 16 constants, in the declaration order of the condition names beneath
+     * {@code [app/cpy/CVCRD01Y.cpy: CCARD-AID]}, with the copybook's field-name prefix dropped.
      */
     private static final List<String> ORACLE_CONSTANT_NAMES = List.of(
             "ENTER", "CLEAR", "PA1", "PA2",

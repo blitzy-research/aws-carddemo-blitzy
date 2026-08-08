@@ -399,6 +399,124 @@ final class BuildAndCiContractTest {
     }
 
     @Test
+    @DisplayName("every mandated documentation deliverable exists, and no page is left on disk that the "
+            + "documentation site's explicit nav does not name")
+    void everyMandatedDocumentIsPublishedAndRegistered() throws IOException {
+        // WHY THIS IS TWO CHECKS AND NOT ONE. A documentation deliverable can fail in two independent
+        // ways, and each is invisible to the other's check. It can be absent, which a reader discovers by
+        // following a dead link. Or it can be present and UNREGISTERED - the nav list in mkdocs.yml is
+        // explicit rather than directory-driven, so a page the nav does not name exists in the repository
+        // and never appears on the published site. The second failure mode is the quieter one: the file is
+        // right there, so a reviewer checking the tree concludes it shipped.
+        final String nav = read(Path.of("../mkdocs.yml"));
+        for (final String page : List.of("index.md", "onboarding-guide.md", "architecture.md",
+                "traceability-matrix.md", "decision-log.md", "gate-evidence.md", "project-guide.md",
+                "technical-specifications.md")) {
+            assertThat(Path.of("../docs").resolve(page))
+                    .as("%s is a mandated deliverable and must exist", page)
+                    .isRegularFile();
+            assertThat(nav)
+                    .as("%s must be registered in the explicit nav, or it never publishes", page)
+                    .contains(page);
+        }
+
+        // The deck is HTML rather than Markdown, so the documentation site serves it as a static asset
+        // and it is deliberately NOT a nav entry. It is reached from the documentation index instead.
+        final Path deck = Path.of("../docs/presentation/index.html");
+        assertThat(deck).as("the migration summary deck is a mandated deliverable").isRegularFile();
+        assertThat(read(deck))
+                .as("the deck must be self-contained: an external stylesheet, script or font would make "
+                        + "its appearance depend on a network no gate requires")
+                .doesNotContain("<link rel=\"stylesheet\" href=\"http")
+                .doesNotContain("<script src=\"http")
+                .as("and it carries both provenance identifiers, like every other migration document")
+                .contains("7756d895ffeb65f7ea72aaa609e356d9899afcec")
+                .contains("CardDemo_v1.0-15-g27d6c6f-68");
+    }
+
+    @Test
+    @DisplayName("the documentation index reaches every migration document, so no page is published and "
+            + "unreachable")
+    void theDocumentationIndexReachesEveryMigrationDocument() throws IOException {
+        final String index = read(Path.of("../docs/index.md"));
+
+        for (final String target : List.of("onboarding-guide.md", "architecture.md",
+                "traceability-matrix.md", "decision-log.md", "gate-evidence.md",
+                "presentation/index.html")) {
+            assertThat(index)
+                    .as("the documentation landing page must link %s; a registered page nobody links to "
+                            + "is found only by someone who already knew it existed", target)
+                    .contains("(" + target + ")");
+        }
+    }
+
+    @Test
+    @DisplayName("the estate README describes the Java module, its build and its local stack, and still "
+            + "describes the mainframe application it was migrated from")
+    void theEstateReadmeDescribesBothImplementations() throws IOException {
+        // The repository now carries two implementations side by side. The estate README described only
+        // the mainframe one, so a reader arriving at the repository root had no way to discover that a
+        // Java module existed at all - and the module's own README is one directory down, which is exactly
+        // where a reader who does not know it exists will not look.
+        final String estateReadme = read(Path.of("../README.md"));
+
+        assertThat(estateReadme)
+                .as("the module, its build command and its local stack must be discoverable from the root")
+                .contains("carddemo-java")
+                .contains("./mvnw -B clean verify")
+                .contains("docker compose up -d")
+                .as("and every migration document must be reachable from there")
+                .contains("docs/onboarding-guide.md")
+                .contains("docs/architecture.md")
+                .contains("docs/traceability-matrix.md")
+                .contains("docs/decision-log.md")
+                .contains("docs/gate-evidence.md")
+                .as("while the mainframe narrative it is the authority for stays in place")
+                .contains("## Installation on the mainframe")
+                .contains("CICS")
+                .contains("VSAM");
+    }
+
+    @Test
+    @DisplayName("the service catalog classifies the component as a service and keeps its identity, "
+            + "because a catalog entry is addressed by identity rather than by type")
+    void theServiceCatalogClassifiesTheComponentCorrectly() throws IOException {
+        final JsonNode catalog =
+                new ObjectMapper(new YAMLFactory()).readTree(Path.of("../catalog-info.yaml").toFile());
+
+        assertThat(catalog.path("spec").path("type").asText())
+                .as("the delivered artefact is a deployable Spring Boot service, not a website: there is "
+                        + "no browser interface anywhere in it, by design")
+                .isEqualTo("service");
+
+        // Identity is deliberately NOT changed. The catalog entry is addressed by name, the documentation
+        // site publishes from the annotated location, and the entry belongs to a named system - so
+        // rewriting any of the three would break the published entry rather than reclassify it.
+        assertThat(catalog.path("metadata").path("name").asText())
+                .as("the catalog entry is addressed by this name")
+                .isEqualTo("blitzy-card-demo");
+        assertThat(catalog.path("metadata").path("annotations").path("github.com/project-slug").asText())
+                .as("and the source location resolves through this slug")
+                .isEqualTo("Blitzy-Sandbox/blitzy-card-demo");
+        assertThat(catalog.path("metadata").path("annotations").path("backstage.io/techdocs-ref").asText())
+                .as("and the documentation is published from the repository root, which is why the pages "
+                        + "live at docs/ rather than inside this module")
+                .isEqualTo("dir:.");
+        assertThat(catalog.path("spec").path("system").asText())
+                .as("the owning system is untouched")
+                .isEqualTo("blitzy-typescript");
+
+        final List<String> tags = new ArrayList<>();
+        catalog.path("metadata").path("tags").forEach(tag -> tags.add(tag.asText()));
+        assertThat(tags)
+                .as("the delivered stack is discoverable by tag")
+                .contains("java-25", "spring-boot", "spring-batch", "spring-data-jpa", "postgresql",
+                        "maven", "aws", "testcontainers")
+                .as("and the estate the component was migrated from stays discoverable too")
+                .contains("cobol", "migration");
+    }
+
+    @Test
     @DisplayName("the jar smoke gate asserts the same health group the container image probes")
     void theSmokeGateAssertsTheGroupTheImageProbes() throws IOException {
         // The step started only a database, ran the local profile and then asserted the AGGREGATE health

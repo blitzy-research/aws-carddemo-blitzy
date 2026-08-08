@@ -307,6 +307,28 @@ class CardControllerTest {
             mockMvc.perform(get(CardController.CARDS_BASE_PATH + "/security"))
                     .andExpect(status().isNotFound());
         }
+
+        @Test
+        @DisplayName("answers a POST at the literal address /api/cards/detail, and refuses a GET there, "
+                + "because the detail turn is addressed by a body and not by a path segment")
+        void answersAPostAtTheLiteralDetailAddress() throws Exception {
+            // Driven at the written-out address rather than through the controller's own constants. The
+            // route inventory recorded this operation as a GET while the mapping was a POST, and every
+            // route test in the module assembled its expectation from the same constant the mapping used,
+            // so both sides agreed with each other and neither agreed with the published contract. The
+            // whole surface is compared against one independent literal oracle in
+            // DeliveredApiSurfaceOracleTest; this is the same claim for the one operation it concerned,
+            // asserted here where the turn's behaviour is specified.
+            when(cardDetailService.processCardDetail(any())).thenReturn(detailResult());
+
+            mockMvc.perform(post("/api/cards/detail")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(detailBody("00000000011", "0000000000000001", "ENTER")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactionName").value("CCDL"));
+            mockMvc.perform(get("/api/cards/detail"))
+                    .andExpect(status().isMethodNotAllowed());
+        }
     }
 
     // ==================================================================================================

@@ -211,28 +211,20 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
         + "create-or-update contract")
 final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
 
-    /** The table under test, named once so no assertion restates it. */
     private static final String TABLE = "transaction_category_balance";
 
-    /** The reference table whose key shares the legacy group name and nothing else. */
     private static final String COLLIDING_TABLE = "transaction_category";
 
-    /** The parent table the account foreign key points at. */
     private static final String PARENT_TABLE = "account";
 
-    /** The primary-key constraint the migration creates over the three key columns. */
     private static final String PRIMARY_KEY_NAME = "pk_transaction_category_balance";
 
-    /** The one foreign key on this table, created by the index migration. */
     private static final String FOREIGN_KEY_NAME = "fk_trancat_balance_account";
 
-    /** Account identifier component column. Note the {@code trancat_} prefix. */
     private static final String ACCOUNT_COLUMN = "trancat_acct_id";
 
-    /** Transaction type code component column. Note the {@code trancat_} prefix. */
     private static final String TYPE_COLUMN = "trancat_type_cd";
 
-    /** Category code component column. Note the {@code trancat_} prefix. */
     private static final String CATEGORY_COLUMN = "trancat_cd";
 
     /**
@@ -241,13 +233,10 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
      */
     private static final String BALANCE_COLUMN = "tran_cat_bal";
 
-    /** Declared width of the account identifier component, in characters. */
     private static final int ACCOUNT_WIDTH = 11;
 
-    /** Declared width of the transaction type code component, in characters. */
     private static final int TYPE_WIDTH = 2;
 
-    /** Declared width of the category code component, in characters. */
     private static final int CATEGORY_WIDTH = 4;
 
     /** Total digit count of the balance column: nine before the implied point and two after. */
@@ -259,13 +248,10 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
     /** Digits before the implied decimal point, which is what bounds the largest storable value. */
     private static final int BALANCE_INTEGER_DIGITS = BALANCE_PRECISION - BALANCE_SCALE;
 
-    /** Number of columns in the composite primary key of this table. */
     private static final int KEY_COLUMN_COUNT = 3;
 
-    /** Number of columns in the primary key of the table whose key group shares the legacy name. */
     private static final int COLLIDING_KEY_COLUMN_COUNT = 2;
 
-    /** Rows the reference-data migration seeds into this table. */
     private static final int SEEDED_ROWS = TestDataFactory.SEEDED_FIFTY_ROW_COUNT;
 
     /** The type code every seeded row carries - measured across the whole reference fixture. */
@@ -280,16 +266,12 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
     /** Reserved type code, outside the seeded shape, and carrying a leading zero on purpose. */
     private static final String RESERVED_TYPE_CODE = "09";
 
-    /** Reserved category code for the create branch and the positive round trip. */
     private static final String RESERVED_CATEGORY_CREATE = "0005";
 
-    /** Reserved category code for the signed and truncation assertions. */
     private static final String RESERVED_CATEGORY_SIGNED = "0006";
 
-    /** Reserved category code for the largest storable magnitude. */
     private static final String RESERVED_CATEGORY_WIDEST = "0007";
 
-    /** Reserved category code for the update branch. */
     private static final String RESERVED_CATEGORY_UPDATE = "0008";
 
     /**
@@ -304,10 +286,8 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
             RESERVED_CATEGORY_WIDEST,
             RESERVED_CATEGORY_UPDATE);
 
-    /** A non-zero positive balance, distinct from every seeded value. */
     private static final BigDecimal POSITIVE_BALANCE = new BigDecimal("1234.56");
 
-    /** The same magnitude carried the other way, for the sign assertion. */
     private static final BigDecimal NEGATIVE_BALANCE = new BigDecimal("-1234.56");
 
     /**
@@ -331,7 +311,6 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
     /** The plain text form of {@link #WIDEST_BALANCE}, for the no-exponent assertion. */
     private static final String WIDEST_BALANCE_PLAIN = "999999999.99";
 
-    /** The balance the update branch writes over its inserted value. */
     private static final BigDecimal UPDATED_BALANCE = new BigDecimal("77.07");
 
     /** Zero at the stored scale, which is what all fifty seeded rows must read back as. */
@@ -345,7 +324,6 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    /** Creates the test class. */
     TransactionCategoryBalanceRepositoryIT() {
     }
 
@@ -378,7 +356,6 @@ final class TransactionCategoryBalanceRepositoryIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = TransactionCategoryBalance.class)
     static class RepositoryUnderTest {
 
-        /** Creates the configuration. */
         RepositoryUnderTest() {
         }
     }

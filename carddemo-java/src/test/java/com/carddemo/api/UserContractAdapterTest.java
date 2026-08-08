@@ -29,6 +29,7 @@ import com.carddemo.service.NavigationService;
 import com.carddemo.service.ScreenNavigationState;
 import com.carddemo.service.UserCommand;
 import com.carddemo.service.UserOutcome;
+import com.carddemo.support.SensitiveValues;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -139,7 +140,7 @@ class UserContractAdapterTest {
             assertThat(command.searchUserId()).isEqualTo(" USER000");
             assertThat(command.firstName()).isEqualTo("GIVEN ");
             assertThat(command.lastName()).isEqualTo(" FAMILY");
-            assertThat(command.password()).isEqualTo("PASSWORD");
+            assertThat(SensitiveValues.fingerprint(command.password())).isEqualTo(SensitiveValues.fingerprint("PASSWORD"));
             assertThat(command.userType()).isEqualTo("A");
             assertThat(command.displayedPageNumber())
                     .as("text rather than a number, so the eight leading-zero characters survive")

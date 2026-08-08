@@ -55,6 +55,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.support.SensitiveValues;
 
 /**
  * Unit test for {@link UserRequest}, the inbound contract shared by the four administrative user
@@ -249,7 +250,7 @@ class UserRequestSecurityTest {
             assertThat(request.searchUserId()).isEqualTo("B");
             assertThat(request.firstName()).isEqualTo(FIRST_NAME);
             assertThat(request.lastName()).isEqualTo(LAST_NAME);
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
             assertThat(request.userType()).isEqualTo("A");
             assertThat(request.rowSelections()).containsExactlyElementsOf(TEN_SELECTIONS);
             assertThat(request.displayedPageNumber()).isEqualTo("00000001");
@@ -332,7 +333,7 @@ class UserRequestSecurityTest {
 
             UserRequest request = moduleEquivalentMapper().readValue(document, UserRequest.class);
 
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
             assertThat(request.userId()).isEqualTo(USER_ID);
             assertThat(request.userType()).isEqualTo("A");
         }
@@ -668,7 +669,10 @@ class UserRequestSecurityTest {
 
             assertThat(violationsOf(spaceFilled)).isEmpty();
             assertThat(spaceFilled.firstName()).hasSize(20).isBlank();
-            assertThat(spaceFilled.password()).hasSize(8).isBlank();
+            assertThat(spaceFilled.password().length()).isEqualTo(8);
+            assertThat(spaceFilled.password().isBlank())
+                    .as("the whole declared width is retained and every character of it is a blank")
+                    .isTrue();
         }
 
         @Test

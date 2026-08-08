@@ -32,6 +32,7 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import com.carddemo.domain.DailyTransaction;
+import com.carddemo.support.SensitiveValues;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -407,7 +408,7 @@ class DailyTransactionRecordMapperRuleComplianceTest {
                     .startsWith("North Enoshaven")
                     .hasSize(DailyTransactionRecordMapper.DALYTRAN_MERCHANT_CITY_LENGTH);
             assertThat(decoded.getDalytranMerchantZip()).isEqualTo("72112     ");
-            assertThat(decoded.getDalytranCardNum()).isEqualTo("4859452612877065");
+            assertThat(SensitiveValues.fingerprint(decoded.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877065"));
             assertThat(decoded.getDalytranOrigTs()).isEqualTo(FIXTURE_ORIGINATION_TIMESTAMP);
             assertThat(decoded.getDalytranProcTs())
                     .isBlank()
@@ -535,7 +536,7 @@ class DailyTransactionRecordMapperRuleComplianceTest {
                     DailyTransactionRecordMapper.fromRecord(fixtureRecord(1));
             assertThat(sliced.getDalytranId()).isEqualTo(whole.getDalytranId());
             assertThat(sliced.getDalytranAmt()).isEqualByComparingTo(whole.getDalytranAmt());
-            assertThat(sliced.getDalytranCardNum()).isEqualTo(whole.getDalytranCardNum());
+            assertThat(SensitiveValues.fingerprint(sliced.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(whole.getDalytranCardNum()));
         }
 
         @Test

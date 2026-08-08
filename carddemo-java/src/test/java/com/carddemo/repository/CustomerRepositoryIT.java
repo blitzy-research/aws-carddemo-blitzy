@@ -176,6 +176,9 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
     /** The one check constraint the schema gives this table, over the business key alone. */
     private static final String KEY_DIGIT_CONSTRAINT = "ck_customer_cust_id_digits";
 
+    /** The name of the encoding rule, which every text column of this table appears inside. */
+    private static final String BYTE_REPERTOIRE_CONSTRAINT = "ck_customer_single_byte_text";
+
     /** The type every column of this table is declared as, as the catalogue spells it. */
     private static final String BOUNDED_TEXT_TYPE = "character varying";
 
@@ -1041,17 +1044,36 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
             final List<String> checks =
                     database.queryForList(CHECK_CONSTRAINTS_ON_TABLE, String.class, TABLE);
 
+            // TWO check constraints, and neither is a content edit. One is the business-key digit class.
+            // The other is the single-byte-text rule, which is a statement about the ENCODING of every text
+            // column - octet_length equal to char_length - and says nothing whatever about what a value may
+            // contain. The distinction is the one this test exists to hold: the 300-to-850 range is
+            // screen-level edit validation belonging to the account-update path, and enforcing THAT here
+            // would refuse rows the legacy system stored.
             assertThat(checks)
-                    .as("the table carries exactly one check constraint, and it is over the business "
-                            + "key alone. The 300-to-850 range is screen-level edit validation "
-                            + "belonging to the account-update path, and enforcing it here would "
-                            + "refuse rows the legacy system stored")
-                    .hasSize(1)
-                    .allSatisfy(definition -> assertThat(definition).startsWith(KEY_DIGIT_CONSTRAINT));
-            assertThat(checks).allSatisfy(definition ->
-                    assertThat(definition)
-                            .as("no constraint on this table mentions the credit-score column")
-                            .doesNotContain(CREDIT_SCORE_COLUMN));
+                    .as("exactly two check constraints: the business-key digit class and the encoding rule")
+                    .hasSize(2);
+            assertThat(checks)
+                    .as("the business-key digit class is one of them")
+                    .anySatisfy(definition -> assertThat(definition).startsWith(KEY_DIGIT_CONSTRAINT));
+            assertThat(checks)
+                    .as("and the encoding rule is the other")
+                    .anySatisfy(definition ->
+                            assertThat(definition).startsWith(BYTE_REPERTOIRE_CONSTRAINT));
+            assertThat(checks).allSatisfy(definition -> {
+                assertThat(definition)
+                        .as("no constraint on this table constrains the VALUE of the credit score: it may "
+                                + "appear only inside the encoding rule, which every text column appears "
+                                + "inside")
+                        .satisfiesAnyOf(
+                                text -> assertThat(text).doesNotContain(CREDIT_SCORE_COLUMN),
+                                text -> assertThat(text).startsWith(BYTE_REPERTOIRE_CONSTRAINT));
+                assertThat(definition)
+                        .as("and no constraint expresses a range comparison of any kind")
+                        .doesNotContain(">=")
+                        .doesNotContain("<=")
+                        .doesNotContain("BETWEEN");
+            });
             assertThat(declaredColumn(CREDIT_SCORE_COLUMN).dataType())
                     .as("the score is three characters of text, not a number. It is stored exactly "
                             + "as the legacy field carries it, leading zeros and all, so no arithmetic "
@@ -1472,6 +1494,30 @@ final class CustomerRepositoryIT extends AbstractPostgresIT {
             body[index] = (byte) (index + 1);
         }
         return body;
+    }
+
+    /**
+     * Reads the rendered definition of this table's single-byte-text constraint from the catalogue.
+     *
+     * @return the rendered CHECK definition, never {@code null}
+     */
+    private String singleByteTextConstraintDefinition() {
+        final List<String> definitions = database.queryForList("""
+                SELECT pg_get_constraintdef(con.oid)
+                  FROM pg_constraint con
+                  JOIN pg_class rel ON rel.oid = con.conrelid
+                  JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                 WHERE nsp.nspname = 'public'
+                   AND rel.relname = 'customer'
+                   AND con.contype = 'c'
+                   AND con.conname = 'ck_customer_single_byte_text'
+                """, String.class);
+
+        assertThat(definitions)
+                .as("the customer table must declare its single-byte-text constraint; without it the "
+                        + "declared character widths are not byte widths at all")
+                .hasSize(1);
+        return definitions.getFirst();
     }
 
     /**

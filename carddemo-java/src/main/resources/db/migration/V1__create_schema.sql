@@ -47,14 +47,7 @@
 --  1. Eleven tables, all lower case, and no existence guard anywhere, so schema drift fails this
 --     migration loudly instead of being silently absorbed.
 --
---  2. NOTHING ELSE IS CREATED - no twelfth table, no extra schema, no sequence, no surrogate key
---     column, no view, no routine, no trigger, no extension, no lookup table. The transaction-report
---     copybook is print formatting; the alternate 500-byte customer copybook restates the same
---     nineteen fields at the same offsets under one differently spelled date field name, so it is an
---     alternate projection of customer; Spring Batch provisions its own metadata; and the validation
---     lookup sets are loaded from src/main/resources/lookup/*.json.
---
---  3. NOTHING ELSE IS CREATED - no twelfth table, no additional schema, no sequence, no surrogate
+--  2. NOTHING ELSE IS CREATED - no twelfth table, no additional schema, no sequence, no surrogate
 --     key column, no view, no routine, no trigger, no extension and no lookup table. The
 --     transaction-report copybook is print formatting, not a table. The alternate 500-byte customer
 --     copybook restates the same nineteen fields at the same offsets under one differently spelled
@@ -68,7 +61,7 @@
 --     80 easily-recognizable, 56 state codes and 240 state-with-ZIP-prefix combinations - is loaded
 --     from src/main/resources/lookup/*.json.
 --
---  4. Primary keys are the natural business keys, exactly as the legacy cluster key definitions
+--  3. Primary keys are the natural business keys, exactly as the legacy cluster key definitions
 --     state them. No number-issuing database object is created: the online transaction identifier
 --     stays highest-existing-key-plus-one computed inside the posting transaction, because a
 --     database-issued number diverges permanently after the first gap and a rollback guarantees one.
@@ -94,6 +87,44 @@
 --  7. The unsafe and low-level code audit is scoped to src/main/java/** only, because the versioned
 --     SQL of this module is declarative schema definition rather than application code assembling
 --     SQL from strings.
+--
+--  8. EVERY FIXED-WIDTH TEXT COLUMN IS CONSTRAINED TO SINGLE-BYTE TEXT, one named constraint per
+--     table, ck_<table>_single_byte_text. This closes a gap that VARCHAR(n) alone leaves open and
+--     that a character-count assertion cannot see.
+--
+--     VARCHAR(n) bounds CHARACTERS, not encoded bytes, and so do information_schema's
+--     character_maximum_length and the char_length function. Under UTF8 a single character can occupy
+--     up to four bytes, so 'ACME' and 'ACMÉ' both satisfy VARCHAR(50) and both report a length of 4,
+--     while the record images they belong to are 4 and 5 bytes wide. Every column below is a field of
+--     a fixed-width record image whose width is contractual: the four output formats at 80, 100, 133
+--     and 430 bytes are asserted byte for byte, and com.carddemo.util.FixedWidthFieldReader measures
+--     and encodes every field as US-ASCII, REFUSING any character US-ASCII cannot represent rather
+--     than substituting one. A multibyte value therefore satisfies the declared bound, satisfies every
+--     character-count check, and is then UNWRITABLE by the layer that has to emit it - the failure
+--     surfaces at output time, on a row that was accepted long before.
+--
+--     The predicate is octet_length(c) = char_length(c), applied to each text column. That is exactly
+--     the US-ASCII repertoire rule the fixed-width layer enforces, stated in the one place a bulk
+--     load, a migration script or a future writer cannot bypass, and it makes the declared character
+--     bound a BYTE bound as a consequence: n characters that each encode to one byte is n bytes. It is
+--     preferred over octet_length(c) <= n, which would bound the bytes while still admitting a value
+--     whose character count and byte count disagree - and disagreement is the thing that breaks offset
+--     arithmetic. NULL is unconstrained, as a CHECK always is, which is what leaves customer.cust_ssn
+--     nullable.
+--
+--     THE THREE WIDENED COLUMNS ARE INCLUDED, NOT EXEMPTED. customer.cust_ssn and
+--     customer.govt_issued_id hold an ENC1 envelope whose payload is Base64, and
+--     user_security.sec_usr_pwd holds a BCrypt digest; all three alphabets are US-ASCII by
+--     construction. Their widened VARCHAR bounds are untouched - the constraint says nothing about
+--     length - so including them tightens the guarantee at no cost and leaves one rule for the whole
+--     table rather than a per-column exemption a reader has to check.
+--
+--     One constraint per table names every text column of that table explicitly. A column added later
+--     without being added here would escape the rule silently, so the coverage is asserted from the
+--     catalogue by SchemaConstraintNegativeProofIT, which reads every character column of every
+--     application table and fails when one is not named in its table's constraint definition.
+--
+--     The reasoning is recorded in docs/decision-log.md DL-278.
 
 
 -- -------------------------------------------------------------------------------------------------
@@ -136,7 +167,17 @@ CREATE TABLE account (
     -- rules before the write; these constraints catch a bulk load, a migration script or any future
     -- writer that never constructs one. The digit class is applied only where the legacy picture
     -- clause is numeric.
-    CONSTRAINT ck_account_acct_id_digits CHECK (acct_id ~ '^[0-9]{11}$')
+    CONSTRAINT ck_account_acct_id_digits CHECK (acct_id ~ '^[0-9]{11}$'),
+    -- Global rule 8. Seven text columns, every one a field of the 300-byte record image.
+    CONSTRAINT ck_account_single_byte_text CHECK (
+        octet_length(acct_id) = char_length(acct_id)
+        AND octet_length(acct_active_status) = char_length(acct_active_status)
+        AND octet_length(acct_open_date) = char_length(acct_open_date)
+        AND octet_length(acct_expiration_date) = char_length(acct_expiration_date)
+        AND octet_length(acct_reissue_date) = char_length(acct_reissue_date)
+        AND octet_length(acct_addr_zip) = char_length(acct_addr_zip)
+        AND octet_length(acct_group_id) = char_length(acct_group_id)
+    )
 );
 -- Mapped bytes end at offset 122; the remaining 178 bytes are trailing filler and are not columns.
 
@@ -172,7 +213,19 @@ CREATE TABLE card (
     -- identifier is declared numeric. Applying a digit class to the card number would reject a value
     -- the legacy field could legitimately have held.
     CONSTRAINT ck_card_card_num_width CHECK (char_length(card_num) = 16),
-    CONSTRAINT ck_card_card_acct_id_digits CHECK (card_acct_id ~ '^[0-9]{11}$')
+    CONSTRAINT ck_card_card_acct_id_digits CHECK (card_acct_id ~ '^[0-9]{11}$'),
+    -- Global rule 8. Six text columns, every one a field of the 150-byte record image. The embossed
+    -- name is the column most likely to receive an accented character from a well-meaning caller, and
+    -- it is precisely the one the card-update path folds to upper case through a 26-character ASCII
+    -- table rather than a locale-aware operation.
+    CONSTRAINT ck_card_single_byte_text CHECK (
+        octet_length(card_num) = char_length(card_num)
+        AND octet_length(card_acct_id) = char_length(card_acct_id)
+        AND octet_length(card_cvv_cd) = char_length(card_cvv_cd)
+        AND octet_length(card_embossed_name) = char_length(card_embossed_name)
+        AND octet_length(card_expiration_date) = char_length(card_expiration_date)
+        AND octet_length(card_active_status) = char_length(card_active_status)
+    )
 );
 -- Mapped bytes end at offset 91; the remaining 59 bytes are trailing filler and are not columns.
 
@@ -267,7 +320,34 @@ CREATE TABLE customer (
     -- rules before the write; these constraints catch a bulk load, a migration script or any future
     -- writer that never constructs one. The digit class is applied only where the legacy picture
     -- clause is numeric.
-    CONSTRAINT ck_customer_cust_id_digits CHECK (cust_id ~ '^[0-9]{9}$')
+    CONSTRAINT ck_customer_cust_id_digits CHECK (cust_id ~ '^[0-9]{9}$'),
+    -- Global rule 8. Eighteen text columns, every one a field of the 500-byte record image. The two
+    -- widened ciphertext columns are INCLUDED rather than exempted: an ENC1 envelope is Base64 and so
+    -- is US-ASCII by construction, and the constraint bounds no length, so their widths are untouched.
+    -- cust_ssn is nullable and a CHECK passes on NULL, which is what keeps that exemption intact.
+    -- middle_name and addr_line_2 are included too: this is a repertoire rule about what the record
+    -- image can carry, not a content edit, so it is not the validation the legacy update path
+    -- deliberately omits for those two fields.
+    CONSTRAINT ck_customer_single_byte_text CHECK (
+        octet_length(cust_id) = char_length(cust_id)
+        AND octet_length(first_name) = char_length(first_name)
+        AND octet_length(middle_name) = char_length(middle_name)
+        AND octet_length(last_name) = char_length(last_name)
+        AND octet_length(addr_line_1) = char_length(addr_line_1)
+        AND octet_length(addr_line_2) = char_length(addr_line_2)
+        AND octet_length(addr_line_3) = char_length(addr_line_3)
+        AND octet_length(addr_state_cd) = char_length(addr_state_cd)
+        AND octet_length(addr_country_cd) = char_length(addr_country_cd)
+        AND octet_length(addr_zip) = char_length(addr_zip)
+        AND octet_length(phone_num_1) = char_length(phone_num_1)
+        AND octet_length(phone_num_2) = char_length(phone_num_2)
+        AND octet_length(cust_ssn) = char_length(cust_ssn)
+        AND octet_length(govt_issued_id) = char_length(govt_issued_id)
+        AND octet_length(cust_dob) = char_length(cust_dob)
+        AND octet_length(eft_account_id) = char_length(eft_account_id)
+        AND octet_length(pri_card_holder_ind) = char_length(pri_card_holder_ind)
+        AND octet_length(fico_credit_score) = char_length(fico_credit_score)
+    )
 );
 
 
@@ -296,7 +376,13 @@ CREATE TABLE card_cross_reference (
     -- relationship rather than merely mis-keying one row.
     CONSTRAINT ck_card_xref_card_num_width CHECK (char_length(xref_card_num) = 16),
     CONSTRAINT ck_card_xref_cust_id_digits CHECK (xref_cust_id ~ '^[0-9]{9}$'),
-    CONSTRAINT ck_card_xref_acct_id_digits CHECK (xref_acct_id ~ '^[0-9]{11}$')
+    CONSTRAINT ck_card_xref_acct_id_digits CHECK (xref_acct_id ~ '^[0-9]{11}$'),
+    -- Global rule 8. Three text columns, every one a field of the 36 mapped bytes.
+    CONSTRAINT ck_card_xref_single_byte_text CHECK (
+        octet_length(xref_card_num) = char_length(xref_card_num)
+        AND octet_length(xref_cust_id) = char_length(xref_cust_id)
+        AND octet_length(xref_acct_id) = char_length(xref_acct_id)
+    )
 );
 -- Mapped bytes end at offset 36; the remaining 14 bytes are trailing filler and are not columns.
 
@@ -336,7 +422,26 @@ CREATE TABLE transaction (
     -- six-digit counter), so the constraint refuses only values no legitimate writer produces. The
     -- entity enforces the same rule before the write; this catches a bulk load or a migration script
     -- that never constructs one.
-    CONSTRAINT ck_transaction_tran_id_digits CHECK (tran_id ~ '^[0-9]{16}$')
+    CONSTRAINT ck_transaction_tran_id_digits CHECK (tran_id ~ '^[0-9]{16}$'),
+    -- Global rule 8. Twelve text columns, every one a field of the 350-byte record image. Three of
+    -- them are read at fixed offsets by artefacts outside this table - the report sort addresses
+    -- tran_card_num at 1-based position 263, the timestamp index keys tran_proc_ts at width 26 from
+    -- offset 304 - so a value whose character count and byte count disagree shifts every field after
+    -- it in the emitted image.
+    CONSTRAINT ck_transaction_single_byte_text CHECK (
+        octet_length(tran_id) = char_length(tran_id)
+        AND octet_length(tran_type_cd) = char_length(tran_type_cd)
+        AND octet_length(tran_cat_cd) = char_length(tran_cat_cd)
+        AND octet_length(tran_source) = char_length(tran_source)
+        AND octet_length(tran_desc) = char_length(tran_desc)
+        AND octet_length(merchant_id) = char_length(merchant_id)
+        AND octet_length(merchant_name) = char_length(merchant_name)
+        AND octet_length(merchant_city) = char_length(merchant_city)
+        AND octet_length(merchant_zip) = char_length(merchant_zip)
+        AND octet_length(tran_card_num) = char_length(tran_card_num)
+        AND octet_length(tran_orig_ts) = char_length(tran_orig_ts)
+        AND octet_length(tran_proc_ts) = char_length(tran_proc_ts)
+    )
 );
 -- Mapped bytes end at offset 330; the remaining 20 bytes are trailing filler and are not columns.
 
@@ -366,7 +471,27 @@ CREATE TABLE daily_transaction (
     dalytran_card_num           VARCHAR(16)     NOT NULL,   -- offset 262, width 16
     dalytran_orig_ts            VARCHAR(26)     NOT NULL,   -- offset 278, width 26
     dalytran_proc_ts            VARCHAR(26)     NOT NULL,   -- offset 304, width 26, blank on input
-    CONSTRAINT pk_daily_transaction PRIMARY KEY (dalytran_id)
+    CONSTRAINT pk_daily_transaction PRIMARY KEY (dalytran_id),
+    -- Global rule 8, and it is NOT an exception to this table's deliberate absence of foreign keys.
+    -- Those are withheld so that invalid CONTENT reaches application validation and produces the
+    -- contractual 430-byte reject record. This constraint is about the record IMAGE rather than its
+    -- content: a reject record is the 350-byte source image plus an 80-byte trailer, so a landed row
+    -- that cannot be re-encoded to 350 bytes cannot be rejected either - the reject file, not just the
+    -- posting, would fail. Refusing it here is what keeps every landed row rejectable.
+    CONSTRAINT ck_daily_transaction_single_byte_text CHECK (
+        octet_length(dalytran_id) = char_length(dalytran_id)
+        AND octet_length(dalytran_type_cd) = char_length(dalytran_type_cd)
+        AND octet_length(dalytran_cat_cd) = char_length(dalytran_cat_cd)
+        AND octet_length(dalytran_source) = char_length(dalytran_source)
+        AND octet_length(dalytran_desc) = char_length(dalytran_desc)
+        AND octet_length(dalytran_merchant_id) = char_length(dalytran_merchant_id)
+        AND octet_length(dalytran_merchant_name) = char_length(dalytran_merchant_name)
+        AND octet_length(dalytran_merchant_city) = char_length(dalytran_merchant_city)
+        AND octet_length(dalytran_merchant_zip) = char_length(dalytran_merchant_zip)
+        AND octet_length(dalytran_card_num) = char_length(dalytran_card_num)
+        AND octet_length(dalytran_orig_ts) = char_length(dalytran_orig_ts)
+        AND octet_length(dalytran_proc_ts) = char_length(dalytran_proc_ts)
+    )
 );
 -- Mapped bytes end at offset 330; the remaining 20 bytes are trailing filler and are not columns.
 
@@ -383,7 +508,13 @@ CREATE TABLE transaction_category_balance (
     trancat_cd                  VARCHAR(4)      NOT NULL,   -- offset  13, width  4, key part 3
     tran_cat_bal                NUMERIC(11,2)   NOT NULL,   -- offset  17, width 11 = 9 int + 2 dec
     CONSTRAINT pk_transaction_category_balance
-        PRIMARY KEY (trancat_acct_id, trancat_type_cd, trancat_cd)
+        PRIMARY KEY (trancat_acct_id, trancat_type_cd, trancat_cd),
+    -- Global rule 8. Three text columns, and all three are key parts of the 17-byte composite key.
+    CONSTRAINT ck_transaction_category_balance_single_byte_text CHECK (
+        octet_length(trancat_acct_id) = char_length(trancat_acct_id)
+        AND octet_length(trancat_type_cd) = char_length(trancat_type_cd)
+        AND octet_length(trancat_cd) = char_length(trancat_cd)
+    )
 );
 -- Mapped bytes end at offset 28; the remaining 22 bytes are trailing filler and are not columns.
 
@@ -408,7 +539,15 @@ CREATE TABLE disclosure_group (
     dis_tran_cat_cd             VARCHAR(4)      NOT NULL,   -- offset  12, width  4, key part 3
     dis_int_rate                NUMERIC(6,2)    NOT NULL,   -- offset  16, width  6 = 4 int + 2 dec
     CONSTRAINT pk_disclosure_group
-        PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd)
+        PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd),
+    -- Global rule 8. Three text columns, all three key parts. The group identifier carries meaningful
+    -- TRAILING SPACES inside its fixed width, and a space is one byte, so the rule holds for the
+    -- padded form exactly as it does for the unpadded one.
+    CONSTRAINT ck_disclosure_group_single_byte_text CHECK (
+        octet_length(dis_acct_group_id) = char_length(dis_acct_group_id)
+        AND octet_length(dis_tran_type_cd) = char_length(dis_tran_type_cd)
+        AND octet_length(dis_tran_cat_cd) = char_length(dis_tran_cat_cd)
+    )
 );
 -- Mapped bytes end at offset 22; the remaining 28 bytes are trailing filler and are not columns.
 
@@ -419,7 +558,12 @@ CREATE TABLE disclosure_group (
 CREATE TABLE transaction_type (
     tran_type                   VARCHAR(2)      NOT NULL,   -- offset   0, width  2, business key
     tran_type_desc              VARCHAR(50)     NOT NULL,   -- offset   2, width 50
-    CONSTRAINT pk_transaction_type PRIMARY KEY (tran_type)
+    CONSTRAINT pk_transaction_type PRIMARY KEY (tran_type),
+    -- Global rule 8. Two text columns of the 60-byte reference record.
+    CONSTRAINT ck_transaction_type_single_byte_text CHECK (
+        octet_length(tran_type) = char_length(tran_type)
+        AND octet_length(tran_type_desc) = char_length(tran_type_desc)
+    )
 );
 -- Mapped bytes end at offset 52; the remaining 8 bytes are trailing filler and are not a column.
 
@@ -438,7 +582,13 @@ CREATE TABLE transaction_category (
     tran_type_cd                VARCHAR(2)      NOT NULL,   -- offset   0, width  2, key part 1
     tran_cat_cd                 VARCHAR(4)      NOT NULL,   -- offset   2, width  4, key part 2
     tran_cat_type_desc          VARCHAR(50)     NOT NULL,   -- offset   6, width 50
-    CONSTRAINT pk_transaction_category PRIMARY KEY (tran_type_cd, tran_cat_cd)
+    CONSTRAINT pk_transaction_category PRIMARY KEY (tran_type_cd, tran_cat_cd),
+    -- Global rule 8. Three text columns of the 60-byte reference record.
+    CONSTRAINT ck_transaction_category_single_byte_text CHECK (
+        octet_length(tran_type_cd) = char_length(tran_type_cd)
+        AND octet_length(tran_cat_cd) = char_length(tran_cat_cd)
+        AND octet_length(tran_cat_type_desc) = char_length(tran_cat_type_desc)
+    )
 );
 -- Mapped bytes end at offset 56; the remaining 4 bytes are trailing filler and are not a column.
 
@@ -479,6 +629,18 @@ CREATE TABLE user_security (
     -- writer that never constructs one. The digit class is applied only where the legacy picture
     -- clause is numeric.
     -- Alphanumeric by declaration, and every seeded identity carries letters, so width alone applies.
-    CONSTRAINT ck_user_security_sec_usr_id_width CHECK (char_length(sec_usr_id) = 8)
+    CONSTRAINT ck_user_security_sec_usr_id_width CHECK (char_length(sec_usr_id) = 8),
+    -- Global rule 8. Five text columns. sec_usr_pwd is INCLUDED although its width is widened for a
+    -- digest: a BCrypt digest is US-ASCII by construction, and the constraint bounds no length, so the
+    -- widened VARCHAR(60) is untouched. Note that ck_user_security_sec_usr_id_width above counts
+    -- CHARACTERS; paired with this constraint that count is also a byte count, which is what makes the
+    -- eight-byte key field of the record image genuinely eight bytes.
+    CONSTRAINT ck_user_security_single_byte_text CHECK (
+        octet_length(sec_usr_id) = char_length(sec_usr_id)
+        AND octet_length(sec_usr_fname) = char_length(sec_usr_fname)
+        AND octet_length(sec_usr_lname) = char_length(sec_usr_lname)
+        AND octet_length(sec_usr_pwd) = char_length(sec_usr_pwd)
+        AND octet_length(sec_usr_type) = char_length(sec_usr_type)
+    )
 );
 -- Mapped bytes end at offset 57; the remaining 23 bytes are trailing filler and are not a column.

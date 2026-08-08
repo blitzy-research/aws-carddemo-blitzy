@@ -52,7 +52,9 @@ import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.RecordWriter;
 import com.carddemo.support.RecordWriterDoubles;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -95,18 +97,19 @@ import ch.qos.logback.core.read.ListAppender;
  *
  * <h2>Paragraph traceability</h2>
  *
- * <p>{@code app/cbl/COCRDUPC.cbl} carries <b>48</b> Area-A paragraph units, of which three -
+ * <p>{@code app/cbl/COCRDUPC.cbl} contributes <b>45</b> paragraph units, being its
+ * {@code PROCEDURE DIVISION} paragraphs, and 45 is the figure the action plan records and the
+ * traceability matrix carries rows for. Its three {@code IDENTIFICATION DIVISION} entries -
  * {@code PROGRAM-ID} at line 23, {@code DATE-WRITTEN} at line 25 and {@code DATE-COMPILED} at line 27 -
- * belong to the identification division. The remaining <b>45</b> are the procedure division's, which is why
- * a census counting procedure paragraphs alone reports 45 and one counting every Area-A unit reports 48.
- * Both figures are correct under their own definition and neither supersedes the other; the count recorded
- * against this member for the traceability matrix is 48. The units, and the nested class that covers each,
- * are:
+ * are program metadata rather than procedure units and the matrix carries no row for any of them; this
+ * suite once added them and published 48, which redefines the frozen 544-row model from inside a test.
+ * They are still asserted, as the member and transaction names the screen header publishes. The units, and
+ * the nested class that covers each, are:
  *
  * <ul>
  *   <li>Identification, lines 23 to 27 - {@code PROGRAM-ID}, {@code DATE-WRITTEN}, {@code DATE-COMPILED}:
- *       carried as the member and transaction names the screen header publishes, asserted in
- *       {@code DispatchAndAbend}</li>
+ *       <em>not</em> paragraph units and owed no matrix row; carried as the member and transaction names
+ *       the screen header publishes, asserted in {@code DispatchAndAbend}</li>
  *   <li>{@code 0000-MAIN} line 367, {@code COMMON-RETURN} line 546, {@code 0000-MAIN-EXIT} line 560: the
  *       five-arm dispatch, the terminal return and the re-armed transaction, asserted in
  *       {@code DispatchAndAbend} and {@code ReachableAbend}</li>
@@ -137,10 +140,8 @@ import ch.qos.logback.core.read.ListAppender;
 @DisplayName("CardUpdateService - card-update transaction CCUP, app/cbl/COCRDUPC.cbl")
 class CardUpdateServiceTest {
 
-    /** The sixteen-character key every scenario reads and writes. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** The eleven-character account identifier every scenario carries. */
     private static final String ACCOUNT_ID = "00000000001";
 
     /**
@@ -151,7 +152,6 @@ class CardUpdateServiceTest {
      */
     private static final String VERIFICATION_CODE = "007";
 
-    /** The stored expiration date, in the layout the write path assembles at lines 1467 to 1474. */
     private static final String EXPIRATION_DATE = "2028-07-31";
 
     /** The stored embossed name, already upper case, as row 0 of the ASCII card fixture resembles. */
@@ -195,10 +195,8 @@ class CardUpdateServiceTest {
     /** An all-ASCII probe, so the discriminating half of the fold assertion is measured in seven bits. */
     private static final String ASCII_FOLD_PROBE = "mary ann";
 
-    /** The declared expectation for {@link #ASCII_FOLD_PROBE}: every position folded. */
     private static final String ASCII_FOLD_PROBE_EXPECTED = "MARY ANN";
 
-    /** The declared width of the two common messages the shared catalog publishes. */
     private static final int COMMON_MESSAGE_BYTE_WIDTH = 50;
 
     /**
@@ -210,7 +208,6 @@ class CardUpdateServiceTest {
      */
     private static final int RETURN_MESSAGE_BYTE_WIDTH = 75;
 
-    /** The visible portion of the common invalid-key message, before its padding. */
     private static final String INVALID_KEY_VISIBLE_TEXT = "Invalid key pressed. Please see below...";
 
     /** The padding the invalid-key message carries: ten positions, and it is never trimmed. */
@@ -227,7 +224,6 @@ class CardUpdateServiceTest {
     private static final String EXPECTED_MSG_RECORD_CHANGED =
             "Record changed by some one else. Please review";
 
-    /** The write-failure text, verbatim. */
     private static final String EXPECTED_MSG_UPDATE_FAILED = "Update of record failed";
 
     /** The account lock-failure text, verbatim: the arm's default for every entity but the customer. */
@@ -244,7 +240,6 @@ class CardUpdateServiceTest {
     /** The terminal online abend code, declared rather than read back from the exception type. */
     private static final String EXPECTED_ONLINE_ABEND_CODE = "9999";
 
-    /** The eight-character program name an unresolvable nomination reports as the abend culprit. */
     private static final String UNRESOLVABLE_PROGRAM = "NOSUCHPG";
 
     /**
@@ -257,16 +252,12 @@ class CardUpdateServiceTest {
      */
     private static final int ABEND_CODE_BYTE_WIDTH = 4;
 
-    /** The abend culprit field width: the eight characters a program name occupies. */
     private static final int ABEND_CULPRIT_BYTE_WIDTH = 8;
 
-    /** The abend reason field width. */
     private static final int ABEND_REASON_BYTE_WIDTH = 50;
 
-    /** The abend operator-message field width. */
     private static final int ABEND_MESSAGE_BYTE_WIDTH = 72;
 
-    /** The assembled abend context width: the four fields end to end. */
     private static final int ABEND_CONTEXT_BYTE_WIDTH = ABEND_CODE_BYTE_WIDTH
             + ABEND_CULPRIT_BYTE_WIDTH + ABEND_REASON_BYTE_WIDTH + ABEND_MESSAGE_BYTE_WIDTH;
 
@@ -327,10 +318,6 @@ class CardUpdateServiceTest {
         this.capturedLog.stop();
     }
 
-    // ==============================================================================================
-    // Fixtures
-    // ==============================================================================================
-
     /**
      * A stored card row, built through the shared fixture factory so the hundred-and-fifty-byte layout is
      * described in one place.
@@ -368,22 +355,11 @@ class CardUpdateServiceTest {
         return value.getBytes(charset).length;
     }
 
-    /**
-     * The fetched image the previous turn returned, matching the stored row.
-     *
-     * @param embossedName the embossed name the image carries, already folded at capture
-     * @return the carried image, never {@code null}
-     */
     private static CardUpdateService.CarriedCardImage carriedImage(final String embossedName) {
         return new CardUpdateService.CarriedCardImage(ACCOUNT_ID, CARD_NUMBER, VERIFICATION_CODE,
                 embossedName, "2028", "07", "31", "Y");
     }
 
-    /**
-     * Navigation state for a turn that is a re-entry from this screen itself.
-     *
-     * @return the echoed state, never {@code null}
-     */
     private static ScreenNavigationState reEntryContext() {
         return new ScreenNavigationState("CCUP", "COCRDUPC", null, null, "USER0001", "U",
                 ScreenNavigationState.ProgramContext.REENTER, "000000001", "ANIYA", null, "VON",
@@ -423,11 +399,6 @@ class CardUpdateServiceTest {
                 CardUpdateService.ChangeAction.SHOW_DETAILS, carried);
     }
 
-    /**
-     * Every formatted message and every argument the service logged during a scenario.
-     *
-     * @return the rendered log, never {@code null}
-     */
     private String renderedLog() {
         final StringBuilder rendered = new StringBuilder();
         for (final ILoggingEvent event : this.capturedLog.list) {
@@ -435,10 +406,6 @@ class CardUpdateServiceTest {
         }
         return rendered.toString();
     }
-
-    // ==============================================================================================
-    // Assertion (a) and (b): the consequence of the two in-place folds
-    // ==============================================================================================
 
     @Nested
     @DisplayName("the two in-place upper folds, lines 1357 with 1360 and 1499 with 1503-1508")
@@ -458,8 +425,6 @@ class CardUpdateServiceTest {
             // no-change message of lines 187 to 188 is raised verbatim.
             assertThat(result.message())
                     .isEqualTo("No change detected with respect to values fetched.");
-            // Clause three of the action decision at lines 971 to 977 therefore does nothing, so the
-            // screen stays in the display state and no write is attempted.
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
             assertThat(result.writeOutcome())
@@ -551,9 +516,10 @@ class CardUpdateServiceTest {
                     .as("line 1466 moves the new-value field, which no CONVERTING operation touches")
                     .isEqualTo(ASCII_FOLD_PROBE)
                     .isNotEqualTo(ASCII_FOLD_PROBE_EXPECTED);
-            // The written row keeps the stored verification code and the stored key untouched.
-            assertThat(written.getValue().getCardCvvCd()).isEqualTo(VERIFICATION_CODE);
-            assertThat(written.getValue().getCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(written.getValue().getCardCvvCd()))
+                    .isEqualTo(SensitiveValues.fingerprint(VERIFICATION_CODE));
+            assertThat(SensitiveValues.fingerprint(written.getValue().getCardNum()))
+                    .isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
         }
 
         @Test
@@ -577,8 +543,6 @@ class CardUpdateServiceTest {
 
             final String presented = fetched.carriedImage().embossedName();
 
-            // Content: equal to the declared expectation, in which the two probe characters survive and
-            // every position holding a plain lower-case letter does not.
             assertThat(presented)
                     .as("a character absent from the twenty-six-character source table is carried through")
                     .isEqualTo(FOLD_PROBE_EXPECTED);
@@ -627,10 +591,6 @@ class CardUpdateServiceTest {
             assertThat(stored.getCardEmbossedName()).isEqualTo(ASCII_FOLD_PROBE);
         }
     }
-
-    // ==============================================================================================
-    // Assertion (d): the blank-and-trim alphabetic check at line 824
-    // ==============================================================================================
 
     @Nested
     @DisplayName("the alphabetic check at line 824 - embedded spaces PASS")
@@ -724,10 +684,6 @@ class CardUpdateServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // Assertions (e) and (f): the write path
-    // ==============================================================================================
-
     @Nested
     @DisplayName("the write path, line 1420, and the backward jump at line 1518")
     class WritePath {
@@ -736,10 +692,11 @@ class CardUpdateServiceTest {
         @DisplayName("(e) a row-version conflict is reported on the screen the operator is holding, is "
                 + "NOT raised past it, and NEVER abends")
         void versionConflictIsReportedOnTheScreenAndNeverAbends() {
-            // COCRDUPC lines 1487 to 1490 answer any non-normal rewrite response with the single statement
-            // SET LOCKED-BUT-UPDATE-FAILED TO TRUE, after which the paragraph falls through its own exit
-            // and the turn composes a screen. A raised conflict would replace that screen - and the keyed
-            // changes on it - with a transport-level error the legacy has no way to produce.
+            // COCRDUPC lines 1487 to 1490 answer any non-normal rewrite response by raising the
+            // screen-level locked-but-update-failed state and nothing else: the paragraph falls through
+            // its own exit and the turn composes a normal screen response. A raised conflict would
+            // replace that screen - and the keyed changes on it - with a transport-level error the
+            // legacy has no way to produce.
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
                     .thenReturn(Optional.of(storedCard(STORED_NAME_FOLDED)));
             Mockito.when(CardUpdateServiceTest.this.cardRepository.saveAndFlush(Mockito.any()))
@@ -760,9 +717,6 @@ class CardUpdateServiceTest {
                     .isEqualTo(EXPECTED_MSG_UPDATE_FAILED);
             assertThat(result.updateCommitted()).isFalse();
 
-            // The outcome maps onto the shared conflict arm for this path, and that arm's own text is the
-            // one the screen is carrying - which is what makes the conflict contract observable even though
-            // the recoverable screen, not an exception, is what the operator is answered with.
             assertThat(result.writeOutcome().conflictKind())
                     .isEqualTo(OptimisticLockConflictException.ConflictKind.UPDATE_FAILED_AFTER_LOCK);
             assertThatExceptionOfType(OptimisticLockConflictException.class)
@@ -781,9 +735,7 @@ class CardUpdateServiceTest {
             // count - not elapsed time - is what proves there was none.
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.times(1))
                     .saveAndFlush(Mockito.any());
-            // The transaction cannot continue, so it is marked for rollback rather than committed.
             Mockito.verify(CardUpdateServiceTest.this.recordWriter).markRollbackOnly();
-            // A version conflict is recoverable. It NEVER abends.
             Mockito.verifyNoInteractions(CardUpdateServiceTest.this.abendService);
         }
 
@@ -799,7 +751,6 @@ class CardUpdateServiceTest {
                     .defaultMessage()).isEqualTo(EXPECTED_MSG_UPDATE_FAILED);
             assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
                     .defaultMessage()).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_ACCOUNT);
-            // The one text of the four that varies by entity.
             assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
                     .defaultMessage("Customer")).isEqualTo(EXPECTED_MSG_COULD_NOT_LOCK_CUSTOMER);
             assertThat(OptimisticLockConflictException.ConflictKind.LOCK_NOT_ACQUIRED
@@ -819,7 +770,6 @@ class CardUpdateServiceTest {
         @DisplayName("(f) the backward jump is bounded by the source's own condition, with no delay: "
                 + "the record is read exactly once and nothing is written")
         void backwardJumpIsBoundedAndWritesNothing() {
-            // The stored row no longer matches the image the screen was built from: a different status.
             final Card diverged = new Card(CARD_NUMBER, ACCOUNT_ID, VERIFICATION_CODE,
                     STORED_NAME_FOLDED, EXPIRATION_DATE, "N");
             Mockito.when(CardUpdateServiceTest.this.cardRepository.findById(CARD_NUMBER))
@@ -832,7 +782,6 @@ class CardUpdateServiceTest {
             assertThat(result.writeOutcome())
                     .isEqualTo(CardUpdateService.WriteOutcome.RECORD_CHANGED_BEFORE_UPDATE);
             assertThat(result.changeDetected()).isTrue();
-            // The verbatim text, with "some one" as TWO WORDS, against a literal declared in this class.
             assertThat(result.message()).isEqualTo(EXPECTED_MSG_RECORD_CHANGED);
             assertThat(result.writeOutcome().conflictKind())
                     .isEqualTo(
@@ -940,10 +889,6 @@ class CardUpdateServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // Assertion (g): the verification code
-    // ==============================================================================================
-
     @Nested
     @DisplayName("the verification code - a bounded string, never a number, never logged")
     class VerificationCode {
@@ -967,23 +912,26 @@ class CardUpdateServiceTest {
             // normalised: a translation that had parsed it into a number would round-trip it as "7".
             final ArgumentCaptor<Card> written = ArgumentCaptor.forClass(Card.class);
             Mockito.verify(CardUpdateServiceTest.this.cardRepository).saveAndFlush(written.capture());
-            assertThat(written.getValue().getCardCvvCd()).isEqualTo("007");
+            assertThat(SensitiveValues.fingerprint(written.getValue().getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(VERIFICATION_CODE));
             assertThat(encodedByteWidth(written.getValue().getCardCvvCd(), StandardCharsets.US_ASCII))
                     .isEqualTo(3);
 
             // The carried image still carries it, because the comparison at line 1503 needs it.
-            assertThat(result.carriedImage().verificationCode()).isEqualTo("007");
+            assertThat(SensitiveValues.fingerprint(result.carriedImage().verificationCode()))
+                    .isEqualTo(SensitiveValues.fingerprint(VERIFICATION_CODE));
             // And nothing about it reaches a log, on this path or any other. The appender is attached to
             // both this member's logger and the dispatch graph's, so this covers every record the turn
             // produced rather than only the ones this class emitted.
             assertThat(CardUpdateServiceTest.this.capturedLog.list)
                     .as("no captured event mentions the verification code")
                     .isNotEmpty()
-                    .noneMatch(event -> event.getFormattedMessage().contains("007"));
-            assertThat(CardUpdateServiceTest.this.renderedLog()).doesNotContain("007");
-            assertThat(result.carriedImage().toString()).doesNotContain("007");
+                    .noneMatch(event -> event.getFormattedMessage().contains(VERIFICATION_CODE));
+            // Asserted through a predicate: doesNotContain prints the needle and the haystack, so the
+            // assertion proving the verification code is not logged would have logged it itself.
+            assertThat(SensitiveValues.absentFrom(CardUpdateServiceTest.this.renderedLog(), VERIFICATION_CODE)).isTrue();
+            assertThat(SensitiveValues.absentFrom(result.carriedImage().toString(), VERIFICATION_CODE)).isTrue();
             assertThat(result.card()).isNotNull();
-            assertThat(result.card().toString()).doesNotContain(CARD_NUMBER);
+            assertThat(SensitiveValues.absentFrom(result.card().toString(), CARD_NUMBER)).isTrue();
         }
 
         @Test
@@ -997,16 +945,13 @@ class CardUpdateServiceTest {
             assertThat(projection.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(projection.activeStatus()).isEqualTo("Y");
             assertThat(projection.version()).isZero();
-            assertThat(projection.cardNumber()).isEqualTo(CARD_NUMBER);
-            assertThat(projection.toString()).doesNotContain("007").doesNotContain(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(projection.cardNumber())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
+            assertThat(SensitiveValues.absentFrom(projection.toString(), VERIFICATION_CODE)).isTrue();
+            assertThat(SensitiveValues.absentFrom(projection.toString(), CARD_NUMBER)).isTrue();
             assertThatNullPointerException()
                     .isThrownBy(() -> CardUpdateService.CardProjection.of(null, null));
         }
     }
-
-    // ==============================================================================================
-    // Assertion (h): the attention keys
-    // ==============================================================================================
 
     @Nested
     @DisplayName("attention keys - PF13 to PF24 fold onto PF1 to PF12")
@@ -1074,7 +1019,6 @@ class CardUpdateServiceTest {
             // Width: measured on ENCODED BYTES, never on a character count.
             assertThat(encodedByteWidth(result.message(), StandardCharsets.US_ASCII))
                     .isEqualTo(COMMON_MESSAGE_BYTE_WIDTH);
-            // No route change: an unmapped identifier leaves the operator on this screen.
             assertThat(result.route()).isEqualTo(NavigationService.Route.CARD_UPDATE);
             assertThat(result.reArmedTransactionId()).isEqualTo("CCUP");
             // Lines 422 to 424 coerce every key that is not permitted at this point to the enter key,
@@ -1143,10 +1087,6 @@ class CardUpdateServiceTest {
                     CardUpdateService.ChangeAction.SHOW_DETAILS, carriedImage(STORED_NAME_FOLDED));
         }
     }
-
-    // ==============================================================================================
-    // Assertion (i): the abend contract, and the filter edits, the fresh entry and the exit arm
-    // ==============================================================================================
 
     @Nested
     @DisplayName("dispatch, the filter edits, and the abend contract")
@@ -1293,7 +1233,8 @@ class CardUpdateServiceTest {
                     .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
             assertThat(result.reEntry()).isTrue();
             assertThat(result.navigationContext().accountId()).isEqualTo("00000000000");
-            assertThat(result.navigationContext().cardNumber()).isEqualTo("0000000000000000");
+            assertThat(SensitiveValues.fingerprint(result.navigationContext().cardNumber()))
+                    .isEqualTo(SensitiveValues.fingerprint("0000000000000000"));
             assertThat(result.infoMessage()).isEqualTo("Please enter Account and Card Number");
         }
 
@@ -1338,10 +1279,6 @@ class CardUpdateServiceTest {
                     new NavigationService(), new OnlineTransactionBoundary(), recordWriter, null));
         }
     }
-
-    // ==============================================================================================
-    // The level-88 derived enums, as contract
-    // ==============================================================================================
 
     @Nested
     @DisplayName("the level-88 condition names as enums")
@@ -1516,10 +1453,6 @@ class CardUpdateServiceTest {
 
     }
 
-    // ==============================================================================================
-    // The filter-fetch path, the file-error path, and the one reachable abend
-    // ==============================================================================================
-
     @Nested
     @DisplayName("the filter fetch at lines 954 to 966, and the read failure at lines 1402 to 1411")
     class FilterFetchAndFileError {
@@ -1575,7 +1508,6 @@ class CardUpdateServiceTest {
             assertThat(result.message())
                     .isEqualTo(CardUpdateService.MSG_ACCOUNT_FILTER_ELEVEN_DIGITS);
             assertThat(result.focusField()).isEqualTo(CardUpdateService.FIELD_ACCOUNT_ID);
-            // The filters were not both valid, so no fetch was attempted at all.
             Mockito.verify(CardUpdateServiceTest.this.cardRepository, Mockito.never())
                     .findById(Mockito.anyString());
         }
@@ -1695,16 +1627,14 @@ class CardUpdateServiceTest {
             assertThat(result.message()).contains(" on CARDDAT");
             assertThat(result.message()).contains("returned RESP");
             assertThat(result.errorFlag()).isTrue();
-            // The catch-all arm never reaches the display state, so nothing is presented.
             assertThat(result.changeAction())
                     .isEqualTo(CardUpdateService.ChangeAction.DETAILS_NOT_FETCHED);
             assertThat(result.card()).isNull();
 
-            // The failure is logged with the raw status and the resource, and nothing sensitive appears.
             assertThat(renderedLog()).contains("Card file read failed");
             assertThat(renderedLog()).contains("resource=CARDDAT");
-            assertThat(renderedLog()).doesNotContain(VERIFICATION_CODE);
-            assertThat(renderedLog()).doesNotContain(CARD_NUMBER);
+            assertThat(SensitiveValues.absentFrom(renderedLog(), VERIFICATION_CODE)).isTrue();
+            assertThat(SensitiveValues.absentFrom(renderedLog(), CARD_NUMBER)).isTrue();
         }
 
         @Test
@@ -1779,10 +1709,6 @@ class CardUpdateServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // The blank-field cascade, its markers, and where the cursor lands
-    // ==============================================================================================
-
     @Nested
     @DisplayName("the not-supplied branches of the four card-data edits, and the cursor at lines 1211 "
             + "to 1235")
@@ -1828,7 +1754,6 @@ class CardUpdateServiceTest {
                     .containsExactly(CardUpdateService.FIELD_ACTIVE_STATUS,
                             CardUpdateService.FIELD_EXPIRY_MONTH,
                             CardUpdateService.FIELD_EXPIRY_YEAR);
-            // A blank field is marked, so the decorator carries the blank flag state for all three.
             assertThat(result.decoration().markedFields())
                     .extracting(FieldErrorMarks.MarkedField::flagState)
                     .containsOnly(FieldErrorMarks.FlagState.BLANK);
@@ -1942,10 +1867,6 @@ class CardUpdateServiceTest {
                             CardUpdateService.FIELD_ACTIVE_STATUS);
         }
     }
-
-    // ==============================================================================================
-    // The two-state field-error contract of app/cpy/CSSETATY.cpy, and its re-entry gate
-    // ==============================================================================================
 
     /**
      * The three observable states the macro copybook's two nested conditions produce.
@@ -2181,10 +2102,6 @@ class CardUpdateServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // Null, blank and wrong-length input
-    // ==============================================================================================
-
     /**
      * The boundary inputs, none of which may escape as an unhandled runtime failure.
      *
@@ -2309,10 +2226,6 @@ class CardUpdateServiceTest {
     }
 
 
-    // ==============================================================================================
-    // The one reachable abend, and the states the dispatch resets
-    // ==============================================================================================
-
     @Nested
     @DisplayName("the catch-all arm at lines 1019 to 1026, reached through an echoed lock-error state")
     class ReachableAbend {
@@ -2413,7 +2326,6 @@ class CardUpdateServiceTest {
                     .anyMatch(event -> event.getLevel() == Level.ERROR
                             && event.getFormattedMessage().contains("abending"));
 
-            // The screen was never presented, so nothing was written and nothing sensitive was logged.
             assertThat(renderedLog())
                     .doesNotContain(VERIFICATION_CODE)
                     .doesNotContain(CARD_NUMBER);
@@ -2489,6 +2401,27 @@ class CardUpdateServiceTest {
                     .isEqualTo(CardUpdateService.LEGACY_MENU_TRANSACTION_ID);
             assertThat(result.workArea().keyAction())
                     .isEqualTo(KeyAction.PFK03);
+        }
+    }
+
+    @Nested
+    @DisplayName("paragraph traceability: the 45 units this member contributes to the matrix")
+    class ParagraphTraceability {
+
+        /** Creates the nested specification. */
+        ParagraphTraceability() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("the unit count is the 45 the published matrix carries, read from the matrix rather "
+                + "than restated, so the three identification entries cannot creep back into it")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            assertThat(TraceabilityMatrixCensus.unitsOf("COCRDUPC.cbl"))
+                    .as("the figure is taken from the matrix's census subtotal, its section declaration "
+                            + "and its rows, which the reader requires to agree; this suite's heading "
+                            + "once published 48 by counting identification-division metadata as units")
+                    .isEqualTo(45);
         }
     }
 }

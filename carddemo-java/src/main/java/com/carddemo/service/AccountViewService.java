@@ -52,15 +52,21 @@ import com.carddemo.util.PfKeyTranslator;
  * message literals are cited, which is what keeps the traceability matrix verifiable against a tree this
  * module never reads at runtime.
  *
- * <p><strong>Paragraph count: 38 measured, 35 in the action plan, 36 methods.</strong> The figures differ
- * for a reason worth stating rather than reconciling silently. Thirty-five paragraph labels are physically
- * declared in the member's procedure division between lines 262 and 916, and only thirty-four of them are
- * distinct because one name is declared twice; the {@code COPY 'CSSTRPFY'} directive at line 913 occupies a
- * thirty-sixth Area A slot in that same division and textually inserts two further paragraphs from
- * {@code app/cpy/CSSTRPFY.cpy}, at its lines 17 and 80. Thirty-six in-member slots plus those two inserted
- * paragraphs is the measured thirty-eight; the action plan's thirty-five counts only the labels physically
- * present in the member. Thirty-seven procedure units therefore exist, and this class names thirty-six
- * methods, because the duplicated label collapses to one - see below.
+ * <p><strong>Paragraph count: 35 units, 34 distinct names, 36 methods.</strong> Thirty-five paragraph
+ * labels are physically declared in the member's procedure division between lines 262 and 916, and only
+ * thirty-four of them are distinct because one name is declared twice. <strong>Thirty-five</strong> is what
+ * the action plan records and what the traceability matrix carries rows for, and this class names
+ * thirty-six methods - one more than the labels it answers for, because the duplicated label collapses to
+ * one method while a statement-level helper is broken out; a method is not a unit and the extra one owes no
+ * row.
+ *
+ * <p>Two further paragraphs are reached from this member and are not units of it. The
+ * {@code COPY 'CSSTRPFY'} directive at line 913 is a directive rather than a paragraph, and the two
+ * paragraphs it inserts, at lines 17 and 80 of {@code app/cpy/CSSTRPFY.cpy}, are units of that copybook,
+ * which the matrix gives a section and two rows of its own. The copybook is included by five members, so
+ * counting its paragraphs against each of them would report ten units for two and the frozen 544-row total
+ * would no longer hold. An earlier revision of this class published a measured thirty-eight by adding the
+ * directive's Area A slot and the two inserted paragraphs to its own count.
  *
  * <p><strong>Anomaly: one paragraph name, two declarations.</strong> {@code 0000-MAIN-EXIT} is declared
  * twice, at line 408 and again at line 411, each with the same no-op body. Both declarations map to the

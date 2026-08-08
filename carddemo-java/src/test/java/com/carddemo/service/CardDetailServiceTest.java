@@ -50,6 +50,7 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 import com.carddemo.util.CobolStringUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,11 +78,10 @@ import static org.mockito.Mockito.when;
  * {@code app/cpy/CVACT02Y.cpy}. No legacy source text appears in this file; only widths, offsets,
  * counts, member names and contract literals, which are metadata.
  *
- * <h2>Thirty-seven paragraph units, and why the count is not thirty-four</h2>
+ * <h2>Thirty-four paragraph units, and what is deliberately not counted among them</h2>
  *
- * <p>Both figures are correct and they count different things, so both are stated. A census of
- * Area-A labels in this member's own procedure division, which begins at line 247, finds
- * <strong>34</strong>: {@code 0000-MAIN} 248, {@code COMMON-RETURN} 394, {@code 0000-MAIN-EXIT} 408,
+ * <p>A census of Area-A labels in this member's own procedure division, which begins at line 247, finds
+ * <strong>34</strong>, and 34 is the figure the traceability matrix carries for this member: {@code 0000-MAIN} 248, {@code COMMON-RETURN} 394, {@code 0000-MAIN-EXIT} 408,
  * {@code 1000-SEND-MAP} 412 and its exit 423, {@code 1100-SCREEN-INIT} 427 and 453,
  * {@code 1200-SETUP-SCREEN-VARS} 457 and 499, {@code 1300-SETUP-SCREEN-ATTRS} 502 and 559,
  * {@code 1400-SEND-SCREEN} 563 and 578, {@code 2000-PROCESS-INPUTS} 582 and 593,
@@ -89,11 +89,17 @@ import static org.mockito.Mockito.when;
  * {@code 2210-EDIT-ACCOUNT} 647 and 681, {@code 2220-EDIT-CARD} 685 and 722,
  * {@code 9000-READ-DATA} 726 and 732, {@code 9100-GETCARD-BYACCTCARD} 736 and 775,
  * {@code 9150-GETCARD-BYACCT} 779 and 810, {@code SEND-LONG-TEXT} 820 and 831,
- * {@code SEND-PLAIN-TEXT} 838 and 849, and {@code ABEND-ROUTINE} 857. Add the in-line
- * {@code COPY 'CSSTRPFY'} unit at line 855 and the two paragraphs that copybook expands into this
- * same procedure division - {@code YYYY-STORE-PFKEY} at line 17 of the copybook and its exit at line
- * 80 - and the total is <strong>37</strong>. Every one of the 37 is named in a test below, so the
- * traceability matrix resolves under either count.
+ * {@code SEND-PLAIN-TEXT} 838 and 849, and {@code ABEND-ROUTINE} 857. Every one of the 34 is named in a
+ * test below.
+ *
+ * <p><strong>Three further things this member contains are exercised here and are deliberately not
+ * counted as units of it.</strong> The in-line {@code COPY 'CSSTRPFY'} at line 855 is a directive rather
+ * than a paragraph, and the two paragraphs that copybook expands - {@code YYYY-STORE-PFKEY} at line 17 of
+ * the copybook and its exit at line 80 - are units of the <em>copybook</em>, which the matrix gives a
+ * section and two rows of its own. That copybook is included by five members, so counting its two
+ * paragraphs against each of them would report ten units for two and the frozen total would no longer be
+ * 544. This suite previously published 37 by adding all three to its own count; the behaviour those three
+ * carry is still asserted below, under the copybook they belong to.
  *
  * <h2>The oracle is independent of the code it judges</h2>
  *
@@ -331,17 +337,19 @@ class CardDetailServiceTest {
     /** Pseudo-conversational re-arm sites in the estate, all of which became route constants. */
     private static final int LEGACY_REARM_SITE_COUNT = 19;
 
-    /** Own Area-A paragraph labels of COCRDSLC. */
+    /** The member this suite answers for, as the traceability matrix cites it. */
+    private static final String LEGACY_MEMBER = "COCRDSLC.cbl";
+
+    /** Own Area-A paragraph labels of COCRDSLC, which is this member's whole contribution. */
     private static final int OWN_PARAGRAPH_LABEL_COUNT = 34;
 
-    /** Paragraphs the attention-key copybook expands into this member's procedure division. */
+    /**
+     * Paragraphs the attention-key copybook expands into this member's procedure division.
+     *
+     * <p>Exercised here, counted in the copybook's own section: it is included by five members, and
+     * counting its paragraphs against each of them would report ten units for two.
+     */
     private static final int COPYBOOK_PARAGRAPH_COUNT = 2;
-
-    /** The in-line {@code COPY 'CSSTRPFY'} unit at COCRDSLC line 855. */
-    private static final int COPY_UNIT_COUNT = 1;
-
-    /** The traceable total: 34 own labels plus one copy unit plus two expanded paragraphs. */
-    private static final int TRACEABLE_PARAGRAPH_UNIT_COUNT = 37;
 
     // -- Fixture values --------------------------------------------------------------------------
 
@@ -1245,8 +1253,8 @@ class CardDetailServiceTest {
     }
 
     // ==============================================================================================
-    // COPY 'CSSTRPFY' 855, YYYY-STORE-PFKEY 17 and YYYY-STORE-PFKEY-EXIT 80 - the three units that
-    // take the paragraph count from 34 to 37
+    // COPY 'CSSTRPFY' 855, YYYY-STORE-PFKEY 17 and YYYY-STORE-PFKEY-EXIT 80 - exercised from this
+    // member, and counted in the copybook's own matrix section rather than among this member's 34
     // ==============================================================================================
 
     @Nested
@@ -2079,15 +2087,24 @@ class CardDetailServiceTest {
     }
 
     @Nested
-    @DisplayName("paragraph traceability - the 37 units this member contributes to the matrix")
+    @DisplayName("paragraph traceability - the 34 units this member contributes to the matrix")
     class ParagraphTraceability {
 
         @Test
-        @DisplayName("the traceable total is the 34 own Area-A labels plus the one in-line copy unit "
-                + "plus the two paragraphs that copybook expands into this procedure division")
-        void theTraceableTotalIsAccountedFor() {
-            assertThat(OWN_PARAGRAPH_LABEL_COUNT + COPY_UNIT_COUNT + COPYBOOK_PARAGRAPH_COUNT)
-                    .isEqualTo(TRACEABLE_PARAGRAPH_UNIT_COUNT);
+        @DisplayName("the unit count is the 34 the published matrix carries for this member, read from "
+                + "the matrix, and the attention-key copybook's two paragraphs are counted in its own "
+                + "section rather than a second time here")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            // Read, not written down: the figure is taken from the matrix's census subtotal, its section
+            // declaration and its rows, which must agree. An earlier revision asserted 34 + 1 + 2 == 37
+            // over constants this file authored, which could not fail and re-counted a shared copybook.
+            assertAll(
+                    () -> assertThat(TraceabilityMatrixCensus.unitsOf(LEGACY_MEMBER))
+                            .isEqualTo(OWN_PARAGRAPH_LABEL_COUNT),
+                    () -> assertThat(TraceabilityMatrixCensus.unitsOf("CSSTRPFY.cpy"))
+                            .as("the copybook's two paragraphs belong to the copybook, which is why "
+                                    + "five including members do not each report them")
+                            .isEqualTo(COPYBOOK_PARAGRAPH_COUNT));
         }
 
         @Test

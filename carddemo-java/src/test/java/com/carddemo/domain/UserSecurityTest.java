@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.DisplayName;
@@ -100,28 +101,20 @@ class UserSecurityTest {
 
     // LAYOUT CONSTANTS - hand-derived from app/cpy/CSUSR01Y.cpy, not read back from the entity
 
-    /** Width of the sign-on identifier at record offset 0, which is also the primary key. */
     private static final int KEY_WIDTH = 8;
 
-    /** Width of the given name at record offset 8. */
     private static final int GIVEN_NAME_WIDTH = 20;
 
-    /** Width of the family name at record offset 28. */
     private static final int FAMILY_NAME_WIDTH = 20;
 
-    /** Width of the credential field at record offset 48 in the legacy record. */
     private static final int LEGACY_CREDENTIAL_WIDTH = 8;
 
-    /** Width of the role code at record offset 56. */
     private static final int ROLE_CODE_WIDTH = 1;
 
-    /** Width of the named trailing filler at record offset 57, which is not persisted. */
     private static final int UNMAPPED_FILLER_WIDTH = 23;
 
-    /** Declared length of the whole record. */
     private static final int RECORD_WIDTH = 80;
 
-    /** Bytes of the record that become columns: the five mapped widths summed. */
     private static final int SIGNIFICANT_WIDTH = 57;
 
     /**
@@ -132,22 +125,16 @@ class UserSecurityTest {
 
     // SEEDED IDENTITY FIXTURES - the non-secret columns of the provisioning job's in-stream cards
 
-    /** Role code selecting the administrative route. */
     private static final String ROLE_ADMINISTRATOR = "A";
 
-    /** Role code selecting the standard route. */
     private static final String ROLE_STANDARD = "U";
 
-    /** First seeded administrator identifier; exactly fills the 8-byte key. */
     private static final String ADMIN_IDENTIFIER = "ADMIN001";
 
-    /** Given name on the first seeded administrator card. */
     private static final String ADMIN_GIVEN_NAME = "MARGARET";
 
-    /** Family name on the first seeded administrator card. */
     private static final String ADMIN_FAMILY_NAME = "GOLD";
 
-    /** Second seeded administrator identifier, used where a second distinct key is needed. */
     private static final String OTHER_ADMIN_IDENTIFIER = "ADMIN002";
 
     // SYNTHETIC CREDENTIAL FIXTURES
@@ -161,11 +148,9 @@ class UserSecurityTest {
     // relied upon anywhere in this file. Two distinct values exist because business-key identity has to
     // be proved to hold across a change of stored credential.
 
-    /** Obviously synthetic stand-in for an already-hashed credential. */
     private static final String SYNTHETIC_STORED_CREDENTIAL =
             "$2a$10$SYNTHETICDIGESTFORUNITTESTONLYNOTAREALCREDENTIAL00001";
 
-    /** A second, distinct synthetic stand-in, used where two records must differ in this property. */
     private static final String OTHER_SYNTHETIC_STORED_CREDENTIAL =
             "$2a$10$SYNTHETICDIGESTFORUNITTESTONLYNOTAREALCREDENTIAL00002";
 
@@ -174,8 +159,6 @@ class UserSecurityTest {
      * paths refuse anything a cleartext credential could be. It is a label, not a credential.
      */
     private static final String NOT_A_STORED_CREDENTIAL = "NOT-A-STORED-HASH";
-
-    // FIXTURE HELPERS
 
     /**
      * Blank-fills a value on the right to a fixed width, reproducing how the provisioning job's cards
@@ -215,8 +198,6 @@ class UserSecurityTest {
                 ROLE_ADMINISTRATOR);
     }
 
-    // CONSTRUCTION AND HYDRATION
-
     /**
      * Verifies the two routes by which an instance comes into existence: the all-argument constructor
      * used by application code, and the no-argument constructor the persistence provider uses.
@@ -241,7 +222,8 @@ class UserSecurityTest {
             assertThat(user.getSecUsrLname()).isEqualTo(familyName);
             // Read through the entity's non-bean accessor: the stored value is deliberately not exposed
             // as a discoverable property, so there is no getter following the bean convention to call.
-            assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest()))
+                    .isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_STORED_CREDENTIAL));
             assertThat(user.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
         }
 
@@ -264,7 +246,8 @@ class UserSecurityTest {
             assertThat(user.getSecUsrId()).isEqualTo("USER0001");
             assertThat(user.getSecUsrFname()).isEqualTo(replacementGivenName);
             assertThat(user.getSecUsrLname()).isEqualTo(replacementFamilyName);
-            assertThat(user.credentialDigest()).isEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest()))
+                    .isEqualTo(SensitiveValues.fingerprint(OTHER_SYNTHETIC_STORED_CREDENTIAL));
             assertThat(user.getSecUsrType()).isEqualTo(ROLE_STANDARD);
         }
 
@@ -288,8 +271,6 @@ class UserSecurityTest {
             assertThat(hydrating.getSecUsrType()).isNull();
         }
     }
-
-    // RECORD GEOMETRY
 
     /**
      * Verifies the byte widths the record layout fixes, and the single width the target deliberately
@@ -348,8 +329,6 @@ class UserSecurityTest {
         }
     }
 
-    // ABSENCE OF NORMALISATION
-
     /**
      * Verifies that a value handed to the entity comes back out byte-for-byte identical. A fixed-width
      * record is blank-filled by construction, so silently trimming a stored name would change the bytes
@@ -364,7 +343,6 @@ class UserSecurityTest {
                 + "the entity does not trim")
         void aBlankFilledNameKeepsItsTrailingPadding() {
             final String paddedGivenName = blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH);
-            // Fixture self-check: the padded form really is a full field wide before it is handed over.
             assertThat(encodedWidth(paddedGivenName)).isEqualTo(GIVEN_NAME_WIDTH);
             assertThat(encodedWidth(ADMIN_GIVEN_NAME)).isLessThan(GIVEN_NAME_WIDTH);
 
@@ -426,15 +404,12 @@ class UserSecurityTest {
             assertThat(user.getSecUsrLname()).isEqualTo(paddedFamilyName);
             assertThat(user.getSecUsrType()).isEqualTo(roleCode);
 
-            // Each card fills the key exactly and blank-fills both names to their full field widths.
             assertThat(encodedWidth(user.getSecUsrId())).isEqualTo(KEY_WIDTH);
             assertThat(encodedWidth(user.getSecUsrFname())).isEqualTo(GIVEN_NAME_WIDTH);
             assertThat(encodedWidth(user.getSecUsrLname())).isEqualTo(FAMILY_NAME_WIDTH);
             assertThat(encodedWidth(user.getSecUsrType())).isEqualTo(ROLE_CODE_WIDTH);
         }
     }
-
-    // THE ROLE CODE
 
     /**
      * Verifies that the one byte the authorisation split rests on is stored raw, with no vocabulary
@@ -513,8 +488,6 @@ class UserSecurityTest {
         }
     }
 
-    // BUSINESS-KEY IDENTITY
-
     /**
      * Verifies that identity rests on the 8-byte sign-on identifier alone. The key is the leading
      * substring of the record image and is assigned rather than generated, so it is stable from
@@ -547,9 +520,12 @@ class UserSecurityTest {
             // was built from rather than against the other side's accessor.
             assertThat(left.getSecUsrFname()).isEqualTo(blankFill(ADMIN_GIVEN_NAME, GIVEN_NAME_WIDTH));
             assertThat(right.getSecUsrFname()).isEqualTo(blankFill("LAWRENCE", GIVEN_NAME_WIDTH));
-            assertThat(left.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
-            assertThat(right.credentialDigest()).isEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
-            assertThat(SYNTHETIC_STORED_CREDENTIAL).isNotEqualTo(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(left.credentialDigest()))
+                    .isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_STORED_CREDENTIAL));
+            assertThat(SensitiveValues.fingerprint(right.credentialDigest()))
+                    .isEqualTo(SensitiveValues.fingerprint(OTHER_SYNTHETIC_STORED_CREDENTIAL));
+            assertThat(SensitiveValues.fingerprint(SYNTHETIC_STORED_CREDENTIAL))
+                    .isNotEqualTo(SensitiveValues.fingerprint(OTHER_SYNTHETIC_STORED_CREDENTIAL));
             assertThat(left.getSecUsrType()).isEqualTo(ROLE_ADMINISTRATOR);
             assertThat(right.getSecUsrType()).isEqualTo(ROLE_STANDARD);
 
@@ -628,8 +604,6 @@ class UserSecurityTest {
         }
     }
 
-    // THE CREDENTIAL CONTRACT
-
     /**
      * Documents and verifies what the entity does and does not do with the stored credential.
      */
@@ -670,13 +644,21 @@ class UserSecurityTest {
 
             // The value read back is the very reference that was handed in: nothing was hashed,
             // re-derived, salted, copied or otherwise transformed on the way through.
-            assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
-            assertThat(user.credentialDigest()).isSameAs(SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest()))
+                    .isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_STORED_CREDENTIAL));
+            // Reference identity asserted as a boolean, because isSameAs prints both operands and both
+            // operands are stored credential material.
+            assertThat(user.credentialDigest() == SYNTHETIC_STORED_CREDENTIAL)
+                    .as("the very reference handed in is the one read back: nothing was hashed, "
+                            + "re-derived, salted or copied on the way through")
+                    .isTrue();
 
             // Replacement stores the new value verbatim as well; there is no accumulation and no
             // re-hashing of what was already there.
             user.replaceCredentialDigest(OTHER_SYNTHETIC_STORED_CREDENTIAL);
-            assertThat(user.credentialDigest()).isSameAs(OTHER_SYNTHETIC_STORED_CREDENTIAL);
+            assertThat(user.credentialDigest() == OTHER_SYNTHETIC_STORED_CREDENTIAL)
+                    .as("replacement stores the new reference verbatim as well")
+                    .isTrue();
         }
 
         @Test
@@ -707,9 +689,9 @@ class UserSecurityTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> user.replaceCredentialDigest(null));
 
-            assertThat(user.credentialDigest())
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest()))
                     .as("a refused replacement leaves the stored value untouched")
-                    .isEqualTo(SYNTHETIC_STORED_CREDENTIAL);
+                    .isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_STORED_CREDENTIAL));
         }
 
         @Test

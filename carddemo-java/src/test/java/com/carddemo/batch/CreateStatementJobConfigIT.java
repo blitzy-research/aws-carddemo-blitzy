@@ -48,6 +48,7 @@ import com.carddemo.service.StatementGenerationService.StatementRun;
 import com.carddemo.service.StatementTransactionSource;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.IsolatedStagingRoot;
 import com.carddemo.support.TestDataFactory;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.sns.core.SnsOperations;
@@ -70,13 +71,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.UnaryOperator;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.TestInstance;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.Job;
@@ -98,6 +98,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Container-backed verification of {@link CreateStatementJobConfig} against a real PostgreSQL 16
@@ -234,36 +236,48 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
                 "management.endpoint.health.validate-group-membership=false",
                 "management.tracing.enabled=false",
                 // One staging root serves all four jobs, so the pipeline chains through the
-                // filesystem exactly as it does in the application. It is bound as a fixed
-                // expression rather than a temporary directory because the four @Value bindings are
-                // resolved while the context starts, which is before any per-test directory exists.
-                "carddemo.batch.create-statement.staging-directory="
-                        + CreateStatementJobConfigIT.STAGING_DIRECTORY_EXPRESSION,
-                "carddemo.batch.post-transaction.staging-directory="
-                        + CreateStatementJobConfigIT.STAGING_DIRECTORY_EXPRESSION,
-                "carddemo.batch.interest-calculation.staging-directory="
-                        + CreateStatementJobConfigIT.STAGING_DIRECTORY_EXPRESSION,
-                "carddemo.batch.combine-transactions.staging-directory="
-                        + CreateStatementJobConfigIT.STAGING_DIRECTORY_EXPRESSION,
+                // filesystem exactly as it does in the application. All four keys are registered from
+                // registerIsolatedStagingDirectory rather than written here: the four @Value bindings are
+                // resolved while the context starts, and the root has to carry this process's own
+                // identity, which no compile-time constant can.
                 "carddemo.batch.combine-transactions.transaction-backup="
                         + CreateStatementJobConfigIT.BACKUP_INPUT_NAME,
                 "carddemo.batch.combine-transactions.synthesized-transaction="
                         + CreateStatementJobConfigIT.SYNTHESIZED_INPUT_NAME})
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @DisplayName("create-statement job, run against a real server as the pipeline's last link: four "
         + "steps behind three strict gates, a character ordering, and a reproduced 328-of-350 "
         + "reprojection")
 final class CreateStatementJobConfigIT extends AbstractPostgresIT {
 
+    /** The four keys the jobs of this slice read their staging root from, in pipeline order. */
+    private static final List<String> STAGING_DIRECTORY_PROPERTIES = List.of(
+            "carddemo.batch.post-transaction.staging-directory",
+            "carddemo.batch.interest-calculation.staging-directory",
+            "carddemo.batch.combine-transactions.staging-directory",
+            "carddemo.batch.create-statement.staging-directory");
+
     /**
-     * The staging root every job in this slice shares, as the property expression the context binds.
+     * This specification's label within this process's private staging namespace.
      *
-     * <p>Referenced from the annotation above, so it has to be a compile-time constant. The platform
-     * temporary directory is resolved by the property placeholder rather than read here, which keeps
-     * the expression identical to the one the sibling suites bind.
+     * <p>It was a fixed expression naming a directory directly beneath the platform temporary directory,
+     * which every run of this specification and every sibling clone on the host resolved identically. It is
+     * now one segment beneath a namespace unique to this process, bound from a property callback. See
+     * {@link IsolatedStagingRoot}.
      */
-    static final String STAGING_DIRECTORY_EXPRESSION =
-            "${java.io.tmpdir}/carddemo-create-statement-it";
+    static final String STAGING_LABEL = "create-statement-it";
+
+    /**
+     * The four staging-directory keys the pipeline's jobs read, all bound to the one isolated root.
+     *
+     * <p>Named here rather than repeated at the callback, so that a job added to this pipeline is visibly
+     * either in this list or absent from it.
+     */
+    private static final List<String> STAGING_DIRECTORY_KEYS = List.of(
+            "carddemo.batch.create-statement.staging-directory",
+            "carddemo.batch.post-transaction.staging-directory",
+            "carddemo.batch.interest-calculation.staging-directory",
+            "carddemo.batch.combine-transactions.staging-directory");
 
     /** Relative name of the first consolidation input, resolved against the staging root. */
     static final String BACKUP_INPUT_NAME = "create-statement-it-transaction-backup.txt";
@@ -523,11 +537,23 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /** Name of the observation the framework publishes for a step execution. */
     private static final String STEP_METER_NAME = "spring.batch.step";
 
-    /** The one clean pipeline run, established once and read by every assertion that needs it. */
-    private static CleanRun cleanRun;
-
-    /** Whether the pipeline has already been attempted, so a failed attempt is not repeated. */
-    private static boolean setupAttempted;
+    /**
+     * The one clean pipeline run, established by {@link #establishTheConsolidatedStore()}.
+     *
+     * <h4>Why this is an instance field established by a lifecycle callback</h4>
+     * It was a <em>static</em> field filled by a guarded {@code @BeforeEach}: the first test to run
+     * established the pipeline, a static flag suppressed a second attempt, and twenty-four
+     * {@code @Order}-ed tests then read whatever that first test left behind. Two things were wrong with
+     * that. The fixture's existence depended on execution order, so a filtered run of a single test read
+     * a null field; and the guard hand-rolled a fail-fast that the framework already provides.
+     *
+     * <p>The class is now {@code PER_CLASS}, so one instance serves every test and a non-static
+     * {@code @BeforeAll} can reach the injected collaborators. The pipeline is established there, once,
+     * unconditionally, before any test - which is what a class-level fixture is - and if it cannot be
+     * established the framework reports that failure against the class and does not run the tests at all,
+     * which is exactly the behaviour the guard was imitating.
+     */
+    private CleanRun cleanRun;
 
     /**
      * The parameters each job was last launched with, so the next launch of it is a fresh instance.
@@ -536,7 +562,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
      * incrementer derives the next value from the previous one - so the previous one has to be kept.
      * This reproduces what the application's launch surface does when it starts the next instance.
      */
-    private static final Map<String, JobParameters> lastParameters = new HashMap<>();
+    private final Map<String, JobParameters> lastParameters = new HashMap<>();
 
     @Autowired
     private JobRegistry jobRegistry;
@@ -608,25 +634,16 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /**
      * Establishes the one clean pipeline run, once, before the first assertion that reads it.
      *
-     * <p>Guarded rather than unconditional. A batch job commits per chunk on its own connections, so a
-     * transactional rollback cannot reach it and re-running the whole pipeline for every assertion
-     * would both be wasteful and let one assertion observe a store another had already changed. The
-     * run is therefore established once and every assertion reads the same outcome.
+     * <p>Unconditional, and run exactly once by the framework rather than by whichever test happened to
+     * be first. A batch job commits per chunk on its own connections, so a transactional rollback cannot
+     * reach it and re-running the whole pipeline for every assertion would both be wasteful and let one
+     * assertion observe a store another had already changed. Establishing it here means every assertion
+     * reads one outcome, no assertion establishes anything, and none of them can run without it.
      *
      * @throws Exception if the store cannot be prepared or a job in the pipeline cannot be launched
      */
-    @BeforeEach
+    @BeforeAll
     void establishTheConsolidatedStore() throws Exception {
-        if (cleanRun != null) {
-            return;
-        }
-        if (setupAttempted) {
-            throw new IllegalStateException("the consolidated store could not be established on the"
-                    + " first attempt, and the pipeline is deliberately not launched again: relaunching"
-                    + " it for every remaining assertion would bury the original diagnostic under a"
-                    + " cascade of unrelated ones. See the first reported failure of this class");
-        }
-        setupAttempted = true;
         restoreSeededState();
         clearStagingRoot();
         stageConsolidationInputs();
@@ -644,7 +661,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
         final JobExecution execution = launch(CreateStatementJobConfig.JOB_NAME,
                 new JobParametersBuilder().toJobParameters());
         final long executionId = requireExecutionId(execution);
-        cleanRun = new CleanRun(execution, executedStepNames(execution),
+        this.cleanRun = new CleanRun(execution, executedStepNames(execution),
                 readRecords(this.config.transactionWorkSequentialResource(executionId),
                         RECORD_LENGTH),
                 readRecords(this.config.statementOutputGeneration(executionId),
@@ -673,15 +690,25 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
      * names this class launched, and to nothing else, the borrowed metadata is handed back too. The
      * six statements run child-first so no foreign key is violated part-way through.</p>
      *
+     * <p>The staging root goes with it. This specification stages a whole pipeline - four jobs, several
+     * generations and two synthesized inputs - and its root is private to this process, so nothing left
+     * there could be read by a later run in any case. It is still removed rather than left: a root that
+     * is emptied between assertions but never at the end leaves one populated tree per process on the
+     * host, and "delete only what this execution created" is a statement about what is deleted, not an
+     * excuse to delete nothing.</p>
+     *
      * @throws SQLException if the store cannot be reseeded or the metadata cannot be released
      */
     @AfterAll
-    static void returnTheSharedServer() throws SQLException {
-        restoreSeededState();
-        releaseBorrowedJobMetadata();
-        cleanRun = null;
-        setupAttempted = false;
-        lastParameters.clear();
+    void returnTheSharedServer() throws Exception {
+        try {
+            restoreSeededState();
+            releaseBorrowedJobMetadata();
+            this.cleanRun = null;
+            this.lastParameters.clear();
+        } finally {
+            IsolatedStagingRoot.discard(stagingRoot());
+        }
     }
 
     /**
@@ -751,11 +778,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     private JobExecution launch(final String jobName, final JobParameters parameters)
             throws Exception {
         final Job job = this.jobRegistry.getJob(jobName);
-        final JobParameters base = lastParameters.getOrDefault(jobName, parameters);
+        final JobParameters base = this.lastParameters.getOrDefault(jobName, parameters);
         final JobParameters effective = job.getJobParametersIncrementer() == null
                 ? parameters
                 : job.getJobParametersIncrementer().getNext(base);
-        lastParameters.put(jobName, effective);
+        this.lastParameters.put(jobName, effective);
         return this.jobLauncher.run(job, effective);
     }
 
@@ -777,30 +804,41 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     /**
      * Returns the staging root the four jobs share, resolved the way the context resolved it.
      *
-     * @return the staging root
+     * @return the staging root, private to this run
      */
     private static Path stagingRoot() {
-        return Path.of(System.getProperty("java.io.tmpdir"), "carddemo-create-statement-it");
+        return IsolatedStagingRoot.forSpecification(STAGING_LABEL);
     }
 
     /**
-     * Empties the staging root so a previous suite's artefacts cannot be mistaken for this run's.
+     * Binds all four staging-directory keys to one root private to this process, before the context is
+     * created.
      *
-     * <p>Only regular files directly beneath the root are removed, and the root itself is left in
-     * place. Nothing outside it is touched.
+     * <p>A property callback rather than four annotation entries, because the value cannot be a
+     * compile-time constant: it carries the process identifier so that no other run of this specification,
+     * and no sibling clone sharing this host, resolves the same absolute path. The callback runs before the
+     * context starts, which is what four {@code @Value} bindings resolved during start-up require.
      *
-     * @throws IOException if the root cannot be read or an artefact cannot be removed
+     * @param registry the registry the framework supplies
      */
-    private static void clearStagingRoot() throws IOException {
-        final Path root = stagingRoot();
-        Files.createDirectories(root);
-        try (var entries = Files.list(root)) {
-            for (final Path entry : entries.toList()) {
-                if (Files.isRegularFile(entry)) {
-                    Files.delete(entry);
-                }
-            }
+    @DynamicPropertySource
+    static void registerIsolatedStagingDirectory(final DynamicPropertyRegistry registry) {
+        for (final String key : STAGING_DIRECTORY_KEYS) {
+            registry.add(key, () -> IsolatedStagingRoot.pathFor(STAGING_LABEL));
         }
+    }
+
+    /**
+     * Removes this specification's own staging root, so nothing a previous run left can be mistaken for
+     * this one's, and prepares an empty one.
+     *
+     * <p>What is removed is a tree this process owns. The sweep that stood here removed every regular file
+     * beneath a directory every run and every sibling clone shared, which could reach a file a
+     * concurrently running sibling was still composing.
+     */
+    private static void clearStagingRoot() {
+        IsolatedStagingRoot.discard(stagingRoot());
+        IsolatedStagingRoot.forSpecification(STAGING_LABEL);
     }
 
     /**
@@ -1140,7 +1178,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(1)
     @DisplayName("the four jobs of the pipeline are registered by name and none of them ran merely "
             + "because a context was refreshed")
     void thePipelineIsRegisteredByNameAndInertAtStartUp() throws Exception {
@@ -1158,17 +1195,16 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                         + " would show up here as a second instance")
                 .isEqualTo(1);
 
-        assertThat(cleanRun.execution().getStatus())
+        assertThat(this.cleanRun.execution().getStatus())
                 .as("and the one instance that does exist is the one this class launched explicitly")
                 .isEqualTo(BatchStatus.COMPLETED);
     }
 
     @Test
-    @Order(2)
     @DisplayName("one legacy step is absorbed, so four steps run in declaration order and the run "
             + "completes")
     void fourStepsRunInDeclarationOrder() {
-        assertThat(cleanRun.stepNames())
+        assertThat(this.cleanRun.stepNames())
                 .as("five legacy steps less the absorbed definition step leaves %d, and they run"
                         + " strictly in sequence - no parallel flow, no partitioning and no task"
                         + " executor takes part", MIGRATED_STEP_COUNT)
@@ -1178,11 +1214,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                         CreateStatementJobConfig.GENERATE_STATEMENTS_STEP_NAME)
                 .hasSize(MIGRATED_STEP_COUNT);
 
-        assertThat(cleanRun.execution().getStatus())
+        assertThat(this.cleanRun.execution().getStatus())
                 .as("a clean pass through all four steps completes the run")
                 .isEqualTo(BatchStatus.COMPLETED);
 
-        for (final StepExecution step : cleanRun.execution().getStepExecutions()) {
+        for (final StepExecution step : this.cleanRun.execution().getStepExecutions()) {
             assertThat(step.getStatus())
                     .as("step %s ended %s; on a clean pass every step has to complete, because a"
                             + " strict gate refuses the next step on anything else",
@@ -1192,11 +1228,10 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(3)
     @DisplayName("this job carries no date parameter, because its member declares no parameter "
             + "string on any of its five steps")
     void theJobCarriesNoDateParameter() {
-        final JobParameters parameters = cleanRun.execution().getJobParameters();
+        final JobParameters parameters = this.cleanRun.execution().getJobParameters();
 
         assertThat(parameters.getParameters().keySet())
                 .as("the member passes no program parameter to any step, so the only parameter this"
@@ -1211,7 +1246,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(4)
     @DisplayName("the absorbed transient definition leaves no schema artefact: eleven application "
             + "tables and four migrations, unchanged")
     void theAbsorbedTransientDefinitionLeavesNoSchemaArtefact() throws Exception {
@@ -1229,7 +1263,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                         MIGRATION_VERSION_COUNT)
                 .hasSize(MIGRATION_VERSION_COUNT);
 
-        assertThat(cleanRun.projectedRecords())
+        assertThat(this.cleanRun.projectedRecords())
                 .as("what the absorbed definition becomes is this artefact - an ordered, keyed,"
                         + " 350-byte result the job writes and reads within one execution")
                 .isNotEmpty();
@@ -1240,7 +1274,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(5)
     @DisplayName("each of the three gates admits its guarded step when every earlier step ended "
             + "clean")
     void everyGateAdmitsItsGuardedStepAfterACleanPredecessor() {
@@ -1248,22 +1281,21 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                 .as("three of the estate's four gated steps live in this one member")
                 .isEqualTo(MIGRATED_STEP_COUNT - 1);
 
-        assertThat(cleanRun.stepNames())
+        assertThat(this.cleanRun.stepNames())
                 .as("the first gate guards the load step: it ran, so the gate admitted it after the"
                         + " ordering step ended clean")
                 .contains(CreateStatementJobConfig.LOAD_WORK_RESOURCE_STEP_NAME);
-        assertThat(cleanRun.stepNames())
+        assertThat(this.cleanRun.stepNames())
                 .as("the second gate guards the scratch step: it ran, so the gate admitted it after"
                         + " the load step ended clean")
                 .contains(CreateStatementJobConfig.CLEAR_STATEMENT_OUTPUTS_STEP_NAME);
-        assertThat(cleanRun.stepNames())
+        assertThat(this.cleanRun.stepNames())
                 .as("the third gate guards the generation step: it ran, so the gate admitted it"
                         + " after the scratch step ended clean")
                 .contains(CreateStatementJobConfig.GENERATE_STATEMENTS_STEP_NAME);
     }
 
     @Test
-    @Order(6)
     @DisplayName("when the ordering step fails, all three gates refuse: the load, scratch and "
             + "generation steps never run")
     void aFailedOrderingStepIsRefusedByEveryGate() throws Exception {
@@ -1321,7 +1353,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(7)
     @DisplayName("when the scratch step fails, the third gate refuses the generation step while the "
             + "two steps ahead of it stay clean")
     void aFailedScratchStepIsRefusedByTheThirdGate() throws Exception {
@@ -1377,12 +1408,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(8)
     @DisplayName("every projected record is exactly 350 encoded bytes and the artefact is an exact "
             + "multiple of that width")
     void everyProjectedRecordIsExactlyThreeHundredAndFiftyEncodedBytes() {
-        assertThat(cleanRun.projectedRecords()).isNotEmpty();
-        for (final String record : cleanRun.projectedRecords()) {
+        assertThat(this.cleanRun.projectedRecords()).isNotEmpty();
+        for (final String record : this.cleanRun.projectedRecords()) {
             assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
                     .as("a projected record is 328 bytes of content padded back to %d; nothing is"
                             + " trimmed and the width is counted in encoded bytes, not characters",
@@ -1399,12 +1429,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(9)
     @DisplayName("the three segments land where the specification places them: card number to the "
             + "front, leading 262 bytes behind it, fifty-byte slice last")
     void theThreeSegmentsLandWhereTheSpecificationPlacesThem() {
         final String projected =
-                projectedRecordFor(cleanRun.projectedRecords(), PROBE_ON_ADDED_CARD_LOW_ID);
+                projectedRecordFor(this.cleanRun.projectedRecords(), PROBE_ON_ADDED_CARD_LOW_ID);
 
         assertThat(field(projected, 0, KEY_FIELD_LENGTH))
                 .as("FIRST SEGMENT: the sixteen bytes from one-based position 263 move to the front")
@@ -1462,12 +1491,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(10)
     @DisplayName("exactly two processing-timestamp bytes are truncated and the twenty-byte filler is "
             + "dropped - the legacy defect, reproduced and not corrected")
     void exactlyTwoProcessingTimestampBytesAreTruncated() {
         final String projected =
-                projectedRecordFor(cleanRun.projectedRecords(), PROBE_ON_ADDED_CARD_LOW_ID);
+                projectedRecordFor(this.cleanRun.projectedRecords(), PROBE_ON_ADDED_CARD_LOW_ID);
         final int survivingBytes = TIMESTAMP_LENGTH - TRUNCATED_PROCESSING_TIMESTAMP_BYTES;
         final String surviving = PROBE_PROCESSING_TIMESTAMP.substring(0, survivingBytes);
         final String lost = PROBE_PROCESSING_TIMESTAMP.substring(survivingBytes);
@@ -1503,7 +1531,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(11)
     @DisplayName("the projected record's leading thirty-two bytes are the key the absorbed "
             + "definition declares at offset zero")
     void theLeadingThirtyTwoBytesAreTheTransientDefinitionKey() {
@@ -1514,7 +1541,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
 
         for (final String identifier : List.of(PROBE_ON_ADDED_CARD_LOW_ID,
                 PROBE_ON_ADDED_CARD_HIGH_ID)) {
-            assertThat(field(projectedRecordFor(cleanRun.projectedRecords(), identifier), 0,
+            assertThat(field(projectedRecordFor(this.cleanRun.projectedRecords(), identifier), 0,
                     WORK_KEY_LENGTH))
                     .as("the cheapest available proof that the three segments were assembled in the"
                             + " right order: bytes one through thirty-two are exactly the key the"
@@ -1523,7 +1550,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                     .isEqualTo(workKey(LEXICALLY_LAST_CARD, identifier));
         }
 
-        assertThat(field(projectedRecordFor(cleanRun.projectedRecords(),
+        assertThat(field(projectedRecordFor(this.cleanRun.projectedRecords(),
                 PROBE_ON_DELIVERED_CARD_ID), 0, WORK_KEY_LENGTH))
                 .as("and the same holds for a record on a delivered card, so the assembly is not a"
                         + " property of the constructed one")
@@ -1535,11 +1562,10 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(12)
     @DisplayName("the ordering is lexicographic on the raw character image, never numeric and never "
             + "zoned-decimal decoded")
     void theOrderingIsLexicographicOnTheCharacterImage() {
-        final List<String> records = cleanRun.projectedRecords();
+        final List<String> records = this.cleanRun.projectedRecords();
         final int onDeliveredCard = positionOf(records, PROBE_ON_DELIVERED_CARD_ID);
         final int onAddedCardLow = positionOf(records, PROBE_ON_ADDED_CARD_LOW_ID);
         final int onAddedCardHigh = positionOf(records, PROBE_ON_ADDED_CARD_HIGH_ID);
@@ -1588,7 +1614,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(13)
     @DisplayName("the dispatcher is entered six times, in the derived execution order, and its "
             + "catch-all terminates the run")
     void theDispatcherVisitsItsSixClausesInTheDerivedExecutionOrder() {
@@ -1621,7 +1646,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(14)
     @DisplayName("the read loop keeps three outcomes distinct: success re-enters the read, "
             + "end-of-file leaves forward, anything else is an error")
     void theReadLoopKeepsThreeOutcomesDistinct() {
@@ -1665,14 +1689,13 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(15)
     @DisplayName("every plain statement record is exactly eighty encoded bytes and the artefact is "
             + "an exact multiple of eighty")
     void everyStatementRecordIsExactlyEightyEncodedBytes() {
-        assertThat(cleanRun.statementRecords())
+        assertThat(this.cleanRun.statementRecords())
                 .as("the run has to have written statements for the assertion to mean anything")
                 .isNotEmpty();
-        for (final String record : cleanRun.statementRecords()) {
+        for (final String record : this.cleanRun.statementRecords()) {
             assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
                     .as("counted in encoded bytes and never trimmed: [%s]", record)
                     .isEqualTo(STATEMENT_RECORD_WIDTH);
@@ -1680,12 +1703,11 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(16)
     @DisplayName("every markup statement record is exactly one hundred encoded bytes, resolving the "
             + "member's own eighty-versus-one-hundred disagreement to one hundred")
     void everyHtmlRecordIsExactlyOneHundredEncodedBytes() {
-        assertThat(cleanRun.htmlRecords()).isNotEmpty();
-        for (final String record : cleanRun.htmlRecords()) {
+        assertThat(this.cleanRun.htmlRecords()).isNotEmpty();
+        for (final String record : this.cleanRun.htmlRecords()) {
             assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
                     .as("the member declares this destination twice and disagrees with itself -"
                             + " eighty bytes at one line and one hundred at another. It is resolved"
@@ -1698,7 +1720,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(17)
     @DisplayName("both banner literals reach the output byte for byte, at their two different and "
             + "deliberately unequal splits")
     void bothBannerLiteralsReachTheOutputByteForByte() {
@@ -1711,17 +1732,16 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                         + " and a shared centring helper would quietly make them agree")
                 .isNotEqualTo(END_BANNER_ASTERISKS);
 
-        assertThat(cleanRun.statementRecords())
+        assertThat(this.cleanRun.statementRecords())
                 .as("the start banner, assembled here from asterisk counts and its own text rather"
                         + " than read from the template holder")
                 .contains(START_BANNER);
-        assertThat(cleanRun.statementRecords())
+        assertThat(this.cleanRun.statementRecords())
                 .as("and the end banner, on its own split")
                 .contains(END_BANNER);
     }
 
     @Test
-    @Order(18)
     @DisplayName("all six rule lines are emitted per statement and none of them is de-duplicated "
             + "away")
     void allSixRuleLinesAreEmittedPerStatement() {
@@ -1746,7 +1766,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(19)
     @DisplayName("the malformed table tag is emitted unrepaired, and the markup path uses literal "
             + "constants with no templating engine")
     void theMalformedTableTagIsEmittedUnrepaired() {
@@ -1754,21 +1773,21 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                 .as("two adjacent spaces after the element name, which is the malformation")
                 .contains("<table  ");
 
-        assertThat(cleanRun.htmlRecords())
+        assertThat(this.cleanRun.htmlRecords())
                 .as("emitted exactly as the source emits it: not collapsed, not normalised, not"
                         + " repaired. Byte equivalence is the contract that this output has to"
                         + " satisfy; well-formed markup is not, and repairing the tag would fail a"
                         + " byte comparison while looking like an improvement")
                 .contains(atWidth(MALFORMED_TABLE_TAG, HTML_RECORD_WIDTH));
 
-        assertThat(cleanRun.htmlRecords())
+        assertThat(this.cleanRun.htmlRecords())
                 .as("the document preamble and its close are likewise invariant literals emitted in"
                         + " source order - there is no template to interpolate, no whitespace"
                         + " normalisation and no ordering variability for a comparison to trip over")
                 .contains(atWidth(HTML_DOCUMENT_TYPE, HTML_RECORD_WIDTH))
                 .contains(atWidth(HTML_DOCUMENT_CLOSE, HTML_RECORD_WIDTH));
 
-        assertThat(cleanRun.htmlRecords().getFirst())
+        assertThat(this.cleanRun.htmlRecords().getFirst())
                 .as("and the preamble is genuinely first, which a templating engine reordering its"
                         + " fragments would not guarantee")
                 .isEqualTo(atWidth(HTML_DOCUMENT_TYPE, HTML_RECORD_WIDTH));
@@ -1779,7 +1798,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(20)
     @DisplayName("a markup-significant byte in seeded data reaches the produced markup artefact "
             + "verbatim, and no character reference appears anywhere in it (DL-209)")
     void seededMarkupSignificantBytesReachTheArtefactVerbatim() {
@@ -1790,7 +1808,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
         // the end - a byte-parity defect against this module's own hundred-byte oracle. Asserted here,
         // against the artefact a real run wrote through a real server, rather than only at the template
         // class, because that is where the defect was observable.
-        final List<String> markupBearing = cleanRun.htmlRecords().stream()
+        final List<String> markupBearing = this.cleanRun.htmlRecords().stream()
                 .filter(record -> record.indexOf('\'') >= 0)
                 .toList();
 
@@ -1811,7 +1829,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                     .contains(HTML_PARAGRAPH_CLOSE);
         }
 
-        final String whole = String.join("", cleanRun.htmlRecords());
+        final String whole = String.join("", this.cleanRun.htmlRecords());
         for (final String reference : HTML_CHARACTER_REFERENCES) {
             assertThat(whole)
                     .as("%s must not appear anywhere in the artefact: the emitting program encodes"
@@ -1821,7 +1839,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(20)
     @DisplayName("the file handler is an injected collaborator and its typed request round-trips all "
             + "four record types with their own status fields")
     void theFileHandlerRoundTripsAllFourRecordTypes() {
@@ -1885,7 +1902,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(21)
     @DisplayName("the five-hundred-byte customer layout the generator consumes is an alternate view "
             + "of the one customer entity, not a second entity")
     void theFiveHundredByteCustomerLayoutIsOneEntity() {
@@ -1910,7 +1926,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(22)
     @DisplayName("each of the four steps publishes its own timer, read for presence and shape only")
     void eachStepPublishesItsOwnTimer() {
         final List<String> stepNames = List.of(
@@ -1950,7 +1965,6 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(23)
     @DisplayName("the fifty-one by ten card table is the shape of the legacy working storage, and the "
             + "migrated job refuses to exceed it loudly rather than truncating silently")
     void theCardTableBoundIsStructuralAndIsEnforcedRatherThanTruncated() {
@@ -1963,7 +1977,7 @@ final class CreateStatementJobConfigIT extends AbstractPostgresIT {
                 .as("and a per-card transaction table of ten")
                 .isEqualTo(StatementGenerationService.MAX_TRANSACTIONS_PER_CARD);
 
-        assertThat(cleanRun.projectedRecords().size())
+        assertThat(this.cleanRun.projectedRecords().size())
                 .as("nothing truncates on the way in: the ordering step carries every row of the"
                         + " consolidated store into the work resource, far more rows than the card"
                         + " table has entries, because the bound applies to the tabulation and not to"

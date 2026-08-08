@@ -46,6 +46,8 @@ import com.carddemo.support.AbstractPostgresIT;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -60,7 +62,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
-import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.autoconfigure.tracing.prometheus.PrometheusExemplarsAutoConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -278,6 +279,17 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
             List.of("\"type\"", "\"title\"", "\"detail\"", "\"instance\"");
 
     /**
+     * Characters of a confidential value's digest a diagnostic is allowed to carry.
+     *
+     * <p>Eight is enough to tell two leaks apart and to correlate one failure with another, and far too
+     * few to invert. A longer prefix would edge towards being a value in its own right.
+     */
+    private static final int FINGERPRINT_CHARACTERS = 8;
+
+    /** Lower-case hexadecimal alphabet, written out so no locale-sensitive formatter is consulted. */
+    private static final char[] HEXADECIMAL = "0123456789abcdef".toCharArray();
+
+    /**
      * Members a framework or problem-detail representation would carry and this contract must not.
      *
      * <p>Quoted, so a match is a JSON member name rather than a coincidence inside a message. The error
@@ -410,10 +422,6 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
     @MockitoBean
     private JobExplorer jobExplorer;
 
-    /** Present because the launch service declares it; never stubbed. */
-    @MockitoBean
-    private JobOperator jobOperator;
-
     /** The launch port. Stubbed nowhere, so no test in this class can start a job. */
     @MockitoBean
     private BatchLaunchGateway batchLaunchGateway;
@@ -527,6 +535,16 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      * absent without any of them appearing in this file. Finally the session the request presented is
      * itself a credential, and is asserted absent for the same reason.
      *
+     * <h4>Why the secret and session assertions are made over a boolean</h4>
+     * A fluent {@code doesNotContain} renders <em>both</em> operands when it fails - the served body and
+     * the value it was searched for - so the one assertion set that exists to stop a secret escaping
+     * would itself have copied that secret, and the whole response, into the build log on the very run
+     * that detected the leak. Asserting the containment as a boolean keeps the diagnostic to the
+     * property name and a truncated one-way fingerprint, which is enough to identify what leaked and to
+     * correlate two failures, and is not enough to recover the value. The marker and framework-member
+     * assertions below stay fluent deliberately: their needles are public contract text rather than
+     * credentials, and seeing the served surface is what makes them diagnosable.
+     *
      * @param result the completed result whose whole served surface must disclose nothing
      * @throws Exception when the body cannot be read
      */
@@ -547,20 +565,62 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
                             member)
                     .doesNotContain(member);
         }
-        for (final String secret : configuredSecrets()) {
-            assertThat(body)
-                    .as("a configured secret reached the served body")
-                    .doesNotContain(secret);
-            assertThat(headersOf(result))
-                    .as("a configured secret reached a served header")
-                    .doesNotContain(secret);
+        final String headers = headersOf(result);
+        for (final ConfiguredSecret secret : configuredSecrets()) {
+            assertThat(body.contains(secret.value()))
+                    .as("the secret configured under %s reached the served body. Neither the value nor"
+                            + " the body is rendered here: a diagnostic that printed either would copy"
+                            + " the secret into the build log, which is the disclosure this assertion"
+                            + " exists to prevent. Fingerprint of the leaked value: %s",
+                            secret.propertyName(), secret.fingerprint())
+                    .isFalse();
+            assertThat(headers.contains(secret.value()))
+                    .as("the secret configured under %s reached a served header. Neither the value nor"
+                            + " the header set is rendered here, for the same reason. Fingerprint of the"
+                            + " leaked value: %s", secret.propertyName(), secret.fingerprint())
+                    .isFalse();
         }
-        assertThat(body)
-                .as("the session the request presented was echoed back into the body")
-                .doesNotContain(administrativeSession());
+        final String session = administrativeSession();
+        assertThat(body.contains(session))
+                .as("the session the request presented was echoed back into the body. The token is not"
+                        + " rendered here, because a signed bearer token is a credential for as long as"
+                        + " it is valid and a failure message is written to a log. Fingerprint of the"
+                        + " echoed token: %s", fingerprintOf(session))
+                .isFalse();
         assertThat(body)
                 .as("the boundary serves its own error contract, never a problem-detail document")
                 .doesNotContain(PROBLEM_DETAIL_MEMBERS.toArray(new String[0]));
+    }
+
+    /**
+     * One configured secret, carried so that an assertion can name it without rendering it.
+     *
+     * <p>The value is held because the absence assertion needs it, and nothing else may print it. The
+     * two accessors a diagnostic is allowed to use are {@link #propertyName()}, which identifies which
+     * setting leaked, and {@link #fingerprint()}, which is a truncated one-way digest - enough to
+     * correlate two failures with each other, not enough to reconstruct the value. {@link #toString()}
+     * is overridden for the same reason: a record's generated rendering would print every component,
+     * and this type reaches an assertion description.
+     *
+     * @param propertyName the configuration key the value was resolved from
+     * @param value        the resolved value, which no diagnostic may render
+     */
+    private record ConfiguredSecret(String propertyName, String value) {
+
+        /**
+         * Returns a non-reversible fingerprint of the value, safe to put in a failure message.
+         *
+         * @return the truncated digest
+         */
+        String fingerprint() {
+            return fingerprintOf(value());
+        }
+
+        /** Renders the key only, so an accidental interpolation cannot disclose the value. */
+        @Override
+        public String toString() {
+            return "ConfiguredSecret[" + propertyName() + " -> redacted/" + fingerprint() + "]";
+        }
     }
 
     /**
@@ -574,8 +634,8 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      *
      * @return every configured secret that resolves in this environment, never {@code null}
      */
-    private List<String> configuredSecrets() {
-        final List<String> resolved = new ArrayList<>(3);
+    private List<ConfiguredSecret> configuredSecrets() {
+        final List<ConfiguredSecret> resolved = new ArrayList<>(3);
         addIfPresent(resolved, "carddemo.security.jwt.secret");
         addIfPresent(resolved, "carddemo.security.field-encryption.key");
         addIfPresent(resolved, "carddemo.security.management.token");
@@ -588,11 +648,38 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
      * @param collected the accumulating list
      * @param name      the property to resolve
      */
-    private void addIfPresent(final List<String> collected, final String name) {
+    private void addIfPresent(final List<ConfiguredSecret> collected, final String name) {
         final String value = this.environment.getProperty(name);
         if (value != null && !value.isBlank()) {
-            collected.add(value);
+            collected.add(new ConfiguredSecret(name, value));
         }
+    }
+
+    /**
+     * Reduces a confidential value to a short one-way fingerprint that a failure message may carry.
+     *
+     * <p>SHA-256 truncated to eight hexadecimal characters. Two failures over the same value produce
+     * the same fingerprint, so a reviewer can tell whether one leak or two occurred, and no fingerprint
+     * yields the value it was taken from. Written out rather than delegated to a formatter that resolves
+     * the ambient default, so the rendering is identical on every host.
+     *
+     * @param  value the value to fingerprint
+     * @return eight hexadecimal characters of its digest
+     */
+    private static String fingerprintOf(final String value) {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (final NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is required of every Java platform", unavailable);
+        }
+        final byte[] hashed = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+        final StringBuilder rendered = new StringBuilder(FINGERPRINT_CHARACTERS);
+        for (int index = 0; index * 2 < FINGERPRINT_CHARACTERS; index++) {
+            final int unsigned = hashed[index] & 0xFF;
+            rendered.append(HEXADECIMAL[unsigned >>> 4]).append(HEXADECIMAL[unsigned & 0x0F]);
+        }
+        return rendered.toString();
     }
 
     /**
@@ -1809,4 +1896,3 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
         }
     }
 }
-

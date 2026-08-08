@@ -16,13 +16,6 @@
  */
 package com.carddemo.config;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.DeserializationContext;
-import com.fasterxml.jackson.databind.JsonDeserializer;
-import com.fasterxml.jackson.databind.deser.DeserializationProblemHandler;
-import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -49,7 +42,10 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.cfg.CoercionAction;
 import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
 import com.fasterxml.jackson.databind.deser.DeserializationProblemHandler;
+import com.fasterxml.jackson.databind.deser.std.StringDeserializer;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
+import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.databind.type.LogicalType;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,7 +54,6 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
-import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -108,8 +103,17 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * this framework at all, and the mapper-level scalar-coercion switch does not govern it either, so it is
  * closed by {@link #strictScalarCoercionCustomizer()} below.
  *
- * <p>That method is the one builder interaction this class permits, and the distinction is exact.
- * {@link Jackson2ObjectMapperBuilderCustomizer} beans are consulted <em>by</em> the auto-configuration,
+ * <p><strong>2b. A text value carrying a transport control character is refused at the reader.</strong>
+ * Width was the only property checked on an inbound screen field, so an embedded newline bound, passed
+ * every edit and was stored - and was met far later by the fixed-length record writer that cannot carry
+ * it. {@link #controlCharacterRefusingTextCustomizer()} closes that at the boundary. It is expressed on
+ * the reader rather than as a per-field constraint because two components of the account-update contract
+ * are required to carry no constraint at all, and because the rule is a statement about the transport
+ * rather than a new business edit: the estate's input device cannot transmit one of these codes, so
+ * refusing them rejects nothing the original accepted.
+ *
+ * <p>Those three methods are the only builder interactions this class permits, and the distinction is
+ * exact. {@link Jackson2ObjectMapperBuilderCustomizer} beans are consulted <em>by</em> the auto-configuration,
  * against the very builder that already carries the four settings above: the framework's own customiser
  * applies {@code spring.jackson.*} first and every additional customiser runs afterwards on the same
  * builder. Nothing is re-derived, no mapper is constructed here and no setting is restated, so the four
@@ -374,6 +378,68 @@ public final class WebMvcConfig implements WebMvcConfigurer {
     }
 
     /**
+     * Refuses a transport control character anywhere in an inbound text value, before it is bound.
+     *
+     * <p><strong>The defect this closes.</strong> Every screen field on this surface is external text of
+     * a declared width, and the widths were the only thing checked. A body carrying
+     * {@code "VALID\nPOISON"} in a transaction description or an address line therefore bound, passed
+     * every field edit, and was written to the store - because a newline is a perfectly ordinary
+     * character to a width check. The byte was met much later and much further away: the statement
+     * generator moves a stored field into a fixed-length record and refuses a control byte there,
+     * because one embedded newline splits a hundred-byte record into two and destroys the byte-parity
+     * contract of the whole artefact. So a value accepted at the boundary failed a batch run hours
+     * afterwards, at a point where the only remedy is to correct stored data. The guard belongs where
+     * the value arrives.
+     *
+     * <p><strong>Why this is a transport rule and not a field edit.</strong> The estate's input device
+     * cannot transmit one of these bytes: a 3270 field carries displayable characters, and the control
+     * codes are the datastream's own framing rather than field content. Refusing them therefore rejects
+     * nothing the legacy system would have accepted, which is what makes the rule a statement about the
+     * transport rather than a new business validation. That distinction is load-bearing here. Two
+     * components of the account-update contract - the middle name and the second address line - are
+     * deliberately unannotated, because the program they reproduce codes no edit for either and any
+     * constraint on them would refuse input the original accepted. A guard expressed as a per-field
+     * annotation could not cover those two without breaking that requirement, and a guard that skipped
+     * them would leave the exposure open on exactly the fields with no other check. Placing the rule on
+     * the reader covers every text value on every body uniformly, adds no constraint to any contract
+     * type, and leaves the published schema unchanged.
+     *
+     * <p><strong>What is refused, and what is deliberately not.</strong> The refusal is the C0 range
+     * {@code U+0000}-{@code U+001F}, the delete character {@code U+007F}, and the C1 range
+     * {@code U+0080}-{@code U+009F}. Nothing else is touched: a printable character binds, an empty
+     * string is still an empty string, a blank field is still blank, an absent property is still
+     * absent, and an explicit {@code null} is still {@code null} - so the ordered emptiness cascades
+     * that own the resulting screen messages are reached exactly as before. Case, spacing, punctuation
+     * and every non-ASCII printable character are carried through untouched, because this is a refusal
+     * and never a rewrite: a rule that silently stripped a byte would shift every byte after it and
+     * would be a byte-parity defect of its own.
+     *
+     * <p><strong>What this does not claim to close.</strong> Printable markup remains storable and is
+     * still emitted byte for byte into the HTML statement artefact, because that artefact is compared
+     * byte for byte against the emitting program's own output and escaping it would fail that
+     * comparison. That residual is a property of the legacy design, is stated on
+     * {@link com.carddemo.util.StatementHtmlTemplates} where the emission happens, and is recorded in
+     * {@code docs/decision-log.md} entries DL-209 and DL-267. What this bean closes is the control-byte path, which is the half
+     * of the exposure that produces a failing batch and a corrupted fixed-length record rather than a
+     * rendering concern.
+     *
+     * <p>The refusal is raised as an ordinary mapping failure against the resolved property path, so
+     * {@link com.carddemo.api.GlobalExceptionHandler} answers {@code 400} naming the offending declared
+     * property with state {@code INVALID} and <strong>never echoes the rejected value</strong> - the
+     * same treatment a wrong-shaped scalar already receives.
+     *
+     * @return an additive customiser that installs one text reader over the builder the
+     *     auto-configuration already owns; it changes no {@code spring.jackson.*} setting and
+     *     re-derives nothing
+     */
+    @Bean
+    public Jackson2ObjectMapperBuilderCustomizer controlCharacterRefusingTextCustomizer() {
+        final SimpleModule module = new SimpleModule("carddemo-control-character-refusal");
+        module.addDeserializer(String.class, new ControlCharacterRefusingStringDeserializer());
+        return builder -> builder.postConfigurer(mapper -> mapper.registerModule(module));
+    }
+
+    /**
      * The validator every request-body and parameter constraint is checked by, with its message
      * rendering pinned to one locale so that a field error is the same bytes everywhere.
      *
@@ -491,6 +557,87 @@ public final class WebMvcConfig implements WebMvcConfigurer {
         return Math.toIntExact(bytes);
     }
 
+    /**
+     * Reader that binds an inbound text value only when it carries no transport control character.
+     *
+     * <p>Every accepted value is handed on <strong>byte for byte</strong>: the reader delegates the read
+     * itself to the mapper's own text reader and then inspects the result, so nothing is trimmed,
+     * folded, normalised, stripped or re-encoded on the way through. The single decision it makes is to
+     * bind or to refuse, which is the only decision that cannot disturb a fixed-width contract.
+     *
+     * <p>The refusal is a {@link MismatchedInputException} raised through the parser, which is what
+     * places the resolved property path on it. That path is what lets the module's error boundary name
+     * the offending property; the rejected value is never attached and never logged here.
+     *
+     * <p>Stateless and therefore safe for concurrent use, which is required of a reader the mapper
+     * shares across every request.
+     */
+    static final class ControlCharacterRefusingStringDeserializer extends JsonDeserializer<String> {
+
+        /** Highest code point in the C0 control range. */
+        private static final char C0_RANGE_END = '\u001F';
+
+        /** The delete character, which is a control code that sits outside the C0 range. */
+        private static final char DELETE_CHARACTER = '\u007F';
+
+        /** Lowest code point in the C1 control range, the first code point above delete. */
+        private static final char C1_RANGE_START = '\u0080';
+
+        /** Highest code point in the C1 control range. */
+        private static final char C1_RANGE_END = '\u009F';
+
+        /**
+         * Summary the refusal carries, which names the rule and never the value.
+         *
+         * <p>Deliberately free of the offending character and of its position. The boundary answers with
+         * the module's own neutral summary and the property name, and a message that quoted the byte
+         * would put caller-supplied content into a diagnostic that is written to a log.
+         */
+        private static final String REFUSAL =
+                "a text value must not contain a transport control character";
+
+        /** Creates the reader. */
+        ControlCharacterRefusingStringDeserializer() {
+            // Intentionally empty: the reader holds no state.
+        }
+
+        /**
+         * Binds one text value, refusing it when it carries a control character.
+         *
+         * @param  parser  the parser positioned on the value, never {@code null} when invoked by the
+         *                 mapper
+         * @param  context the deserialization context, never {@code null} when invoked by the mapper
+         * @return the value exactly as the mapper's own text reader produced it, or {@code null} where
+         *         that reader produces {@code null}
+         * @throws IOException if the underlying read fails, or the value carries a control character
+         */
+        @Override
+        public String deserialize(final JsonParser parser, final DeserializationContext context)
+                throws IOException {
+            final String value = StringDeserializer.instance.deserialize(parser, context);
+            if (value == null) {
+                return null;
+            }
+            for (int position = 0; position < value.length(); position++) {
+                if (isTransportControl(value.charAt(position))) {
+                    throw MismatchedInputException.from(parser, String.class, REFUSAL);
+                }
+            }
+            return value;
+        }
+
+        /**
+         * Reports whether one character is a transport control code rather than field content.
+         *
+         * @param  character the character to classify
+         * @return {@code true} for the C0 range, the delete character and the C1 range
+         */
+        private static boolean isTransportControl(final char character) {
+            return character <= C0_RANGE_END
+                    || character == DELETE_CHARACTER
+                    || character >= C1_RANGE_START && character <= C1_RANGE_END;
+        }
+    }
 
     /**
      * Filter that rejects both declared-length and chunked bodies above the same finite limit.

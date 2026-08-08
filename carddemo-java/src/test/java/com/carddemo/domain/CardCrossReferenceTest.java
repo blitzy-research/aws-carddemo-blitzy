@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -50,7 +51,6 @@ class CardCrossReferenceTest {
     /** The stand-in the entity prints in place of any populated identifier. */
     private static final String REDACTION_PLACEHOLDER = "***REDACTED***";
 
-    /** Width of the customer identifier field. */
     private static final int CUSTOMER_ID_WIDTH = 9;
 
     private static final int ACCOUNT_ID_WIDTH = 11;
@@ -198,7 +198,7 @@ class CardCrossReferenceTest {
         void theConstructorTakesItsArgumentsInCopybookOrder() {
             final CardCrossReference row = firstRow();
 
-            assertThat(row.getXrefCardNum()).isEqualTo(FIRST_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUMBER));
             assertThat(row.getXrefCustId()).isEqualTo(FIRST_CUSTOMER_ID);
             assertThat(row.getXrefAcctId()).isEqualTo(FIRST_ACCOUNT_ID);
         }
@@ -318,7 +318,7 @@ class CardCrossReferenceTest {
 
             row.setXrefCardNum(SECOND_CARD_NUMBER);
 
-            assertThat(row.getXrefCardNum()).isEqualTo(SECOND_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(SECOND_CARD_NUMBER));
             assertThat(row.getXrefCustId()).isEqualTo(FIRST_CUSTOMER_ID);
             assertThat(row.getXrefAcctId()).isEqualTo(FIRST_ACCOUNT_ID);
         }
@@ -332,7 +332,7 @@ class CardCrossReferenceTest {
             row.setXrefCustId(SECOND_CUSTOMER_ID);
 
             assertThat(row.getXrefCustId()).isEqualTo(SECOND_CUSTOMER_ID);
-            assertThat(row.getXrefCardNum()).isEqualTo(FIRST_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUMBER));
             assertThat(row.getXrefAcctId()).isEqualTo(FIRST_ACCOUNT_ID);
         }
 
@@ -345,7 +345,7 @@ class CardCrossReferenceTest {
             row.setXrefAcctId(SECOND_ACCOUNT_ID);
 
             assertThat(row.getXrefAcctId()).isEqualTo(SECOND_ACCOUNT_ID);
-            assertThat(row.getXrefCardNum()).isEqualTo(FIRST_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUMBER));
             assertThat(row.getXrefCustId()).isEqualTo(FIRST_CUSTOMER_ID);
         }
 
@@ -359,7 +359,7 @@ class CardCrossReferenceTest {
             final CardCrossReference row =
                     new CardCrossReference(blankBearing, blankBearing, blankBearing);
 
-            assertThat(row.getXrefCardNum()).isEqualTo(blankBearing);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(blankBearing));
             assertThat(row.getXrefCustId()).isEqualTo(blankBearing);
             assertThat(row.getXrefAcctId()).isEqualTo(blankBearing);
             assertThat(asciiWidth(row.getXrefCardNum()))
@@ -376,7 +376,7 @@ class CardCrossReferenceTest {
 
             row.setXrefCardNum(mixedCase);
 
-            assertThat(row.getXrefCardNum()).isEqualTo(mixedCase);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(mixedCase));
             assertThat(asciiWidth(row.getXrefCardNum())).isEqualTo(CARD_NUMBER_WIDTH);
         }
 
@@ -476,7 +476,9 @@ class CardCrossReferenceTest {
         void theCardNumberKeepsItsLeadingZero() {
             final CardCrossReference row = firstRow();
 
-            assertThat(row.getXrefCardNum()).startsWith("0");
+            assertThat(row.getXrefCardNum().startsWith("0"))
+                    .as("the stored key keeps its leading zero, which a numeric round trip would drop")
+                    .isTrue();
             assertThat(asciiWidth(row.getXrefCardNum())).isEqualTo(CARD_NUMBER_WIDTH);
         }
     }
@@ -630,7 +632,7 @@ class CardCrossReferenceTest {
         void noFillerPropertyExists() {
             final CardCrossReference row = firstRow();
 
-            assertThat(row.getXrefCardNum()).isEqualTo(FIRST_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUMBER));
             assertThat(row.getXrefCustId()).isEqualTo(FIRST_CUSTOMER_ID);
             assertThat(row.getXrefAcctId()).isEqualTo(FIRST_ACCOUNT_ID);
 
@@ -780,7 +782,7 @@ class CardCrossReferenceTest {
             final CardCrossReference row =
                     new CardCrossReference(cardNumber, customerId, accountId);
 
-            assertThat(row.getXrefCardNum()).isEqualTo(cardNumber);
+            assertThat(SensitiveValues.fingerprint(row.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(cardNumber));
             assertThat(row.getXrefCustId()).isEqualTo(customerId);
             assertThat(row.getXrefAcctId()).isEqualTo(accountId);
             assertThat(asciiWidth(row.getXrefCardNum())).isEqualTo(CARD_NUMBER_WIDTH);

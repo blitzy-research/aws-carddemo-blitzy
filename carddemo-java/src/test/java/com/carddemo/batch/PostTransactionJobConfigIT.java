@@ -44,6 +44,8 @@ import com.carddemo.service.AbendService;
 import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.LegacyRejectReasons;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 import io.awspring.cloud.s3.S3Operations;
@@ -1185,13 +1187,20 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
                 .as("NO REJECT RECORD CAN EVER BEAR THE ACCOUNT-REWRITE CODE. It is set downstream of"
                         + " the posting mainline, on a record that has already posted, and the routing"
                         + " decision is taken on whether the record posted rather than on whether it"
-                        + " carries a reason code")
+                        + " carries a reason code. That arm is entered POSITIVELY in"
+                        + " RejectReasonArmsIT, which watches the run set the code and then post the"
+                        + " record anyway - so this absence is a consequence of inertness rather than"
+                        + " of the arm never being reached")
                 .doesNotContain(fourDigitForm(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE));
         assertThat(reasonFields)
-                .as("and none bears the account-read code either: the cross-reference table's own"
-                        + " foreign key to the account table makes the dangling row that reason needs"
-                        + " impossible in the migrated schema, which is a documented strengthening"
-                        + " rather than a lost behaviour")
+                .as("and none bears the account-read code either, because the cross-reference table's"
+                        + " foreign key to the account table makes the dangling row impossible in the"
+                        + " migrated schema - a documented strengthening rather than a lost behaviour."
+                        + " Note precisely what that argues: the SCHEMA cannot produce the state, not"
+                        + " that the CODE PATH is unreachable. RejectReasonArmsIT enters it by making"
+                        + " the account read itself report the absence the legacy INVALID KEY arm"
+                        + " reported, and watches a real 430-byte record carrying %s leave the system",
+                        fourDigitForm(RejectReason.ACCOUNT_NOT_FOUND_ON_READ))
                 .doesNotContain(fourDigitForm(RejectReason.ACCOUNT_NOT_FOUND_ON_READ));
 
         // A REFUSED RECORD POSTS NOTHING. The posting mainline runs only when the reason code is zero,
@@ -1222,14 +1231,21 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * The four-digit zero-filled form of one reason code, derived independently of the writer.
+     * The four-digit zero-filled form of one reason code, taken from the transcription of the legacy
+     * source rather than from the shipped constant that was passed in.
      *
-     * @param  reason the reason
-     * @return its four-digit form
+     * <p>This helper used to read {@code reason.getReasonCode()}, which made every comparison built on it
+     * a comparison of the implementation against itself: a code recorded wrongly in the enumeration
+     * produced a wrongly-agreeing expectation and a passing test over a file no consumer could read. It now
+     * names the constant and asks {@link LegacyRejectReasons} which four digits the legacy source moves at
+     * the site that constant stands for, so a drift in the enumeration changes the produced field without
+     * moving the expectation.
+     *
+     * @param  reason the reason, used to name the transcribed entry rather than to supply its value
+     * @return its four-digit form as the legacy source sets it
      */
     private static String fourDigitForm(final RejectReason reason) {
-        return TestDataFactory.digits(Integer.toString(reason.getReasonCode()), REASON_CODE_WIDTH,
-                "reject reason code");
+        return TestDataFactory.transcribedReasonFor(reason).fourDigitCode();
     }
 
     @Test
@@ -1328,7 +1344,7 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
                         + " form of the ordering")
                 .isPresent();
 
-        assertThat(postedPurchase.getTranCardNum()).isEqualTo(PURCHASE_CARD);
+        assertThat(SensitiveValues.fingerprint(postedPurchase.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(PURCHASE_CARD));
         assertThat(postedPurchase.getTranAmt()).isEqualByComparingTo(PURCHASE_AMOUNT);
         assertThat(postedReturn.getTranAmt()).isEqualByComparingTo(RETURN_AMOUNT);
 
@@ -1626,53 +1642,92 @@ class PostTransactionJobConfigIT extends AbstractPostgresIT {
                 .isEqualTo(VALIDATION_TRAILER_WIDTH)
                 .isEqualTo(TransactionPostingService.VALIDATION_TRAILER_LENGTH);
 
-        // ---- EVERY REASON'S TRAILER, DERIVED INDEPENDENTLY AND MEASURED IN ENCODED BYTES. ----
+        // ---- EVERY REASON'S TRAILER: THE PRODUCTION ASSEMBLER AGAINST THE TRANSCRIPTION. ----
+        //
+        // This block used to build its expectation from the very enumeration it was checking - it read
+        // getReasonCode() and getDescription() and then asserted that the trailer contained them - so a
+        // wrong code in the enumeration produced a wrongly-agreeing expectation and a passing test over a
+        // file no consumer could read. It now drives the PRODUCTION trailer assembler,
+        // RejectRecordWriter.validationTrailer, and compares its bytes against LegacyRejectReasons, a hand
+        // transcription of the legacy source that imports nothing from the shipped types.
         assertThat(RejectReason.values())
                 .as("the estate sets five reject reasons and no more")
+                .hasSize(LegacyRejectReasons.REASONS.size())
                 .hasSize(5);
-        for (final RejectReason reason : RejectReason.values()) {
-            final String trailer =
-                    TestDataFactory.rejectTrailer(reason.getReasonCode(), reason.getDescription());
-            final int described = encodedWidth(reason.getDescription());
+        for (final LegacyRejectReasons.Reason transcribed : LegacyRejectReasons.REASONS) {
+            final RejectReason shipped = RejectReason.byReasonCode(transcribed.code())
+                    .orElseThrow(() -> new AssertionError("the legacy source sets reason "
+                            + transcribed.fourDigitCode() + " at " + transcribed.sourceLocation()
+                            + ", but the shipped enumeration recognises no such code"));
+            assertThat(shipped.name())
+                    .as("%s must be recovered as the reason that arises when %s, because the two"
+                            + " account-not-found reasons share one description and are told apart by"
+                            + " nothing but these four digits",
+                            transcribed.fourDigitCode(), transcribed.role())
+                    .isEqualTo(transcribed.shippedConstantName());
+
+            final String trailer = RejectRecordWriter.validationTrailer(shipped);
+            final int described = encodedWidth(transcribed.description());
             assertThat(encodedWidth(trailer))
-                    .as("the trailer of reason %d is exactly %d encoded bytes",
-                            reason.getReasonCode(), VALIDATION_TRAILER_WIDTH)
+                    .as("the trailer the PRODUCTION assembler emits for %s is exactly %d encoded bytes",
+                            transcribed.fourDigitCode(), VALIDATION_TRAILER_WIDTH)
                     .isEqualTo(VALIDATION_TRAILER_WIDTH);
+            assertThat(trailer)
+                    .as("and it is the eighty characters the legacy source's own values produce:"
+                            + " %s zero-filled on the left, then the description the source moves at"
+                            + " %s, blank-padded on the right", transcribed.fourDigitCode(),
+                            transcribed.sourceLocation())
+                    .isEqualTo(transcribed.trailer());
             assertThat(trailer.substring(0, REASON_CODE_WIDTH))
                     .as("the reason field is numeric and fixed width, so the code is zero-filled on the"
                             + " left to four digits")
-                    .isEqualTo(fourDigitForm(reason));
+                    .isEqualTo(transcribed.fourDigitCode());
             assertThat(trailer.substring(REASON_CODE_WIDTH, REASON_CODE_WIDTH + described))
                     .as("the description occupies the front of its field verbatim")
-                    .isEqualTo(reason.getDescription());
+                    .isEqualTo(transcribed.description());
             assertThat(trailer.substring(REASON_CODE_WIDTH + described))
                     .as("and the remaining %d bytes of the seventy-six character field are blanks -"
                             + " never trimmed away, because the field is fixed width",
                             REASON_DESCRIPTION_WIDTH - described)
                     .isEqualTo(" ".repeat(REASON_DESCRIPTION_WIDTH - described))
                     .hasSize(REASON_DESCRIPTION_WIDTH - described);
+            assertThat(encodedWidth(RejectRecordWriter.failReasonDescriptionField(shipped)))
+                    .as("the production description field is the full seventy-six bytes for %s",
+                            transcribed.fourDigitCode())
+                    .isEqualTo(REASON_DESCRIPTION_WIDTH);
         }
 
-        // The five measured description widths and the blank padding each of them leaves.
-        assertThat(encodedWidth(RejectReason.INVALID_CARD_NUMBER.getDescription())).isEqualTo(25);
-        assertThat(encodedWidth(RejectReason.ACCOUNT_NOT_FOUND_ON_READ.getDescription()))
-                .isEqualTo(24);
-        assertThat(encodedWidth(RejectReason.OVERLIMIT_TRANSACTION.getDescription())).isEqualTo(21);
-        assertThat(encodedWidth(
-                RejectReason.TRANSACTION_AFTER_ACCOUNT_EXPIRATION.getDescription())).isEqualTo(42);
-        assertThat(encodedWidth(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE.getDescription()))
-                .isEqualTo(24);
+        // The five description widths, measured against the transcription rather than against the
+        // enumeration, and each asserted to be what the production accessor actually returns.
+        assertThat(LegacyRejectReasons.REASONS.stream()
+                        .map(reason -> encodedWidth(reason.description()))
+                        .toList())
+                .as("the five description lengths the legacy source moves, in ascending code order")
+                .containsExactly(25, 24, 21, 42, 24);
+        for (final LegacyRejectReasons.Reason transcribed : LegacyRejectReasons.REASONS) {
+            assertThat(RejectReason.byReasonCode(transcribed.code()).orElseThrow().getDescription())
+                    .as("reason %s carries the description the legacy source moves at %s, character"
+                            + " for character and unpadded", transcribed.fourDigitCode(),
+                            transcribed.sourceLocation())
+                    .isEqualTo(transcribed.description());
+        }
 
         // ---- THE TWO ACCOUNT-NOT-FOUND REASONS ARE ONE TEXT AND TWO CODES. ----
-        assertThat(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE.getDescription())
+        final LegacyRejectReasons.Reason transcribedOnRead =
+                LegacyRejectReasons.requireByCode(LegacyRejectReasons.ACCOUNT_NOT_FOUND_ON_READ_CODE);
+        final LegacyRejectReasons.Reason transcribedOnRewrite =
+                LegacyRejectReasons.requireByCode(LegacyRejectReasons.ACCOUNT_NOT_FOUND_ON_REWRITE_CODE);
+        assertThat(transcribedOnRewrite.description())
                 .as("identical description text, because the member moves the same literal on both"
                         + " arms")
-                .isEqualTo(RejectReason.ACCOUNT_NOT_FOUND_ON_READ.getDescription());
-        assertThat(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE.getReasonCode())
-                .as("DISTINCT CODES, AND THEY MUST NEVER BE FOLDED TOGETHER: the four-digit code is the"
-                        + " only thing that distinguishes a failed read from a failed rewrite, and the"
-                        + " two are raised on different operations at different points in the run")
-                .isNotEqualTo(RejectReason.ACCOUNT_NOT_FOUND_ON_READ.getReasonCode());
+                .isEqualTo(transcribedOnRead.description());
+        assertThat(RejectRecordWriter.validationTrailer(
+                        RejectReason.byReasonCode(transcribedOnRewrite.code()).orElseThrow()))
+                .as("DISTINCT TRAILERS, AND THEY MUST NEVER BE FOLDED TOGETHER: the four-digit code is"
+                        + " the only thing that distinguishes a failed read from a failed rewrite, and"
+                        + " the two are raised on different operations at different points in the run")
+                .isNotEqualTo(RejectRecordWriter.validationTrailer(
+                        RejectReason.byReasonCode(transcribedOnRead.code()).orElseThrow()));
         assertThat(fourDigitForm(RejectReason.ACCOUNT_NOT_FOUND_ON_READ)).isEqualTo("0101");
         assertThat(fourDigitForm(RejectReason.ACCOUNT_NOT_FOUND_ON_REWRITE)).isEqualTo("0109");
         assertThat(RejectReason.byReasonCode(101))

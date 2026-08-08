@@ -25,7 +25,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.Timeout;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -35,6 +37,7 @@ import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.ResponseInputStream;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -213,7 +216,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * <h2>Why the image tag is pinned, and pinned to this tag specifically</h2>
  * Tags on the 2026 line perform licence activation at start-up and exit rather than serve traffic
  * without an authorisation token, so a floating tag would make every queue test fail for a reason
- * unrelated to the code under test. This is the newest Community tag that starts token-free, and it
+ * unrelated to the code under test. The pinned tag is a Community tag that starts token-free, and it
  * is the same tag {@code carddemo-java/docker-compose.yml} pins, so a local run and a
  * continuous-integration run exercise the same emulator.
  *
@@ -247,6 +250,43 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * the fixed floor the profile documents declare - which is what demonstrates that a dynamic property
  * source really does outrank a property file. See {@code docs/decision-log.md} DL-104.</p>
  *
+ * <h2>Every call across this boundary is bounded, and in two independent places</h2>
+ * A test that reaches a transport can stall on it, and a stall is not a failure: nothing reports it and
+ * nothing ends it. The asynchronous operations below are consumed with {@code join}, which does not
+ * respond to interruption, and the {@value #DRAIN_DEADLINE_SECONDS}-second drain deadline is evaluated
+ * <em>between</em> calls, so it cannot end a single call that never returns. Left unbounded, one stalled
+ * socket holds the whole integration phase until the continuous-integration job's own ceiling fires,
+ * hours later, against a run whose diagnostic is by then long gone.
+ *
+ * <p>Two bounds close that, and they are deliberately at different levels because neither alone is
+ * sufficient:</p>
+ *
+ * <ul>
+ *   <li><strong>A finite call budget on every client.</strong> Each of the four clients carries
+ *       {@link #API_CALL_TIMEOUT} for a whole call and {@link #API_CALL_ATTEMPT_TIMEOUT} for one attempt
+ *       of it, so a stalled call completes its future exceptionally rather than never - which is what
+ *       makes a {@code join} finite. Both are set strictly below the drain deadline, so no single call
+ *       can outlive the loop deadline it is measured against.</li>
+ *   <li><strong>A finite budget on every test method.</strong> {@code @Timeout} on this class bounds
+ *       every test method of every subclass, and of every nested group within one, at
+ *       {@value #EXTERNAL_BOUNDARY_TIMEOUT_SECONDS} seconds. It is the backstop for a stall that is not
+ *       an SDK call at all, and a method that needs longer overrides it locally.</li>
+ * </ul>
+ *
+ * <p><strong>These budgets are the test harness's own and are not a statement about the migrated
+ * application.</strong> The queue definition this module reproduces is defined errors-ignored, and the
+ * shipped publisher carries no call budget of any kind by design - {@code com.carddemo.config.AwsConfig}
+ * sets a single attempt and nothing else, which {@code AwsConfigTest} asserts by requiring both budgets
+ * to be absent there. Bounding the harness therefore changes no production posture: it bounds the
+ * clients this class builds for its own assertions, and leaves the client under test exactly as it
+ * ships.</p>
+ *
+ * <p>What the method bound does <em>not</em> cover is worth stating, because the omission is
+ * deliberate. A class-level {@code @Timeout} applies to testable methods, not to lifecycle methods, and
+ * the emulator starts in this class's static initialiser rather than in either - so container start-up
+ * is governed by Testcontainers' own wait strategy and is not competing with a per-test budget that
+ * would have to be inflated to accommodate it.</p>
+ *
  * <p>Provenance: this support type has no legacy antecedent - the legacy estate carries no test
  * harness of any kind. It exists to serve tests of the queue that replaces
  * {@code TDQUEUE(JOBS)} as defined in {@code app/csd/CARDDEMO.CSD}, taken from checkout
@@ -256,6 +296,7 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * against one.</p>
  */
 @ActiveProfiles("test")
+@Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
 public abstract class AbstractLocalStackIT {
 
     /**
@@ -335,6 +376,45 @@ public abstract class AbstractLocalStackIT {
     protected static final int RECORD_SIZE = 80;
 
     /**
+     * Seconds any one test method of this tier may take before it is failed as stalled.
+     *
+     * <p>Applied by the {@code @Timeout} on this class, so it covers every test method of every subclass
+     * and of every nested group within one. The figure is several times the slowest method measured in
+     * this tier - the whole-pipeline end-to-end case, at eighteen seconds on a host running dozens of
+     * builds at once - so what it fails is a stall rather than a slow machine, and a method with a
+     * genuinely longer budget, such as the refused-transport cases that wait on a socket which never
+     * answers, states its own and overrides this one.</p>
+     *
+     * <p>Declared as a constant rather than written into the annotation because the annotation is on this
+     * class and {@link AbstractPostgresAndLocalStackIT} carries the same bound: one figure, referenced
+     * twice, cannot drift between the two entry points into this emulator.</p>
+     */
+    protected static final long EXTERNAL_BOUNDARY_TIMEOUT_SECONDS = 120L;
+
+    /** Seconds a drain will keep asking before it gives up, as a figure the class documentation cites. */
+    private static final long DRAIN_DEADLINE_SECONDS = 30L;
+
+    /**
+     * Whole-call budget for a client this class builds, retries included.
+     *
+     * <p>Below {@link #DRAIN_DEADLINE_SECONDS} on purpose: a drain checks its deadline between calls, so a
+     * call permitted to run longer than the deadline would let a loop that has already expired sit in a
+     * single request. Being below it means every iteration observes the deadline it is measured against.
+     * Wide enough for two full attempts, so a single slow response is retried rather than failed.</p>
+     */
+    private static final Duration API_CALL_TIMEOUT = Duration.ofSeconds(25);
+
+    /**
+     * Budget for one attempt of a call a client this class builds makes.
+     *
+     * <p>Every operation this class performs is one small request against an emulator on this same host -
+     * the largest body it ever sends is a single {@value #RECORD_SIZE}-character record - so ten seconds
+     * is a very wide margin, and wide enough to absorb the {@value #RECEIVE_WAIT_SECONDS}-second poll a
+     * receive call asks the service to hold its connection for.</p>
+     */
+    private static final Duration API_CALL_ATTEMPT_TIMEOUT = Duration.ofSeconds(10);
+
+    /**
      * The wildcard that asks the receive operation for every user message attribute.
      *
      * <p>A literal the service defines, and the only value that returns attributes a test did not name
@@ -348,8 +428,14 @@ public abstract class AbstractLocalStackIT {
     /** Seconds a receive call waits for a message before returning empty. */
     private static final int RECEIVE_WAIT_SECONDS = 1;
 
-    /** Upper bound on how long a drain will keep asking before giving up. */
-    private static final Duration DRAIN_DEADLINE = Duration.ofSeconds(30);
+    /**
+     * Upper bound on how long a drain will keep asking before giving up.
+     *
+     * <p>Composed from {@link #DRAIN_DEADLINE_SECONDS} rather than restating the figure, because the two
+     * call budgets above are set relative to this deadline and the relation has to survive a later edit
+     * to either.</p>
+     */
+    private static final Duration DRAIN_DEADLINE = Duration.ofSeconds(DRAIN_DEADLINE_SECONDS);
 
     /** The one emulator every subclass shares. */
     private static final LocalStackContainer LOCALSTACK = startEmulator();
@@ -407,6 +493,27 @@ public abstract class AbstractLocalStackIT {
     }
 
     /**
+     * The call budgets every client this class builds carries.
+     *
+     * <p>Built per client rather than held as a shared instance only because the configuration object is
+     * cheap and building it beside each client keeps the four builders reading identically. What matters
+     * is that all four go through this one method, so no client can be added later that reaches the
+     * emulator without a budget: an unbudgeted call is the failure this exists to prevent, and it is
+     * invisible when it happens.</p>
+     *
+     * <p>This is the harness's own posture and says nothing about the shipped publisher, which carries no
+     * budget deliberately. See the class documentation.</p>
+     *
+     * @return the override configuration to apply to a client this class builds
+     */
+    private static ClientOverrideConfiguration boundedCallConfiguration() {
+        return ClientOverrideConfiguration.builder()
+                .apiCallTimeout(API_CALL_TIMEOUT)
+                .apiCallAttemptTimeout(API_CALL_ATTEMPT_TIMEOUT)
+                .build();
+    }
+
+    /**
      * Builds the client the tests publish and receive through.
      *
      * @return a client bound to the running emulator
@@ -417,6 +524,7 @@ public abstract class AbstractLocalStackIT {
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
                         LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .overrideConfiguration(boundedCallConfiguration())
                 .build();
     }
 
@@ -427,6 +535,7 @@ public abstract class AbstractLocalStackIT {
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
                         LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .overrideConfiguration(boundedCallConfiguration())
                 .build();
     }
 
@@ -438,6 +547,7 @@ public abstract class AbstractLocalStackIT {
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
                         LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
                 .forcePathStyle(true)
+                .overrideConfiguration(boundedCallConfiguration())
                 .build();
     }
 
@@ -448,6 +558,7 @@ public abstract class AbstractLocalStackIT {
                 .region(Region.of(LOCALSTACK.getRegion()))
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(
                         LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey())))
+                .overrideConfiguration(boundedCallConfiguration())
                 .build();
     }
 
@@ -915,18 +1026,36 @@ public abstract class AbstractLocalStackIT {
         return status == null ? BucketVersioningStatus.UNKNOWN_TO_SDK_VERSION : status;
     }
 
-    /** Stores one exact byte image. */
+    /**
+     * Stores one exact byte image, with no transformation of the content.
+     *
+     * @param bucket  the bucket to store into; must not be {@code null}
+     * @param key     the object key to store under; must not be {@code null}
+     * @param content the exact bytes to store; must not be {@code null}
+     */
     protected static void putObject(final String bucket, final String key, final byte[] content) {
         S3_CLIENT.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(),
                 RequestBody.fromBytes(content));
     }
 
-    /** Removes one object; S3 treats an absent key as success. */
+    /**
+     * Removes one object. The service treats an absent key as success, so this is idempotent.
+     *
+     * @param bucket the bucket to remove from; must not be {@code null}
+     * @param key    the object key to remove; must not be {@code null}
+     */
     protected static void deleteObject(final String bucket, final String key) {
         S3_CLIENT.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
     }
 
-    /** Reads one object back as exact bytes. */
+    /**
+     * Reads one object back as exact bytes.
+     *
+     * @param  bucket the bucket to read from; must not be {@code null}
+     * @param  key    the object key to read; must not be {@code null}
+     * @return the object's exact bytes, unmodified
+     * @throws java.io.UncheckedIOException if the object body cannot be read
+     */
     protected static byte[] objectBytes(final String bucket, final String key) {
         try (ResponseInputStream<GetObjectResponse> body = S3_CLIENT.getObject(
                 GetObjectRequest.builder().bucket(bucket).key(key).build())) {
@@ -956,7 +1085,13 @@ public abstract class AbstractLocalStackIT {
                 .toList();
     }
 
-    /** Reports whether one object exists without reading its body. */
+    /**
+     * Reports whether one object exists, without reading its body.
+     *
+     * @param  bucket the bucket to inspect; must not be {@code null}
+     * @param  key    the object key to look for; must not be {@code null}
+     * @return whether the store holds an object under that key
+     */
     protected static boolean objectExists(final String bucket, final String key) {
         try {
             S3_CLIENT.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());

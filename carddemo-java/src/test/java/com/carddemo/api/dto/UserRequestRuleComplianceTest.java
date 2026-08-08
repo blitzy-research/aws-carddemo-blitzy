@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamWriteFeature;
@@ -609,7 +610,7 @@ class UserRequestRuleComplianceTest {
             assertThat(request.searchUserId()).isEqualTo(USER_ID);
             assertThat(request.firstName()).isEqualTo("FIRSTNAME");
             assertThat(request.lastName()).isEqualTo("LASTNAME");
-            assertThat(request.password()).isEqualTo("PASSWORD");
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("PASSWORD"));
             assertThat(request.userType()).isEqualTo("A");
             assertThat(request.rowSelections()).containsExactly("U", "D");
             assertThat(request.displayedPageNumber()).isEqualTo("00000001");

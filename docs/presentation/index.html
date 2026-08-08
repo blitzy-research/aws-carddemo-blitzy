@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<!--
+  Copyright Amazon.com, Inc. or its affiliates.
+  All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License").
+  You may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific
+  language governing permissions and limitations under the License
+
+  Migration summary deck. Deliberately a single self-contained file with no external
+  stylesheet, script or font: it must render from the file system, from the published
+  documentation site and from an offline CI runner alike, and a CDN reference would make
+  the deck's appearance depend on a network the gates do not require.
+
+  Provenance of the migrated estate: checkout SHA 7756d895ffeb65f7ea72aaa609e356d9899afcec,
+  upstream release stamp CardDemo_v1.0-15-g27d6c6f-68 dated 2022-07-19.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWS CardDemo — COBOL to Java 25 Migration Summary</title>
+<style>
+  :root {
+    --ink: #14243a;
+    --muted: #5a6b80;
+    --rule: #d7dee8;
+    --accent: #1f6feb;
+    --legacy: #8a5a00;
+    --page: #ffffff;
+    --panel: #f5f8fc;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #e9eef5;
+    color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header.deck {
+    background: var(--ink);
+    color: #fff;
+    padding: 14px 22px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  header.deck b { font-size: 15px; letter-spacing: .01em; }
+  header.deck span { color: #b9c7d8; font-size: 13px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 22px 16px 60px; }
+  section.slide {
+    background: var(--page);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 26px 30px 30px;
+    margin: 0 0 22px;
+  }
+  section.slide > h2 {
+    margin: 0 0 4px;
+    font-size: 23px;
+    line-height: 1.25;
+  }
+  section.slide > p.lede { margin: 0 0 18px; color: var(--muted); }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 14px; font-size: 14.5px; }
+  th, td { border-bottom: 1px solid var(--rule); padding: 7px 9px; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13.5px;
+  }
+  ul { margin: 6px 0 14px; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 4px 0 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; }
+  .stat b { display: block; font-size: 25px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--panel);
+    padding: 10px 14px;
+    margin: 14px 0;
+    font-size: 14.5px;
+  }
+  .warn { border-left-color: var(--legacy); }
+  .from { color: var(--legacy); }
+  footer.deck { color: var(--muted); font-size: 13px; text-align: center; padding: 0 16px 40px; }
+  a { color: var(--accent); }
+  @media print {
+    body { background: #fff; }
+    section.slide { break-after: page; border: none; margin: 0; }
+    header.deck { background: #fff; color: #000; }
+  }
+</style>
+</head>
+<body>
+
+<header class="deck">
+  <b>AWS CardDemo — z/OS COBOL to Java 25 / Spring Boot</b>
+  <span>Migration summary &middot; SHA <span class="mono">7756d895</span> &middot; stamp <span class="mono">CardDemo_v1.0-15-g27d6c6f-68</span></span>
+</header>
+
+<main>
+
+<section class="slide">
+  <h2>1. What was migrated</h2>
+  <p class="lede">The whole estate, not a representative subset. Every program, every copybook and every
+  job member was read; one copybook was deliberately excluded and the exclusion is recorded as a decision.</p>
+
+  <div class="grid">
+    <div class="stat"><b>28</b><span>COBOL programs — 17 online, 10 batch, 1 shared subprogram</span></div>
+    <div class="stat"><b>19,254</b><span>lines of COBOL source</span></div>
+    <div class="stat"><b>28</b><span>copybooks, two of them procedural</span></div>
+    <div class="stat"><b>17</b><span>BMS mapsets and their 17 symbolic maps</span></div>
+    <div class="stat"><b>29</b><span>JCL members plus 2 cataloged procedures</span></div>
+    <div class="stat"><b>544</b><span>procedure units, every one traced</span></div>
+  </div>
+
+  <p>The 544 is <strong>528</strong> paragraphs in the programs' procedure divisions plus <strong>14</strong>
+  from the date-validation copybook and <strong>2</strong> from the function-key copybook. Each has a row in
+  <a href="../traceability-matrix.md">the traceability matrix</a> naming its source member, its line, its
+  target class, its target method and the test that covers it.</p>
+
+  <div class="note">
+    <strong>The legacy tree was never copied and never edited.</strong> The Java module is physically
+    disjoint at <span class="mono">carddemo-java/</span>; <span class="mono">app/</span> stays byte-identical
+    because it is simultaneously the parity baseline for every golden fixture and the anchor every
+    traceability row cites. Traceability is by citation, never by transcription.
+  </div>
+</section>
+
+<section class="slide">
+  <h2>2. What each legacy concern became</h2>
+  <p class="lede">Thirteen runtime concerns were replaced at once. The replacement was chosen so the legacy
+  behaviour stays <em>expressible</em>, not merely approximable.</p>
+
+  <table>
+    <thead><tr><th>Legacy</th><th>Target</th><th>What had to survive</th></tr></thead>
+    <tbody>
+      <tr><td class="from">CICS 3270, 17 mapsets, 24&times;80</td><td>Spring MVC REST controllers and DTOs</td><td>field widths, numeric typing, message text, page sizes</td></tr>
+      <tr><td class="from">COMMAREA carried across turns</td><td>JWT claims plus an echoed navigation context</td><td>the pseudo-conversation, without server-side state</td></tr>
+      <tr><td class="from">25 <span class="mono">XCTL</span> dispatches, 19 re-arms</td><td>route constants returned in the response</td><td>the dispatch graph; the client drives the next call</td></tr>
+      <tr><td class="from">10 VSAM KSDS, 3 alternate indexes</td><td>PostgreSQL 16, 11 tables, Flyway V1&ndash;V4</td><td>record layouts to the byte; business keys, never surrogates</td></tr>
+      <tr><td class="from">Browse: <span class="mono">STARTBR/READNEXT/READPREV</span></td><td><span class="mono">Pageable</span> repository queries</td><td>page size <em>and</em> fill direction</td></tr>
+      <tr><td class="from">JCL: 29 members, 79 program steps</td><td>9 Spring Batch jobs</td><td>step sequencing and the four condition-code gates</td></tr>
+      <tr><td class="from">One <span class="mono">WRITEQ TD QUEUE('JOBS')</span></td><td>SQS FIFO publish</td><td>80-byte fixed records, append order, ignore-on-error</td></tr>
+      <tr><td class="from">27 static <span class="mono">CALL</span> sites</td><td>constructor-injected beans</td><td>the <span class="mono">USING</span> linkage, as parameter objects</td></tr>
+      <tr><td class="from">DFSORT, 4 specifications</td><td>per-job comparators and JPQL predicates</td><td>per-job key <em>typing</em> — the same field is ZD in one job and CH in another</td></tr>
+      <tr><td class="from">217 <span class="mono">DISPLAY</span> statements</td><td>SLF4J, Actuator, Micrometer, OTLP</td><td>the diagnostics, now queryable</td></tr>
+      <tr><td class="from">No test harness of any kind</td><td>JUnit 5, Mockito, AssertJ, Testcontainers</td><td>&mdash; created, not migrated</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Only 9 of the 79 program steps invoke an application program.</strong> The other 70 are dataset
+  utilities, displays, sorts and null executions — they are absorbed by Flyway migrations, Compose service
+  definitions and test fixtures. That is why the module carries nine job configurations rather than 79.</p>
+</section>
+
+<section class="slide">
+  <h2>3. Faithful beats idiomatic</h2>
+  <p class="lede">Wherever COBOL semantics and natural Java diverged, COBOL won and the divergence was
+  written down. These are the decisions that would have compiled cleanly, read plausibly and been wrong.</p>
+
+  <h3>Arithmetic truncates, because nothing in the estate rounds</h3>
+  <p>The keyword <span class="mono">ROUNDED</span> appears <strong>zero</strong> times in 19,254 lines. A
+  COBOL store without it truncates toward zero, so every monetary scale uses
+  <span class="mono">RoundingMode.DOWN</span>. The conventional <span class="mono">HALF_EVEN</span> would
+  differ by one cent on roughly half of all interest computations — invisible to a test written under the
+  same wrong assumption, and a byte-parity failure.</p>
+
+  <h3>Expression order is preserved operand for operand</h3>
+  <p><span class="mono">( TRAN-CAT-BAL * DIS-INT-RATE) / 1200</span> multiplies first. Dividing the rate by
+  1200 first is algebraically identical and moves the truncation point, so it is prohibited.</p>
+
+  <h3>Defects are reproduced, not repaired</h3>
+  <ul>
+    <li>An <strong>empty fee paragraph</strong> is genuinely invoked and implements nothing. It survives as a
+      documented no-op. Inventing fee logic would be feature expansion and would change interest output.</li>
+    <li>The <strong>end-of-file control break is dead code</strong>: the last account's interest records are
+      written while its balance and cycle accumulators are never updated. Both halves are reproduced — the
+      final group accrues and emits, and its account is <em>not</em> rewritten.</li>
+    <li>Two account-update fields are <strong>decorated for error display but never validated</strong>. The
+      DTO adds no constraint to them, because that would reject input the legacy accepts.</li>
+    <li>An alphabetic check that blanks letters and trims <strong>passes embedded spaces</strong>. The
+      faithful predicate is "letter or space", not <span class="mono">allMatch(isLetter)</span>.</li>
+    <li>Fourteen source anomalies — misspelled field names, duplicated labels, a conflicting generation
+      limit — are recorded in the register and propagated into no new logic.</li>
+  </ul>
+
+  <div class="note warn">
+    <strong>Two deliberate departures, both labelled as improvements rather than translations.</strong>
+    The legacy compares an eight-character plaintext password directly; the target stores a BCrypt hash.
+    Every legacy file is defined with uncommitted reads, no recovery and no journal; the target runs
+    PostgreSQL READ COMMITTED with JPA <span class="mono">@Version</span>. Both are stronger than the
+    baseline, and saying so in the log is what stops a reviewer reading the stronger posture as a regression.
+  </div>
+</section>
+
+<section class="slide">
+  <h2>4. What the module delivers</h2>
+
+  <div class="grid">
+    <div class="stat"><b>20</b><span>HTTP operations over 19 paths</span></div>
+    <div class="stat"><b>9</b><span>independently launchable batch jobs</span></div>
+    <div class="stat"><b>11</b><span>tables, 4 Flyway migrations</span></div>
+    <div class="stat"><b>5</b><span>fixed output widths: 40, 80, 100, 133, 430</span></div>
+    <div class="stat"><b>0</b><span>reflection sites, native queries, process launches</span></div>
+    <div class="stat"><b>0</b><span>compiler warnings, enforced by <span class="mono">-Werror</span></span></div>
+  </div>
+
+  <table>
+    <thead><tr><th>Layer</th><th>What lives there</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">api</td><td>controllers and DTOs — the REST form of the 17 screen transactions, plus batch control</td></tr>
+      <tr><td class="mono">service</td><td>the paragraph-for-method translations; 26 services carry the 544 units</td></tr>
+      <tr><td class="mono">repository</td><td>11 Spring Data interfaces; the three alternate indexes became finders and one JPQL range</td></tr>
+      <tr><td class="mono">domain</td><td>entities at their verified byte widths, composite keys, and enums from 508 condition names</td></tr>
+      <tr><td class="mono">batch</td><td>9 job configurations and their step processors, over one shared template</td></tr>
+      <tr><td class="mono">util</td><td>the zoned-decimal codec, 11 hand-written fixed-width mappers, templates and formatters</td></tr>
+    </tbody>
+  </table>
+
+  <p>The mappers are hand-written on purpose. Gate 6 budgets <strong>zero</strong> reflection, and every
+  annotation-driven mapping library reintroduces it — so all eleven layouts are sliced by explicit offset.</p>
+</section>
+
+<section class="slide">
+  <h2>5. How it was proved</h2>
+  <p class="lede">Eight gates, all executed locally against real containers. No gate requires a production
+  environment, a staging environment or a running mainframe.</p>
+
+  <table>
+    <thead><tr><th>Gate</th><th>What it establishes</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>byte equivalence of the emitted records</td><td>one seeded pipeline pass; four goldens compared as byte arrays, not semantically</td></tr>
+      <tr><td>2</td><td>zero-warning build from a clean checkout</td><td><span class="mono">-Xlint:all -Werror</span> at <span class="mono">release 25</span> — mechanical, not asserted</td></tr>
+      <tr><td>3</td><td>a performance <em>baseline</em></td><td>measured per run: elapsed, peak heap and records/second from one run's own figures</td></tr>
+      <tr><td>4</td><td>the named validation artefacts</td><td>nine fixtures asserted by name, byte count, record count and uniform width</td></tr>
+      <tr><td>5</td><td>the external interface contracts</td><td>cards drained back out of a real queue; message texts over a real port</td></tr>
+      <tr><td>6</td><td>the unsafe-code audit</td><td>a scoped grep list, scoped to <span class="mono">src/main/java</span> so migrations are not miscounted</td></tr>
+      <tr><td>7</td><td>scope matching and the coverage floor</td><td>JaCoCo at 80% line coverage as a <em>failing check</em>, plus zero untested classes</td></tr>
+      <tr><td>8</td><td>the integration sign-off</td><td>one row per item, each derived from an artefact — never from a literal pass</td></tr>
+    </tbody>
+  </table>
+
+  <h3>The measured baseline, and what it is not</h3>
+  <table>
+    <thead><tr><th>Run</th><th class="num">Records</th><th class="num">Elapsed (ms)</th><th class="num">Peak heap (B)</th><th class="num">Rec/s</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">postTransactionJob</td><td class="num">300</td><td class="num">17,270</td><td class="num">458,049,824</td><td class="num">17.37</td></tr>
+      <tr><td class="mono">interestCalculationJob</td><td class="num">100</td><td class="num">2,600</td><td class="num">474,827,040</td><td class="num">38.46</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <strong>These are measurements, not thresholds, and nothing asserts them.</strong> No latency,
+    throughput, availability or capacity figure exists anywhere in the legacy estate, so there is nothing to
+    compare against: Gate 3 establishes the first Java baseline rather than testing one. Taken 2026-08-08 on
+    a 4-vCPU container with Temurin 25.0.3+9 and PostgreSQL 16.14. Re-measure on your own hardware rather
+    than quoting a row.
+  </div>
+</section>
+
+<section class="slide">
+  <h2>6. Where the detail lives</h2>
+  <table>
+    <thead><tr><th>Question</th><th>Document</th></tr></thead>
+    <tbody>
+      <tr><td>Which Java method is this COBOL paragraph?</td><td><a href="../traceability-matrix.md">traceability-matrix.md</a> — 544 rows</td></tr>
+      <tr><td>Why does it behave that way?</td><td><a href="../decision-log.md">decision-log.md</a> — every divergence, plus the 14-anomaly register</td></tr>
+      <tr><td>How is it put together?</td><td><a href="../architecture.md">architecture.md</a></td></tr>
+      <tr><td>How do I build, run and validate it?</td><td><a href="../onboarding-guide.md">onboarding-guide.md</a></td></tr>
+      <tr><td>What does each gate prove today?</td><td><a href="../gate-evidence.md">gate-evidence.md</a></td></tr>
+      <tr><td>What did the mainframe application do?</td><td><a href="../../README.md">the estate README</a></td></tr>
+    </tbody>
+  </table>
+  <p><strong>No feature was added.</strong> Nothing in the target does anything the COBOL did not already
+  do — no new screen, field, report or job — and the three places where that constraint was genuinely
+  tempting are named on slide 3.</p>
+</section>
+
+</main>
+
+<footer class="deck">
+  Migrated estate: checkout <span class="mono">7756d895ffeb65f7ea72aaa609e356d9899afcec</span>,
+  upstream release stamp <span class="mono">CardDemo_v1.0-15-g27d6c6f-68</span> (2022-07-19).
+  Licensed under the Apache License 2.0.
+</footer>
+
+</body>
+</html>

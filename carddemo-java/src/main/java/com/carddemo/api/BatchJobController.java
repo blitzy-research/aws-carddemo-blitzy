@@ -37,14 +37,7 @@ import java.util.Objects;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.batch.core.JobParametersInvalidException;
-import org.springframework.batch.core.UnexpectedJobExecutionException;
-import org.springframework.batch.core.launch.JobParametersNotFoundException;
 import org.springframework.batch.core.launch.NoSuchJobException;
-import org.springframework.batch.core.launch.NoSuchJobExecutionException;
-import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
-import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
-import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -181,8 +174,8 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <h2>What the answers may and may not carry</h2>
  *
- * <p>Every body is an immutable map of scalars. A launch, a next-instance start and a restart answer with
- * the execution identifier and the stable job name; the status body carries four members: the execution
+ * <p>Every body is an immutable map of scalars. A launch answers with the execution identifier and the
+ * stable job name; the status body carries four members: the execution
  * identifier, the stable job name, the framework's batch status and its exit code. Nothing else is
  * exposed. In particular the framework's exit <em>description</em> is never read, because it carries a
  * rendered stack trace; no failure chain, no parameter map, no step detail, no query text, no resource
@@ -239,25 +232,8 @@ public final class BatchJobController {
     /** The launch operation, addressed by the stable job name. */
     public static final String LAUNCH_SUBPATH = "/{jobName}/launch";
 
-    /**
-     * The deliberate repeat operation, addressed by the stable job name.
-     *
-     * <p>Separate from the launch on purpose: this is the only path that advances the parameter incrementer,
-     * so running the same work again is an explicit, separately audited act rather than a side effect of
-     * resubmitting a request.
-     */
-    public static final String NEXT_INSTANCE_SUBPATH = "/{jobName}/next-instance";
-
     /** The status operation, addressed by the execution identifier the framework assigned. */
     public static final String EXECUTION_SUBPATH = "/executions/{executionId}";
-
-    /**
-     * The restart operation, addressed by the execution identifier of the run being resumed.
-     *
-     * <p>Distinct from both starts: a restart continues one identity the metadata already holds rather than
-     * creating another, which is why it takes an execution identifier and accepts no parameters at all.
-     */
-    public static final String RESTART_SUBPATH = "/executions/{executionId}/restart";
 
     /** Name of the path variable carrying the stable job name. */
     public static final String JOB_NAME_PATH_VARIABLE = "jobName";
@@ -325,12 +301,6 @@ public final class BatchJobController {
     /** Timer name for one launch request, following the module's batch metric naming. */
     private static final String METRIC_LAUNCH_REQUEST = "carddemo.batch.joblaunch.request";
 
-    /** Timer name for one next-instance start, following the module's batch metric naming. */
-    private static final String METRIC_NEXT_INSTANCE_REQUEST = "carddemo.batch.jobnextinstance.request";
-
-    /** Timer name for one restart request, following the module's batch metric naming. */
-    private static final String METRIC_RESTART_REQUEST = "carddemo.batch.jobrestart.request";
-
     /** Timer name for one status request, following the module's batch metric naming. */
     private static final String METRIC_STATUS_REQUEST = "carddemo.batch.jobstatus.request";
 
@@ -397,14 +367,6 @@ public final class BatchJobController {
      */
     private static final String PARAMETERS_INVALID_MESSAGE =
             "The job parameters supplied were rejected by this job. Correct them and submit again.";
-
-    /** Operator text for a next-instance request when no previous instance exists. */
-    private static final String NO_PREVIOUS_INSTANCE_MESSAGE =
-            "This job has no previous instance to advance. Launch it with its required parameters first.";
-
-    /** Operator text for a repeat or restart the framework cannot perform in the current state. */
-    private static final String NOT_RESTARTABLE_MESSAGE =
-            "This job cannot be repeated or restarted in its current state.";
 
     /** The service that owns the closed inventory and both batch operations. */
     private final BatchJobLaunchService batchJobLaunchService;
@@ -553,178 +515,6 @@ public final class BatchJobController {
     }
 
     /**
-     * Starts the next instance of one allow-listed job: the deliberate repeat of work already run.
-     *
-     * <p><strong>This is the only operation that advances the parameter incrementer</strong>, which every
-     * job configuration attaches for exactly this purpose. It takes the parameters the job last ran with,
-     * advances the single monotonic identifying parameter the incrementer contributes, and starts the run
-     * that produces. It accepts no parameters of its own, and that is the point: a caller cannot use it to
-     * introduce a value, only to say "again". Running a posting or an accrual pass a second time is
-     * therefore an explicit, separately authorised and separately audited act rather than something a
-     * resubmitted request can cause.
-     *
-     * <p>A job that has never run has no previous parameter set to advance, and the framework says so; that
-     * is translated into the module's error contract rather than papered over by inventing a first parameter
-     * set here. Which parameters a first launch needs is the job's own contract, and the launch operation is
-     * where they are supplied.
-     *
-     * @param jobName the stable job name, which must be one of {@link #LAUNCHABLE_JOB_NAMES}
-     * @return {@code 200} carrying the execution identifier and the stable job name
-     * @throws RecordNotFoundException if the name is outside the closed inventory
-     * @throws ValidationException     if the job has never run, if the previous run is still running or
-     *                                 already complete in a way the framework will not advance, or if the
-     *                                 job's own validator rejected the advanced parameters
-     * @throws IllegalStateException   if an allow-listed name is not registered, which is a wiring fault
-     *                                 rather than a caller fault
-     */
-    @Operation(summary = "Run one batch job again, as a new instance",
-            description = "Starts the next instance of one of the nine registered jobs: the parameters it "
-                    + "last ran with, with the single identifying run parameter advanced. It repeats work "
-                    + "without restating it - no parameter is accepted here, so this operation can only "
-                    + "say 'again' and can never introduce a value, which is what distinguishes it from a "
-                    + "launch that carries a body.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "A new instance was started. Carries the execution identifier to ask after "
-                        + "and the stable job name it was started under."),
-        @ApiResponse(responseCode = "400",
-                description = "This job has never run, so there is no previous run to repeat, or the run "
-                        + "addressed cannot be advanced in its current state."),
-        @ApiResponse(responseCode = "401",
-                description = "No credential was presented, or the one presented did not verify."),
-        @ApiResponse(responseCode = "403",
-                description = "The credential presented does not carry the administrative authority "
-                        + "operational control requires."),
-        @ApiResponse(responseCode = "404",
-                description = "The name is not one of the nine jobs this surface will start.")})
-    public ResponseEntity<BatchJobLaunchResponse> startNextJobInstance(
-            @PathVariable(name = JOB_NAME_PATH_VARIABLE) final String jobName) {
-        final Timer.Sample sample = Timer.start(this.meterRegistry);
-
-        if (!LAUNCHABLE_JOB_NAMES.contains(jobName)) {
-            recordNextInstance(sample, JOB_TAG_UNRECOGNISED, OUTCOME_ABSENT);
-            LOG.warn("Batch job repeat addressed a job outside the closed inventory");
-            throw new RecordNotFoundException(RECORD_TYPE_BATCH_JOB, jobName);
-        }
-
-        final String stableJobName = registeredNameOf(jobName);
-        final Long executionId;
-        try {
-            executionId = this.batchJobLaunchService.startNextInstance(stableJobName);
-        } catch (final JobParametersNotFoundException neverRun) {
-            recordNextInstance(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job repeat refused: job={} reason=no-previous-instance", stableJobName);
-            throw new ValidationException(NO_PREVIOUS_INSTANCE_MESSAGE);
-        } catch (final JobExecutionAlreadyRunningException | JobInstanceAlreadyCompleteException
-                | JobRestartException notAdvanceable) {
-            recordNextInstance(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job repeat refused: job={} reason=not-advanceable", stableJobName);
-            throw new ValidationException(NOT_RESTARTABLE_MESSAGE);
-        } catch (final JobParametersInvalidException rejectedParameters) {
-            recordNextInstance(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job repeat refused: job={} reason=parameters-rejected", stableJobName);
-            throw new ValidationException(PARAMETERS_INVALID_MESSAGE);
-        } catch (final NoSuchJobException notRegistered) {
-            recordNextInstance(sample, stableJobName, OUTCOME_ABSENT);
-            throw registrationFault(stableJobName, notRegistered);
-        } catch (final UnexpectedJobExecutionException unexpected) {
-            recordNextInstance(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.error("Batch job repeat failed: job={} reason=unexpected-framework-condition",
-                    stableJobName);
-            throw new ValidationException(NOT_RESTARTABLE_MESSAGE);
-        }
-
-        recordNextInstance(sample, stableJobName, OUTCOME_LAUNCHED);
-        LOG.info("Batch job next instance started: job={} executionId={}", stableJobName, executionId);
-
-        return ResponseEntity.ok(new BatchJobLaunchResponse(executionId, stableJobName));
-    }
-
-    /**
-     * Restarts one execution of one allow-listed job: continuing an identity the metadata already holds.
-     *
-     * <p>Distinct from both starts, and distinct in what it does to the metadata. A restart creates no new
-     * job instance: it resumes the instance the addressed execution belonged to, from the step it stopped
-     * at, under the parameters that instance already carries. That is why it accepts no parameters - supplying
-     * one would change the identity being resumed, which is a different run and belongs to the launch
-     * operation.
-     *
-     * <p>An execution belonging to a job outside the closed inventory reads as absent, exactly as it does on
-     * the status operation and for the same reason: without that check this would be a general restart
-     * facility over the framework's metadata rather than an operation over nine jobs.
-     *
-     * @param executionId the execution identifier of the run being resumed
-     * @return {@code 200} carrying the new execution identifier and the stable job name
-     * @throws RecordNotFoundException if no such execution is held, or it belongs to a job outside the
-     *                                 closed inventory
-     * @throws ValidationException     if the framework will not restart that execution - it is already
-     *                                 running, already complete, or not restartable - or if the job's own
-     *                                 validator rejected the parameters the instance carries
-     * @throws IllegalStateException   if the owning job is not registered, which is a wiring fault
-     */
-    @Operation(summary = "Restart one stopped or failed batch job execution",
-            description = "Resumes the job instance the addressed execution belonged to, from the step it "
-                    + "stopped at and under the parameters that instance already carries. No parameter is "
-                    + "accepted, because supplying one would change the identity being resumed. An "
-                    + "execution this surface does not own reads as absent.")
-    @ApiResponses({
-        @ApiResponse(responseCode = "200",
-                description = "The execution was restarted. Carries the new execution identifier and the "
-                        + "stable job name."),
-        @ApiResponse(responseCode = "400",
-                description = "The execution addressed cannot be restarted in its current state, or the "
-                        + "job refused the parameters its instance carries."),
-        @ApiResponse(responseCode = "401",
-                description = "No credential was presented, or the one presented did not verify."),
-        @ApiResponse(responseCode = "403",
-                description = "The credential presented does not carry the administrative authority "
-                        + "operational control requires."),
-        @ApiResponse(responseCode = "404",
-                description = "No such execution is held, or it belongs to a job this surface does not "
-                        + "own.")})
-    public ResponseEntity<BatchJobLaunchResponse> restartJobExecution(
-            @PathVariable(name = EXECUTION_ID_PATH_VARIABLE) final long executionId) {
-        final Timer.Sample sample = Timer.start(this.meterRegistry);
-
-        final BatchJobLaunchService.JobExecutionReport report =
-                this.batchJobLaunchService.readExecution(executionId);
-        if (report == null) {
-            recordRestart(sample, JOB_TAG_UNRECOGNISED, OUTCOME_ABSENT);
-            LOG.debug("Batch job execution not restartable: executionId={}", executionId);
-            throw new RecordNotFoundException(RECORD_TYPE_JOB_EXECUTION, Long.toString(executionId));
-        }
-        final String stableJobName = report.jobName();
-
-        final Long restartedExecutionId;
-        try {
-            restartedExecutionId = this.batchJobLaunchService.restart(executionId);
-        } catch (final NoSuchJobExecutionException absent) {
-            recordRestart(sample, stableJobName, OUTCOME_ABSENT);
-            LOG.debug("Batch job execution not restartable: job={} executionId={}", stableJobName,
-                    executionId);
-            throw new RecordNotFoundException(RECORD_TYPE_JOB_EXECUTION, Long.toString(executionId));
-        } catch (final JobInstanceAlreadyCompleteException | JobRestartException notRestartable) {
-            recordRestart(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job restart refused: job={} reason=not-restartable", stableJobName);
-            throw new ValidationException(NOT_RESTARTABLE_MESSAGE);
-        } catch (final JobParametersInvalidException rejectedParameters) {
-            recordRestart(sample, stableJobName, OUTCOME_REFUSED);
-            LOG.warn("Batch job restart refused: job={} reason=parameters-rejected", stableJobName);
-            throw new ValidationException(PARAMETERS_INVALID_MESSAGE);
-        } catch (final NoSuchJobException notRegistered) {
-            recordRestart(sample, stableJobName, OUTCOME_ABSENT);
-            throw registrationFault(stableJobName, notRegistered);
-        }
-
-        recordRestart(sample, stableJobName, OUTCOME_LAUNCHED);
-        LOG.info("Batch job execution restarted: job={} executionId={} restartedAs={}", stableJobName,
-                executionId, restartedExecutionId);
-
-        return ResponseEntity.ok(
-                new BatchJobLaunchResponse(restartedExecutionId, stableJobName));
-    }
-
-    /**
      * Reports one execution of one allow-listed job out of the framework's own metadata.
      *
      * <p>Four members and no more: the execution identifier, the stable job name, the batch status and the
@@ -827,26 +617,6 @@ public final class BatchJobController {
     // Adapting an allow-listed request onto the service's own calls
     // ==================================================================================================
 
-    /**
-     * Resolves an allow-listed name through the service and answers the name the registry produced.
-     *
-     * <p>The registry's answer is used rather than the value that arrived, so the launch is issued against
-     * the identity the framework holds. The two agree for every one of the nine - each job is built from
-     * the same catalogued constant - and reading it back is what makes that agreement checked rather than
-     * assumed.
-     *
-     * @param jobName an allow-listed stable job name
-     * @return the registered job
-     * @throws IllegalStateException if the name is allow-listed but not registered
-     */
-    private String registeredNameOf(final String jobName) {
-        try {
-            return this.batchJobLaunchService.registeredNameOf(jobName);
-        } catch (final NoSuchJobException notRegistered) {
-            throw registrationFault(jobName, notRegistered);
-        }
-    }
-
     private static String messageFor(final RejectionReason reason) {
         return switch (Objects.requireNonNull(reason, "reason must not be null")) {
             case ACTIVE_EXECUTION -> ACTIVE_EXECUTION_MESSAGE;
@@ -889,44 +659,6 @@ public final class BatchJobController {
     private void recordLaunch(final Timer.Sample sample, final String jobTag, final String outcome) {
         sample.stop(Timer.builder(METRIC_LAUNCH_REQUEST)
                 .description("Elapsed time of one CardDemo batch job launch request")
-                .tag(TAG_JOB, jobTag)
-                .tag(TAG_OUTCOME, outcome)
-                .register(this.meterRegistry));
-    }
-
-    /**
-     * Records the elapsed time of one next-instance start, tagged by job and outcome.
-     *
-     * <p>Timed under its own name rather than folded into the launch timer, because the two operations mean
-     * different things operationally: a launch is "run this once" and a next-instance start is "run it
-     * again". Repeats of financial work are exactly what an operator needs to be able to see the rate of, and
-     * a shared timer would hide them among the launches.
-     *
-     * @param sample  the timing sample started at the head of the request
-     * @param jobTag  an allow-listed job name, or {@link #JOB_TAG_UNRECOGNISED}
-     * @param outcome the outcome the request reached
-     */
-    private void recordNextInstance(final Timer.Sample sample, final String jobTag, final String outcome) {
-        sample.stop(Timer.builder(METRIC_NEXT_INSTANCE_REQUEST)
-                .description("Elapsed time of one CardDemo batch job next-instance start request")
-                .tag(TAG_JOB, jobTag)
-                .tag(TAG_OUTCOME, outcome)
-                .register(this.meterRegistry));
-    }
-
-    /**
-     * Records the elapsed time of one restart request, tagged by job and outcome.
-     *
-     * <p>Also timed under its own name. A restart resumes an existing job instance rather than creating one,
-     * so its rate answers a different operational question from either start.
-     *
-     * @param sample  the timing sample started at the head of the request
-     * @param jobTag  an allow-listed job name, or {@link #JOB_TAG_UNRECOGNISED}
-     * @param outcome the outcome the request reached
-     */
-    private void recordRestart(final Timer.Sample sample, final String jobTag, final String outcome) {
-        sample.stop(Timer.builder(METRIC_RESTART_REQUEST)
-                .description("Elapsed time of one CardDemo batch job restart request")
                 .tag(TAG_JOB, jobTag)
                 .tag(TAG_OUTCOME, outcome)
                 .register(this.meterRegistry));

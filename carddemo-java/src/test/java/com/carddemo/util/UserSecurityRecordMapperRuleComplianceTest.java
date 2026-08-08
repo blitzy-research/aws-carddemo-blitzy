@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.function.UnaryOperator;
 
 import com.carddemo.domain.UserSecurity;
+import com.carddemo.support.SensitiveValues;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -400,7 +401,7 @@ class UserSecurityRecordMapperRuleComplianceTest {
             final UserSecurity user = UserSecurityRecordMapper
                     .fromRecord(seedRecordImage(0), credential -> OTHER_BCRYPT_DIGEST);
 
-            assertThat(user.credentialDigest()).isEqualTo(OTHER_BCRYPT_DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(OTHER_BCRYPT_DIGEST));
         }
 
         @Test

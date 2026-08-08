@@ -21,6 +21,8 @@ import jakarta.persistence.EntityManager;
 import java.util.Objects;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.PreparedStatementCallback;
+import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * JPA implementation of the assigned-key, insert-only transaction fragment.
@@ -44,8 +46,24 @@ public class TransactionInsertRepositoryImpl implements TransactionInsertReposit
         this.jdbcTemplate = Objects.requireNonNull(jdbcTemplate, "jdbcTemplate");
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The guard is not redundant with the declared propagation. The propagation is enforced by the
+     * repository proxy; this check is enforced by the method, so the invariant holds for a caller that
+     * obtained the fragment directly and for any future wiring in which the proxy is absent. Without it the
+     * statement would run in its own implicit transaction and release the lock immediately, which
+     * serialises nothing while appearing to succeed - a silent failure is the one outcome this operation
+     * cannot be allowed to have.
+     */
     @Override
     public void lockIdentifierAllocation(final long lockKey) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalTransactionStateException("the identifier allocation lock is"
+                    + " transaction-scoped and must be taken inside an existing transaction; taken"
+                    + " outside one it would be released as soon as the statement completed and would"
+                    + " serialise nothing");
+        }
         this.jdbcTemplate.execute("SELECT pg_advisory_xact_lock(?)",
                 (PreparedStatementCallback<Void>) statement -> {
             statement.setLong(1, lockKey);

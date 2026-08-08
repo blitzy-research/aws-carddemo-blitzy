@@ -47,6 +47,27 @@ class ApiRoutePathsTest {
     class TheAddresses {
 
         @Test
+        @DisplayName("the API root is the region the security chain states one positive authority rule "
+                + "over, and every other address here is spelled from it")
+        void theApiRootIsTheRegionEveryAddressIsSpelledFrom() {
+            assertThat(ApiRoutePaths.API_PATH_PREFIX).isEqualTo("/api");
+            // Containment is the property that matters, and it is asserted rather than trusted to the
+            // spelling: an address that fell outside the root would be answered by the chain's closing rule
+            // instead of by the allow-list, and would therefore be reachable by an identity that is not a
+            // sign-on record at all.
+            assertThat(ApiRoutePaths.SIGN_ON_PATH)
+                    .startsWith(ApiRoutePaths.API_PATH_PREFIX + "/");
+            assertThat(ApiRoutePaths.ADMIN_PATH_PREFIX)
+                    .startsWith(ApiRoutePaths.API_PATH_PREFIX + "/");
+            assertThat(ApiRoutePaths.BATCH_CONTROL_PATH_PREFIX)
+                    .startsWith(ApiRoutePaths.API_PATH_PREFIX + "/");
+            assertThat(ApiRoutePaths.ADMIN_USERS_PATH)
+                    .startsWith(ApiRoutePaths.API_PATH_PREFIX + "/");
+            assertThat(ApiRoutePaths.BATCH_JOBS_PATH)
+                    .startsWith(ApiRoutePaths.API_PATH_PREFIX + "/");
+        }
+
+        @Test
         @DisplayName("the sign-on address is the anonymous route, spelled once")
         void theSignOnAddressIsSpelledOnce() {
             assertThat(ApiRoutePaths.SIGN_ON_PATH).isEqualTo("/api/auth/signon");

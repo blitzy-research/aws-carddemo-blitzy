@@ -69,9 +69,9 @@ Two notes on running these, both recorded so a reader is not surprised by them:
 | **Requirement** | At least one production-representative input processed end to end locally, producing byte-equivalent output against the documented COBOL baseline. Mocked I/O does not satisfy this gate. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/failsafe-reports/`, and the golden fixtures under `src/test/resources/fixtures/expected/` |
-| **Standing result** | The four contractual output widths are asserted byte for byte against golden fixtures, by tests that read what the code actually wrote rather than what it was asked to write. |
+| **Standing result** | The four contractual output widths this gate names are asserted byte for byte against golden fixtures, by tests that read what the code actually wrote rather than what it was asked to write. A fifth fixed width the estate emits is verified at its own width and ordering by its job's integration test; it carries no golden because this gate names four expected outputs. |
 
-The four widths, each with a golden fixture in the tree:
+The four widths this gate names, each with a golden fixture in the tree:
 
 | Output | Width | Golden fixture |
 | --- | ---: | --- |
@@ -79,7 +79,21 @@ The four widths, each with a golden fixture in the tree:
 | Statement, plain text | 80 bytes | `fixtures/expected/statement.txt` |
 | Statement, HTML | 100 bytes | `fixtures/expected/statement-html.txt` |
 | Transaction report line | 133 bytes, `RECFM=FB` | `fixtures/expected/transaction-report.txt` |
-| Transaction archive | fixed record stride, asserted whole | `fixtures/expected/transaction-archive.txt` |
+
+The archive the backup job publishes is **not** a fifth gated width and has no plain-text golden. Its
+expectation is the encoded `fixtures/expected/transaction-archive.b64`, which
+`batch/BackupTransactionJobConfigTest` reads; the empty `transaction-archive.txt` that once sat beside the
+four above was deleted rather than left to invite a vacuous assertion, and DL-219 records that. A row for
+it here would name a file that does not exist.
+
+**The estate emits a fifth fixed width, and it is not in the table above.** The category-balance report the
+`PRTCATBL` job stream produces is **40 bytes** per line — 32 content bytes and an 8-byte trailer — declared
+by that stream as `SORTOUT DCB=(LRECL=40)`. It has no golden fixture because Gate 1 names four expected
+outputs and the fixtures mirror those four exactly. It is verified at its width, at its edited-balance
+formatting and at its three-key ascending ordering by `batch/CategoryBalanceReportJobConfigIT`, and the
+width itself is read from `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` rather than repeated as a
+literal. An earlier revision of this page enumerated four widths as though they were the whole contract;
+the complete set is **40, 80, 100, 133 and 430**.
 
 The parity traps these comparisons exist to catch are recorded in `decision-log.md` rather than restated
 here: truncating arithmetic with no `ROUNDED` clause anywhere in the estate, zoned-decimal sign overpunch,
@@ -138,7 +152,7 @@ Suppressed warnings are counted under Gate 6, where the budget is three and the 
 | --- | --- |
 | **Requirement** | Benchmark locally and document elapsed time, peak memory and records per second, comparing against a documented COBOL baseline where available and otherwise establishing the Java baseline. |
 | **Command** | `./mvnw -B clean verify` (the measurement runs inside the integration tier) |
-| **Evidence artefact** | `target/gate-evidence/gate3-interest-calculation.md`, written by the run itself |
+| **Evidence artefact** | `target/gate-evidence/gate3-interest-calculation.md` and `target/gate-evidence/gate3-pipeline-baseline.md`, each written by the run that took the figures |
 | **Standing result** | **There is no COBOL baseline to compare against**, so this gate establishes the first Java baseline. The measurement mechanism is a property of the code; the figures are properties of a run. |
 
 ### Where each figure comes from, and where it does not
@@ -154,7 +168,9 @@ were read from queries that computed something adjacent to what the gate asks fo
 | Records per second | The run's own record count divided by that run's own elapsed time | *Application records per second (rolling rate)* divides by the **rate window**, so a job processing 300 records in 4 seconds inside a 1-minute window reads as 5 per second rather than 75 |
 
 The measurement lives in `support/RunScopedPerformanceRecorder` and is driven from
-`InterestCalculationJobIT`. It asserts only that a figure is **well formed** — a positive elapsed time,
+`batch/InterestCalculationJobIT` for the isolated accrual run and from `e2e/BatchPipelineE2ETest` for the
+posting and accrual runs of the primary pipeline. It asserts only that a figure is **well formed** — a
+positive elapsed time,
 the fixture's own record count, a peak the platform reported — and never that a figure is fast enough.
 Adding such an assertion would invent a service level this migration is expressly forbidden from
 inventing. Every dashboard panel adjacent to a Gate 3 figure is labelled a visualization, and
@@ -167,15 +183,60 @@ a baseline. Re-measure on your own machine rather than trusting a row here.
 
 | Date | Machine | Run | Records | Elapsed (ms) | Peak heap (bytes) | Records/second |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| _not yet recorded_ | _record the host, CPU and JVM_ | `interestCalculationJob` | — | — | — | — |
+| 2026-08-08 | Linux 6.12.85+ x86_64 container, Intel Xeon 2.60GHz, 4 vCPU, Temurin 25.0.3+9 | `interestCalculationJob` | 3 | 86 | 567854600 | 34.56 |
+| 2026-08-08 | Linux 6.12.85+ x86_64 container, Intel Xeon 2.60GHz, 4 vCPU, Temurin 25.0.3+9 | `postTransactionJob` | 300 | 4821 | 228233392 | 62.23 |
+| 2026-08-08 | Linux 6.12.85+ x86_64 container, Intel Xeon 2.60GHz, 4 vCPU, Temurin 25.0.3+9 | `interestCalculationJob` | 100 | 427 | 261787824 | 233.91 |
+| 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `postTransactionJob` | 300 | 17270 | 458049824 | 17.37 |
+| 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 100 | 2600 | 474827040 | 38.46 |
+| 2026-08-08 | Intel Xeon @ 2.60GHz, 4 vCPU, Ubuntu 25.10 container, Temurin 25.0.3+9, PostgreSQL 16.14 via Testcontainers | `interestCalculationJob` | 3 | 107 | 235653920 | 27.91 |
 
-To fill a row: run `./mvnw -B clean verify`, then copy the table from
-`target/gate-evidence/gate3-interest-calculation.md` and add the date and the machine. The generated file
-carries the fixture volumes the run was measured over in its own footnote.
+Every row was measured by `support/RunScopedPerformanceRecorder` inside the integration tier and copied
+across verbatim from a generated file, with the date and the machine added here — the two things a run
+cannot know about itself. Rows measured in isolation come from
+`target/gate-evidence/gate3-interest-calculation.md`, taken by `batch/InterestCalculationJobIT` over that
+class's own three-row fixture; rows measured across the primary pipeline come from
+`target/gate-evidence/gate3-pipeline-baseline.md`, taken by `e2e/BatchPipelineE2ETest` while it drove the
+whole committed 300-record input through the delivered pipeline — which is why the accrual run appears at
+two record counts. The table also carries rows from more than one measured run of the same job, taken on
+hosts described separately in the machine column. **None of that is a discrepancy and none of it is a
+threshold**: the volumes differ, the host differs, and a figure quoted without both is not a baseline at
+all.
 
-The volumes the interest measurement is taken over: three transaction-category-balance rows forming two
-account groups, resolved against the seeded default disclosure group, over a reference seed of 50
-accounts, 50 category balances and 51 disclosure rows.
+The volumes each row was measured over, which is what makes the figure mean anything:
+
+- **`interestCalculationJob`, 3 records** — three transaction-category-balance rows forming two account
+  groups, resolved against the seeded default disclosure group, over a reference seed of 50 accounts, 50
+  category balances and 51 disclosure rows. Measured in isolation by `batch/InterestCalculationJobIT`.
+- **`postTransactionJob`, 300 records** — the whole committed `dailytran.txt` at 300 records of 350 bytes,
+  against 50 accounts, 50 cards, 50 cross-references and 50 seeded category balances. Measured by
+  `e2e/BatchPipelineE2ETest`.
+- **`interestCalculationJob`, 100 records** — the category-balance rows the 300-record posting run left
+  behind across all 50 accounts, against three 17-row disclosure groups. Measured by
+  `e2e/BatchPipelineE2ETest`, in the same pipeline pass as the row above.
+
+**These are measurements, not thresholds, and none of them is asserted.** No latency, throughput,
+availability or capacity figure exists anywhere in the legacy estate, so there is nothing to compare them
+against and this gate establishes the first Java baseline rather than testing one. Three properties of
+these rows should be read before any of them is quoted. The elapsed times include per-record commit and
+staging work against a containerised server on a shared four-vCPU host, so they are a floor on what the
+same code does on dedicated hardware rather than a ceiling — which is also why the same job at the same
+volume appears at more than one elapsed time. The peak-heap figures are the *whole test JVM's* summed pool
+peaks during the run — the recorder resets the platform's peak accounting immediately before each launch, so
+the figure belongs to the run, but the JVM was sized by the surrounding suite and not by the job, and no
+heap sizing is imposed anywhere to make the number smaller; that is also why the smallest run can carry the
+largest peak. And the `interestCalculationJob` rows differ by an order of magnitude in record count because
+they are measured over different volumes, which is precisely why no row here may be read without its
+volumes.
+
+To take a row of your own: run `./mvnw -B clean verify`, then copy the generated tables from
+`target/gate-evidence/gate3-pipeline-baseline.md` and `target/gate-evidence/gate3-interest-calculation.md`
+and add the date and the machine. Each generated file carries the fixture volumes its run was measured over
+in its own footnote. `e2e/GateVerificationTest` parses the table above and requires every row to carry a
+concrete date, a named machine, a run label and four positive figures whose quotient agrees with its own
+records and elapsed time, and requires the volumes bullet naming that run at that record count to exist, so
+a row cannot be written here without having been measured. The recorder deliberately does not write into
+`docs/`: a baseline is published by a person who can name the machine it was taken on, and a test that
+edited this page would make the repository's content depend on the hardware of whoever last ran the suite.
 
 ---
 
@@ -223,11 +284,12 @@ EBCDIC decode is required.
 | **Requirement** | Every external interface verified by a local test that exercises the real contract. Self-certification is not acceptable. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/failsafe-reports/` |
-| **Standing result** | All three external contracts are exercised against real endpoints — golden files, a real queue, and real HTTP — rather than against a builder's return value. |
+| **Standing result** | All three external contracts are exercised against real endpoints — golden files, a real queue, and real HTTP — rather than against a builder's return value. The file-format contract spans **five** fixed widths, four of them golden-backed. |
 
 | Contract | How it is exercised |
 | --- | --- |
-| The four fixed-width file formats | Byte-equality assertions against the golden fixtures listed under Gate 1 |
+| The four golden-backed fixed-width file formats | Byte-equality assertions against the golden fixtures listed under Gate 1, and a round trip of each through the real staging interface |
+| The fifth fixed-width file format — the 40-byte category-balance report line | Asserted at its width, its edited-balance formatting and its three-key ascending ordering by `batch/CategoryBalanceReportJobConfigIT`; `e2e/OnlineTransactionE2ETest` asserts that it is a fifth width rather than one of the four, so the two inventories cannot drift apart |
 | The sign-on message and routing contract | Real HTTP requests asserting the message strings and the administrator/user routing outcome |
 | The batch trigger | The report-submission endpoint publishes to a **real** SQS FIFO queue on LocalStack; the test drains the queue and asserts the ordered card sequence, the four substituted date slots and the terminal `/*EOF` sentinel |
 
@@ -349,7 +411,7 @@ Coverage dimensions the scope tier requires, and where each is exercised:
 | Multi-subsystem batch processing | Ten batch programs across five subsystems, plus the two-program statement pair that communicates through a shared linkage area |
 | File I/O | Eleven record layouts at widths 50, 60, 80, 150, 300, 350 and 500 bytes; sequential, indexed and dynamic access; ten base clusters plus three alternate indexes plus one in-job transient cluster |
 | Inter-program calls | Twenty-seven static call sites become injected collaborators; twenty-five transfer-control transitions and nineteen pseudo-conversational return points become route constants |
-| JCL orchestration | Twenty-nine job members and two procedures; condition-code dependencies on exactly four steps; three distinct sort specifications; six generation-data-group bases |
+| JCL orchestration | Twenty-nine job members and two procedures; condition-code dependencies on exactly four steps; **four** distinct sort specifications, the fourth being the category-balance report's three ascending keys into a 40-byte record; six generation-data-group bases |
 | AWS service integration | Object storage, an SQS FIFO queue and SNS, all exercised against LocalStack Community |
 
 ### The three alternate-index equivalents, and where the third one's predicate lives
@@ -390,13 +452,30 @@ for the report job, it must keep exactly this shape.
 
 | Checklist item | Satisfying artefact | Standing result |
 | --- | --- | --- |
-| End-to-end verification | Golden fixtures at 80, 100, 133 and 430 bytes | Gate 1 above |
+| End-to-end verification | Golden fixtures at 80, 100, 133 and 430 bytes; the fifth 40-byte width verified by `batch/CategoryBalanceReportJobConfigIT` | Gate 1 above |
 | Interface contract verification | Sign-on messages; the job-submission card image; a real SQS FIFO queue | Gate 5 above |
-| Performance baseline | `support/RunScopedPerformanceRecorder`, figures in this page's Gate 3 tables | mechanism in place; figures are per-run |
+| Performance baseline | `support/RunScopedPerformanceRecorder`, figures in this page's Gate 3 measured-runs table | **recorded**: six measured rows, dated and attributed to a named machine, each with its fixture volumes. Re-measure on your own hardware rather than quoting a row here |
 | Unsafe code audit | The scoped grep list | every count zero |
 | Line coverage ≥ 80% | JaCoCo failing check | enforced by the build |
 | Zero critical/high CVEs | `dependency-check-maven` | **re-run before sign-off**; a CVE result ages, so a figure recorded here would be stale by the time it was read |
-| Traceability 100% | `traceability-matrix.md` | one row per paragraph unit, citing the SHA and the release stamp |
+| Traceability 100% | `traceability-matrix.md` | one row per paragraph unit, citing the SHA and the release stamp, and every row's named test **executes** the method it cites |
+
+### What "covering test" is worth on the traceability row
+
+The row count is asserted by `e2e/GateVerificationTest`, so a matrix of 543 or 545 rows fails the build.
+The count is the cheaper half of the claim. The half worth checking by hand is the last column, because a
+row can name a real test class that never runs the method beside it — and a named test that does not
+execute its method is not coverage, however complete the row looks.
+
+The case that makes this concrete is `COACTUPC`, six of whose 85 rows point at methods **no production
+path calls**: the two alphanumeric character-class edits, which have no call site in the source at all,
+and the optional alphabetic edit, whose one live source call site is on a field the migration directive
+forbids validating. Those six are complete translations rather than non-implementations, so they carry no
+marker; their covering test reaches them **directly**, that being the only way to run them without the
+wiring the directive forbids. Read `target/site/jacoco/jacoco.xml` for `AccountUpdateService` after a
+unit run and each of the six reports zero missed instructions and zero missed lines — which is the
+difference between a citation and a measurement. The matrix's `COACTUPC` section states the arrangement
+in prose so a reader does not have to infer it from the coverage report.
 
 ### Dependency vulnerability scan
 
@@ -410,7 +489,17 @@ own release record.
 cd carddemo-java && ./mvnw -B dependency-check:check
 ```
 
-The gate is zero **critical or high**. Findings below that severity are reported and do not fail it.
+The gate is zero **unsuppressed critical or high**, and the qualifier is load-bearing rather than
+defensive. Findings below that severity are reported and do not fail it. Above it, the build fails unless
+the finding is covered by a written analyst determination in `carddemo-java/owasp-suppressions.xml` — and
+exactly **one** determination exists: `CVE-2026-66299` at 7.5 against the three embedded servlet-container
+artefacts, whose fixed releases are published on no line, so there is nothing to upgrade to. It is scoped
+to that one identifier on those named artefacts, it carries the commands that reproduce its false-match
+argument, and it is self-expiring because `failBuildOnUnusedSuppressionRule` fails the build the moment it
+stops matching. `GateVerificationTest` asserts that scope and reads both halves of the report, so a
+suppressed high-severity finding outside the determination fails a test rather than passing quietly. The
+determination is disclosed under Gate 8 of `carddemo-java/README.md` and recorded in
+[decision-log.md](decision-log.md) at DL-159.
 
 ---
 

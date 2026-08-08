@@ -144,13 +144,10 @@ class AccountRecordMapperTest {
 
     private static final int EXPECTED_FILLER_LENGTH = 178;
 
-    /** Encoded width of one zoned-decimal amount: ten integer digits plus two implied decimals. */
     private static final int EXPECTED_AMOUNT_LENGTH = 12;
 
-    /** Encoded width shared by the three date items, the ZIP and the group identifier. */
     private static final int EXPECTED_TEN_BYTE_LENGTH = 10;
 
-    /** Combined width of the three date items that interrupt the monetary run. */
     private static final int EXPECTED_DATE_BLOCK_LENGTH = 30;
 
     private static final int EXPECTED_MONETARY_SCALE = 2;
@@ -208,7 +205,6 @@ class AccountRecordMapperTest {
 
     private static final BigDecimal ROW_CURR_CYC_DEBIT = new BigDecimal("0.00");
 
-    /** The filler run this layout declares, emitted and expected as spaces. */
     private static final String EXPECTED_FILLER = " ".repeat(EXPECTED_FILLER_LENGTH);
 
     /**
@@ -272,7 +268,6 @@ class AccountRecordMapperTest {
 
     private static final String SIGNED_CURR_CYC_DEBIT_IMAGE = "00000000123D";
 
-    /** A non-blank group identifier, left-justified and space-padded to its ten-byte field. */
     private static final String SIGNED_GROUP_ID = "ZEROAPR   ";
 
     /** The whole synthetic image, assembled from the hand-derived slices in copybook order. */

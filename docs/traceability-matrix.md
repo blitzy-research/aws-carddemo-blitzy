@@ -67,21 +67,83 @@ Every one of the 544 rows carries the same seven cells: the six the sign-off req
 | Line | The 1-based source line of the label |
 | Target class | The Java class, named relative to the `com.carddemo` base package |
 | Target method | The Java method, named exactly as the module declares it |
-| Covering test | The test class that exercises that method |
+| Covering test | The test class that **executes** that method — naming a test that merely mentions the method, or that reaches its enclosing class without reaching it, would not discharge the sign-off. Where a method has no production caller and is therefore reached by its test directly, the member's own section says so. |
 | Notes | A marker, or blank when the row is an ordinary translation |
+
+### What the Covering test column claims, and what it does not
+
+This column is the weakest kind of evidence on the page, and saying so is part of making the page usable.
+It names **the suite that exercises the paragraph's behaviour**, reached through the public entry point of
+the class that owns the method — not a test that calls the named method by name.
+
+That distinction is not a gap in the tests; it follows from the translation itself. A COBOL paragraph is an
+*internal* step of a program, so its faithful counterpart is a private method, and **518 of the 544 target
+methods are private**. A private method cannot be named in a test without either widening its visibility or
+reaching it reflectively, and both were rejected: widening it to suit a test would misrepresent the
+paragraph's role, and reflection is budgeted at zero for the whole module. So the entry points appear
+literally in test source and the internal steps are reached through them.
+
+What is therefore **mechanically checked** about every row, and fails the build when it is not true:
+
+| Checked | By |
+| :--- | :--- |
+| The paragraph label exists, at the cited line, in the cited member | `e2e/GateVerificationTest`, reading the legacy member and matching Area A labels |
+| The per-member row count equals the labels that member actually declares | the same, member by member — so a row invented for a paragraph that does not exist fails |
+| The total is 544, and its three contributions sum to it | the same, as a gate condition rather than a statistic |
+| The named target class and covering test class both exist | the module's own compilation, plus the per-member checks in the service suites |
+| The three per-member subtotals agree — census table, section declaration and counted rows | `support/TraceabilityMatrixCensus`, which throws when the three disagree |
+
+What is **not** proven by this page, stated plainly: that a *named private method* was dynamically entered
+during a *named test*. A row is a mapping claim and a reachability claim; it is not an execution trace, and
+reading it as one would overstate it.
+
+The evidence for dynamic execution is the coverage report, which measures what actually ran:
+
+```bash
+cd carddemo-java
+./mvnw -B clean verify                      # or: -Pscoped-tests -Dtest=TheCoveringTest
+open target/site/jacoco/index.html          # per-class, per-method coverage
+```
+
+Two properties of that report are what make it load-bearing rather than informational. Line coverage is
+enforced at **80% as a build-failing check**, and a second rule holds the number of **wholly untested
+classes at zero** — so no target class named on this page can be entirely unexercised without failing the
+build. To settle a single row, run its covering test on its own and read that method's counters in the
+report; if they are zero, the row's reachability claim is wrong and belongs in a bug rather than in a
+document.
 
 ### Marker legend
 
 | Marker | Meaning |
 | :-: | :--- |
-| *(blank)* | An ordinary translation. 522 of the 544 rows. |
+| *(blank)* | An ordinary translation. 516 of the 544 rows. |
 | `†` | **Documented non-implementation.** The paragraph is invoked and implements nothing; the Java method exists, is called, and does nothing. 1 row. |
 | `‡` | **Source anomaly.** A duplicated label or a misspelled label, preserved as found rather than corrected. 3 rows. |
 | `§` | **Unwired member.** The program is complete but no job stream invokes it; its job is defined and exercised by tests, and excluded from the default pipeline. 18 rows. |
+| `¶` | **Deliberately unwired paragraph.** The paragraph is translated and its method exists, but no delivered call site reaches it — by decision, recorded on the method itself. The row's covering test therefore exercises the method **directly**, by name, through package access rather than through the driver. 6 rows. |
 
-1 + 3 + 18 + 522 = 544. Each marked row is cross-referenced to its entry in the source anomaly
+1 + 3 + 18 + 6 + 516 = 544. Each marked row is cross-referenced to its entry in the source anomaly
 register of [decision-log.md](decision-log.md), which is the authority for the reasoning; this page
 links rather than restates it.
+
+### Why the unwired-paragraph marker exists, and what it obliges
+
+A covering test that cannot reach the method it is named against is a false entry, and a row-count check
+cannot see one. All six `¶` rows belong to `COACTUPC`: the three edits whose paragraphs the delivered
+driver never routes to — `1230-EDIT-ALPHANUM-REQD`, `1235-EDIT-ALPHA-OPT` and `1240-EDIT-ALPHANUM-OPT`
+— and the three paired exit paragraphs, which are reachable only from those heads. Two of the three
+heads have no call site in the legacy member either; the third does, at source lines 1568 to 1574 for
+the middle name, and the migration directive forbids attaching a constraint to that field, so the
+delivered driver must not route to it. That decision is recorded in
+[decision-log.md](decision-log.md) and is not revisited here.
+
+The obligation the marker carries is specific and mechanically checked. The named test declares the
+methods by name and calls each head directly — `AccountUpdateServiceTest.DeliberatelyUnwiredEdits`,
+reaching them through ordinary package access rather than reflectively, because the production tree is
+held to a reflection count of zero. Calling a head executes its paired exit on every arm, which is why
+the three exits need no call of their own. `e2e.GateVerificationTest` asserts both halves: that every
+row in this page resolves to a class that exists and declares the named method, and that every `¶` row's
+covering test names that method — the check a row count cannot make.
 
 ### Rows that share a target method
 
@@ -448,6 +510,34 @@ largest single member in the estate.
 Primary target class `service.AccountUpdateService`, primary covering test
 `service.AccountUpdateServiceTest`. Also exercised by: `api.AccountControllerIT`.
 
+Six of the 85 rows below carry the `¶` marker. Their methods are translated, are declared on the primary
+target class, and are reached by no delivered call site; the primary covering test exercises each of the
+three heads directly, by name, in its `DeliberatelyUnwiredEdits` group, and each head executes its paired
+exit on every arm. See
+[why the marker exists and what it obliges](#why-the-unwired-paragraph-marker-exists-and-what-it-obliges).
+
+**Which six, and why each is there** — stated here rather than left to be discovered. They are
+`1230-EDIT-ALPHANUM-REQD` and its exit, `1235-EDIT-ALPHA-OPT` and its exit, and `1240-EDIT-ALPHANUM-OPT`
+and its exit — the three character-class edits whose Java methods exist, are translated in full, and are
+called by no production path. Two different reasons put them there. The two alphanumeric edits have **no
+call site in the source**: the driver reaches the required alphabetic, the optional alphabetic, the required
+numeric, the mandatory and the signed edits, and never those two. The optional alphabetic edit does have a
+live source call site, on the middle name, but the migration directive forbids attaching any constraint to
+that field — the screen-attribute block describes it as carrying no edits — so wiring it would reject input
+the legacy is documented to accept. That conflict, and the fact that the comment describing the middle name
+as unedited is itself a source defect, are recorded in [decision-log.md](decision-log.md).
+
+These six rows are **not** non-implementations, which is why they carry the `¶` marker and not the `†` or
+`‡` one: the methods are complete translations, and the marker denotes *unrouted* rather than
+*unimplemented*. The named covering test **executes all six**, in the nested specification *the three
+character-class edits the member translates but never reaches*. It reaches them directly — that being the
+only way to run them without the wiring the directive forbids — and asserts the blank arm, the character
+class, the composed message suffix and the embedded-space idiom of each, plus that no production call site
+has appeared. Coverage measurement confirms the execution rather than the citation asserting it: all six
+methods report **zero missed instructions and zero missed lines**. The distinction that matters for the
+sign-off is between a row whose test *names* it and a row whose test *runs* it, and every row on this page
+is the second kind.
+
 | Source member | Paragraph | Line | Target class | Target method | Covering test | Notes |
 | :--- | :--- | ---: | :--- | :--- | :--- | :-: |
 | app/cbl/COACTUPC.cbl | `0000-MAIN` | 859 | `service.AccountUpdateService` | `handle` | `service.AccountUpdateServiceTest` |  |
@@ -469,12 +559,12 @@ Primary target class `service.AccountUpdateService`, primary covering test
 | app/cbl/COACTUPC.cbl | `1220-EDIT-YESNO-EXIT` | 1894 | `service.AccountUpdateService` | `editYesNoExit` | `service.AccountUpdateServiceTest` |  |
 | app/cbl/COACTUPC.cbl | `1225-EDIT-ALPHA-REQD` | 1898 | `service.AccountUpdateService` | `editAlphaRequired` | `service.AccountUpdateServiceTest` |  |
 | app/cbl/COACTUPC.cbl | `1225-EDIT-ALPHA-REQD-EXIT` | 1951 | `service.AccountUpdateService` | `editAlphaRequiredExit` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1230-EDIT-ALPHANUM-REQD` | 1955 | `service.AccountUpdateService` | `editAlphanumericRequired` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1230-EDIT-ALPHANUM-REQD-EXIT` | 2009 | `service.AccountUpdateService` | `editAlphanumericRequiredExit` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1235-EDIT-ALPHA-OPT` | 2012 | `service.AccountUpdateService` | `editAlphaOptional` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1235-EDIT-ALPHA-OPT-EXIT` | 2057 | `service.AccountUpdateService` | `editAlphaOptionalExit` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1240-EDIT-ALPHANUM-OPT` | 2061 | `service.AccountUpdateService` | `editAlphanumericOptional` | `service.AccountUpdateServiceTest` |  |
-| app/cbl/COACTUPC.cbl | `1240-EDIT-ALPHANUM-OPT-EXIT` | 2105 | `service.AccountUpdateService` | `editAlphanumericOptionalExit` | `service.AccountUpdateServiceTest` |  |
+| app/cbl/COACTUPC.cbl | `1230-EDIT-ALPHANUM-REQD` | 1955 | `service.AccountUpdateService` | `editAlphanumericRequired` | `service.AccountUpdateServiceTest` | ¶ |
+| app/cbl/COACTUPC.cbl | `1230-EDIT-ALPHANUM-REQD-EXIT` | 2009 | `service.AccountUpdateService` | `editAlphanumericRequiredExit` | `service.AccountUpdateServiceTest` | ¶ |
+| app/cbl/COACTUPC.cbl | `1235-EDIT-ALPHA-OPT` | 2012 | `service.AccountUpdateService` | `editAlphaOptional` | `service.AccountUpdateServiceTest` | ¶ |
+| app/cbl/COACTUPC.cbl | `1235-EDIT-ALPHA-OPT-EXIT` | 2057 | `service.AccountUpdateService` | `editAlphaOptionalExit` | `service.AccountUpdateServiceTest` | ¶ |
+| app/cbl/COACTUPC.cbl | `1240-EDIT-ALPHANUM-OPT` | 2061 | `service.AccountUpdateService` | `editAlphanumericOptional` | `service.AccountUpdateServiceTest` | ¶ |
+| app/cbl/COACTUPC.cbl | `1240-EDIT-ALPHANUM-OPT-EXIT` | 2105 | `service.AccountUpdateService` | `editAlphanumericOptionalExit` | `service.AccountUpdateServiceTest` | ¶ |
 | app/cbl/COACTUPC.cbl | `1245-EDIT-NUM-REQD` | 2109 | `service.AccountUpdateService` | `editNumericRequired` | `service.AccountUpdateServiceTest` |  |
 | app/cbl/COACTUPC.cbl | `1245-EDIT-NUM-REQD-EXIT` | 2176 | `service.AccountUpdateService` | `editNumericRequiredExit` | `service.AccountUpdateServiceTest` |  |
 | app/cbl/COACTUPC.cbl | `1250-EDIT-SIGNED-9V2` | 2180 | `service.AccountUpdateService` | `editSigned9v2` | `service.AccountUpdateServiceTest` |  |
@@ -1073,13 +1163,19 @@ awk 'BEGIN{n=0} /^\| *(app\/cbl|app\/cpy)\//{n++} END{print "rows:", n}' \
   docs/traceability-matrix.md
 ```
 
-That reports `rows: 544`. Four further properties hold and are worth stating because each is a way the
-page could silently go wrong:
+That reports `rows: 544`. **A row count is necessary and is not sufficient**, because a page can carry
+544 correctly counted rows and still name a test that cannot reach the method on its row. Five further
+properties therefore hold, each a way the page could otherwise go silently wrong, and each asserted by
+`e2e.GateVerificationTest` rather than by inspection:
 
 - **Every cell is populated.** No row is missing a target class, a target method or a covering test.
 - **Every citation resolves.** All 22 target classes exist under the module's main source tree, every
   method named is declared on the class it is attributed to, and all 22 covering tests plus every
   supplementary suite named in a member lead line exist under the module's test tree.
+- **Every covering test can reach the method it is named against.** Rows whose method the delivered
+  driver never routes to are the ones a row count cannot vouch for, so they are marked `¶` and carry a
+  stronger obligation: the named test must declare the method by name. All six such rows are
+  `COACTUPC`'s, and all six are asserted individually.
 - **Per-member subtotals match the census.** Member by member, including `COACTUPC` 85, `COCRDUPC` 45,
   `COCRDLIC` 39, `COACTVWC` 35, `COCRDSLC` 34, `CSUTLDTC` 2, `CSUTLDPY` 14 and `CSSTRPFY` 2.
 - **The estate contains no `SECTION`s.** Every one of the 544 units is a paragraph, so no row is a
@@ -1114,8 +1210,8 @@ all, and each was taken from the source rather than assumed:
 ## Related pages
 
 - [decision-log.md](decision-log.md) — the reasoning behind every divergence, the source anomaly
-  register that the `†`, `‡` and `§` markers point into, and the record of what was deliberately not
-  migrated.
+  register that the `†`, `‡` and `§` markers point into, the decision the `¶` marker rests on, and the
+  record of what was deliberately not migrated.
 - [architecture.md](architecture.md) — the layers, the package responsibilities and the record layouts
   that the data copybooks map onto.
 - [gate-evidence.md](gate-evidence.md) — the recorded evidence for the eight validation gates, of which

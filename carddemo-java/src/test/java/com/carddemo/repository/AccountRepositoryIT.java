@@ -128,6 +128,17 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  * stamp {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. Every legacy fact above is cited as
  * metadata - a width, an offset, a record length, a row count or a resource name. No legacy source
  * statement is transcribed.
+ *
+ * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
+ *
+ * <p>This class writes through the shipped entity and repository, so the rules it observes are
+ * enforced twice over: once by the entity before the write and once by a named {@code CHECK}
+ * constraint in {@code V1__create_schema.sql}. That means a specification at this level passes
+ * whether or not the database guard exists, and deleting the guard would break nothing here.
+ * ck_account_acct_id_digits are therefore exercised by RAW JDBC in
+ * {@code SchemaConstraintNegativeProofIT}, which bypasses the entity layer entirely and asserts the
+ * exact constraint name PostgreSQL reports. That is the shape of the writer these constraints exist
+ * to catch - a bulk load or a migration script that never constructs a record image.
  */
 @SpringBootTest(classes = AccountRepositoryIT.AccountPersistenceSlice.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

@@ -18,6 +18,7 @@ package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.CardStatus;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamWriteFeature;
@@ -144,13 +145,11 @@ class CardUpdateRequestTest {
     /** Account id at its full map width of 11, with the leading zeros that must never be lost. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /** One character past the map width of 11, so the width bound must report it. */
     private static final String OVER_WIDE_ACCOUNT_ID = "000000000011";
 
     /** Fictional card number at its full map width of 16, again with contractual leading zeros. */
     private static final String CARD_NUMBER = "0000000000000011";
 
-    /** One character past the map width of 16. */
     private static final String OVER_WIDE_CARD_NUMBER = "00000000000000011";
 
     /**
@@ -169,7 +168,6 @@ class CardUpdateRequestTest {
     private static final String NAME_UPPER_FOLDED =
             "MARY ANN ELIZABETH O'HARA-SMITH DE LA CRUZ JUNIORS";
 
-    /** One character past the map width of 50. */
     private static final String OVER_WIDE_NAME =
             "Mary Ann Elizabeth o'Hara-Smith de la Cruz JuniorII";
 
@@ -184,22 +182,17 @@ class CardUpdateRequestTest {
     /** Two given names separated by a space - valid input that the legacy system accepts. */
     private static final String TWO_WORD_NAME = "MARY ANN";
 
-    /** Active status as the raw single character the map declares at width 1. */
     private static final String STATUS_ACTIVE = "Y";
 
-    /** Two characters where the map declares one. */
     private static final String OVER_WIDE_STATUS = "YN";
 
     /** Expiry month at its map width of 2, zero-padded, which must never be reduced to one digit. */
     private static final String EXPIRY_MONTH = "01";
 
-    /** Three characters where the map declares two. */
     private static final String OVER_WIDE_MONTH = "013";
 
-    /** Expiry year at its map width of 4. */
     private static final String EXPIRY_YEAR = "2026";
 
-    /** Five characters where the map declares four. */
     private static final String OVER_WIDE_YEAR = "20261";
 
     /** Expiry day at its map width of 2 - hidden, protected and carry-through only. */
@@ -231,58 +224,29 @@ class CardUpdateRequestTest {
                 ACCOUNT_ID, "Y", CARD_NUMBER, "CCRDUPA", "COCRDUP");
     }
 
-    /**
-     * Builds a submission with every component present and every value inside its map width.
-     *
-     * @return a fully populated request
-     */
     private static CardUpdateRequest populated() {
         return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, NAME_MIXED_CASE, STATUS_ACTIVE,
                 EXPIRY_MONTH, EXPIRY_YEAR, EXPIRY_DAY, KeyAction.PFK05, navigation(),
                 CONCURRENCY_TOKEN);
     }
 
-    /**
-     * Builds a submission that differs from {@link #populated()} only in its account id.
-     *
-     * @param accountId the account id to carry, possibly {@code null} or blank
-     * @return a request carrying that account id
-     */
     private static CardUpdateRequest withAccountId(String accountId) {
         return new CardUpdateRequest(accountId, CARD_NUMBER, NAME_MIXED_CASE, STATUS_ACTIVE,
                 EXPIRY_MONTH, EXPIRY_YEAR, EXPIRY_DAY, KeyAction.PFK05, navigation(),
                 CONCURRENCY_TOKEN);
     }
 
-    /**
-     * Builds a submission that differs from {@link #populated()} only in its card number.
-     *
-     * @param cardNumber the card number to carry, possibly {@code null} or blank
-     * @return a request carrying that card number
-     */
     private static CardUpdateRequest withCardNumber(String cardNumber) {
         return new CardUpdateRequest(ACCOUNT_ID, cardNumber, NAME_MIXED_CASE, STATUS_ACTIVE,
                 EXPIRY_MONTH, EXPIRY_YEAR, EXPIRY_DAY, KeyAction.PFK05, navigation(),
                 CONCURRENCY_TOKEN);
     }
 
-    /**
-     * Builds a submission that differs from {@link #populated()} only in its embossed name.
-     *
-     * @param name the embossed name to carry
-     * @return a request carrying that name
-     */
     private static CardUpdateRequest withName(String name) {
         return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, name, STATUS_ACTIVE, EXPIRY_MONTH,
                 EXPIRY_YEAR, EXPIRY_DAY, KeyAction.PFK05, navigation(), CONCURRENCY_TOKEN);
     }
 
-    /**
-     * Builds a submission that differs from {@link #populated()} only in its active status.
-     *
-     * @param status the raw status character to carry, possibly {@code null} or blank
-     * @return a request carrying that status
-     */
     private static CardUpdateRequest withStatus(String status) {
         return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, NAME_MIXED_CASE, status, EXPIRY_MONTH,
                 EXPIRY_YEAR, EXPIRY_DAY, KeyAction.PFK05, navigation(), CONCURRENCY_TOKEN);
@@ -820,8 +784,8 @@ class CardUpdateRequestTest {
             assertThat(violationsOf(withAccountId("ABCDEFGHIJK"))).isEmpty();
             assertThat(violationsOf(withCardNumber("ABCDEFGHIJKLMNOP"))).isEmpty();
             assertThat(withAccountId("ABCDEFGHIJK").accountId()).isEqualTo("ABCDEFGHIJK");
-            assertThat(withCardNumber("ABCDEFGHIJKLMNOP").cardNumber())
-                    .isEqualTo("ABCDEFGHIJKLMNOP");
+            assertThat(SensitiveValues.fingerprint(withCardNumber("ABCDEFGHIJKLMNOP").cardNumber()))
+                    .isEqualTo(SensitiveValues.fingerprint("ABCDEFGHIJKLMNOP"));
         }
 
         @Test
@@ -848,7 +812,8 @@ class CardUpdateRequestTest {
             CardUpdateRequest request = populated();
 
             assertThat(request.accountId()).isEqualTo(ACCOUNT_ID).hasSize(11);
-            assertThat(request.cardNumber()).isEqualTo(CARD_NUMBER).hasSize(16);
+            assertThat(SensitiveValues.fingerprint(request.cardNumber())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
+            assertThat(request.cardNumber().length()).isEqualTo(16);
             assertThat(request.embossedName()).isEqualTo(NAME_MIXED_CASE).hasSize(50);
             assertThat(request.activeStatus()).isEqualTo(STATUS_ACTIVE).hasSize(1);
             assertThat(request.expiryMonth()).isEqualTo(EXPIRY_MONTH).hasSize(2);
@@ -862,7 +827,8 @@ class CardUpdateRequestTest {
             JsonNode payload = payloadOf(populated());
 
             assertThat(payload.get("accountId").asText()).isEqualTo(ACCOUNT_ID).hasSize(11);
-            assertThat(payload.get("cardNumber").asText()).isEqualTo(CARD_NUMBER).hasSize(16);
+            assertThat(SensitiveValues.fingerprint(payload.get("cardNumber").asText())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
+            assertThat(payload.get("cardNumber").asText().length()).isEqualTo(16);
             assertThat(payload.get("embossedName").asText()).isEqualTo(NAME_MIXED_CASE).hasSize(50);
             assertThat(payload.get("activeStatus").asText()).isEqualTo(STATUS_ACTIVE).hasSize(1);
             assertThat(payload.get("expiryMonth").asText()).isEqualTo(EXPIRY_MONTH).hasSize(2);
@@ -877,7 +843,8 @@ class CardUpdateRequestTest {
                     "9", "3", KeyAction.PFK05, navigation(), CONCURRENCY_TOKEN);
 
             assertThat(shortValues.accountId()).isEqualTo("1").hasSize(1);
-            assertThat(shortValues.cardNumber()).isEqualTo("2").hasSize(1);
+            assertThat(SensitiveValues.fingerprint(shortValues.cardNumber())).isEqualTo(SensitiveValues.fingerprint("2"));
+            assertThat(shortValues.cardNumber().length()).isEqualTo(1);
             assertThat(shortValues.embossedName()).isEqualTo("M").hasSize(1);
             assertThat(shortValues.expiryMonth()).isEqualTo("1").hasSize(1);
             assertThat(shortValues.expiryYear()).isEqualTo("9").hasSize(1);
@@ -893,7 +860,8 @@ class CardUpdateRequestTest {
                     navigation(), CONCURRENCY_TOKEN);
 
             assertThat(spaceFilled.accountId()).isEqualTo("11         ").hasSize(11);
-            assertThat(spaceFilled.cardNumber()).isEqualTo("11              ").hasSize(16);
+            assertThat(SensitiveValues.fingerprint(spaceFilled.cardNumber())).isEqualTo(SensitiveValues.fingerprint("11              "));
+            assertThat(spaceFilled.cardNumber().length()).isEqualTo(16);
             assertThat(spaceFilled.activeStatus()).isEqualTo(" ").hasSize(1);
             assertThat(spaceFilled.expiryMonth()).isEqualTo("1 ").hasSize(2);
             assertThat(spaceFilled.expiryYear()).isEqualTo("26  ").hasSize(4);
@@ -912,10 +880,10 @@ class CardUpdateRequestTest {
                     KeyAction.PFK05, navigation(), CONCURRENCY_TOKEN);
 
             assertThat(request.accountId()).isEqualTo("00000000001").isNotEqualTo("1").hasSize(11);
-            assertThat(request.cardNumber())
-                    .isEqualTo("0000000000000001")
-                    .isNotEqualTo("1")
-                    .hasSize(16);
+            assertThat(SensitiveValues.fingerprint(request.cardNumber()))
+                    .isEqualTo(SensitiveValues.fingerprint("0000000000000001"))
+                    .isNotEqualTo(SensitiveValues.fingerprint("1"));
+            assertThat(request.cardNumber().length()).isEqualTo(16);
 
             JsonNode payload = payloadOf(request);
 
@@ -939,7 +907,7 @@ class CardUpdateRequestTest {
                     CardUpdateRequest.class);
 
             assertThat(bound.accountId()).isEqualTo("00000000001");
-            assertThat(bound.cardNumber()).isEqualTo("0000000000000001");
+            assertThat(SensitiveValues.fingerprint(bound.cardNumber())).isEqualTo(SensitiveValues.fingerprint("0000000000000001"));
             assertThat(bound.expiryMonth()).isEqualTo("01");
             assertThat(bound.expiryYear()).isEqualTo("2026");
         }
@@ -1028,7 +996,7 @@ class CardUpdateRequestTest {
                     .as("a width bound measures; nothing here trims, pads or re-cases")
                     .isEqualTo(NAME_WITH_SURROUNDING_SPACES);
             assertThat(request.accountId()).isEqualTo(ACCOUNT_ID);
-            assertThat(request.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(request.cardNumber())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
         }
 
         @Test
@@ -1200,7 +1168,7 @@ class CardUpdateRequestTest {
             CardUpdateRequest bound = moduleEquivalentMapper().readValue(body,
                     CardUpdateRequest.class);
 
-            assertThat(bound.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(bound.cardNumber())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(bound.expiryMonth()).isEqualTo(EXPIRY_MONTH);
             assertThat(bound.accountId()).isNull();
         }
@@ -1280,7 +1248,7 @@ class CardUpdateRequestTest {
             payloadOf(request);
 
             assertThat(request.accountId()).isEqualTo(ACCOUNT_ID);
-            assertThat(request.cardNumber()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(request.cardNumber())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(request.embossedName()).isEqualTo(NAME_MIXED_CASE);
             assertThat(request.activeStatus()).isEqualTo(STATUS_ACTIVE);
             assertThat(request.expiryMonth()).isEqualTo(EXPIRY_MONTH);
@@ -1305,7 +1273,7 @@ class CardUpdateRequestTest {
                     .as("constructing the variant left the original exactly as it was")
                     .isEqualTo(STATUS_ACTIVE);
             assertThat(variant.activeStatus()).isEqualTo("N");
-            assertThat(original.cardNumber()).isEqualTo(variant.cardNumber());
+            assertThat(SensitiveValues.fingerprint(original.cardNumber())).isEqualTo(SensitiveValues.fingerprint(variant.cardNumber()));
         }
 
         @Test

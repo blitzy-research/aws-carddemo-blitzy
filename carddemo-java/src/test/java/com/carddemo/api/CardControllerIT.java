@@ -17,6 +17,7 @@
 package com.carddemo.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.carddemo.api.dto.CardDetailResponse;
 import com.carddemo.api.dto.CardListResponse;
@@ -61,6 +62,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.boot.actuate.autoconfigure.tracing.prometheus.PrometheusExemplarsAutoConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
@@ -928,6 +930,16 @@ public class CardControllerIT extends AbstractPostgresIT {
                 .expirationDate(RESERVED_EXPIRATION_DATE)
                 .activeStatus(activeStatus)
                 .build());
+    }
+
+    /**
+     * Reads a reserved row back if it exists, so a test can assert that a refused write landed nothing.
+     *
+     * @param  cardNumber the reserved key
+     * @return the row, or empty when no row carries the key
+     */
+    private Optional<Card> storedCardOrEmpty(final String cardNumber) {
+        return this.cards.findById(cardNumber);
     }
 
     /**
@@ -1993,31 +2005,65 @@ public class CardControllerIT extends AbstractPostgresIT {
                     .isEqualTo(RESERVED_EMBOSSED_NAME);
         }
 
+        /**
+         * A non-ASCII embossed name is not a state this schema admits, and that is why the discrimination
+         * between the table fold and a library case mapping is proven at the unit level rather than here.
+         *
+         * <p>The two implementations differ observably only when the STORED value carries a character
+         * outside the 26-letter table: with a stored {@code MAR\u00c9A}, a table fold leaves the submitted
+         * {@code mar\u00e9a} as {@code MAR\u00e9A} and the comparison sees a change, while a library case
+         * mapping would fold both to the same string and the turn would report no change. Persisting
+         * {@code MAR\u00c9A} is what that discrimination requires - and it is a row the record image cannot
+         * carry: the legacy field is a fixed-width EBCDIC field, the estate has no non-ASCII repertoire, and
+         * {@code com.carddemo.util.FixedWidthFieldReader} refuses to measure such a value rather than
+         * substituting one. {@code ck_card_single_byte_text} in {@code V1__create_schema.sql} now says so,
+         * and the test below asserts that refusal.
+         *
+         * <p>The discrimination itself is asserted where it needs no impossible row:
+         * {@code util/CobolStringUtilsTest} exercises {@code asciiUpperFold} over the whole ASCII range plus
+         * the sharp s, the dotless i, the n with tilde and the e with acute, and asserts for each that the
+         * table's result differs from the library method's. That is a stronger proof than this one was, and
+         * it is a proof about the fold rather than about a row nothing can store.
+         */
         @Test
-        @DisplayName("the fold leaves a non-ASCII letter untouched, so its case variant is a change - "
-                + "which a locale-aware upper-casing would have hidden")
-        void theFoldLeavesANonAsciiLetterUntouched() throws Exception {
-            // The fold is a 26-character table substitution, locale-independent and Unicode-unaware. A
-            // letter outside that table is left exactly as it stands, so a case variant of it does not
-            // compare equal - the observable difference between a table fold and a library upper-casing.
-            // The same table-based reasoning governs the alphabetic edit, which is what then rejects it.
-            writeReservedCard(RESERVED_NON_ASCII_CARD, NON_ASCII_NAME_UPPER, STATUS_ACTIVE);
-            final JsonNode fetched = updateFetch(RESERVED_ROW_ACCOUNT, RESERVED_NON_ASCII_CARD);
-            assertThat(textOf(fetched, PROPERTY_EMBOSSED_NAME))
-                    .as("the capture folds the stored name, and the table leaves this letter alone")
-                    .isEqualTo(NON_ASCII_NAME_UPPER);
+        @DisplayName("a non-ASCII embossed name cannot be STORED at all, which is why the fold's "
+                + "discriminating property is proven over the fold itself")
+        void aNonAsciiEmbossedNameCannotBeStored() {
+            assertThatExceptionOfType(DataIntegrityViolationException.class)
+                    .as("the record image is a fixed-width field the estate never encoded outside "
+                            + "US-ASCII, so the schema refuses a value the emitting layer could not write")
+                    .isThrownBy(() -> writeReservedCard(RESERVED_NON_ASCII_CARD, NON_ASCII_NAME_UPPER,
+                            STATUS_ACTIVE))
+                    .withMessageContaining("ck_card_single_byte_text");
 
-            final Map<String, Object> caseOnly = resubmissionOf(fetched, KeyAction.ENTER);
-            caseOnly.put(PROPERTY_EMBOSSED_NAME, NON_ASCII_NAME_LOWER);
-            final JsonNode screen = updateTurn(caseOnly);
+            assertThat(storedCardOrEmpty(RESERVED_NON_ASCII_CARD))
+                    .as("and nothing landed: the refusal is the whole outcome")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a SUBMITTED non-ASCII name is refused by the alphabetic edit, and the change is "
+                + "detected rather than folded away")
+        void aSubmittedNonAsciiNameIsRefusedByTheAlphabeticEdit() throws Exception {
+            // What remains reachable over this boundary, and it is worth holding: the submitted group is
+            // folded, the comparison sees a difference against the stored ASCII name, and the alphabetic
+            // edit - the same 26-letter reasoning - reports the source's own message. This test does not
+            // discriminate between the two case mappings, because with an ASCII stored value neither would
+            // hide the change; the discrimination is cited in this nest's own documentation.
+            writeReservedCard(RESERVED_NON_ASCII_CARD, RESERVED_EMBOSSED_NAME, STATUS_ACTIVE);
+            final JsonNode fetched = updateFetch(RESERVED_ROW_ACCOUNT, RESERVED_NON_ASCII_CARD);
+
+            final Map<String, Object> submitted = resubmissionOf(fetched, KeyAction.ENTER);
+            submitted.put(PROPERTY_EMBOSSED_NAME, NON_ASCII_NAME_LOWER);
+            final JsonNode screen = updateTurn(submitted);
 
             assertThat(textOf(screen, "errorMessage"))
-                    .as("had the fold been locale-aware, the two spellings would have compared equal and "
-                            + "this turn would have reported no change instead")
+                    .as("the difference is seen and then faulted; it is not folded away into no change")
                     .isNotEqualTo(NO_CHANGE_DETECTED)
                     .isEqualTo(NAME_MUST_BE_ALPHA);
             assertThat(storedCard(RESERVED_NON_ASCII_CARD).getCardEmbossedName())
-                    .isEqualTo(NON_ASCII_NAME_UPPER);
+                    .as("a faulted turn writes nothing, so the stored name is still the ASCII one")
+                    .isEqualTo(RESERVED_EMBOSSED_NAME);
         }
     }
 

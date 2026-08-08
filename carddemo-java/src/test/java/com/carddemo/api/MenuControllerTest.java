@@ -348,6 +348,31 @@ class MenuControllerTest {
         }
 
         @Test
+        @DisplayName("both turns answer at their literal addresses /api/menu and /api/admin/menu, so the "
+                + "documented addresses are the served ones and not merely the same constant twice")
+        void bothTurnsAnswerAtTheirLiteralAddresses() throws Exception {
+            // Written out rather than assembled from the constants the mappings use: an expectation built
+            // from the mapping's own constant moves with it and can never disagree with it, which is how
+            // a wrong verb and a missing operation survived in the published route inventory. The whole
+            // surface is compared against one independent literal oracle in DeliveredApiSurfaceOracleTest;
+            // these are the two menu addresses, asserted where the turns' behaviour is specified.
+            mockMvc.perform(post("/api/menu")
+                            .principal(authenticated(ORDINARY_USER_ID, UserType.USER))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(firstEntry())))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactionName")
+                            .value(MenuService.USER_MENU_TRANSACTION_ID));
+            mockMvc.perform(post("/api/admin/menu")
+                            .principal(authenticated(ADMIN_USER_ID, UserType.ADMIN))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body(firstEntry())))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactionName")
+                            .value(MenuService.ADMIN_MENU_TRANSACTION_ID));
+        }
+
+        @Test
         @DisplayName("the controller holds no rule of its own: its only state is its collaborators, so "
                 + "there is nowhere for a catalogue, a route table or a message literal to be kept")
         void theControllerHoldsNoRuleOfItsOwn() {

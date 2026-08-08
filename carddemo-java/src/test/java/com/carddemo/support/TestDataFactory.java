@@ -22,6 +22,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -31,6 +35,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -113,8 +118,10 @@ import com.carddemo.domain.id.TransactionCategoryId;
  *
  * <p><strong>CREDENTIAL HANDLING.</strong> The shared legacy cleartext credential appears nowhere in
  * this file - not in a literal, not in a comment, not in a method name and not in a diagnostic - and
- * nowhere else in this module either. What the class-path fixture carries in its credential window is a
- * synthetic stand-in, read at run time and sliced out by offset. See
+ * nowhere else in this module's Java sources either. It lives in exactly one test resource, in the
+ * credential window of the sign-on fixture, and is read at run time by offset and overwritten after use.
+ * That window carries the delivered provisioning value rather than a stand-in, because acceptance is the
+ * only property that distinguishes a correct shipped digest from a merely well-formed one. See
  * {@link #fixtureCredentialWindow()}, which states the whole contract and the measurement that makes
  * the distinction load-bearing rather than pedantic.</p>
  *
@@ -2906,6 +2913,21 @@ public final class TestDataFactory {
      */
     public static final String USER_SECURITY_FIXTURE = "usrsec.txt";
 
+    /** Repository-relative path of the read-only member that provisions the ten sign-on identities. */
+    public static final String PROVISIONING_MEMBER = "app/jcl/DUSRSECJ.jcl";
+
+    /** Directory name of this module, used to recognise the checkout root while walking upward. */
+    private static final String MODULE_DIRECTORY = "carddemo-java";
+
+    /** Directory name of the read-only legacy estate, recognised the same way. */
+    private static final String LEGACY_ROOT = "app";
+
+    /** The statement that opens the provisioning member's in-stream card images. */
+    private static final String PROVISIONING_STREAM_OPEN = "//SYSUT1";
+
+    /** The delimiter that closes them. */
+    private static final String PROVISIONING_STREAM_CLOSE = "/*";
+
     /**
      * Reads a delivered fixture as fixed-width records.
      *
@@ -3021,30 +3043,52 @@ public final class TestDataFactory {
     // run time, and handed back as a mutable character array so a caller can overwrite it.
     //
     // ---------------------------------------------------------------------------------------------
-    // MEASURED, AND LOAD-BEARING: THE CLASS-PATH FIXTURE'S WINDOW IS A SYNTHETIC STAND-IN.
+    // THE CLASS-PATH FIXTURE'S WINDOW CARRIES THE DELIVERED PROVISIONING VALUE, AND HAS TO.
     // ---------------------------------------------------------------------------------------------
-    // The delivered fixture does NOT carry the legacy cleartext in its credential window. It carries an
-    // eight-character synthetic value, chosen to be unrelated to the legacy one and to everything else
-    // in the fixture, so that the window is exercised at its full declared width without the legacy
-    // value existing inside this module at all. Both were compared byte for byte and they differ.
+    // It once carried an eight-character SYNTHETIC stand-in instead, on the reasoning that a module
+    // which hashes a credential should not hold the credential. That reasoning is sound about the
+    // module's own configuration and wrong about this fixture, for two independent reasons.
     //
-    // The consequence is the whole reason this is stated here rather than assumed. The ten digests the
-    // credential seed loads were produced from the LEGACY provisioning value, and it was measured that
-    // all ten accept it and none accepts the fixture's window value. So a method that read the window
-    // and asked a seeded digest to accept it would return false every time - and would look, to anyone
-    // reading its name, like a verification that had passed for a good reason.
+    // First, the plan designates these fixtures as derived from the delivered reference data, and names
+    // the credential seed as reproducing the ten in-stream provisioning records. A fabricated window
+    // made the fixture silently disagree with the provenance it documents - a fidelity defect in a Gate
+    // 4 named artefact, not a hardening measure.
     //
-    // This class therefore refuses to offer that method. What it offers instead is honest in both
-    // directions:
+    // Second, and decisively: with a fabricated window the ten digests the credential seed loads became
+    // UNVERIFIABLE from inside this module. The only questions answerable about them were their SHAPE
+    // and their REFUSAL of a wrong value - and both of those are satisfied by a digest of ANY value
+    // whatsoever. A future wrong literal in the seed would have passed every committed test while the
+    // seeded sign-on silently stopped working, which is exactly the gap a reviewer found. Acceptance is
+    // the only property that distinguishes a correct digest from a well-formed one, and acceptance
+    // cannot be asserted without the value.
     //
-    //   * a digest THIS CLASS produces from the window value, and a matcher that verifies it - which is
-    //     entirely self-consistent and is what a test seeding its own identity needs;
-    //   * for a SEEDED digest, the two checks that are answerable from inside a module that
-    //     deliberately does not hold the legacy value: its shape, and its refusal of a wrong value.
-    //     Both were measured to hold for all ten.
+    // The window is therefore the delivered value, recovered from the provisioning records' own layout
+    // position. Note what did NOT change: the value still appears nowhere in this file and nowhere else
+    // in this module's Java sources - not in a literal, not in a comment, not in a method name, not in a
+    // diagnostic. It lives in one test resource, is read by offset, is used, and is overwritten. The
+    // module remains standalone, because nothing reads the legacy tree at run time; the derivation
+    // happened once, when the fixture was written.
     //
-    // Reaching into the legacy tree for the legacy value is not an option and is not a gap: that tree is
-    // read-only reference, and a module that had to read it to test itself would not be standalone.
+    // Nor is this a hardcoded credential in the sense the constraint forbids. That constraint governs
+    // the production configuration, which resolves every secret from the environment with no fallback,
+    // and the credential seed itself is scoped to the local and test profiles only.
+    //
+    // ---------------------------------------------------------------------------------------------
+    // MEASURED, AND LOAD-BEARING: THE WINDOW IS INVARIANT UNDER THE SIGN-ON FOLD.
+    // ---------------------------------------------------------------------------------------------
+    // The sign-on program upper-cases the submitted credential before comparing anything, through a
+    // twenty-six character ASCII substitution table. The delivered window contains no lower-case
+    // character, so folding it is the identity - which means a digest of the raw window and a digest of
+    // the folded window are digests of the same value, and matching the raw window is matching what the
+    // boundary compares. That is asserted rather than assumed, by fixtureCredentialWindowIsFoldInvariant,
+    // because a fixture whose window folded to something else would make every acceptance check here
+    // quietly weaker than it reads.
+    //
+    // Recorded as DL-280 in docs/decision-log.md.
+    //
+    // A consequence worth naming: the fold's unconditionality can no longer be demonstrated using the
+    // credential itself, since for an all-upper value a folded and an unfolded digest are the same
+    // digest. That property is demonstrated with a mixed-case PROBE that is not a credential.
     // =============================================================================================
 
     /** Length of a digest of the credential, as the storage column and the entity both require. */
@@ -3091,12 +3135,13 @@ public final class TestDataFactory {
      * known column range of a known record. The array is freshly allocated on every call, so a caller
      * may - and should - overwrite it once finished.</p>
      *
-     * <p><strong>WHAT THIS IS, PRECISELY.</strong> It is the fixture's synthetic window value, not the
-     * legacy cleartext, which this module deliberately does not hold. It is therefore the value that
-     * {@link #digestOfFixtureCredentialWindow()} hashes and that
-     * {@link #digestAcceptsFixtureCredentialWindow(PasswordEncoder, String)} matches with, and it is
-     * <em>not</em> the value a seeded digest accepts. The section comment above states the measurement
-     * behind that and why no method here pretends otherwise.</p>
+     * <p><strong>WHAT THIS IS, PRECISELY.</strong> It is the delivered provisioning value, recovered from
+     * the credential window of the class-path fixture, which reproduces the ten in-stream provisioning
+     * records. It is therefore the value that {@link #digestOfFixtureCredentialWindow()} hashes, the
+     * value {@link #digestAcceptsFixtureCredentialWindow(PasswordEncoder, String)} matches with, and -
+     * this being the point - the value <em>a seeded digest accepts</em>. That last property is what makes
+     * the ten shipped digests verifiable at all; the section comment above records why a fabricated
+     * window left them unverifiable and why shape and refusal alone were not enough.</p>
      *
      * <p><strong>DO NOT LOG, PRINT OR ASSERT ON THE RETURN VALUE.</strong> It stands in for a credential
      * and is treated as one. Pass it to an encoder or a matcher and discard it;
@@ -3114,6 +3159,160 @@ public final class TestDataFactory {
         final char[] window = new char[field.width()];
         records.get(0).getChars(field.offset(), field.endOffset(), window, 0);
         return window;
+    }
+
+    /**
+     * Reads the credential window of the read-only provisioning member's in-stream card images.
+     *
+     * <h4>What this is, and why it is not a literal anywhere</h4>
+     * The ten delivered digests were produced from the value the legacy provisioning member carries for
+     * all ten sign-on identities. That value is recovered here the only way it may be: <strong>at run
+     * time, by offset, out of the read-only reference tree</strong>. It is never written down - not in a
+     * literal, not in a comment, not in a method name and not in a diagnostic - which is the same
+     * discipline {@link #fixtureCredentialWindow()} follows and the same one the credential-literal audit
+     * under Gate 6 of {@code docs/gate-evidence.md} describes and reproduces.
+     *
+     * <p><strong>This is what a test proving the delivered digests must present.</strong> Installing a
+     * digest of some other value first and then signing on proves that the encoder works; it proves
+     * nothing whatever about the ten digests the migration shipped. Presenting this value does.
+     *
+     * <p>The ten card images are located by their in-stream delimiters rather than by line number, so a
+     * comment added above them does not silently move the window. All ten are required to carry the same
+     * value, which is the property the seed depends on and which would otherwise be an assumption.
+     *
+     * <p><strong>DO NOT LOG, PRINT OR ASSERT ON THE RETURN VALUE.</strong> Overwrite it when finished;
+     * {@link #digestAcceptsProvisioningCredential(PasswordEncoder, String)} keeps it out of the calling
+     * frame entirely and is the preferred entry point.
+     *
+     * @return the eight characters every provisioning card image carries in its credential window
+     * @throws IllegalStateException if the member is absent, or does not carry ten card images, or the
+     *                               ten do not agree
+     */
+    public static char[] provisioningCredentialWindow() {
+        final FieldSpec field = USER_SECURITY.field("SEC-USR-PWD");
+        final List<String> cards = provisioningCardImages();
+        final char[] window = new char[field.width()];
+        cards.get(0).getChars(field.offset(), field.endOffset(), window, 0);
+        for (final String card : cards) {
+            for (int index = 0; index < field.width(); index++) {
+                if (card.charAt(field.offset() + index) != window[index]) {
+                    Arrays.fill(window, SPACE_FILLER);
+                    throw new IllegalStateException("the ten card images of " + PROVISIONING_MEMBER
+                            + " must all carry one credential window, because the ten delivered digests"
+                            + " are ten salted digests of one value; they differ at window position "
+                            + (index + 1));
+                }
+            }
+        }
+        return window;
+    }
+
+    /**
+     * Reports whether a digest accepts the provisioning credential, without that value entering the
+     * caller.
+     *
+     * <p>The window is read here, used here and overwritten here, so it appears in no assertion message
+     * and in no log line of the calling test. This is the method that makes a frozen digest provable:
+     * it answers, for a digest read straight off the migrated server, whether the value the legacy
+     * member provisions still opens it.
+     *
+     * @param encoder the encoder the module is configured with
+     * @param digest  the digest to test
+     * @return {@code true} when the digest accepts the provisioning credential
+     */
+    public static boolean digestAcceptsProvisioningCredential(final PasswordEncoder encoder,
+            final String digest) {
+        Objects.requireNonNull(encoder, "encoder");
+        Objects.requireNonNull(digest, "digest");
+        final char[] window = provisioningCredentialWindow();
+        try {
+            return encoder.matches(CharBuffer.wrap(window), digest);
+        } finally {
+            Arrays.fill(window, SPACE_FILLER);
+        }
+    }
+
+    /**
+     * Reads the provisioning member's ten in-stream card images.
+     *
+     * <p>Delimited rather than numbered: the images sit between the input data definition and the
+     * in-stream terminator, so editing the member's comment block cannot shift what is read. Each image
+     * is padded on the right to the layout's own width, because the member carries them at their content
+     * length while the dataset they produce is fixed-width.
+     *
+     * @return the ten card images, each at the identity layout's record length
+     */
+    private static List<String> provisioningCardImages() {
+        final Path member = legacyMember(PROVISIONING_MEMBER);
+        final String content;
+        try {
+            content = Files.readString(member, StandardCharsets.ISO_8859_1);
+        } catch (final IOException unreadable) {
+            throw new IllegalStateException("the provisioning member at " + member
+                    + " could not be read, so the credential it provisions cannot be recovered",
+                    unreadable);
+        }
+
+        final List<String> images = new ArrayList<>(SEEDED_USER_COUNT);
+        boolean inStream = false;
+        for (String line : content.split("\n", -1)) {
+            if (line.endsWith("\r")) {
+                line = line.substring(0, line.length() - 1);
+            }
+            if (line.startsWith(PROVISIONING_STREAM_OPEN)) {
+                inStream = true;
+                continue;
+            }
+            if (!inStream) {
+                continue;
+            }
+            if (line.startsWith(PROVISIONING_STREAM_CLOSE)) {
+                break;
+            }
+            images.add(line.length() >= USER_SECURITY.recordLength()
+                    ? line.substring(0, USER_SECURITY.recordLength())
+                    : line + String.valueOf(SPACE_FILLER)
+                            .repeat(USER_SECURITY.recordLength() - line.length()));
+        }
+
+        if (images.size() != SEEDED_USER_COUNT) {
+            throw new IllegalStateException(PROVISIONING_MEMBER + " must carry exactly "
+                    + SEEDED_USER_COUNT + " in-stream card images between '"
+                    + PROVISIONING_STREAM_OPEN + "' and '" + PROVISIONING_STREAM_CLOSE + "', but "
+                    + images.size() + " were found");
+        }
+        return List.copyOf(images);
+    }
+
+    /**
+     * Resolves one member of the read-only legacy estate, which lives above the module directory.
+     *
+     * <p>The build's working directory is the module, so the estate is reached by walking upward to the
+     * checkout root - the directory that holds both the module and the estate. Bounded by the filesystem
+     * root, so a misconfigured working directory produces a diagnostic instead of an endless loop.
+     *
+     * <p>Package-private rather than private so a specification in this package can verify a literal it
+     * restates against the member it restates it from - which is what makes a hand-typed oracle a
+     * verified oracle rather than a second opinion.
+     *
+     * @param  relativePath the member's repository-relative path
+     * @return the resolved path
+     */
+    static Path legacyMember(final String relativePath) {
+        final Path start = Path.of("").toAbsolutePath().normalize();
+        for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
+            if (Files.isDirectory(candidate.resolve(MODULE_DIRECTORY))
+                    && Files.isDirectory(candidate.resolve(LEGACY_ROOT))) {
+                final Path member = candidate.resolve(relativePath);
+                if (Files.isRegularFile(member)) {
+                    return member;
+                }
+            }
+        }
+        throw new IllegalStateException("no checkout root above " + start + " holds both a '"
+                + MODULE_DIRECTORY + "' directory and a '" + LEGACY_ROOT + "' directory containing "
+                + relativePath + ". The build's working directory is the module, so the read-only "
+                + "estate is resolved by walking upward.");
     }
 
     /**
@@ -3148,14 +3347,14 @@ public final class TestDataFactory {
      * <p>The window is read here, used here and overwritten here, so it can appear in no assertion
      * message and in no log line of the calling test.</p>
      *
-     * <p><strong>THIS RETURNS FALSE FOR A SEEDED DIGEST, BY DESIGN, AND THAT IS NOT A FAILURE.</strong>
-     * The seeded digests were produced from the legacy provisioning value; the fixture's window carries
-     * a synthetic stand-in; the two differ, and it was measured that all ten seeded digests accept the
-     * former and none accepts the latter. Use this method against a digest produced by
-     * {@link #digestOfFixtureCredentialWindow()}. For a seeded digest, assert
+     * <p><strong>THIS IS THE ACCEPTANCE CHECK FOR A SEEDED DIGEST, AND IT RETURNS TRUE.</strong> The ten
+     * digests the credential seed loads were produced from the delivered provisioning value, and the
+     * fixture's window carries that same value, so each of the ten accepts it. Asserting that is the only
+     * check which separates a <em>correct</em> shipped digest from a merely <em>well-formed</em> one:
      * {@link #hasStoredDigestShape(String)} and
-     * {@link #digestRefusesOtherValues(PasswordEncoder, String)} instead, which are the two properties
-     * a module that deliberately does not hold the legacy value can answer.</p>
+     * {@link #digestRefusesOtherValues(PasswordEncoder, String)} are both satisfied by a digest of any
+     * value at all, so on their own they would pass over a wrong literal in the seed. Assert all three
+     * together - shape, acceptance, refusal - and none of them alone.</p>
      *
      * @param encoder the encoder the module is configured with
      * @param digest  the digest to test
@@ -3174,11 +3373,79 @@ public final class TestDataFactory {
     }
 
     /**
+     * Reports whether the fixture's credential window is invariant under the sign-on fold.
+     *
+     * <p>The sign-on program upper-cases the submitted credential before comparing anything, through a
+     * twenty-six character ASCII substitution table. When the window contains no lower-case character
+     * that fold is the identity, and matching the raw window is therefore matching exactly what the
+     * boundary compares - which is the assumption every acceptance check in this class rests on.</p>
+     *
+     * <p>Asserted rather than assumed, because a fixture whose window folded to something else would
+     * make each of those checks quietly weaker than it reads: a digest produced from the raw window
+     * would then be compared against a folded submission and would never match, and the refusal would
+     * look like a contract failure rather than a fixture defect. The fold is applied over the character
+     * array here rather than by calling the module's string utility, because that utility takes a
+     * {@code String} and the value must not become one.</p>
+     *
+     * @return {@code true} when folding the window changes nothing
+     */
+    public static boolean fixtureCredentialWindowIsFoldInvariant() {
+        final char[] window = fixtureCredentialWindow();
+        try {
+            for (final char character : window) {
+                if (character >= 'a' && character <= 'z') {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            Arrays.fill(window, SPACE_FILLER);
+        }
+    }
+
+    /**
+     * Returns a one-way fingerprint of the fixture's credential window, as lower-case hexadecimal.
+     *
+     * <p><strong>Why a fingerprint rather than the value.</strong> A specification that guards the
+     * fixture wants an EXACT comparison - a measurement such as "not blank, and the same on all ten
+     * records" is satisfied by any populated window and so would not notice one being swapped for
+     * another. An exact comparison normally means a literal, and a literal here would put the credential
+     * into a Java source and into every failure message that printed it.</p>
+     *
+     * <p>A SHA-256 fingerprint gives the exactness without either cost: it changes whenever the window
+     * changes, and it is safe to declare as a constant, to print in a diagnostic and to read in a
+     * review, because it cannot be inverted into the value it stands for. It is a guard against silent
+     * drift, not a security control.</p>
+     *
+     * @return sixty-four lower-case hexadecimal characters
+     */
+    public static String fixtureCredentialWindowFingerprint() {
+        final char[] window = fixtureCredentialWindow();
+        final byte[] encoded = new byte[window.length];
+        try {
+            for (int index = 0; index < window.length; index++) {
+                encoded[index] = (byte) window[index];
+            }
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(encoded));
+        } catch (final NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(
+                    "SHA-256 is required of every Java platform, so its absence is not a condition this "
+                            + "fixture can work around", unavailable);
+        } finally {
+            Arrays.fill(window, SPACE_FILLER);
+            Arrays.fill(encoded, (byte) SPACE_FILLER);
+        }
+    }
+
+    /**
      * Reports whether a digest refuses a value it was not derived from.
      *
      * <p>Answerable about any digest, seeded or built, and measured to hold for all ten seeded ones. A
-     * digest that accepted everything would satisfy an acceptance check and be worthless, which is why
-     * a refusal check is needed alongside one.</p>
+     * digest that accepted everything would satisfy an acceptance check and be worthless, which is why a
+     * refusal check is needed <em>alongside</em> one - and, symmetrically, why it is no substitute for
+     * one: a digest of the wrong value refuses this probe just as readily as a digest of the right
+     * value does.</p>
      *
      * @param encoder the encoder the module is configured with
      * @param digest  the digest to test
@@ -3195,8 +3462,10 @@ public final class TestDataFactory {
      * Reports whether a value has the shape a stored digest must have: the required length, a
      * recognised version marker, and the module's cost factor.
      *
-     * <p>Shape only. It says nothing about what the digest accepts, which is what
-     * {@link #digestAcceptsFixtureCredentialWindow(PasswordEncoder, String)} is for.</p>
+     * <p>Shape only, and shape is a weak property: a digest of the wrong value has exactly the same
+     * shape as a digest of the right one. What the digest accepts is
+     * {@link #digestAcceptsFixtureCredentialWindow(PasswordEncoder, String)}, and a seed assertion that
+     * checks shape without checking acceptance would pass over a wrong literal.</p>
      *
      * @param digest the value to inspect
      * @return {@code true} when the value is shaped like a digest at the module's cost factor
@@ -3516,35 +3785,46 @@ public final class TestDataFactory {
     private static final BigDecimal DEFAULT_RETURN_AMOUNT = new BigDecimal("-504.77");
 
     /**
-     * A card number for the case where the card resolves but the account behind it does not.
+     * A card number that appears in no card table, no cross-reference and no account.
      *
-     * <p>A record naming this card reaches the reasons that fire when an account cannot be found, but
-     * only once the test has also registered a cross-reference from this card to
-     * {@link #UNKNOWN_ACCOUNT_ID}. The landing table's deliberate absence of referential constraints is
-     * what makes writing such a record possible in the first place.</p>
+     * <p>Its use is to prove the <strong>landing</strong> table's deliberate absence of referential
+     * constraints: a record naming it is accepted by the server, which is what lets an input carrying an
+     * unresolvable reference reach the validation cascade at all rather than being refused on insert.</p>
+     *
+     * <p><strong>It does NOT reach the account-not-found reasons, and it never could.</strong> That
+     * would require a cross-reference from this card to an account the account table does not hold, and
+     * {@code V2__create_indexes.sql} puts a foreign key from the cross-reference table to the account
+     * table precisely to forbid such a row. Those two reasons are reached through the account-repository
+     * spy in {@code RejectReasonArmsIT}, which makes one read report the absence the legacy file's
+     * {@code INVALID KEY} arm reported while leaving the schema and the row intact. See
+     * {@link #dailyTransactionRejectedBy(RejectReason)}, which refuses to pretend otherwise.</p>
      */
     public static final String ORPHANED_CARD_NUMBER = "8888888888888888";
 
-    /** The reason code that means no rejection; posting proceeds only on this value. */
-    public static final int NO_REJECT_REASON_CODE = 0;
-
-    /** Every reject reason code the validation cascade can produce, in declaration order. */
-    public static final List<Integer> REJECT_REASON_CODES = collectRejectReasonCodes();
+    /**
+     * The reason code that means no rejection; posting proceeds only on this value.
+     *
+     * <p>Read off {@link LegacyRejectReason#NO_REASON_CODE}, which is the legacy member's own value and
+     * not the module's. See the note on the following constant for why the difference matters.
+     */
+    public static final int NO_REJECT_REASON_CODE = LegacyRejectReason.NO_REASON_CODE;
 
     /**
-     * Collects the reject reason codes from the contract enumeration rather than restating them, so a
-     * code cannot be recorded here that the system does not recognise.
+     * Every reject reason code the legacy validation cascade can produce, in ascending order, taken
+     * from a hand transcription of the legacy source rather than from the shipped enumeration.
      *
-     * @return the reason codes, in declaration order
+     * <h4>Why these come from an oracle and not from the module's enumeration</h4>
+     * They used to be collected from {@code RejectReason.values()}. That made this list agree with the
+     * module by construction: a wrong code in the enumeration would have produced a wrong code in the
+     * fixture and a wrong code in the expectation at the same time, and every comparison between them
+     * would still have passed. They now come from {@link LegacyRejectReasons#CODES}, which imports
+     * nothing from the shipped types, and the shipped enumeration is asserted AGAINST that table in
+     * {@code RejectReasonOracleTest} - the direction that establishes the contract. A second, independently
+     * written transcription of the same five sites, {@link LegacyRejectReason}, is held to the legacy
+     * member by {@code LegacyRejectReasonTest}; the two agree, and either one leaves the module's
+     * enumeration free to be wrong and be caught.
      */
-    private static List<Integer> collectRejectReasonCodes() {
-        final RejectReason[] reasons = RejectReason.values();
-        final List<Integer> codes = new ArrayList<>(reasons.length);
-        for (final RejectReason reason : reasons) {
-            codes.add(reason.getReasonCode());
-        }
-        return List.copyOf(codes);
-    }
+    public static final List<Integer> REJECT_REASON_CODES = LegacyRejectReasons.CODES;
 
     /**
      * An account naming a real disclosure group, so the direct interest-rate lookup is reached.
@@ -3636,16 +3916,13 @@ public final class TestDataFactory {
     }
 
     /**
-     * A landing record shaped to reach one named reject reason.
+     * A landing record shaped to reach one named reject reason - for the three reasons a record can
+     * reach on its own.
      *
-     * <p>What the <em>record</em> must carry is supplied here; where a reason additionally depends on
-     * stored state, that state is named so the caller can arrange it:</p>
+     * <p>Three of the five reject reasons are properties of the record and the seeded state together,
+     * and this supplies the record half of each:</p>
      * <ul>
      *   <li>invalid card number - complete here: the record names a card no seeded row carries.</li>
-     *   <li>account not found, on either the read or the rewrite - the record names
-     *       {@link #ORPHANED_CARD_NUMBER}; the caller registers a cross-reference from that card to
-     *       {@link #UNKNOWN_ACCOUNT_ID}, so the card resolves and the account does not. The two reasons
-     *       differ in when the lookup fails, not in what the record carries.</li>
      *   <li>overlimit - complete here: the amount alone breaches any seeded limit. The basis is
      *       evaluated strictly left to right as cycle credit less cycle debit plus this amount, so no
      *       rearrangement of that expression is performed anywhere.</li>
@@ -3653,19 +3930,49 @@ public final class TestDataFactory {
      *       any seeded expiry date.</li>
      * </ul>
      *
-     * <p>The switch is exhaustive over the contract enumeration and carries no fallback arm, so adding
-     * a reason to the contract fails this file at compile time rather than silently producing a record
-     * that reaches nothing.</p>
+     * <h3>The two reasons this method REFUSES to pretend it can shape</h3>
      *
-     * @param reason the reason the record should reach
+     * <p>The two account-not-found reasons are not reachable from any landing record, and this method
+     * used to claim otherwise. It handed back a record naming {@link #ORPHANED_CARD_NUMBER} and
+     * instructed the caller to register a cross-reference from that card to {@link #UNKNOWN_ACCOUNT_ID}
+     * so that the card would resolve and the account would not. <strong>That instruction cannot be
+     * carried out.</strong> The cross-reference table carries a foreign key to the account table, added
+     * by {@code V2__create_indexes.sql}, so the dangling row the recipe depends on is refused by the
+     * server. Every caller that followed the recipe would fail on the arrangement, and any caller that
+     * skipped it would receive a record that quietly posts - which is how the two arms came to be
+     * unobserved while every assertion about them passed.</p>
+     *
+     * <p>Recorded as DL-279 in {@code docs/decision-log.md}.</p>
+     *
+     * <p>Both are therefore refused here, loudly, with a message naming where they ARE reached:
+     * {@code RejectReasonArmsIT} enters them through a narrow spy over the account repository, which
+     * makes one read report what the legacy file's {@code INVALID KEY} arm reported while the schema,
+     * the foreign key and the row all stay intact. A factory that returns a fixture unable to do what
+     * its name says is worse than one that refuses, because the refusal is discovered at the call site
+     * rather than inferred from a test that never went red.</p>
+     *
+     * <p>The switch remains exhaustive over the contract enumeration with no fallback arm, so adding a
+     * reason to the contract still fails this file at compile time rather than silently producing a
+     * record that reaches nothing.</p>
+     *
+     * @param reason the legacy reason the record should reach, from the oracle rather than from the
+     *               module's own enumeration - a record built to trigger what the module <em>thinks</em>
+     *               a reason is proves nothing about what the estate does
      * @return a builder for a landing record shaped to reach that reason
+     * @throws IllegalArgumentException if the reason is one of the two no landing record can reach
      */
     public static DailyTransactionBuilder dailyTransactionRejectedBy(final RejectReason reason) {
         Objects.requireNonNull(reason, "reason");
         return switch (reason) {
             case INVALID_CARD_NUMBER -> dailyTransaction().cardNumber(UNKNOWN_CARD_NUMBER);
             case ACCOUNT_NOT_FOUND_ON_READ, ACCOUNT_NOT_FOUND_ON_REWRITE ->
-                    dailyTransaction().cardNumber(ORPHANED_CARD_NUMBER);
+                    throw new IllegalArgumentException("no landing record can reach " + reason.name()
+                            + " (code " + reason.getReasonCode() + "): the arm is entered when the"
+                            + " account read or the account rewrite reports no row, and the"
+                            + " cross-reference table's foreign key to the account table forbids the"
+                            + " dangling row that would produce that from persisted state. Reach it"
+                            + " through the account-repository spy in RejectReasonArmsIT instead, which"
+                            + " leaves the schema, the foreign key and the row intact");
             case OVERLIMIT_TRANSACTION -> dailyTransaction().amount(OVERLIMIT_AMOUNT);
             case TRANSACTION_AFTER_ACCOUNT_EXPIRATION ->
                     dailyTransaction().originalTimestamp(POST_EXPIRY_TIMESTAMP);
@@ -3683,6 +3990,13 @@ public final class TestDataFactory {
     // that code. A comparison against this image is byte equality over the whole four hundred and
     // thirty bytes, never a trimmed or semantic comparison, so a stray blank or a wrong sign byte
     // fails rather than passing unnoticed.
+    //
+    // The SAME argument applies to the two values inside the trailer, and it did not used to be
+    // honoured. The four digits and the seventy-six characters were read out of the shipped
+    // RejectReason enumeration, so the assembled expectation agreed with the implementation by
+    // construction and a wrong code produced a wrong file and a passing test. Both values now come
+    // from LegacyRejectReasons, a hand transcription of the legacy source that imports nothing from
+    // the shipped types; the enumeration is asserted against that table in RejectReasonOracleTest.
     // =============================================================================================
 
     /**
@@ -3736,16 +4050,51 @@ public final class TestDataFactory {
     }
 
     /**
-     * Assembles a reject record from a landing image and a reason drawn from the contract
-     * enumeration, which supplies both the code and the description text.
+     * Assembles a reject record from a landing image and a reason, taking the four digits and the
+     * seventy-six characters from the hand transcription of the legacy source rather than from the reason
+     * value that was passed in.
+     *
+     * <h3>Why the supplied reason is NAMED here and not read</h3>
+     *
+     * <p>This overload used to call {@code reason.getReasonCode()} and {@code reason.getDescription()}, so
+     * the expected trailer was assembled out of the very values a comparison against it was supposed to
+     * check. Every reject-record assertion in the estate was therefore self-referential: had the shipped
+     * enumeration recorded 104 where the legacy sets 103, the expectation would have said 104 too and the
+     * comparison would have passed over a file no consumer could read.</p>
+     *
+     * <p>The reason is still accepted as a parameter, because a test parameterised over the shipped
+     * enumeration is the natural way to cover every arm and because the production code hands back
+     * enumeration values. But only its NAME is used: {@link LegacyRejectReasons} is asked which code and
+     * which description the legacy source sets at the site that constant stands for, and the trailer is
+     * built from those. A drifted code in production now changes the produced bytes while leaving this
+     * expectation where the source put it, so the comparison fails - which is the whole point.</p>
      *
      * @param landingImage the three-hundred-and-fifty byte landing record image
-     * @param reason       the reason
+     * @param reason       the reason, used to name the transcribed entry rather than to supply its values
      * @return the four-hundred-and-thirty byte reject record image
+     * @throws IllegalArgumentException if no transcribed entry stands for the supplied reason
      */
     public static String rejectRecordImage(final String landingImage, final RejectReason reason) {
+        final LegacyRejectReasons.Reason transcribed = transcribedReasonFor(reason);
+        return rejectRecordImage(landingImage, transcribed.code(), transcribed.description());
+    }
+
+    /**
+     * Returns the hand transcription of the legacy reason that the supplied shipped constant stands for.
+     *
+     * <p>The single place the binding between the shipped enumeration and the transcribed table lives, so
+     * a specification that is parameterised over the enumeration - the natural shape, because the
+     * production code hands back enumeration values - can still take its expected code and its expected
+     * description from the legacy source rather than from the value it is checking. Only the constant's
+     * NAME crosses the boundary; neither its code nor its description is read.</p>
+     *
+     * @param reason the shipped reason
+     * @return the transcribed reason that constant must carry
+     * @throws IllegalArgumentException if the transcription records nothing for a constant of that name
+     */
+    public static LegacyRejectReasons.Reason transcribedReasonFor(final RejectReason reason) {
         Objects.requireNonNull(reason, "reason");
-        return rejectRecordImage(landingImage, reason.getReasonCode(), reason.getDescription());
+        return LegacyRejectReasons.requireByShippedConstantName(reason.name());
     }
 
     // =============================================================================================

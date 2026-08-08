@@ -54,6 +54,7 @@ import com.carddemo.exception.AbendException;
 import com.carddemo.exception.FileStatusException;
 import com.carddemo.service.StatementDataAccessService.StatementFileRequest;
 import com.carddemo.service.StatementDataAccessService.StatementFileResponse;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2911,7 +2912,7 @@ class StatementGenerationServiceTest {
             final Account account =
                     TestDataFactory.account().acctId(ACCOUNT_ID).currentBalance(CURRENT_BALANCE)
                             .build();
-            assertThat(crossReference.getXrefCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(crossReference.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(crossReference.getXrefCustId()).isEqualTo(CUSTOMER_ID);
             assertThat(crossReference.getXrefAcctId()).isEqualTo(ACCOUNT_ID);
             assertThat(account.getAcctId()).isEqualTo(ACCOUNT_ID);

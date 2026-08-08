@@ -133,56 +133,42 @@ class ReportRequestServiceTest {
     /** The module's pinned instant, which lands inside a thirty-day month. */
     private static final Instant PINNED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
 
-    /** The pinned clock every test uses unless it needs a different calendar month. */
     private static final Clock PINNED_CLOCK = Clock.fixed(PINNED_INSTANT, ZoneOffset.UTC);
 
     // ==============================================================================================
     // Contract widths and counts. Legacy contract values, never tuning parameters.
     // ==============================================================================================
 
-    /** One job-submission card occupies an eighty-column frame. */
     private static final int CARD_IMAGE_WIDTH = 80;
 
-    /** A complete submission carries seventeen cards, the sentinel among them. */
     private static final int SUBMISSION_CARD_COUNT = 17;
 
     /** The concatenated image is the seventeen frames end to end with nothing between them. */
     private static final int CONCATENATED_IMAGE_WIDTH = SUBMISSION_CARD_COUNT * CARD_IMAGE_WIDTH;
 
-    /** A date substitution slot is ten characters wide. */
     private static final int DATE_SLOT_WIDTH = 10;
 
-    /** The two common messages are fifty characters wide, trailing spaces included. */
     private static final int COMMON_MESSAGE_WIDTH = 50;
 
-    /** The two screen titles are forty characters wide, leading and trailing spaces included. */
     private static final int SCREEN_TITLE_WIDTH = 40;
 
     /** The outbound message field is narrower than the eighty-character work field behind it. */
     private static final int OUTBOUND_MESSAGE_WIDTH = 78;
 
-    /** Byte offset of the start-date slot on the start-date sort-symbol card: 18 + 10 + 52. */
     private static final int START_SORT_SYMBOL_SLOT_OFFSET = 18;
 
-    /** Byte offset of the end-date slot on the end-date sort-symbol card: 16 + 10 + 54. */
     private static final int END_SORT_SYMBOL_SLOT_OFFSET = 16;
 
-    /** Byte offset of the start-date slot on the parameter card: 10 + 1 + 10 + 59. */
     private static final int PARAMETER_START_SLOT_OFFSET = 0;
 
-    /** Byte offset of the separator between the two slots on the parameter card. */
     private static final int PARAMETER_SEPARATOR_OFFSET = 10;
 
-    /** Byte offset of the end-date slot on the parameter card. */
     private static final int PARAMETER_END_SLOT_OFFSET = 11;
 
-    /** Zero-based position of the start-date sort-symbol card in the stream. */
     private static final int START_SORT_SYMBOL_CARD_INDEX = 10;
 
-    /** Zero-based position of the end-date sort-symbol card in the stream. */
     private static final int END_SORT_SYMBOL_CARD_INDEX = 11;
 
-    /** Zero-based position of the date-parameter card in the stream. */
     private static final int PARAMETER_CARD_INDEX = 14;
 
     // ==============================================================================================
@@ -192,45 +178,32 @@ class ReportRequestServiceTest {
     // without running anything. Nothing below is obtained from the production card builder.
     // ==============================================================================================
 
-    /** Card 1: the job card. */
     private static final String CARD_01_JOB =
             "//TRNRPT00 JOB 'TRAN REPORT',CLASS=A,MSGCLASS=0," + " ".repeat(32);
 
-    /** Card 2: the notify continuation. */
     private static final String CARD_02_NOTIFY = "// NOTIFY=&SYSUID" + " ".repeat(63);
 
-    /** Cards 3, 5 and 7: the comment card, which appears three times. */
     private static final String CARD_COMMENT = "//*" + " ".repeat(77);
 
-    /** Card 4: the procedure library. */
     private static final String CARD_04_JOBLIB =
             "//JOBLIB JCLLIB ORDER=('AWS.M2.CARDDEMO.PROC')" + " ".repeat(34);
 
-    /** Card 6: the step that invokes the cataloged reporting procedure. */
     private static final String CARD_06_EXEC_PROC = "//STEP10 EXEC PROC=TRANREPT" + " ".repeat(53);
 
-    /** Card 8: the sort symbol-names override. */
     private static final String CARD_08_SYMNAMES = "//STEP05R.SYMNAMES DD *" + " ".repeat(57);
 
-    /** Card 9: the card-number sort symbol, zoned decimal at offset 263 for sixteen bytes. */
     private static final String CARD_09_CARD_NUM_SYMBOL = "TRAN-CARD-NUM,263,16,ZD" + " ".repeat(57);
 
-    /** Card 10: the processing-date sort symbol, character at offset 305 for ten bytes. */
     private static final String CARD_10_PROC_DT_SYMBOL = "TRAN-PROC-DT,305,10,CH" + " ".repeat(58);
 
-    /** The eighteen-byte leading literal of card 11, which opens the character constant. */
     private static final String START_SORT_SYMBOL_LEAD = "PARM-START-DATE,C'";
 
-    /** The sixteen-byte leading literal of card 12. */
     private static final String END_SORT_SYMBOL_LEAD = "PARM-END-DATE,C'";
 
-    /** Cards 13 and 16: the in-stream terminator, which appears twice. */
     private static final String CARD_IN_STREAM_TERMINATOR = "/*" + " ".repeat(78);
 
-    /** Card 14: the date-parameter override. */
     private static final String CARD_14_DATEPARM = "//STEP10R.DATEPARM DD *" + " ".repeat(57);
 
-    /** Card 17: the sentinel, which the legacy transmits rather than merely holding. */
     private static final String CARD_17_SENTINEL = "/*EOF" + " ".repeat(75);
 
     // ==============================================================================================
@@ -244,46 +217,33 @@ class ReportRequestServiceTest {
      */
     private static final String MSG_START_MONTH_EMPTY = "Start Date - Month can NOT be empty...";
 
-    /** The start-day emptiness text, capitalised the same way. */
     private static final String MSG_START_DAY_EMPTY = "Start Date - Day can NOT be empty...";
 
-    /** The start-year emptiness text. */
     private static final String MSG_START_YEAR_EMPTY = "Start Date - Year can NOT be empty...";
 
-    /** The end-month emptiness text. */
     private static final String MSG_END_MONTH_EMPTY = "End Date - Month can NOT be empty...";
 
-    /** The end-day emptiness text. */
     private static final String MSG_END_DAY_EMPTY = "End Date - Day can NOT be empty...";
 
-    /** The end-year emptiness text. */
     private static final String MSG_END_YEAR_EMPTY = "End Date - Year can NOT be empty...";
 
-    /** The start-month range text. */
     private static final String MSG_START_MONTH_INVALID = "Start Date - Not a valid Month...";
 
-    /** The start-day range text. */
     private static final String MSG_START_DAY_INVALID = "Start Date - Not a valid Day...";
 
-    /** The start-year range text. */
     private static final String MSG_START_YEAR_INVALID = "Start Date - Not a valid Year...";
 
-    /** The end-month range text. */
     private static final String MSG_END_MONTH_INVALID = "End Date - Not a valid Month...";
 
-    /** The end-day range text. */
     private static final String MSG_END_DAY_INVALID = "End Date - Not a valid Day...";
 
-    /** The end-year range text. */
     private static final String MSG_END_YEAR_INVALID = "End Date - Not a valid Year...";
 
     /** The text a start date the subprogram refuses produces; note the lower-case final word. */
     private static final String MSG_START_DATE_INVALID = "Start Date - Not a valid date...";
 
-    /** The text a refused end date produces. */
     private static final String MSG_END_DATE_INVALID = "End Date - Not a valid date...";
 
-    /** The text produced when no reporting period was marked at all. */
     private static final String MSG_SELECT_REPORT_TYPE = "Select a report type to print report...";
 
     /**
@@ -298,13 +258,10 @@ class ReportRequestServiceTest {
      */
     private static final String FRAGMENT_SUBMITTED_SUFFIX = " report submitted for printing ...";
 
-    /** The confirmation-prompt prefix, which ends in a space. */
     private static final String FRAGMENT_CONFIRM_PREFIX = "Please confirm to print the ";
 
-    /** The confirmation-prompt suffix, which opens with a space. */
     private static final String FRAGMENT_CONFIRM_SUFFIX = " report...";
 
-    /** The unrecognised-confirmation suffix, which closes the quoted entry. */
     private static final String FRAGMENT_INVALID_CONFIRM_SUFFIX =
             "\" is not a valid value to confirm...";
 
@@ -323,85 +280,64 @@ class ReportRequestServiceTest {
     private static final String PADDED_THANK_YOU_MESSAGE =
             "Thank you for using CardDemo application..." + " ".repeat(7);
 
-    /** The first screen title at its declared width, centred by six leading spaces. */
     private static final String PADDED_TITLE_01 =
             " ".repeat(6) + "AWS Mainframe Modernization" + " ".repeat(7);
 
-    /** The second screen title at its declared width, centred by fourteen leading spaces. */
     private static final String PADDED_TITLE_02 = " ".repeat(14) + "CardDemo" + " ".repeat(18);
 
     // ==============================================================================================
     // Screen values, report names and the periods this clock derives.
     // ==============================================================================================
 
-    /** The marker character the screen writes into whichever period the operator chose. */
     private static final String SELECTED = "Y";
 
-    /** The affirmative confirmation entry. */
     private static final String CONFIRM_YES = "Y";
 
     /** The affirmative confirmation entry in lower case, which the source admits as well. */
     private static final String CONFIRM_YES_LOWER = "y";
 
-    /** The declining confirmation entry. */
     private static final String CONFIRM_NO = "N";
 
-    /** The declining confirmation entry in lower case. */
     private static final String CONFIRM_NO_LOWER = "n";
 
-    /** A confirmation entry the screen does not admit. */
     private static final String CONFIRM_INADMISSIBLE = "Q";
 
     /** The month-to-date report name, as the result reports it delimited at its first space. */
     private static final String REPORT_NAME_MONTHLY = "Monthly";
 
-    /** The year-to-date report name. */
     private static final String REPORT_NAME_YEARLY = "Yearly";
 
-    /** The operator-supplied-range report name. */
     private static final String REPORT_NAME_CUSTOM = "Custom";
 
-    /** The month-to-date window the pinned clock derives: the first of its month. */
     private static final String PINNED_MONTHLY_START = "2022-06-01";
 
-    /** The month-to-date window the pinned clock derives: the last day of its thirty-day month. */
     private static final String PINNED_MONTHLY_END = "2022-06-30";
 
-    /** The year-to-date window the pinned clock derives. */
     private static final String PINNED_YEARLY_START = "2022-01-01";
 
-    /** The closing bound of that year-to-date window. */
     private static final String PINNED_YEARLY_END = "2022-12-31";
 
-    /** The header date the pinned clock renders, with the legacy's two-digit year. */
     private static final String PINNED_HEADER_DATE = "06/10/22";
 
-    /** The header time the pinned clock renders on a twenty-four hour clock. */
     private static final String PINNED_HEADER_TIME = "19:27:53";
 
-    /** The transaction identifier the turn re-arms. */
     private static final String RE_ARMED_TRANSACTION_ID = "CR00";
 
-    /** The program name the header carries. */
     private static final String HEADER_PROGRAM_NAME = "CORPT00C";
 
     // ==============================================================================================
     // The subprogram result block, at the component widths its record declares.
     // ==============================================================================================
 
-    /** The four-character severity the source accepts outright. */
     private static final String SEVERITY_ACCEPTED = "0000";
 
-    /** The four-character severity every failure condition reports. */
     private static final String SEVERITY_ERROR = "0003";
 
     /** The one message number a non-zero severity is nevertheless accepted under. */
     private static final String MESSAGE_NUMBER_TOLERATED = "2513";
 
-    /** A message number that is not the tolerated one, so the same severity is refused. */
     private static final String MESSAGE_NUMBER_REFUSED = "2508";
 
-    /** The message number the success condition reports. */
     private static final String MESSAGE_NUMBER_NONE = "0000";
 
     /** The fifteen-character result text of an accepted date. */
@@ -410,7 +346,6 @@ class ReportRequestServiceTest {
     /** The fifteen-character result text of a refused date. */
     private static final String RESULT_TEXT_ERROR = "Datevalue error";
 
-    /** The ten-character mask the caller transmits. */
     private static final String MASK_HYPHENATED = "YYYY-MM-DD";
 
     // ==============================================================================================
@@ -420,52 +355,36 @@ class ReportRequestServiceTest {
     /** The screen field the cursor falls back to, and the property the catch-all arm faults. */
     private static final String FIELD_MONTHLY = "MONTHLY";
 
-    /** The confirmation field. */
     private static final String FIELD_CONFIRM = "CONFIRM";
 
-    /** The start-month screen field. */
     private static final String FIELD_START_MONTH = "SDTMM";
 
-    /** The start-day screen field. */
     private static final String FIELD_START_DAY = "SDTDD";
 
-    /** The start-year screen field. */
     private static final String FIELD_START_YEAR = "SDTYYYY";
 
-    /** The end-month screen field. */
     private static final String FIELD_END_MONTH = "EDTMM";
 
-    /** The end-day screen field. */
     private static final String FIELD_END_DAY = "EDTDD";
 
-    /** The end-year screen field. */
     private static final String FIELD_END_YEAR = "EDTYYYY";
 
-    /** The property name of the report-type selection. */
     private static final String PROPERTY_REPORT_TYPE = "reportType";
 
-    /** The property name of the start month. */
     private static final String PROPERTY_START_MONTH = "startMonth";
 
-    /** The property name of the start day. */
     private static final String PROPERTY_START_DAY = "startDay";
 
-    /** The property name of the start year. */
     private static final String PROPERTY_START_YEAR = "startYear";
 
-    /** The property name of the end month. */
     private static final String PROPERTY_END_MONTH = "endMonth";
 
-    /** The property name of the end day. */
     private static final String PROPERTY_END_DAY = "endDay";
 
-    /** The property name of the end year. */
     private static final String PROPERTY_END_YEAR = "endYear";
 
-    /** The property name of the assembled start date. */
     private static final String PROPERTY_START_DATE = "startDate";
 
-    /** The property name of the assembled end date. */
     private static final String PROPERTY_END_DATE = "endDate";
 
     /** The program name of the dangling CICS program definition that has no source member. */
@@ -474,10 +393,8 @@ class ReportRequestServiceTest {
     /** A submission identity the stubbed bridge echoes back; whitespace-free, as the bridge demands. */
     private static final String STUBBED_SUBMISSION_ID = "stubbed-submission-identity";
 
-    /** A stable token a caller repeats when retrying one logical request. */
     private static final String RETRY_TOKEN = "report-request-retry-001";
 
-    /** A token naming a deliberate second submission of the same period. */
     private static final String OTHER_TOKEN = "report-request-new-002";
 
     /**
@@ -506,7 +423,6 @@ class ReportRequestServiceTest {
     // Collaborators. All four are mocks; the clock is fixed.
     // ==============================================================================================
 
-    /** The shared date-validation subprogram, whose two-field result this suite drives directly. */
     @Mock
     private DateValidationService dateValidationService;
 
@@ -522,15 +438,12 @@ class ReportRequestServiceTest {
     @Mock
     private NavigationService navigationService;
 
-    /** Captures the complete card stream the service hands the bridge. */
     @Captor
     private ArgumentCaptor<List<String>> publishedCardsCaptor;
 
-    /** Captures the submission identity the service derives and hands the bridge unchanged. */
     @Captor
     private ArgumentCaptor<String> submissionIdentityCaptor;
 
-    /** Captures the format selector the service transmits to the date-validation subprogram. */
     @Captor
     private ArgumentCaptor<DateFormat> dateFormatCaptor;
 
@@ -538,16 +451,13 @@ class ReportRequestServiceTest {
     @Captor
     private ArgumentCaptor<String> validatedDateCaptor;
 
-    /** The service under test, built over the pinned clock. */
     private ReportRequestService subject;
 
     /** The service's own logger, so a non-fatal failure can be proven to have been recorded. */
     private Logger serviceLogger;
 
-    /** The level the logger held before this test lowered it. */
     private Level previousLogLevel;
 
-    /** Captures the service's diagnostics. */
     private ListAppender<ILoggingEvent> logCapture;
 
     /**
@@ -570,7 +480,6 @@ class ReportRequestServiceTest {
         serviceLogger.addAppender(logCapture);
     }
 
-    /** Detaches the log capture and restores the logger's level. */
     @AfterEach
     void tearDown() {
         serviceLogger.detachAppender(logCapture);
@@ -629,7 +538,6 @@ class ReportRequestServiceTest {
         return Clock.fixed(Instant.parse(isoInstant), ZoneOffset.UTC);
     }
 
-    /** A navigation state that has already been presented once, so the turn processes a submission. */
     private static ConversationState reEntry() {
         return ConversationState.empty().withReEntry();
     }
@@ -696,15 +604,12 @@ class ReportRequestServiceTest {
                 confirm);
     }
 
-    /** A confirmed operator-supplied range covering a whole calendar year, both bounds real days. */
     private static ReportRequestService.ReportScreenInput confirmedCustomTurn() {
         return customTurn("01", "01", "2022", "12", "31", "2022", CONFIRM_YES);
     }
 
-    /** The start date the confirmed operator-supplied range assembles. */
     private static final String CUSTOM_START = "2022-01-01";
 
-    /** The end date the confirmed operator-supplied range assembles. */
     private static final String CUSTOM_END = "2022-12-31";
 
     /**
@@ -843,19 +748,16 @@ class ReportRequestServiceTest {
                 resultText, CUSTOM_START, MASK_HYPHENATED);
     }
 
-    /** The block an accepted date produces: the accepted severity outright. */
     private static DateValidationService.SubprogramResult acceptedBlock() {
         return resultBlock(DateValidationService.DateFeedback.DATE_IS_VALID, SEVERITY_ACCEPTED,
                 MESSAGE_NUMBER_NONE, RESULT_TEXT_VALID);
     }
 
-    /** The block a non-zero severity carrying the tolerated message number produces. */
     private static DateValidationService.SubprogramResult toleratedBlock() {
         return resultBlock(DateValidationService.DateFeedback.UNSUPPORTED_RANGE, SEVERITY_ERROR,
                 MESSAGE_NUMBER_TOLERATED, RESULT_TEXT_ERROR);
     }
 
-    /** The block the same non-zero severity carrying any other message number produces. */
     private static DateValidationService.SubprogramResult refusedBlock() {
         return resultBlock(DateValidationService.DateFeedback.BAD_DATE_VALUE, SEVERITY_ERROR,
                 MESSAGE_NUMBER_REFUSED, RESULT_TEXT_ERROR);
@@ -885,37 +787,31 @@ class ReportRequestServiceTest {
                 cardsPublished, true, JobSubmissionException.DEFAULT_MESSAGE);
     }
 
-    /** Stubs the bridge to accept every card of whatever stream it is handed. */
     private void bridgeAcceptsEveryCard() {
         when(jobSubmissionService.submitCanonicalJobImage(any(), any()))
                 .thenReturn(accepted(SUBMISSION_CARD_COUNT));
     }
 
-    /** Stubs the subprogram to accept every date it is offered, on the accepted severity. */
     private void validatorAcceptsEveryDate() {
         when(dateValidationService.validateDate(any(), any(DateFormat.class)))
                 .thenReturn(acceptedBlock());
     }
 
-    /** Stubs the subprogram to answer with a non-zero severity carrying the tolerated number. */
     private void validatorToleratesEveryDate() {
         when(dateValidationService.validateDate(any(), any(DateFormat.class)))
                 .thenReturn(toleratedBlock());
     }
 
-    /** Stubs the subprogram to refuse with the same severity under a different message number. */
     private void validatorRefusesEveryDate() {
         when(dateValidationService.validateDate(any(), any(DateFormat.class)))
                 .thenReturn(refusedBlock());
     }
 
-    /** Stubs the catalogue to supply both padded screen titles. */
     private void catalogueSuppliesTitles() {
         when(messageCatalogService.screenTitle01()).thenReturn(PADDED_TITLE_01);
         when(messageCatalogService.screenTitle02()).thenReturn(PADDED_TITLE_02);
     }
 
-    /** Stubs the navigation rules to resolve a nominated destination to the supplied route. */
     private void navigationResolves(final NavigationService.Route destination) {
         when(navigationService.resolveNominatedDestination(any(),
                 eq(NavigationService.Route.SIGN_ON))).thenReturn(destination);
@@ -1009,7 +905,6 @@ class ReportRequestServiceTest {
     // The main paragraph and the attention-key dispatch
     // ==============================================================================================
 
-    /** Covers the main paragraph, the receive, the transfer, the send and the return paragraphs. */
     @Nested
     @DisplayName("Turn entry and the attention-key dispatch")
     class TurnEntry {
@@ -2103,7 +1998,6 @@ class ReportRequestServiceTest {
     // The two-state field contract and the route contract
     // ==============================================================================================
 
-    /** Covers the per-field error contract and the destination contract. */
     @Nested
     @DisplayName("The field-error and route contracts")
     class FieldAndRouteContracts {
@@ -2207,7 +2101,6 @@ class ReportRequestServiceTest {
     // The turn's outcome, the logical-request token, and the terminal send
     // ==============================================================================================
 
-    /** Covers both entry points, the outcome record, and the send that ends the turn. */
     @Nested
     @DisplayName("The turn outcome and the logical-request token")
     class TurnOutcome {

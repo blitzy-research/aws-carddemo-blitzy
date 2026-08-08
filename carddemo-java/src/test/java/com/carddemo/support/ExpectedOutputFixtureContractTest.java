@@ -178,8 +178,22 @@ final class ExpectedOutputFixtureContractTest {
         222, 223, 224, 226, 230, 233, 234, 239, 241, 252, 266, 270, 271, 272, 279, 282, 291, 298,
     };
 
-    /** The reason every one of the 38 rejected records carries. */
+    /** The reason every one of the 38 rejected records carries, as the shipped constant the writer takes. */
     private static final RejectReason REJECT_REASON = RejectReason.OVERLIMIT_TRANSACTION;
+
+    /**
+     * The same reason as transcribed by hand from the legacy source, which is where the EXPECTED bytes
+     * come from.
+     *
+     * <p>The constant above is what the production writer is DRIVEN with; this is what its output is
+     * CHECKED against. Keeping the two apart is the point: an expectation composed from
+     * {@code REJECT_REASON.getReasonCode()} and {@code REJECT_REASON.getDescription()} - which is how
+     * this file used to compose it - agrees with the enumeration by construction, so a code recorded as
+     * 0104 would have produced an expectation of 0104 and this golden contract would have passed over a
+     * file no consumer could read.</p>
+     */
+    private static final LegacyRejectReasons.Reason TRANSCRIBED_REJECT_REASON =
+            LegacyRejectReasons.requireByCode(LegacyRejectReasons.OVERLIMIT_TRANSACTION_CODE);
 
     /** Reporting-window start date the committed report header carries. */
     private static final String REPORT_START_DATE = "2022-01-01";
@@ -762,17 +776,27 @@ final class ExpectedOutputFixtureContractTest {
         @DisplayName("every committed trailer carries the four-digit over-limit reason code and its "
                 + "description padded to the full 76-byte field")
         void everyCommittedTrailerCarriesTheOverLimitReason() throws IOException {
-            // The trailer is composed here from the enumeration's own code and description and the
-            // two field widths, and never by calling the writer that produces it.
+            // The trailer is composed from the HAND TRANSCRIPTION of the legacy source and the two
+            // field widths - never by calling the writer that produces it, and no longer from the
+            // enumeration the writer reads. Both of those would be the implementation checking itself.
             final String expectedTrailer =
                     "0".repeat(RejectRecordWriter.FAIL_REASON_LENGTH
-                                    - String.valueOf(REJECT_REASON.getReasonCode()).length())
-                            + REJECT_REASON.getReasonCode()
-                            + REJECT_REASON.getDescription()
+                                    - String.valueOf(
+                                            TRANSCRIBED_REJECT_REASON.code()).length())
+                            + TRANSCRIBED_REJECT_REASON.code()
+                            + TRANSCRIBED_REJECT_REASON.description()
                             + " ".repeat(RejectRecordWriter.FAIL_REASON_DESC_LENGTH
-                                    - REJECT_REASON.getDescription().length());
+                                    - TRANSCRIBED_REJECT_REASON.description().length());
 
-            assertThat(expectedTrailer).hasSize(RejectRecordWriter.VALIDATION_TRAILER_LENGTH);
+            assertThat(expectedTrailer)
+                    .as("eighty characters, and identical to the trailer the transcription renders on"
+                            + " its own - two independent compositions of the same legacy values")
+                    .hasSize(RejectRecordWriter.VALIDATION_TRAILER_LENGTH)
+                    .isEqualTo(TRANSCRIBED_REJECT_REASON.trailer());
+            assertThat(REJECT_REASON.name())
+                    .as("and the constant the writer is driven with is the one the transcription says"
+                            + " stands for the site where %s", TRANSCRIBED_REJECT_REASON.role())
+                    .isEqualTo(TRANSCRIBED_REJECT_REASON.shippedConstantName());
             assertThat(textRecords(REJECT_FIXTURE, REJECT_RECORD_WIDTH))
                     .allSatisfy(record -> assertThat(record.substring(
                                     DAILY_TRANSACTION_RECORD_WIDTH))

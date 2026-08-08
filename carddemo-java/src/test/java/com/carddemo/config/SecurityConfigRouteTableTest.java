@@ -481,11 +481,30 @@ class SecurityConfigRouteTableTest {
     class Entitlements {
 
         @Test
-        @DisplayName("give the ordinary entitlement no dedicated rule, so an unnamed route is answered by "
-                + "the closing catch-all and is refused rather than admitted")
-        void giveTheOrdinaryEntitlementNoDedicatedRule() {
-            assertThat(Gating.AUTHENTICATED.enforcementPattern()).isEmpty();
-            assertThat(TransactionRoute.enforcementPatternsFor(Gating.AUTHENTICATED)).isEmpty();
+        @DisplayName("give the ordinary entitlement a rule of its own over the API root, so an ordinary "
+                + "route requires one of the two sign-on authorities by name rather than merely an "
+                + "identity")
+        void giveTheOrdinaryEntitlementARuleOverTheApiRoot() {
+            // This entitlement used to name no pattern at all and was answered by the chain's closing
+            // authenticated() rule, which asks whether an identity exists and not whose. That admitted any
+            // authority minted anywhere in the process to every ordinary business route. Naming the region
+            // is what lets the chain state the two authorities that may pass.
+            assertThat(Gating.AUTHENTICATED.enforcementPattern())
+                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+            assertThat(TransactionRoute.enforcementPatternsFor(Gating.AUTHENTICATED))
+                    .as("the twelve ordinary entries share one region, so they yield one rule between them")
+                    .containsExactly(SecurityConfig.API_PATH_PREFIX + "/**");
+        }
+
+        @Test
+        @DisplayName("leave no entitlement without a named rule, which is what makes the closing catch-all "
+                + "a boundary for unmapped addresses rather than the gate on a business route")
+        void leaveNoEntitlementWithoutANamedRule() {
+            assertThat(Gating.values())
+                    .allSatisfy(gating -> assertThat(gating.enforcementPattern())
+                            .as("%s would otherwise be enforced by whatever the closing rule happens to "
+                                    + "say", gating)
+                            .isPresent());
         }
 
         @Test
@@ -500,12 +519,20 @@ class SecurityConfigRouteTableTest {
         }
 
         @Test
-        @DisplayName("name a pattern for the two entitlements that have a rule of their own")
-        void nameAPatternForTheTwoEntitlementsThatHaveARule() {
+        @DisplayName("name a pattern for each of the three entitlements, narrowest first")
+        void nameAPatternForEachOfTheThreeEntitlements() {
             assertThat(Gating.ANONYMOUS.enforcementPattern())
                     .contains(SecurityConfig.SIGN_ON_PATH);
             assertThat(Gating.ADMINISTRATIVE.enforcementPattern())
                     .contains(SecurityConfig.ADMIN_PATH_PREFIX + "/**");
+            assertThat(Gating.AUTHENTICATED.enforcementPattern())
+                    .contains(SecurityConfig.API_PATH_PREFIX + "/**");
+            // The ordinary region contains the other two, which is why chain order rather than pattern
+            // disjointness is what keeps the sign-on route anonymous and the administrative prefix gated.
+            assertThat(SecurityConfig.SIGN_ON_PATH)
+                    .startsWith(SecurityConfig.API_PATH_PREFIX + "/");
+            assertThat(SecurityConfig.ADMIN_PATH_PREFIX)
+                    .startsWith(SecurityConfig.API_PATH_PREFIX + "/");
         }
 
         @Test

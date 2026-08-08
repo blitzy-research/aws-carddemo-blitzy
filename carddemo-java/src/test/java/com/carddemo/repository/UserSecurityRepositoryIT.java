@@ -50,6 +50,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.data.repository.Repository;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -192,6 +194,17 @@ import com.carddemo.support.TestDataFactory.SeededIdentity;
  * traceability matrix header and is not asserted against any individual member. No legacy source text
  * is reproduced here: member names, field names, byte offsets, widths, record lengths, line references
  * and row counts are metadata describing where a mapping came from.
+ *
+ * <h2>Where the DATABASE guard is proven, as distinct from the entity guard</h2>
+ *
+ * <p>This class writes through the shipped entity and repository, so the rules it observes are
+ * enforced twice over: once by the entity before the write and once by a named {@code CHECK}
+ * constraint in {@code V1__create_schema.sql}. That means a specification at this level passes
+ * whether or not the database guard exists, and deleting the guard would break nothing here.
+ * ck_user_security_sec_usr_id_width are therefore exercised by RAW JDBC in
+ * {@code SchemaConstraintNegativeProofIT}, which bypasses the entity layer entirely and asserts the
+ * exact constraint name PostgreSQL reports. That is the shape of the writer these constraints exist
+ * to catch - a bulk load or a migration script that never constructs a record image.
  */
 @DisplayName("Credential repository: closed surface, projected reads and keyset paging")
 final class UserSecurityRepositoryIT extends AbstractPostgresIT {
@@ -851,6 +864,57 @@ final class UserSecurityRepositoryIT extends AbstractPostgresIT {
                                 + "detectable")
                         .doesNotHaveDuplicates()
                         .hasSize(TestDataFactory.SEEDED_DIGEST_COUNT);
+            });
+        }
+
+        @Test
+        @DisplayName("every one of the ten seeded digests ACCEPTS the delivered credential, read off a "
+                + "real server before anything in this suite writes a credential")
+        void everySeededDigestAcceptsTheDeliveredCredential() {
+            // WHY THIS IS NOT COVERED BY THE TWO TESTS AROUND IT.
+            //
+            // storesTenDistinctFullLengthDigests establishes shape and distinctness;
+            // storesNoCleartextCredential establishes that the stored value is not the cleartext. Both
+            // are satisfied by a digest of ANY value at all - sixty characters, a recognised marker, the
+            // module's cost factor, ten independent salts, none of them equal to a visible field. A
+            // wrong literal in V4__seed_user_security.sql produces exactly that and admits nobody, and
+            // the seeded sign-on stops working with no test to say so.
+            //
+            // Acceptance is the only property that separates a CORRECT seeded digest from a well-formed
+            // one. It is asserted here for all ten rows, against the digests the migration actually
+            // loaded, through the encoder the module is configured with.
+            //
+            // The credential never enters this frame: the window is read, used and overwritten inside
+            // the shared fixture, and this test observes one boolean per row.
+            runner().run(context -> {
+                final UserSecurityRepository repository = context.getBean(UserSecurityRepository.class);
+                final PasswordEncoder encoder =
+                        new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR);
+
+                assertThat(TestDataFactory.fixtureCredentialWindowIsFoldInvariant())
+                        .as("the sign-on transaction folds a submitted credential to upper case before "
+                                + "comparing it, so this acceptance check equals a real sign-on only "
+                                + "while the credential is invariant under that fold")
+                        .isTrue();
+
+                for (final SeededIdentity identity : TestDataFactory.SEEDED_IDENTITIES) {
+                    final String stored =
+                            repository.findById(identity.userId()).orElseThrow().credentialDigest();
+
+                    assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(encoder, stored))
+                            .as("%s: the digest the migration loaded must accept the delivered "
+                                    + "credential", identity.userId())
+                            .isTrue();
+                    assertThat(TestDataFactory.digestRefusesOtherValues(encoder, stored))
+                            .as("%s: and refuse a value it was not derived from, so acceptance is "
+                                    + "discriminating rather than universal", identity.userId())
+                            .isTrue();
+                }
+
+                assertThat(TestDataFactory.SEEDED_IDENTITIES)
+                        .as("all ten, not a sample: each row is its own opportunity to carry a wrong "
+                                + "digest")
+                        .hasSize(SEEDED_IDENTITIES);
             });
         }
 

@@ -63,7 +63,6 @@ import org.springframework.batch.core.UnexpectedJobExecutionException;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.NoSuchJobException;
 import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
@@ -111,6 +110,18 @@ class BatchJobControllerTest {
     private static final Long EXECUTION_ID = 4271L;
 
     /**
+     * The two unmapped methods the mapped operations delegate their implementation to.
+     *
+     * <p>Named here because they are the one legitimate case of an unmapped method in this class: each is
+     * invoked by the request-mapped typed operation immediately above it, so neither is a surface a caller
+     * addresses and neither can answer not-found. Any <em>other</em> unmapped method carrying published
+     * interface metadata is an API-shaped operation the router does not serve, which is what
+     * {@link TheDeliveredOperationInventory#declaresNoUnmappedDocumentedOperation()} refuses.
+     */
+    private static final Set<String> DELEGATED_IMPLEMENTATIONS =
+            Set.of("launchJob", "readJobExecution");
+
+    /**
      * A parameter value with surrounding spaces, used to prove nothing is trimmed.
      *
      * <p>Two of the parameters the jobs declare are fixed width, and one becomes the leading characters of
@@ -123,9 +134,6 @@ class BatchJobControllerTest {
 
     /** Launcher the resolved job is started through, against typed parameters. */
     private JobLauncher jobLauncher;
-
-    /** Operator used for deliberate next-instance and restart operations. */
-    private JobOperator jobOperator;
 
     /** Metadata reader one execution is reported from. */
     private JobExplorer jobExplorer;
@@ -141,7 +149,7 @@ class BatchJobControllerTest {
      * framework interfaces.
      *
      * <p>The service is the genuine collaborator rather than a stub of it, so every assertion below still
-     * measures what actually reaches the registry, the operator and the metadata reader. That is the point
+     * measures what actually reaches the registry, the launcher and the metadata reader. That is the point
      * of the seam: the controller no longer names the framework, and the framework interactions it drives
      * are still observed here through the same three mocks.
      */
@@ -149,12 +157,11 @@ class BatchJobControllerTest {
     void setUp() {
         jobRegistry = mock(JobRegistry.class);
         jobLauncher = mock(JobLauncher.class);
-        jobOperator = mock(JobOperator.class);
         jobExplorer = mock(JobExplorer.class);
         meterRegistry = new SimpleMeterRegistry();
         controller = new BatchJobController(
                 new BatchJobLaunchService(jobRegistry, BatchLaunchGateway.from(jobLauncher),
-                        jobOperator, jobExplorer),
+                        jobExplorer),
                 meterRegistry);
     }
 
@@ -243,7 +250,7 @@ class BatchJobControllerTest {
 
         @Test
         @DisplayName("is exactly two documented operations - launch and status read")
-        void isExactlyFourDocumentedOperations() {
+        void isExactlyTwoDocumentedOperations() {
             final List<Method> mapped = mappedMethods();
 
             assertThat(mapped).hasSize(2);
@@ -264,18 +271,36 @@ class BatchJobControllerTest {
         }
 
         @Test
-        @DisplayName("the two repeat operations accept no parameter of their own, so neither can be used "
-                + "to introduce a value - one says 'again' and the other says 'continue'")
-        void theTwoRepeatOperationsAcceptNoParameterOfTheirOwn() {
-            final List<Method> repeats = Arrays.stream(BatchJobController.class.getDeclaredMethods())
-                    .filter(method -> "startNextJobInstance".equals(method.getName())
-                            || "restartJobExecution".equals(method.getName()))
-                    .toList();
+        @DisplayName("declares no unmapped operation carrying published interface metadata, so the "
+                + "surface a reader sees is the surface the router serves")
+        void declaresNoUnmappedDocumentedOperation() {
+            // An @Operation-annotated public method with no request mapping reads as an endpoint,
+            // publishes nothing and answers not-found at runtime. Two such methods - a next-instance
+            // start and a restart - were declared here and were unreachable; the batch surface is
+            // launch and status, and the repeat that remains is the launch's own advanced instance.
+            // Whatever the framework's operator can still do beyond those two lives on
+            // BatchJobLaunchService, which carries no interface metadata at all.
+            final List<Method> documentedButUnmapped =
+                    Arrays.stream(BatchJobController.class.getDeclaredMethods())
+                            .filter(method -> method.getAnnotation(Operation.class) != null)
+                            .filter(method -> method.getAnnotation(PostMapping.class) == null
+                                    && method.getAnnotation(GetMapping.class) == null)
+                            .filter(method -> !DELEGATED_IMPLEMENTATIONS.contains(method.getName()))
+                            .toList();
 
-            assertThat(repeats).hasSize(2);
-            assertThat(repeats).allSatisfy(method -> assertThat(method.getParameterCount())
-                    .as("%s takes only the resource it addresses", method.getName())
-                    .isOne());
+            assertThat(documentedButUnmapped)
+                    .as("each of these presents an API-shaped operation the router does not publish")
+                    .isEmpty();
+            // A repeat and a resume would both be defensible operations and neither is delivered: the
+            // integration contract asserts that a next-instance address and a restart address answer as
+            // absent. An implementation kept behind an unmapped method would still be described by its
+            // own operation metadata and would still be reachable from any code in this package, so the
+            // methods are absent rather than merely unmapped.
+            assertThat(Arrays.stream(BatchJobController.class.getDeclaredMethods())
+                    .map(Method::getName)
+                    .toList())
+                    .as("the removed pair may not return under either name")
+                    .doesNotContain("startNextJobInstance", "restartJobExecution");
         }
 
         @Test
@@ -287,12 +312,12 @@ class BatchJobControllerTest {
                 declared.add(method.getName().toLowerCase(Locale.ROOT));
             }
 
-            // "next instance" is not "next job": it repeats the addressed job under an advanced run
-            // parameter and chains nothing, which is why the forbidden list keeps "nextjob" out of it
-            // while the delivered operation is named for the instance it starts.
+            // "nextinstance" and "restart" are on the forbidden list with the rest: the delivered surface
+            // is the launch and the status read, so a method named for repeating or resuming a run would
+            // be an operation this class does not offer however it were mapped.
             assertThat(declared).noneSatisfy(name -> assertThat(name)
                     .containsAnyOf("runall", "runeverything", "pipeline", "master", "schedule", "stop",
-                            "abandon", "delete"));
+                            "abandon", "delete", "nextinstance", "nextjob", "restart"));
             assertThat(mappedMethods()).extracting(Method::getName)
                     .as("no mapped operation chains one job to another")
                     .doesNotContain("startNextJob", "runPipeline", "runAll");
@@ -325,7 +350,7 @@ class BatchJobControllerTest {
 
             final BatchJobLaunchService operations =
                     new BatchJobLaunchService(jobRegistry, BatchLaunchGateway.from(jobLauncher),
-                            jobOperator, jobExplorer);
+                            jobExplorer);
             assertThatNullPointerException().isThrownBy(() ->
                     new BatchJobController(null, meterRegistry));
             assertThatNullPointerException().isThrownBy(() ->
@@ -967,37 +992,28 @@ class BatchJobControllerTest {
         }
 
         @Test
-        @DisplayName("time a repeat under its own timer rather than folding it into the launch timer, "
-                + "because the rate at which financial work is re-run is its own operational question")
-        void timeARepeatUnderItsOwnTimer() throws Exception {
-            final String jobName = PostTransactionJobConfig.JOB_NAME;
-            registerJob(jobName);
-            when(jobOperator.startNextInstance(jobName)).thenReturn(EXECUTION_ID);
+        @DisplayName("registers exactly the two timers the two delivered operations need, so no timer "
+                + "survives for an operation this surface no longer publishes")
+        void registersOnlyTheTimersTheDeliveredOperationsNeed() throws Exception {
+            final String launched = PostTransactionJobConfig.JOB_NAME;
+            registerLaunchableJob(launched);
+            controller.launchJob(launched, Map.of());
+            final String reported = InterestCalculationJobConfig.JOB_NAME;
+            final JobExecution running =
+                    executionOf(reported, BatchStatus.STARTED, ExitStatus.EXECUTING);
+            when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(running);
+            controller.readJobExecution(EXECUTION_ID);
 
-            controller.startNextJobInstance(jobName);
-
-            assertThat(meterRegistry.find("carddemo.batch.jobnextinstance.request")
-                    .tag("job", jobName).tag("outcome", "launched").timer())
-                    .isNotNull();
-            assertThat(meterRegistry.find("carddemo.batch.joblaunch.request").timer())
-                    .as("a repeat must not be counted among the launches")
-                    .isNull();
-        }
-
-        @Test
-        @DisplayName("time a restart under its own timer, because resuming an instance is a different "
-                + "operational act from starting one")
-        void timeARestartUnderItsOwnTimer() throws Exception {
-            final String jobName = InterestCalculationJobConfig.JOB_NAME;
-            final JobExecution execution = executionOf(jobName, BatchStatus.FAILED, ExitStatus.FAILED);
-            when(jobExplorer.getJobExecution(EXECUTION_ID)).thenReturn(execution);
-            when(jobOperator.restart(EXECUTION_ID)).thenReturn(EXECUTION_ID);
-
-            controller.restartJobExecution(EXECUTION_ID);
-
-            assertThat(meterRegistry.find("carddemo.batch.jobrestart.request")
-                    .tag("job", jobName).tag("outcome", "launched").timer())
-                    .isNotNull();
+            assertThat(meterRegistry.getMeters().stream()
+                    .map(meter -> meter.getId().getName())
+                    .filter(name -> name.startsWith("carddemo.batch.job"))
+                    .distinct()
+                    .sorted()
+                    .toList())
+                    .as("a timer for a next-instance start or a restart would measure an operation the "
+                            + "router does not serve, and would report zero for ever")
+                    .containsExactly("carddemo.batch.joblaunch.request",
+                            "carddemo.batch.jobstatus.request");
         }
 
         @Test

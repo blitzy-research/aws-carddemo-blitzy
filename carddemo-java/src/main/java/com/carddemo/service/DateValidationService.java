@@ -524,7 +524,7 @@ public final class DateValidationService {
          *
          * @param  value the component
          * @param  width the declared byte width
-         * @param  field the component name, for the diagnostic
+         * @param  name  the component name, for the diagnostic
          * @throws IllegalArgumentException if the encoded image is not exactly {@code width} bytes
          */
         private static void requireWidth(final String value, final int width, final String name) {
@@ -648,8 +648,11 @@ public final class DateValidationService {
      * the caller's message field is passed in rather than assumed empty; in the account-update program it
      * is shared by every field on the screen.
      *
+     * @param  candidateDate        the candidate date; moved to the eight-character input field
      * @param  currentReturnMessage the caller's accumulated message on entry; empty stands for the blank
      *                              state that lets a stage claim the message
+     * @return the flags, the input-error indicator and the accumulated message
+     * @throws NullPointerException     if either argument is {@code null}
      * @throws IllegalArgumentException if {@code candidateDate} carries a character the single-byte
      *                                  character set cannot represent
      */
@@ -708,6 +711,12 @@ public final class DateValidationService {
      * legacy conversion having no defined result for one the main cascade would have rejected. The current
      * date is supplied by the caller rather than read from a clock, keeping the service pure.
      *
+     * @param  candidateDate        the candidate date of birth as an eight-character image
+     * @param  currentDate          the current date the reasonableness check compares against
+     * @param  currentReturnMessage the caller's accumulated message on entry; empty stands for the blank
+     *                              state that lets this range claim the message
+     * @return the flags, the input-error indicator and the accumulated message
+     * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if the candidate is not a resolvable calendar date, meaning the
      *                                  entry precondition was not met, or is not single-byte representable
      */
@@ -743,8 +752,12 @@ public final class DateValidationService {
      * <p>The legacy third parameter is an output area the caller blanks before the call; here it is a
      * return value, typed, with a renderer that reproduces the eighty-character form.
      *
-     * @param candidateDate moved to the ten-character first linkage parameter, so a shorter value is space
-     *                      padded on the right
+     * @param  candidateDate the candidate date, moved to the ten-character first linkage parameter, so a
+     *                       shorter value is space padded on the right
+     * @param  dateFormat    the format mask the candidate is validated against
+     * @return the result block: severity code, message number, the date as tested, the mask used and the
+     *         rendered eighty-character outcome text
+     * @throws NullPointerException if either argument is {@code null}
      */
     public SubprogramResult validateDate(final String candidateDate, final DateFormat dateFormat) {
         Objects.requireNonNull(candidateDate,
@@ -775,6 +788,11 @@ public final class DateValidationService {
      * substituting one of the two real masks would validate against the wrong picture and return a
      * confidently wrong verdict. The unresolved case therefore yields a non-zero severity with a
      * non-tolerated message number, which the acceptance test rejects.
+     *
+     * @param  candidateDate the candidate date, moved to the ten-character first linkage parameter
+     * @param  formatMask    the raw mask as held in the caller's ten-character work field
+     * @return the result block, carrying the bad-picture-string outcome when the mask does not resolve
+     * @throws NullPointerException if either argument is {@code null}
      */
     public SubprogramResult validateDate(final String candidateDate, final String formatMask) {
         Objects.requireNonNull(candidateDate,
@@ -805,6 +823,10 @@ public final class DateValidationService {
      * <strong>a non-zero severity carrying the tolerated message number is accepted</strong>. Both
      * comparisons are textual, so neither field is parsed, and the levels do not collapse into one because
      * acceptance can arrive by either route.
+     *
+     * @param  result the result block returned by either validation entry point
+     * @return whether the four genuine call sites would treat this result as an acceptable date
+     * @throws NullPointerException if {@code result} is {@code null}
      */
     public boolean isDateAcceptable(final SubprogramResult result) {
         Objects.requireNonNull(result, "result must not be null");
@@ -1072,6 +1094,8 @@ public final class DateValidationService {
      * coverage measures. The closing guard at {@code [app/cpy/CSUTLDPY.cpy:L274]} is reproduced exactly as
      * written; see {@link #editDateLe}.
      *
+     * @param  state the cascade's working storage, which supplies the three date parts and receives the
+     *               day flag, the input-error indicator and the accumulated message
      * @return whether a range-level jump was taken
      */
     private CascadeFlow editDayMonthYear(final CascadeState state) {
@@ -1291,7 +1315,12 @@ public final class DateValidationService {
         };
     }
 
-    /** @return the strict formatter for the given mask, built once and shared */
+    /**
+     * Returns the strict formatter for one mask, built once and shared.
+     *
+     * @param  dateFormat the legacy mask
+     * @return the strict formatter for that mask
+     */
     private static DateTimeFormatter formatterFor(final DateFormat dateFormat) {
         return switch (dateFormat) {
             case YYYY_MM_DD -> HYPHENATED_FORMATTER;

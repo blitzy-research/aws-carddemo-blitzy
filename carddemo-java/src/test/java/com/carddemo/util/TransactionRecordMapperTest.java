@@ -17,6 +17,7 @@
 package com.carddemo.util;
 
 import com.carddemo.domain.Transaction;
+import com.carddemo.support.SensitiveValues;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -765,7 +766,7 @@ class TransactionRecordMapperTest {
         assertThat(mapped.getMerchantCity())
                 .isEqualTo(alphanumeric(ROW0_MERCHANT_CITY, WIDTH_MERCHANT_CITY));
         assertThat(mapped.getMerchantZip()).isEqualTo(ROW0_MERCHANT_ZIP);
-        assertThat(mapped.getTranCardNum()).isEqualTo(ROW0_CARD_NUM);
+        assertThat(SensitiveValues.fingerprint(mapped.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW0_CARD_NUM));
         assertThat(mapped.getTranOrigTs()).isEqualTo(ROW0_ORIG_TS);
         assertThat(mapped.getTranProcTs()).isEqualTo(UNSTAMPED_PROC_TS);
     }
@@ -1245,7 +1246,7 @@ class TransactionRecordMapperTest {
             assertThat(mapped.getMerchantCity())
                     .isEqualTo(alphanumeric(ROW1_MERCHANT_CITY, WIDTH_MERCHANT_CITY));
             assertThat(mapped.getMerchantZip()).isEqualTo(ROW1_MERCHANT_ZIP);
-            assertThat(mapped.getTranCardNum()).isEqualTo(ROW1_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(mapped.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW1_CARD_NUM));
             assertThat(mapped.getTranOrigTs()).isEqualTo(ROW1_ORIG_TS);
             assertThat(mapped.getTranProcTs()).isEqualTo(UNSTAMPED_PROC_TS);
         }
@@ -1268,7 +1269,7 @@ class TransactionRecordMapperTest {
             assertThat(mapped.getMerchantCity())
                     .isEqualTo(alphanumeric(ROW299_MERCHANT_CITY, WIDTH_MERCHANT_CITY));
             assertThat(mapped.getMerchantZip()).isEqualTo(ROW299_MERCHANT_ZIP);
-            assertThat(mapped.getTranCardNum()).isEqualTo(ROW299_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(mapped.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW299_CARD_NUM));
             assertThat(mapped.getTranOrigTs()).isEqualTo(ROW299_ORIG_TS);
             assertThat(mapped.getTranProcTs()).isEqualTo(UNSTAMPED_PROC_TS);
         }

@@ -54,6 +54,7 @@ import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -79,17 +80,26 @@ import static org.mockito.Mockito.when;
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19.
  *
  * <p>The authority is <strong>649 lines</strong> long. Its {@code PROCEDURE DIVISION} carries
- * <strong>26 named paragraph labels</strong> plus the <strong>unnamed driving body at lines
- * 160-217</strong>, giving <strong>27 paragraph units</strong>. Both counts are true of different
- * things and the project specification records only the smaller one, so both are stated here: the
- * plan's figure of 26 counts labels alone, while a census that also counts the unlabelled body -
- * the unit that actually sequences the program - gives 27. This class contributes
- * <strong>27 traceability rows</strong>, and the map below names the covering group for each unit.
+ * <strong>26 named paragraph labels</strong>, which is the member's contribution: the action plan records
+ * 26 and {@code docs/traceability-matrix.md} carries <strong>exactly 26 rows</strong> for it, one per
+ * label.
+ *
+ * <p>The member's <strong>unnamed driving body at lines 160-217</strong> is covered here too, by
+ * {@code TheDrivingBody}, and it is <em>not</em> a twenty-seventh unit: it carries no label, so no matrix
+ * row can cite it. It is the <strong>Java driver helper</strong> that sequences the 26 mapped units, and it
+ * is named that way so a reader does not read it as a mapped paragraph. The count itself is read from the
+ * matrix in {@code TheMatrixContribution} rather than restated here.
  *
  * <h2>Paragraph unit coverage map</h2>
  *
+ * <p>The unnamed driving body is listed first, unnumbered, because it is covered but is not a unit. The
+ * numbered entries are the member's 26 labels.
+ *
+ * <ul>
+ *   <li>the unnamed driving body, lines 160-217 - {@code TheDrivingBody} - covered, not a unit</li>
+ * </ul>
+ *
  * <ol>
- *   <li>the unnamed driving body, lines 160-217 - {@code TheDrivingBody}</li>
  *   <li>{@code 0550-DATEPARM-READ}, line 220 - {@code TheInclusiveDateBounds},
  *       {@code NullAndBoundaryInput}</li>
  *   <li>{@code 1000-TRANFILE-GET-NEXT}, line 248 - {@code TheFrozenOrderedInput}</li>
@@ -810,7 +820,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 1, and the twelve open and close units it sequences.
+    // The driver helper, and the twelve open and close units it sequences.
     // =============================================================================================
 
     @Nested
@@ -923,7 +933,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 10, and the width contract every group shares.
+    // Paragraph unit 9, and the width contract every group shares.
     // =============================================================================================
 
     @Nested
@@ -1007,7 +1017,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 8.
+    // Paragraph unit 7.
     // =============================================================================================
 
     @Nested
@@ -1052,7 +1062,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 4, and the per-caller increments of units 5, 6, 7, 8 and 10.
+    // Paragraph unit 3, and the per-caller increments of units 4, 5, 6, 7 and 9.
     // =============================================================================================
 
     @Nested
@@ -1188,7 +1198,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 9: the single writer.
+    // Paragraph unit 8: the single writer.
     // =============================================================================================
 
     @Nested
@@ -1246,7 +1256,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph units 5, 6 and 7: the accumulation chain.
+    // Paragraph units 4, 5 and 6: the accumulation chain.
     // =============================================================================================
 
     @Nested
@@ -1498,7 +1508,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 2, and the inclusive range guard the driving body applies.
+    // Paragraph unit 1, and the inclusive range guard the driving body applies.
     // =============================================================================================
 
     @Nested
@@ -1617,7 +1627,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 3: the sequential read over the frozen ordered generation.
+    // Paragraph unit 2: the sequential read over the frozen ordered generation.
     // =============================================================================================
 
     @Nested
@@ -1716,7 +1726,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph units 17, 18, 19 and 26: three reference lookups, all of which abend on a miss.
+    // Paragraph units 16, 17, 18 and 25: three reference lookups, all of which abend on a miss.
     // =============================================================================================
 
     @Nested
@@ -2120,7 +2130,7 @@ class TransactionReportServiceTest {
     }
 
     // =============================================================================================
-    // Paragraph unit 27, and the two-level status model the read paragraphs branch on.
+    // Paragraph unit 26, and the two-level status model the read paragraphs branch on.
     // =============================================================================================
 
     @Nested
@@ -2431,6 +2441,26 @@ class TransactionReportServiceTest {
                             .isEqualByComparingTo(ZERO_AT_MONETARY_SCALE),
                     () -> assertThat(amountOn(linesOfKind(report, LineKind.GRAND_TOTAL).get(0)))
                             .isEqualByComparingTo(ZERO_AT_MONETARY_SCALE));
+        }
+    }
+
+    @Nested
+    @DisplayName("the matrix contribution: the 26 units this member carries, read from the matrix")
+    class TheMatrixContribution {
+
+        /** Creates the nested specification. */
+        TheMatrixContribution() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("the unit count is the 26 the published matrix carries, so the unlabelled driving "
+                + "body cannot be counted back in as a twenty-seventh row")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            assertThat(TraceabilityMatrixCensus.unitsOf("CBTRN03C.cbl"))
+                    .as("the figure is taken from the matrix's census subtotal, its section declaration "
+                            + "and its rows, which the reader requires to agree")
+                    .isEqualTo(26);
         }
     }
 }

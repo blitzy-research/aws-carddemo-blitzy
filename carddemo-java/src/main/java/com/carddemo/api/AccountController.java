@@ -79,9 +79,13 @@ import org.springframework.web.bind.annotation.RestController;
  * route must keep allowing. What it may then <em>see</em> is a separate question, because four of the
  * customer values on both screens are regulated. Both turns therefore pass their regulated components
  * through {@link AccountProtectedDataAdapter}: an administrator reveals, and every other caller receives
- * masks at the widths the revealed values occupy. The view turn has always done so; the update turn now
- * does too, through {@code gatedForUpdate}, and the two use the same gate so they cannot come to disagree
- * about what a masked screen looks like.
+ * masks at the widths the revealed values occupy. Both turns read one derivation of that authority,
+ * {@code revealAuthorityFor}, so they cannot come to disagree about who may see what or about what a
+ * masked screen looks like. Each of the two turns reached that state separately and neither did so at
+ * first: the update turn passed the values through ungated, and the view turn passed them through a
+ * <em>constant</em> authority - permanently unprivileged, carrying no user type - which meant an
+ * administrator received masks on the view screen and cleartext on the update screen for the same four
+ * values of the same record. The single derivation is what closed the second half of that asymmetry.
  *
  * <p><strong>Why the turn is submitted rather than fetched, even for the view.</strong> Both turns need
  * the communication area the client echoed back - the record that carries the enter-or-re-enter flag on
@@ -239,21 +243,6 @@ public class AccountController {
 
     /** Width at which the view contract publishes either telephone number, for the same reason. */
     private static final int PUBLISHED_PHONE_NUMBER_WIDTH = 13;
-
-    /**
-     * The authority under which the view turn asks for the four regulated values.
-     *
-     * <p>Masked by default, which is the documented default of the gate itself. Revealing requires
-     * either the administrative role or an ownership determination the caller made for itself, and a
-     * screen boundary can honestly assert neither: the estate's sign-on record carries no account
-     * linkage, so there is no ownership to establish, and the echoed communication area is a
-     * client-supplied value that must never be read for an authorization decision. Asking for a mask is
-     * therefore the truthful request, and the gate answers it with values at the same widths the
-     * revealed ones would occupy, so no client has to lay the screen out differently.
-     */
-    private static final AccountProtectedDataAdapter.RevealAuthorization VIEW_REVEAL_AUTHORIZATION =
-            AccountProtectedDataAdapter.RevealAuthorization.unprivileged(
-                    AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_VIEW, null);
 
     /**
      * The four regulated values of a turn that resolved no customer record.
@@ -517,8 +506,12 @@ public class AccountController {
      * account identifier. The route is reachable by any signed-on caller, exactly as the resource
      * definition makes it, and the identifier is a request field rather than a property of the caller -
      * so before this gate existed, any signed-on caller could name any account and read four regulated
-     * values in the clear. The view turn had been gated since it was written; the update turn had not,
-     * and that asymmetry was the defect.
+     * values in the clear. The view turn passed its values through the gate from the start while the
+     * update turn did not, and that was the first asymmetry. It was not the only one: the view turn
+     * presented a <em>constant</em> authority, so once the update turn began deriving its authority from
+     * the principal the two disagreed in the opposite direction - an administrator saw cleartext here and
+     * masks there. Both now read {@link #revealAuthorityFor}, which is a single derivation and therefore
+     * cannot answer two ways.
      *
      * <p><strong>Why the gate is applied here rather than in the transaction.</strong> The transaction
      * needs the cleartext: it compares every typed field against the stored value to decide whether a
@@ -527,13 +520,10 @@ public class AccountController {
      * screen it always composed, and the boundary that knows who is asking replaces the eight regulated
      * components before the screen is published.
      *
-     * <p><strong>What authority is asserted, and what is deliberately not.</strong> An administrator
-     * reveals. Every other caller receives masks at the same widths the revealed values occupy, so no
-     * client has to lay the screen out differently. Ownership is <em>not</em> asserted: the sign-on
-     * record carries no account linkage and no program in the estate checks one, so this boundary has no
-     * honest way to establish that a caller owns the account it named - and asking for a mask is the
-     * truthful request when that is the case. The echoed communication area is never consulted for this,
-     * because it is a client-supplied value and an authorization decided by request content is not an
+     * <p><strong>What authority is asserted, and what is deliberately not,</strong> is stated once on
+     * {@link #revealAuthorityFor} rather than twice here: an administrator reveals, ownership is not
+     * asserted because the estate's sign-on record carries no account linkage, and the echoed
+     * communication area is never consulted because an authorization decided by request content is not an
      * authorization.
      *
      * <p><strong>The consequence is stated rather than hidden.</strong> A caller that receives masks
@@ -550,13 +540,8 @@ public class AccountController {
      */
     private AccountUpdateResponse gatedForUpdate(final AccountUpdateResponse composed,
                                                  final Authentication authentication) {
-        final UserType signedOnType = ScreenStateAdapter.authenticatedUserType(authentication);
-        final AccountProtectedDataAdapter.RevealAuthorization authority =
-                signedOnType == UserType.ADMIN
-                        ? AccountProtectedDataAdapter.RevealAuthorization.administrator(
-                                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_UPDATE)
-                        : AccountProtectedDataAdapter.RevealAuthorization.unprivileged(
-                                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_UPDATE, signedOnType);
+        final AccountProtectedDataAdapter.RevealAuthorization authority = revealAuthorityFor(
+                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_UPDATE, authentication);
 
         final AccountProtectedDataAdapter.AccountUpdateProtectedValues gated =
                 this.accountProtectedDataAdapter.gateForUpdate(
@@ -583,6 +568,54 @@ public class AccountController {
     }
 
     /**
+     * The authority under which one turn of this controller asks for the regulated values.
+     *
+     * <p><strong>One derivation, read by both screens, which is the point of it existing.</strong> The
+     * view turn used to carry a constant authority instead - permanently unprivileged, with no user type
+     * at all - so an administrator received masks on the view screen and cleartext on the update screen
+     * for the same four values of the same record. The two screens are the same regulated data behind the
+     * same policy, and a policy that answers differently depending on which screen asked is not a policy.
+     * Deriving it once here means the two cannot come to disagree by an edit to one of them, which is what
+     * this class's own contract claims and what a constant could not deliver.
+     *
+     * <p><strong>What authority is asserted, and what is deliberately not.</strong> An administrator
+     * reveals, from the sign-on split at {@code app/cbl/COSGN00C.cbl:L227-L236}. Every other caller
+     * receives masks at the same widths the revealed values occupy, so no client has to lay a screen out
+     * differently. Ownership is <em>not</em> asserted: the estate's sign-on record carries no account
+     * linkage and no program in the estate checks one, so this boundary has no honest way to establish
+     * that a caller owns the account it named, and asking for a mask is the truthful request when that is
+     * the case.
+     *
+     * <p><strong>The authority comes from the established identity and from nothing else.</strong> Not
+     * from the echoed communication area, which is a client-supplied value - an authorization decided by
+     * request content is not an authorization, and a client that forged a user type into the echoed state
+     * would otherwise have granted itself the reveal. An absent identity yields an absent user type, which
+     * is not the administrator type and therefore reveals nothing.
+     *
+     * <p><strong>What actually decides is the user type, not the factory chosen.</strong>
+     * {@link AccountProtectedDataAdapter.RevealAuthorization#permitsReveal()} reads the type off the
+     * authority, so {@code unprivileged(purpose, ADMIN)} would permit a reveal as readily as
+     * {@code administrator(purpose)} does - the factory names the caller's standing rather than deciding
+     * it. The constant this method replaced masked everything because it passed a <em>null</em> type, not
+     * because it named the unprivileged factory. The branch below is therefore stated for the reader
+     * rather than needed by the gate, and it is kept because a call site that says
+     * {@code administrator(...)} when the caller is one is honest about what it is asserting.
+     *
+     * @param purpose the account operation being served, which the gate records rather than decides on
+     * @param authentication the established identity, which may be {@code null} on a route the chain does
+     *                       not authenticate
+     * @return the authority to present to the gate, never {@code null}
+     */
+    private static AccountProtectedDataAdapter.RevealAuthorization revealAuthorityFor(
+            final AccountProtectedDataAdapter.RevealPurpose purpose,
+            final Authentication authentication) {
+        final UserType signedOnType = ScreenStateAdapter.authenticatedUserType(authentication);
+        return signedOnType == UserType.ADMIN
+                ? AccountProtectedDataAdapter.RevealAuthorization.administrator(purpose)
+                : AccountProtectedDataAdapter.RevealAuthorization.unprivileged(purpose, signedOnType);
+    }
+
+    /**
      * Publishes one account-view turn on the declared response contract.
      *
      * <p>The update transaction publishes its own screen, so only this one needs projecting. What is
@@ -602,6 +635,11 @@ public class AccountController {
      * than cleartext, so a direct read would publish ciphertext; the gate is also what applies the
      * masking policy and what composes the national identifier into the single dashed item this screen
      * declared, in place of the three separate positions the update screen declares.
+     *
+     * <p><strong>The authority presented to the gate is derived from the established identity</strong> by
+     * {@link #revealAuthorityFor}, which is the same derivation the update turn uses. It was a constant
+     * here - permanently unprivileged - which meant an administrator saw masks on this screen and
+     * cleartext on the update screen for the same four values of the same record.
      *
      * <p><strong>Money crosses untouched.</strong> The response contract refuses an amount whose scale
      * is not the scale its record field stores, and honouring that by passing the stored value through
@@ -623,7 +661,8 @@ public class AccountController {
         final boolean customerPresented = result.customerFieldsPresented() && result.customer() != null;
         final AccountProtectedDataAdapter.AccountViewProtectedValues regulated = customerPresented
                 ? this.accountProtectedDataAdapter.revealForView(result.customer(),
-                        VIEW_REVEAL_AUTHORIZATION)
+                        revealAuthorityFor(
+                                AccountProtectedDataAdapter.RevealPurpose.ACCOUNT_VIEW, authentication))
                 : NO_PROTECTED_VALUES;
 
         return new AccountViewResponse(

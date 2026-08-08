@@ -17,6 +17,7 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.UserType;
+import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamWriteFeature;
@@ -123,7 +124,6 @@ class UserRequestTest {
      */
     private static final String CREDENTIAL = "ABCD1234";
 
-    /** The same synthetic credential with one character too many, for the width bound. */
     private static final String OVERLONG_CREDENTIAL = "ABCD12345";
 
     /** An eight-character credential that is entirely blanks - a legitimate absent value. */
@@ -138,7 +138,6 @@ class UserRequestTest {
     /** A wholly numeric identifier whose leading zeros must survive because the component is text. */
     private static final String NUMERIC_USER_ID = "00000042";
 
-    /** An identifier one character wider than the maps declare. */
     private static final String OVERLONG_USER_ID = "NEWUSR010";
 
     /**
@@ -159,16 +158,13 @@ class UserRequestTest {
     /** A last name carrying punctuation, a digit and mixed case - none of which is edited. */
     private static final String LAST_NAME = "o'HARA-smith2";
 
-    /** A twenty-character first name, exactly at the declared width. */
     private static final String FIRST_NAME_AT_WIDTH = "ABCDEFGHIJKLMNOPQRST";
 
-    /** A twenty-one-character first name, one beyond the declared width. */
     private static final String FIRST_NAME_OVER_WIDTH = "ABCDEFGHIJKLMNOPQRSTU";
 
     /** An undeclared one-character user-type code, which the legacy programs store unexamined. */
     private static final String UNDECLARED_USER_TYPE = "X";
 
-    /** A two-character user type, one beyond the declared width. */
     private static final String OVERLONG_USER_TYPE = "AU";
 
     /**
@@ -180,10 +176,8 @@ class UserRequestTest {
      */
     private static final String PAGE_NUMBER = "00000007";
 
-    /** The retained key of the first row of the page just displayed. */
     private static final String FIRST_ANCHOR = "USER0001";
 
-    /** The retained key of the last row of the page just displayed. */
     private static final String LAST_ANCHOR = "USER0010";
 
     /**
@@ -420,11 +414,6 @@ class UserRequestTest {
                 null, null);
     }
 
-    /**
-     * A body carrying no value at all.
-     *
-     * @return a request with every component absent
-     */
     private static UserRequest whollyAbsent() {
         return new UserRequest(null, null, null, null, null, null, null, null, null, null,
                 null, null);
@@ -563,7 +552,9 @@ class UserRequestTest {
             UserRequest request = new UserRequest(USER_ID, null, null, null, "", null, null, null,
                     null, null, null, null);
 
-            assertThat(request.password()).isEmpty();
+            assertThat(request.password().isEmpty())
+                    .describedAs("an empty submitted credential binds as empty rather than as absent")
+                    .isTrue();
             assertThat(violationsOf(request)).isEmpty();
         }
 
@@ -573,11 +564,13 @@ class UserRequestTest {
             UserRequest request = new UserRequest(USER_ID, null, null, null, BLANK_CREDENTIAL, null,
                     null, null, null, null, null, null);
 
-            assertThat(request.password())
+            assertThat(SensitiveValues.fingerprint(request.password()))
                     .describedAs("blanks are real data in a fixed-width estate and are not trimmed "
                             + "away")
-                    .isEqualTo(BLANK_CREDENTIAL)
-                    .hasSize(UserRequest.PASSWORD_LENGTH);
+                    .isEqualTo(SensitiveValues.fingerprint(BLANK_CREDENTIAL));
+            assertThat(request.password().length())
+                    .describedAs("and the whole declared width is retained")
+                    .isEqualTo(UserRequest.PASSWORD_LENGTH);
             assertThat(violationsOf(request)).isEmpty();
         }
 
@@ -595,11 +588,15 @@ class UserRequestTest {
             UserRequest request = new UserRequest(USER_ID, null, null, null, UNFOLDED_CREDENTIAL,
                     null, null, null, null, null, null, null);
 
-            assertThat(request.password())
-                    .isEqualTo(UNFOLDED_CREDENTIAL)
-                    .hasSize(UserRequest.PASSWORD_LENGTH)
-                    .startsWith(" ")
-                    .contains("aB");
+            assertThat(SensitiveValues.fingerprint(request.password()))
+                    .isEqualTo(SensitiveValues.fingerprint(UNFOLDED_CREDENTIAL));
+            assertThat(request.password().length()).isEqualTo(UserRequest.PASSWORD_LENGTH);
+            assertThat(request.password().startsWith(" "))
+                    .describedAs("the leading blank survives binding")
+                    .isTrue();
+            assertThat(request.password().contains("aB"))
+                    .describedAs("and the case is not folded on the way in")
+                    .isTrue();
             assertThat(violationsOf(request)).isEmpty();
         }
 
@@ -919,10 +916,10 @@ class UserRequestTest {
 
             UserRequest bound = moduleEquivalentMapper().readValue(document, UserRequest.class);
 
-            assertThat(bound.password())
+            assertThat(SensitiveValues.fingerprint(bound.password()))
                     .describedAs("a suppressed property would bind nothing here, and the add and "
                             + "update operations would silently lose the credential")
-                    .isEqualTo(CREDENTIAL);
+                    .isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
             assertThat(bound.userId()).isEqualTo(USER_ID);
             assertThat(bound.firstName()).isEqualTo(FIRST_NAME);
             assertThat(bound.lastName()).isEqualTo(LAST_NAME);
@@ -1022,7 +1019,7 @@ class UserRequestTest {
             UserRequest bound = moduleEquivalentMapper().readValue(document, UserRequest.class);
 
             assertThat(bound.userId()).isEqualTo(USER_ID);
-            assertThat(bound.password()).isEqualTo(CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(bound.password())).isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
         }
 
         @Test
@@ -1138,7 +1135,7 @@ class UserRequestTest {
             assertThat(request.userId()).hasSize(UserRequest.USER_ID_LENGTH);
             assertThat(request.firstName()).hasSize(UserRequest.NAME_PART_LENGTH);
             assertThat(request.lastName()).hasSize(UserRequest.NAME_PART_LENGTH);
-            assertThat(request.password()).hasSize(UserRequest.PASSWORD_LENGTH);
+            assertThat(request.password().length()).isEqualTo(UserRequest.PASSWORD_LENGTH);
             assertThat(request.userType()).hasSize(UserRequest.USER_TYPE_LENGTH);
             assertThat(request.displayedPageNumber())
                     .hasSize(UserRequest.DISPLAYED_PAGE_NUMBER_LENGTH);
@@ -1494,7 +1491,7 @@ class UserRequestTest {
             assertThat(request.searchUserId()).isEqualTo(" srch ");
             assertThat(request.firstName()).isEqualTo("  Mary  ");
             assertThat(request.lastName()).isEqualTo(" o'Hara ");
-            assertThat(request.password()).isEqualTo(" pw     ");
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(" pw     "));
             assertThat(request.userType()).isEqualTo(" ");
             assertThat(request.displayedPageNumber()).isEqualTo(" 0000007");
             assertThat(request.firstUserIdOnPage()).isEqualTo("  anchor");
@@ -1511,7 +1508,7 @@ class UserRequestTest {
             assertThat(request.userId()).hasSize(1);
             assertThat(request.firstName()).hasSize(1);
             assertThat(request.lastName()).hasSize(1);
-            assertThat(request.password()).hasSize(1);
+            assertThat(request.password().length()).isEqualTo(1);
             assertThat(request.userType()).hasSize(1);
             assertThat(violationsOf(request)).isEmpty();
         }
@@ -1525,7 +1522,7 @@ class UserRequestTest {
             assertThat(request.userId()).isEqualTo("mIxEdUsR");
             assertThat(request.firstName()).isEqualTo("mIxEd");
             assertThat(request.lastName()).isEqualTo("CaSeD");
-            assertThat(request.password()).isEqualTo("aBcD1234");
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("aBcD1234"));
             assertThat(request.userType()).isEqualTo("u");
         }
 
@@ -1689,7 +1686,7 @@ class UserRequestTest {
             assertThat(request.searchUserId()).isEqualTo(SEARCH_USER_ID);
             assertThat(request.firstName()).isEqualTo(FIRST_NAME);
             assertThat(request.lastName()).isEqualTo(LAST_NAME);
-            assertThat(request.password()).isEqualTo(CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
             assertThat(request.userType()).isEqualTo(UserType.ADMIN.getCode());
             assertThat(request.rowSelections()).containsExactly("S");
             assertThat(request.displayedPageNumber()).isEqualTo(PAGE_NUMBER);
@@ -1716,7 +1713,7 @@ class UserRequestTest {
 
             for (int read = 0; read < 2; read++) {
                 assertThat(request.userId()).isEqualTo(USER_ID);
-                assertThat(request.password()).isEqualTo(CREDENTIAL);
+                assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(CREDENTIAL));
                 assertThat(request.rowSelections()).isEmpty();
             }
         }

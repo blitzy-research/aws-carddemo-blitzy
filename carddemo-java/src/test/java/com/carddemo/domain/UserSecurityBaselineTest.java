@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
@@ -156,7 +157,7 @@ class UserSecurityBaselineTest {
             assertThat(user.getSecUsrId()).isEqualTo("ADMIN001");
             assertThat(user.getSecUsrFname()).isEqualTo(rightPadded("MARGARET", NAME_WIDTH));
             assertThat(user.getSecUsrLname()).isEqualTo(rightPadded("GOLD", NAME_WIDTH));
-            assertThat(user.credentialDigest()).isEqualTo(DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(DIGEST));
             assertThat(user.getSecUsrType()).isEqualTo(ADMIN_CLASSIFICATION);
         }
 
@@ -295,8 +296,8 @@ class UserSecurityBaselineTest {
         @DisplayName("a sixty-character digest is stored unchanged, which is what the widened column "
                 + "exists for: a digest does not fit the eight-byte legacy field")
         void aSixtyCharacterDigestIsStoredUnchanged() {
-            assertThat(user.credentialDigest()).isEqualTo(DIGEST);
-            assertThat(user.credentialDigest()).hasSize(DIGEST_COLUMN_WIDTH);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(DIGEST));
+            assertThat(user.credentialDigest().length()).isEqualTo(DIGEST_COLUMN_WIDTH);
             assertThat(DIGEST_COLUMN_WIDTH).isGreaterThan(LEGACY_CREDENTIAL_WIDTH);
         }
 
@@ -319,8 +320,8 @@ class UserSecurityBaselineTest {
         @DisplayName("the digest carries the algorithm marker its own format prescribes, so a reader can "
                 + "tell a digest from the eight-byte plaintext the legacy record held")
         void theDigestCarriesItsAlgorithmMarker() {
-            assertThat(user.credentialDigest()).startsWith("$2a$");
-            assertThat(user.credentialDigest()).doesNotContain(" ");
+            assertThat(user.credentialDigest().startsWith("$2a$")).isTrue();
+            assertThat(SensitiveValues.absentFrom(user.credentialDigest(), " ")).isTrue();
             assertThat(user.credentialDigest().length()).isNotEqualTo(LEGACY_CREDENTIAL_WIDTH);
         }
 
@@ -377,7 +378,7 @@ class UserSecurityBaselineTest {
             assertThat(target.getSecUsrId()).isEqualTo("USER0005");
             assertThat(target.getSecUsrFname()).isEqualTo(rightPadded("LEE", NAME_WIDTH));
             assertThat(target.getSecUsrLname()).isEqualTo(rightPadded("TING", NAME_WIDTH));
-            assertThat(target.credentialDigest()).isEqualTo(DIGEST);
+            assertThat(SensitiveValues.fingerprint(target.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(DIGEST));
             assertThat(target.getSecUsrType()).isEqualTo(USER_CLASSIFICATION);
         }
 
@@ -635,7 +636,7 @@ class UserSecurityBaselineTest {
             assertThat(seeded.getSecUsrType())
                     .hasSize(CLASSIFICATION_WIDTH)
                     .isIn(ADMIN_CLASSIFICATION, USER_CLASSIFICATION);
-            assertThat(seeded.credentialDigest()).hasSize(DIGEST_COLUMN_WIDTH);
+            assertThat(seeded.credentialDigest().length()).isEqualTo(DIGEST_COLUMN_WIDTH);
         }
 
         @Test

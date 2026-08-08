@@ -17,9 +17,11 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Transaction;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Spring Data JPA repository for table {@code transaction} - the Java replacement for the
@@ -79,16 +81,16 @@ import org.springframework.data.jpa.repository.Query;
  * and for the concrete reason a sequence is not an acceptable substitute. The shipped schema declares
  * no sequence and no auto-generated column anywhere, for exactly this reason.
  *
- * <p><strong>Sharing a transaction is not by itself enough to make that rule safe, and the
- * serialisation that makes it safe is the allocating service's, not this interface's.</strong> Under
+ * <p><strong>Sharing a transaction is not by itself enough to make that rule safe.</strong> Under
  * the {@code READ COMMITTED} isolation this module runs at, an insert another transaction has not yet
- * committed is invisible, so two allocators can read the same maximum, compute the same successor and
- * collide on the primary key. Closing that window is a concurrency policy - how allocation is
- * serialised, how many attempts a loser makes and what it reports when they are exhausted - and a
- * policy belongs with the component that owns the transactional boundary and can observe the outcome
- * of the insert. This interface can do neither, so it declares no lock, and the bill-payment service
- * carries the obligation deliberately where it mints an identifier. The precondition the maximum
- * depends on -
+ * committed is invisible, so two allocators could read the same maximum, compute the same successor and
+ * collide on the primary key. That window is closed by {@link #lockIdentifierAllocation(long)}, the
+ * transaction-scoped application lock this interface publishes for exactly that purpose: it is the
+ * relational form of the position the legacy region held across its own read-modify-write, it is
+ * transaction-mandatory so it cannot be taken where it would be released immediately, and every caller
+ * that mints an identifier takes it before reading the maximum. What remains the caller's is the response
+ * to a writer that reached the table <em>without</em> the lock, and both allocating services carry that
+ * obligation where they mint. The precondition the maximum depends on -
  * that every stored identifier is exactly sixteen digit characters - is enforced twice over rather
  * than assumed: the entity refuses any other shape before an insert or an update reaches the
  * database, and {@code V1__create_schema.sql} carries the matching check constraint
@@ -122,12 +124,19 @@ import org.springframework.data.jpa.repository.Query;
  * region: the account, card, card alternate index, card cross-reference, cross-reference alternate
  * index, customer, transaction base cluster and user-security files. Both card-side alternate-index
  * paths are among them; the transaction alternate-index path is not, and the transaction entry
- * addresses the base cluster directly. No online request could therefore reach this index, so nothing
- * on this interface reads through it: the reporting job's date-range selection is served by the
- * report's own bounded reader rather than by a query declared here. An unbounded {@code List}-returning
- * range query did once live on this interface, unreferenced by any production caller while the report
- * filtered elsewhere; it was removed rather than left as a second contract for the same selection, and
- * the removal is recorded in {@code docs/decision-log.md}.
+ * addresses the base cluster directly. No online request can therefore reach this index, and exactly
+ * one caller in the module does: the reporting job's record-selection step, through
+ * {@link #findByProcessingDateWindowOrderedByCardNumber(String, String)}.
+ *
+ * <p><strong>That query is the index's reason for existing and its only consumer.</strong> The legacy
+ * reporting stream unloads the whole cluster and then hands the unload to an external sort whose
+ * inclusion condition addresses ten characters of the processing timestamp; performed as a file scan
+ * the selection reads every stored record, which is precisely the cost the alternate index was defined
+ * to avoid. The selection is therefore declared here, where the index can serve it, and the report
+ * step calls it rather than filtering an unloaded generation for itself. A range query that no
+ * production caller reached was previously removed from this interface for being a second contract for
+ * the same selection; what is declared now is the <em>first</em> contract, and the report's selection
+ * step is its caller.
  *
  * <p>{@code V2__create_indexes.sql} additionally declares {@code fk_transaction_card}, from this
  * table's card number to the card master. The entity nonetheless declares <strong>no association of
@@ -254,21 +263,24 @@ public interface TransactionRepository
      * duplicate never reaches the table, because the identifier is the primary key, but the payment
      * that lost the race is rejected for a reason that has nothing to do with the payment.
      *
-     * <p>How that window is answered - by serialising allocators, by retrying a loser, or by
-     * reporting the collision - is a decision only the component owning the transactional boundary can
-     * take, because only it can observe whether the insert succeeded and decide what to report when it
-     * did not. This interface can neither open a transaction nor see the outcome, so it declares no
-     * lock of its own and states the obligation here instead: <strong>a caller minting an identifier
-     * from this maximum owns the response to a collision.</strong>
+     * <p><strong>That window is closed by serialising allocators, and the serialisation is what the
+     * legacy region already had.</strong> The legacy program held its browse position on the keyed file
+     * across the backward read, the increment and the write, over a file defined with a locking update
+     * model - so two tasks minting an identifier could not interleave between the read and the write. The
+     * relational equivalent is {@link #lockIdentifierAllocation(long)}: one application-wide lock, taken
+     * before the maximum is read and released when the allocating transaction ends. Because the lock is
+     * scoped to a transaction, it is declared <em>transaction-mandatory</em> - taken outside one it would
+     * be released the instant the statement completed and would serialise nothing - and the two callers
+     * that mint an identifier take it as the first statement of the unit that also performs the insert.
      *
-     * <p>The bill-payment service is the one such caller, and it answers the window the way the legacy
-     * program did rather than by adding a mechanism the legacy program had no equivalent of. The legacy
-     * write of a duplicate key returned a duplicate response and the program reported it on the screen;
-     * the service reproduces that arm exactly, so a losing allocator receives the source's own
-     * already-exists message and the operator retries. Serialising allocators would make the loser wait
-     * and then succeed, which is a better outcome and a different one, and adding a retry loop would
-     * likewise be unrequested behaviour - so neither is done, and the correspondence is recorded rather
-     * than improved.
+     * <p>What the lock does <em>not</em> do is remove the caller's obligation, and the reason is a writer
+     * it cannot reach. A bulk load, a migration script or a future caller that never takes the lock can
+     * still store an identifier between an allocator's read and its insert, so <strong>a caller minting
+     * an identifier from this maximum still owns the response to a collision.</strong> The two callers
+     * answer it the same way: the maximum is re-read under the lock they still hold and the identifier is
+     * minted once more, up to a bounded number of attempts, and the last attempt lets the store's own
+     * duplicate response reach the source's already-exists arm rather than looping. Two allocators that
+     * both take the lock are serialised by it and never consume that bound.
      *
      * <p><strong>An empty result is the analogue of the legacy end-of-file response.</strong> The
      * maximum over zero rows is null, which the repository infrastructure materialises as an empty
@@ -310,4 +322,82 @@ public interface TransactionRepository
             FROM Transaction t
             """)
     Optional<String> findMaxId();
+
+    /**
+     * Returns every transaction whose processing date falls inside an inclusive ten-character window,
+     * ordered by card number ascending, which is the record selection the reporting stream performs.
+     *
+     * <h2>What this reproduces, statement for statement</h2>
+     *
+     * <p>The cataloged reporting procedure declares two sort symbols over the 350-byte record - the card
+     * number as sixteen zoned-decimal bytes at one-based position 263, and the processing date as ten
+     * character bytes at one-based position 305 - then applies an inclusion condition that admits a
+     * record whose processing date is greater than or equal to the start bound <em>and</em> less than or
+     * equal to the end bound, and orders what survives by the card number ascending. Both bounds are
+     * inclusive and both comparisons are between characters. This method is that step: the predicate is
+     * the {@code WHERE} clause, the ordering is the {@code ORDER BY} clause, and the width the predicate
+     * addresses is the ten leading characters of the timestamp rather than the whole 26-character field.
+     *
+     * <p><strong>The ten-character width is the trap, and it is why the UPPER bound takes a prefix.</strong>
+     * The stored field is 26 characters; the bound is 10. Comparing the <em>whole</em> column against a
+     * ten-character upper bound drops every record processed on the end date, because a longer string
+     * whose leading characters equal a shorter one sorts above it - so a record stamped
+     * {@code 2022-07-06 12:00:00.000000} would fail a {@code <= '2022-07-06'} test even though the legacy
+     * admits it. Taking the leading ten characters on the upper bound is what makes it inclusive in the
+     * sense the legacy means.
+     *
+     * <p><strong>The lower bound is deliberately left bare, and that is the half that reaches the
+     * index.</strong> A wrapped lower bound is not indexable, so wrapping both would have left this
+     * selection reading every stored row - the very cost the alternate index exists to avoid. Bare is
+     * also exactly equivalent: a 26-character value whose ten-character prefix is at or above a
+     * ten-character bound is itself at or above that bound, because either the two differ within the
+     * first ten characters, in which case the value is greater, or the prefix equals the bound, in which
+     * case the longer value is greater. The prefix upper bound remains a filter, which is expected and
+     * sufficient. One consequence is worth stating because it removes a guard rather than adding one: an
+     * unprocessed record carries twenty-six blanks, which sort below the digits of any date, so the bare
+     * lower bound already excludes it and this query needs no emptiness test.
+     *
+     * <p><strong>Card-number ordering, and what breaks ties.</strong> The sort key is the card number and
+     * nothing else, so records sharing a card number are in no order the sort utility guarantees. The
+     * identifier is added as a second key here for one reason: it makes the result <em>stable</em>, so the
+     * emitted report is a function of the stored rows and not of the plan the server happened to choose.
+     * The card number is sixteen digit characters in every writer's output - the schema's own key-shape
+     * check on the transaction identifier states the same rule for that column, and the card master's
+     * width check states it for card numbers - so ascending character order and ascending numeric order
+     * coincide, which is what lets a character comparison reproduce the utility's zoned-decimal typing.
+     * The report job nonetheless re-applies its own zoned-decimal comparator to the rows it receives, so
+     * the emitted order is that comparator's even if a future collation were to disagree with this one.
+     *
+     * <p><strong>Collation independence.</strong> Both operands of each comparison are ten characters in
+     * the same shape - four digits, a hyphen, two digits, a hyphen, two digits - so the hyphens occupy
+     * identical positions and cannot change the outcome under any collation that orders digits normally.
+     * The delivered schema is validated against a server initialised with the byte-ordering locale, and
+     * this predicate does not depend on that.
+     *
+     * <p><strong>Why the result is a plain list and why that is bounded in practice.</strong> The legacy
+     * step materialised its whole result as a dataset before the report program read a record of it, so a
+     * materialised result is the faithful shape rather than a concession. The window is the bound: the
+     * caller supplies a start and an end date and receives the records processed between them, which is
+     * the same set the legacy sort wrote to its output dataset. The report step then walks that set once,
+     * writing one record at a time.
+     *
+     * <p>This is the only method on this interface that reads through the processing-timestamp alternate
+     * index, and the lower bound alone is the predicate able to drive it.
+     *
+     * <p>Recorded in {@code docs/decision-log.md} DL-276.
+     *
+     * @param  startDate the inclusive lower bound, exactly {@code YYYY-MM-DD}
+     * @param  endDate   the inclusive upper bound, exactly {@code YYYY-MM-DD}
+     * @return the selected records, ordered by card number ascending then by identifier ascending, empty
+     *         when the window admits none
+     */
+    @Query("""
+            SELECT t
+            FROM Transaction t
+            WHERE t.tranProcTs >= :startDate
+              AND SUBSTRING(t.tranProcTs, 1, 10) <= :endDate
+            ORDER BY t.tranCardNum ASC, t.tranId ASC
+            """)
+    List<Transaction> findByProcessingDateWindowOrderedByCardNumber(
+            @Param("startDate") String startDate, @Param("endDate") String endDate);
 }

@@ -175,6 +175,7 @@ final class TransactionReportJobConfigTest {
                 new RunIdIncrementer(),
                 new JobParameterValidators(new DateValidationService()),
                 scanRepository,
+                repository,
                 new FixedWidthFlatFileReaderFactory(),
                 reportService,
                 new SimpleMeterRegistry(),
@@ -195,7 +196,42 @@ final class TransactionReportJobConfigTest {
     private TransactionReportJobConfig configurationHolding(final List<Transaction> records) {
         final TransactionRepository repository = mock(TransactionRepository.class);
         when(repository.findAll(any(Sort.class))).thenReturn(records);
+        when(repository.count()).thenReturn((long) records.size());
+        // The window selection the report's second step now issues. The double reproduces the query's
+        // declared contract - an inclusive comparison over the ten leading characters of the processing
+        // timestamp, ordered by card number then identifier - so this class exercises the step's own
+        // ordering and its window re-check. That the QUERY itself has that contract is proved against a
+        // real server by TransactionRepositoryIT, not asserted here.
+        when(repository.findByProcessingDateWindowOrderedByCardNumber(anyString(), anyString()))
+                .thenAnswer(invocation -> selectWindow(records, invocation.getArgument(0),
+                        invocation.getArgument(1)));
         return configuration(repository, mock(TransactionReportService.class));
+    }
+
+    /** Characters of the processing timestamp the window predicate addresses, as the sort symbol does. */
+    private static final int PROCESSING_DATE_WIDTH = 10;
+
+    /**
+     * Applies the window selection's declared contract to a held record set.
+     *
+     * @param records   the records the master holds
+     * @param startDate the inclusive lower bound
+     * @param endDate   the inclusive upper bound
+     * @return the admitted records, ordered by card number then identifier, both ascending
+     */
+    private static List<Transaction> selectWindow(final List<Transaction> records,
+            final String startDate, final String endDate) {
+
+        return records.stream()
+                .filter(record -> {
+                    final String processingDate = record.getTranProcTs()
+                            .substring(0, PROCESSING_DATE_WIDTH);
+                    return startDate.compareTo(processingDate) <= 0
+                            && processingDate.compareTo(endDate) <= 0;
+                })
+                .sorted(Comparator.comparing(Transaction::getTranCardNum)
+                        .thenComparing(Transaction::getTranId))
+                .toList();
     }
 
     /**
@@ -307,7 +343,7 @@ final class TransactionReportJobConfigTest {
 
         final TransactionReportJobConfig configuration = configurationHolding(records);
         configuration.newUnloadProgram(configuration.backupGeneration(JOB_EXECUTION_ID)).run();
-        configuration.newFilterAndOrderProgram(configuration.backupGeneration(JOB_EXECUTION_ID),
+        configuration.newFilterAndOrderProgram(
                 configuration.filteredGeneration(JOB_EXECUTION_ID),
                 configuration.reportDateWindow(chunkContext(startDate, endDate))).run();
 
@@ -593,8 +629,8 @@ final class TransactionReportJobConfigTest {
         }
 
         @Test
-        @DisplayName("records sharing a card number keep the sequence the unload delivered them in, "
-                + "because the specification declares no secondary key")
+        @DisplayName("records sharing a card number keep identifier order, because the specification "
+                + "declares no secondary key and the selection makes the tie stable")
         void tiesKeepTheSequenceTheUnloadDelivered() throws IOException {
             final TransactionReportJobConfig configuration = configurationHolding(List.of(
                     transaction("0000000000000007", "4111111111111111", INSIDE_WINDOW, "10.00"),
@@ -603,7 +639,6 @@ final class TransactionReportJobConfigTest {
 
             configuration.newUnloadProgram(configuration.backupGeneration(JOB_EXECUTION_ID)).run();
             configuration.newFilterAndOrderProgram(
-                    configuration.backupGeneration(JOB_EXECUTION_ID),
                     configuration.filteredGeneration(JOB_EXECUTION_ID),
                     configuration.reportDateWindow(chunkContext(WINDOW_START, WINDOW_END))).run();
 
@@ -668,7 +703,6 @@ final class TransactionReportJobConfigTest {
                     .as("a short, space-padded field would order differently under the two typings, "
                             + "so it must fail loudly rather than reorder the report")
                     .isThrownBy(() -> configuration.newFilterAndOrderProgram(
-                            configuration.backupGeneration(JOB_EXECUTION_ID),
                             configuration.filteredGeneration(JOB_EXECUTION_ID),
                             configuration.reportDateWindow(
                                     chunkContext(WINDOW_START, WINDOW_END))).run())
@@ -746,7 +780,6 @@ final class TransactionReportJobConfigTest {
 
             final TransactionReportJobConfig.FilterAndOrderProgram program =
                     configuration.newFilterAndOrderProgram(
-                            configuration.backupGeneration(JOB_EXECUTION_ID),
                             configuration.filteredGeneration(JOB_EXECUTION_ID),
                             configuration.reportDateWindow(
                                     chunkContext(WINDOW_START, WINDOW_END)));
@@ -1312,6 +1345,7 @@ final class TransactionReportJobConfigTest {
                             new RunIdIncrementer(),
                             new JobParameterValidators(new DateValidationService()),
                             mock(TransactionScanRepository.class),
+                            mock(TransactionRepository.class),
                             new FixedWidthFlatFileReaderFactory(),
                             mock(TransactionReportService.class),
                             new SimpleMeterRegistry(),
@@ -1377,6 +1411,7 @@ final class TransactionReportJobConfigTest {
                             new RunIdIncrementer(),
                             new JobParameterValidators(new DateValidationService()),
                             mock(TransactionScanRepository.class),
+                            mock(TransactionRepository.class),
                             new FixedWidthFlatFileReaderFactory(),
                             null,
                             new SimpleMeterRegistry(),

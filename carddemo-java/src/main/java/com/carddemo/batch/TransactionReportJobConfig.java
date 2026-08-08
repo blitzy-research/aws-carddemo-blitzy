@@ -64,6 +64,7 @@ import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.batch.step.TransactionReportProcessor;
 import com.carddemo.domain.Transaction;
 import com.carddemo.domain.enums.FileStatus;
+import com.carddemo.repository.TransactionRepository;
 import com.carddemo.repository.TransactionScanRepository;
 import com.carddemo.service.BatchJobCatalog;
 import com.carddemo.service.ReportTransactionInput;
@@ -492,6 +493,12 @@ public final class TransactionReportJobConfig {
     /** Bounded sequential-read view kept separate from the frozen online repository surface. */
     private final TransactionScanRepository transactionScanRepository;
 
+    /**
+     * The transaction master, read for the one selection the processing-timestamp alternate index exists
+     * to serve: the inclusive ten-character processing-date window this job's second step applies.
+     */
+    private final TransactionRepository transactionRepository;
+
     /** Source of the fixed-width reader over the unloaded generation. */
     private final FixedWidthFlatFileReaderFactory readerFactory;
 
@@ -531,6 +538,8 @@ public final class TransactionReportJobConfig {
      * @param jobParameterValidators owner of the parameter cascade and of the window predicate; must
      *                               not be {@code null}
      * @param transactionScanRepository bounded sequential-read view of the transaction master
+     * @param transactionRepository the transaction master, for the window selection; must not be
+     *                              {@code null}
      * @param readerFactory source of the fixed-width reader; must not be {@code null}
      * @param reportService the report generator; must not be {@code null}
      * @param meterRegistry the registry every step is timed on; must not be {@code null}
@@ -547,6 +556,7 @@ public final class TransactionReportJobConfig {
             @Qualifier("batchJobRunIncrementer") final JobParametersIncrementer jobRunIncrementer,
             final JobParameterValidators jobParameterValidators,
             final TransactionScanRepository transactionScanRepository,
+            final TransactionRepository transactionRepository,
             final FixedWidthFlatFileReaderFactory readerFactory,
             final TransactionReportService reportService,
             final MeterRegistry meterRegistry,
@@ -576,6 +586,8 @@ public final class TransactionReportJobConfig {
                 Objects.requireNonNull(jobParameterValidators, "jobParameterValidators");
         this.transactionScanRepository = Objects.requireNonNull(
                 transactionScanRepository, "transactionScanRepository");
+        this.transactionRepository = Objects.requireNonNull(
+                transactionRepository, "transactionRepository");
         this.readerFactory = Objects.requireNonNull(readerFactory, "readerFactory");
         this.reportService = Objects.requireNonNull(reportService, "reportService");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");
@@ -681,13 +693,15 @@ public final class TransactionReportJobConfig {
     }
 
     /**
-     * The filter-and-order step: read the backup generation, keep the records whose processing date
-     * falls inside the inclusive window, order what survives by card number ascending under this
-     * class's own zoned-decimal typing, and write the filtered generation at
+     * The filter-and-order step: select the records whose processing date falls inside the inclusive
+     * window through the processing-timestamp access path, order them by card number ascending under
+     * this class's own zoned-decimal typing, and write the filtered generation at
      * {@value #UNLOAD_RECORD_LENGTH} bytes per record.
      *
      * <p>Reproduces the legacy external-sort step. It is a read-and-write step for the same reason the
-     * unload is: <strong>the sort utility is not invoked, it is replaced</strong>.
+     * unload is: <strong>the sort utility is not invoked, it is replaced</strong>. Its record source is
+     * the store's own window selection rather than the unloaded generation, which is what puts the
+     * inclusion condition where the alternate index can serve it.
      *
      * @return the step, registered under {@link #FILTER_AND_ORDER_STEP_NAME}, never {@code null}
      */
@@ -851,8 +865,7 @@ public final class TransactionReportJobConfig {
         final long jobExecutionId = jobExecutionIdOf(chunkContext);
         final Path generation = filteredGeneration(jobExecutionId);
         final Path working = StagedGenerationStore.workingPath(generation);
-        newFilterAndOrderProgram(backupGeneration(jobExecutionId),
-                working, reportDateWindow(chunkContext)).run();
+        newFilterAndOrderProgram(working, reportDateWindow(chunkContext)).run();
         StagedGenerationStore.completeWorkingFile(working, generation);
         StagedGenerationStore.register(stepExecutionOf(chunkContext),
                 this.filteredTransactionBase, generation,
@@ -901,16 +914,15 @@ public final class TransactionReportJobConfig {
     /**
      * Builds one filter-and-order lifecycle.
      *
-     * @param backupGeneration the generation to read; must not be {@code null}
      * @param filteredGeneration the generation to write; must not be {@code null}
      * @param window the inclusive processing-date window; must not be {@code null}
      * @return a fresh lifecycle, never {@code null}
      */
-    FilterAndOrderProgram newFilterAndOrderProgram(final Path backupGeneration,
-            final Path filteredGeneration, final JobParameterValidators.ReportDateWindow window) {
+    FilterAndOrderProgram newFilterAndOrderProgram(final Path filteredGeneration,
+            final JobParameterValidators.ReportDateWindow window) {
 
-        return new FilterAndOrderProgram(this.meterRegistry, this.clock, this.readerFactory,
-                backupGeneration, filteredGeneration, window);
+        return new FilterAndOrderProgram(this.meterRegistry, this.clock, this.transactionRepository,
+                filteredGeneration, window);
     }
 
     /**
@@ -1384,25 +1396,42 @@ public final class TransactionReportJobConfig {
     // -----------------------------------------------------------------------------------------------
 
     /**
-     * One pass of the legacy external sort: read the backup generation, apply the inclusive
-     * record-inclusion predicate, order what survives by card number ascending under the zoned-decimal
-     * typing this job declares, and write the filtered generation.
+     * One pass of the legacy external sort: select the records whose processing date falls inside the
+     * inclusive window, order them by card number ascending under the zoned-decimal typing this job
+     * declares, and write the filtered generation.
      *
-     * <p>The work area accumulates before anything is emitted, because an external sort cannot write
-     * its first record until it has read its last. It is per-execution state on a per-execution object,
-     * never a field of a singleton.
+     * <p><strong>The selection is a query, not a file scan, and that is where the alternate index earns
+     * its keep.</strong> The records come from
+     * {@link TransactionRepository#findByProcessingDateWindowOrderedByCardNumber(String, String)}, which
+     * is the relational form of the sort utility's inclusion condition over ten characters of the
+     * processing timestamp and the one consumer of the processing-timestamp alternate index. Reading the
+     * unloaded generation and discarding what fell outside the window read every stored record to emit a
+     * window's worth, which is exactly the cost that index was defined to avoid; the unload step still
+     * produces the backup generation, because that generation is the legacy copy step's own output and is
+     * not this step's input. Recorded in {@code docs/decision-log.md} DL-276.
+     *
+     * <p>The work area still accumulates before anything is emitted, because an external sort cannot
+     * write its first record until it has read its last. It is per-execution state on a per-execution
+     * object, never a field of a singleton.
      *
      * <p>Two properties of this class are the parity core of the file and must not be relaxed. The
      * predicate is <strong>inclusive at both ends</strong> and is evaluated by the single shared window
-     * predicate rather than restated here. The ordering applies
+     * predicate - which is applied here to every record the query returned, so the window the emitted
+     * generation reflects is the shared predicate's window and a query that ever admitted a record
+     * outside it would be refused rather than absorbed. The ordering applies
      * {@link TransactionReportJobConfig#CARD_NUMBER_ZONED_DECIMAL_ASCENDING}, which is private to the
      * enclosing class precisely so it cannot be shared with the job that types the same field as
-     * character.
+     * character; the query's own ordering makes the result stable, and this comparator is what the
+     * emitted order is.
+     *
+     * <p>The excluded count is the records the master holds outside the window - the figure the legacy
+     * sort reported for the same run - obtained as the master's row count less the records emitted, since
+     * the records outside the window are no longer read one by one.
      */
     static final class FilterAndOrderProgram extends AbstractCobolStep<Transaction> {
 
-        /** Reader over the backup generation, at the transaction record layout. */
-        private final FlatFileItemReader<Transaction> reader;
+        /** The transaction master this execution selects from. */
+        private final TransactionRepository transactionRepository;
 
         /** The filtered, ordered generation this execution writes. */
         private final Path filteredGeneration;
@@ -1410,37 +1439,39 @@ public final class TransactionReportJobConfig {
         /** The inclusive processing-date window the predicate tests against. */
         private final JobParameterValidators.ReportDateWindow window;
 
+        /** Position over the records the window selected, in the order the query returned them. */
+        private Iterator<Transaction> selectionCursor;
+
         /** Disk-backed bounded work area, standing in for the sort utility's work datasets. */
         private ExternalStringSorter sorter;
 
         /** Handle on the generation being written. */
         private BufferedWriter writer;
 
-        /** Records the predicate rejected, reported once the pass completes. */
+        /** Records the master holds outside the window, reported once the pass completes. */
         private long recordsExcluded;
 
-        /** Records the predicate included and the sorter emitted. */
+        /** Records the window admitted and the sorter emitted. */
         private long recordsIncluded;
+
+        /** Rows the master held when the selection ran, which is what the excluded figure is taken from. */
+        private long masterRecordCount;
 
         /**
          * @param meterRegistry the registry the lifecycle is timed on; must not be {@code null}
          * @param clock the clock stamping the lifecycle boundaries; must not be {@code null}
-         * @param readerFactory source of the fixed-width reader; must not be {@code null}
-         * @param backupGeneration the generation to read; must not be {@code null}
+         * @param transactionRepository the transaction master to select from; must not be {@code null}
          * @param filteredGeneration the generation to write; must not be {@code null}
          * @param window the inclusive processing-date window; must not be {@code null}
          */
         FilterAndOrderProgram(final MeterRegistry meterRegistry, final Clock clock,
-                final FixedWidthFlatFileReaderFactory readerFactory, final Path backupGeneration,
+                final TransactionRepository transactionRepository,
                 final Path filteredGeneration,
                 final JobParameterValidators.ReportDateWindow window) {
 
             super(TransactionReportProcessor.LEGACY_SORT_STEP, meterRegistry, clock);
-            Objects.requireNonNull(readerFactory, "readerFactory");
-            Objects.requireNonNull(backupGeneration, "backupGeneration");
-            // The reader, and with it every offset of the record layout, comes from the shared factory;
-            // this step composes it rather than tokenising the record itself.
-            this.reader = readerFactory.fixedTransactionReader(new PathResource(backupGeneration));
+            this.transactionRepository = Objects.requireNonNull(transactionRepository,
+                    "transactionRepository");
             this.filteredGeneration = Objects.requireNonNull(filteredGeneration,
                     "filteredGeneration");
             this.window = Objects.requireNonNull(window, "window");
@@ -1449,7 +1480,13 @@ public final class TransactionReportJobConfig {
         @Override
         protected void openResources() {
             openResource(DD_SORT_INPUT, () -> {
-                this.reader.open(new ExecutionContext());
+                // The inclusion condition of the legacy sort, executed by the store through the
+                // processing-timestamp alternate index rather than by scanning an unloaded copy.
+                this.selectionCursor = this.transactionRepository
+                        .findByProcessingDateWindowOrderedByCardNumber(
+                                this.window.startDate(), this.window.endDate())
+                        .iterator();
+                this.masterRecordCount = this.transactionRepository.count();
                 return FileStatus.SUCCESS.getCode();
             });
 
@@ -1465,37 +1502,44 @@ public final class TransactionReportJobConfig {
         @Override
         protected Optional<Transaction> readNextRecord() {
             return this.<Transaction>readRecord(DD_SORT_INPUT, () -> {
-                final Transaction next = this.reader.read();
-                if (next == null) {
-                    return IoResult.endOfFile();
+                if (this.selectionCursor.hasNext()) {
+                    return IoResult.of(FileStatus.SUCCESS.getCode(), this.selectionCursor.next());
                 }
-                return IoResult.of(FileStatus.SUCCESS.getCode(), next);
+                return IoResult.endOfFile();
             });
         }
 
         @Override
         protected void processRecord(final Transaction record) {
+            // The record image, and with it every offset of the layout, comes from the utility layer;
+            // this step renders and never slices.
             final String image = TransactionRecordMapper.toRecord(record);
             requireEncodedWidth(image, UNLOAD_RECORD_LENGTH, DD_SORT_INPUT);
 
-            // BOTH BOUNDS ARE INCLUSIVE. The test is delegated so that this job cannot express the
-            // window in its own words and drift to an exclusive comparison; the comparison there is
-            // between characters, exactly as the specification declares the field's type.
-            if (this.window.includes(processingDateSortField(image))) {
-                this.sorter.add(image);
-            } else {
-                this.recordsExcluded++;
+            // BOTH BOUNDS ARE INCLUSIVE, and the shared predicate remains the authority. The query
+            // selects on the same ten characters, so every record reaching here passes; a record that
+            // did not would mean the two had drifted, and the run refuses it rather than emitting it.
+            final String processingDate = processingDateSortField(image);
+            if (!this.window.includes(processingDate)) {
+                throw new IllegalStateException("the record selection returned a record processed on "
+                        + processingDate + ", which the inclusive window " + this.window.startDate()
+                        + " to " + this.window.endDate() + " does not admit; the selection and the "
+                        + "shared window predicate have drifted apart");
             }
+            this.sorter.add(image);
         }
 
         @Override
         protected void closeResources() {
             closeResource(DD_SORT_INPUT, () -> {
-                this.reader.close();
+                // The input side holds nothing open: the cursor iterates an already-materialised
+                // selection, exactly as the legacy sort read an already-written dataset.
+                this.selectionCursor = null;
                 return FileStatus.SUCCESS.getCode();
             });
 
             this.recordsIncluded = this.sorter.writeTo(this::writeOrderedRecord);
+            this.recordsExcluded = Math.max(0L, this.masterRecordCount - this.recordsIncluded);
 
             closeResource(DD_SORT_OUTPUT, () -> {
                 this.writer.flush();
@@ -1514,9 +1558,7 @@ public final class TransactionReportJobConfig {
         protected void releaseResources() {
             releaseQuietly(this.writer, DD_SORT_OUTPUT);
             releaseQuietly(this.sorter, "SORTWK");
-            // The item stream declares its own close rather than the standard one, so the release is
-            // handed that close directly.
-            releaseQuietly(this.reader::close, DD_SORT_INPUT);
+            this.selectionCursor = null;
         }
 
         private void writeOrderedRecord(final String ordered) {
@@ -1553,7 +1595,7 @@ public final class TransactionReportJobConfig {
         }
 
         /**
-         * Records the predicate rejected, for a caller that drives the lifecycle directly.
+         * Records the master holds outside the window, for a caller that drives the lifecycle directly.
          *
          * @return the count, never negative
          */

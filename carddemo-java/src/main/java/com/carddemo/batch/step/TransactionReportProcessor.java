@@ -44,8 +44,10 @@ import org.springframework.batch.item.ItemProcessor;
  *
  * <p>Translated from the legacy estate at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19 - the trailer comment carried by every
- * COBOL and JCL member. The authorities are the report program {@code app/cbl/CBTRN03C.cbl}
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is the migration's provenance
+ * anchor, carried by a measured subset of the estate rather than by every member, so it identifies
+ * the delivery this translation was taken from and is never asserted per member. The authorities
+ * are the report program {@code app/cbl/CBTRN03C.cbl}
  * (649 lines), the report layout copybook {@code app/cpy/CVTRA07Y.cpy}, the job
  * {@code app/jcl/TRANREPT.jcl} and the cataloged procedure {@code app/proc/TRANREPT.prc}. They are
  * <strong>cited, never transcribed</strong>, and nothing on this path reads the legacy tree at run
@@ -78,9 +80,10 @@ import org.springframework.batch.item.ItemProcessor;
  * <h2>Why this class delegates instead of driving the report itself</h2>
  *
  * <p>{@link TransactionReportService} is the module's translation of the report program: all
- * twenty-seven paragraph units of its procedure division, the inclusive character-date guard, the
- * card-number break, the account totals, the page break, the four-record header block, the
- * accumulation chain and the end-of-input flush. Every one of those lives there, in state created
+ * twenty-six mapped paragraph units of its procedure division plus the unnamed driving body that
+ * sequences them, the inclusive character-date guard, the card-number break, the account totals,
+ * the page break, the four-record header block, the accumulation chain and the end-of-input
+ * flush. Every one of those lives there, in state created
  * fresh for each invocation, and the report's content and its order are therefore decided in
  * exactly one place in the module.
  *

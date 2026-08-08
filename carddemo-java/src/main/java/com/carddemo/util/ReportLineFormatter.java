@@ -32,10 +32,11 @@ import java.util.Objects;
  * dataset that receives it is declared with a record length of 133 and fixed-blocked records
  * [app/proc/TRANREPT.prc]. Every record written to the report is therefore exactly 133 bytes.
  *
- * <p>Layout authority is split across two members and both were read verbatim. The seven
- * report groups are declared in the report-formatting copybook [app/cpy/CVTRA07Y.cpy], which
- * the report driver includes [app/cbl/CBTRN03C.cbl:L113]. The record itself, the blank line,
- * the page size and the date-parameter structure are declared in the driver.
+ * <p>Layout authority is split across two members, and the layout below is derived from both of
+ * them without transcribing either. The seven report groups are declared in the report-formatting
+ * copybook [app/cpy/CVTRA07Y.cpy], which the report driver includes [app/cbl/CBTRN03C.cbl:L113].
+ * The record itself, the blank line, the page size and the date-parameter structure are declared in
+ * the driver.
  *
  * <p><strong>Six of the seven groups are narrower than 133 bytes</strong> and are therefore
  * left-justified and space-padded on the right to 133, exactly as a COBOL move of a short group into

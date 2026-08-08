@@ -398,7 +398,25 @@ public record TransactionListRequest(
     public static final int DISPLAYED_TRANSACTION_ID_COUNT = ROW_COUNT;
 
     /**
-     * Compatibility constructor for callers that carry the earlier split paging shape.
+     * Compatibility constructor for callers that carry the split paging shape, in which the displayed
+     * page number and the cursor pair arrive as two separate components rather than inside one
+     * continuation.
+     *
+     * <p>The two are folded into a {@link ScreenContinuation}: when both are absent the continuation is
+     * {@code null}, which is the shape of a first entry; otherwise a continuation is assembled from the
+     * cursor pair's previous key, next key and direction together with the page number, with the
+     * next-page flag cleared and no displayed identifiers carried. Every other component is passed
+     * straight to the canonical constructor, whose contract is the authority for it.
+     *
+     * @param transactionIdFilter the echoed transaction-identifier filter, as transmitted
+     * @param displayedPageNumber the page number the screen displayed, or {@code null} when none was
+     *                            displayed
+     * @param rowSelectors        the ten row selectors as transmitted; {@code null} becomes the empty
+     *                            sequence
+     * @param keyAction           the decoded attention key
+     * @param navigationContext   the navigation state the client echoed back
+     * @param pageMetadata        the cursor pair the screen carried, or {@code null} when none was
+     *                            carried
      */
     public TransactionListRequest(final String transactionIdFilter,
                                   final String displayedPageNumber,
@@ -418,12 +436,22 @@ public record TransactionListRequest(
                                 List.of()));
     }
 
-    /** Compatibility view of the legacy split page-number component. */
+    /**
+     * Compatibility view of the split page-number component.
+     *
+     * @return the page number the continuation carries, or {@code null} when this request carries no
+     *         continuation at all
+     */
     public String displayedPageNumber() {
         return continuation == null ? null : continuation.displayedPageNumber();
     }
 
-    /** Compatibility view of the legacy split cursor component. */
+    /**
+     * Compatibility view of the split cursor component.
+     *
+     * @return the previous-key, next-key and direction triple the continuation carries, or {@code null}
+     *         when this request carries no continuation at all
+     */
     public PageMetadata.PageCursorRequest pageMetadata() {
         return continuation == null ? null : continuation.pageCursor();
     }

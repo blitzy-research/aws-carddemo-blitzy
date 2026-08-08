@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import com.carddemo.domain.UserSecurity;
+import com.carddemo.support.SensitiveValues;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -343,7 +344,7 @@ class UserSecurityRecordMapperTest {
                 assertThat(user.getSecUsrFname()).isEqualTo("MARGARET" + spaces(12));
                 assertThat(user.getSecUsrLname()).isEqualTo("GOLD" + spaces(16));
                 assertThat(user.getSecUsrType()).isEqualTo(ADMINISTRATOR_TYPE);
-                assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_DIGEST);
+                assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_DIGEST));
             }
         }
 
@@ -442,7 +443,7 @@ class UserSecurityRecordMapperTest {
             final UserSecurity user =
                     UserSecurityRecordMapper.fromRecord(administratorImage(), returnsOtherFixture);
 
-            assertThat(user.credentialDigest()).isEqualTo(OTHER_SYNTHETIC_DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(OTHER_SYNTHETIC_DIGEST));
             assertThat(bytesOf(user.credentialDigest())).hasSize(DIGEST_WIDTH);
         }
 
@@ -539,7 +540,7 @@ class UserSecurityRecordMapperTest {
                 assertThat(user.getSecUsrLname()).isEqualTo(padded(identity[2], LNAME_WIDTH));
                 assertThat(bytesOf(user.getSecUsrLname())).hasSize(LNAME_WIDTH);
                 assertThat(user.getSecUsrType()).isEqualTo(identity[3]);
-                assertThat(user.credentialDigest()).isEqualTo(SYNTHETIC_DIGEST);
+                assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_DIGEST));
 
                 identifiers.add(user.getSecUsrId());
                 if (ADMINISTRATOR_TYPE.equals(identity[3])) {

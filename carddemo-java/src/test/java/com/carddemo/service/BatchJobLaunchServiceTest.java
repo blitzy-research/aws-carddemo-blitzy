@@ -29,7 +29,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,7 +46,6 @@ import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
-import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.NoSuchJobException;
 
 /**
@@ -91,24 +92,19 @@ final class BatchJobLaunchServiceTest {
     /** Guarded launch boundary implemented by the batch tier. */
     private BatchLaunchGateway batchLaunchGateway;
 
-    /** Operator used for deliberate repeat and restart operations. */
-    private JobOperator jobOperator;
-
     /** Metadata reader one execution is reported from. */
     private JobExplorer jobExplorer;
 
     /** The service under test. */
     private BatchJobLaunchService service;
 
-    /** Assembles the service over the four stubbed framework interfaces. */
+    /** Assembles the service over the three stubbed framework interfaces. */
     @BeforeEach
     void setUp() {
         jobRegistry = mock(JobRegistry.class);
         batchLaunchGateway = mock(BatchLaunchGateway.class);
-        jobOperator = mock(JobOperator.class);
         jobExplorer = mock(JobExplorer.class);
-        service = new BatchJobLaunchService(
-                jobRegistry, batchLaunchGateway, jobOperator, jobExplorer);
+        service = new BatchJobLaunchService(jobRegistry, batchLaunchGateway, jobExplorer);
     }
 
     /**
@@ -137,16 +133,27 @@ final class BatchJobLaunchServiceTest {
         @DisplayName("takes every collaborator through the constructor and refuses a missing one")
         void refusesAMissingCollaborator() {
             assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobLaunchService(
-                            null, batchLaunchGateway, jobOperator, jobExplorer));
+                    new BatchJobLaunchService(null, batchLaunchGateway, jobExplorer));
             assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobLaunchService(jobRegistry, null, jobOperator, jobExplorer));
+                    new BatchJobLaunchService(jobRegistry, null, jobExplorer));
             assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobLaunchService(
-                            jobRegistry, batchLaunchGateway, null, jobExplorer));
-            assertThatNullPointerException().isThrownBy(() ->
-                    new BatchJobLaunchService(
-                            jobRegistry, batchLaunchGateway, jobOperator, null));
+                    new BatchJobLaunchService(jobRegistry, batchLaunchGateway, null));
+        }
+
+        @Test
+        @DisplayName("takes three collaborators and no operator, because the delivered surface offers no "
+                + "repeat and no resume for an operator to serve")
+        void takesThreeCollaboratorsAndNoOperator() {
+            assertThat(BatchJobLaunchService.class.getDeclaredConstructors()).hasSize(1);
+            assertThat(BatchJobLaunchService.class.getDeclaredConstructors()[0].getParameterTypes())
+                    .as("a collaborator held for an operation nobody can reach is not a dependency")
+                    .containsExactly(JobRegistry.class, BatchLaunchGateway.class, JobExplorer.class);
+            assertThat(Arrays.stream(BatchJobLaunchService.class.getDeclaredMethods())
+                    .map(Method::getName)
+                    .toList())
+                    .as("neither the repeat nor the resume seam survives, so neither can acquire a "
+                            + "caller by accident")
+                    .doesNotContain("startNextInstance", "restart", "registeredNameOf");
         }
 
         @Test
@@ -177,32 +184,6 @@ final class BatchJobLaunchServiceTest {
             assertThat(service.launchable("anotherJob")).isFalse();
             assertThat(service.launchable(null)).isFalse();
             verify(jobRegistry, never()).getJob(anyString());
-        }
-    }
-
-    @Nested
-    @DisplayName("Resolving a registered name")
-    class ResolvingARegisteredName {
-
-        @Test
-        @DisplayName("answers the name the registry's own job carries, so a launch is issued against the "
-                + "identity the framework holds")
-        void answersTheRegistrysOwnName() throws NoSuchJobException {
-            final Job job = mock(Job.class);
-            when(job.getName()).thenReturn(JOB_NAME);
-            when(jobRegistry.getJob(JOB_NAME)).thenReturn(job);
-
-            assertThat(service.registeredNameOf(JOB_NAME)).isEqualTo(JOB_NAME);
-        }
-
-        @Test
-        @DisplayName("propagates the framework's own report when the name is not registered, so the "
-                + "boundary above decides how a wiring fault reads")
-        void propagatesTheFrameworksOwnReport() throws NoSuchJobException {
-            when(jobRegistry.getJob(JOB_NAME)).thenThrow(new NoSuchJobException(JOB_NAME));
-
-            assertThatExceptionOfType(NoSuchJobException.class)
-                    .isThrownBy(() -> service.registeredNameOf(JOB_NAME));
         }
     }
 

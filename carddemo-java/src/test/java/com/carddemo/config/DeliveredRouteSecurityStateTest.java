@@ -134,7 +134,11 @@ class DeliveredRouteSecurityStateTest {
                     SecurityState.AUTHENTICATED, "CAUP"),
             new DeliveredRoute(CardController.CARDS_BASE_PATH + CardController.CARD_LIST_PATH, "POST",
                     SecurityState.AUTHENTICATED, "CCLI"),
-            new DeliveredRoute(CardController.CARDS_BASE_PATH + CardController.CARD_DETAIL_PATH, "GET",
+            // Addressed by a body rather than by a path segment, exactly as the list and update routes
+            // are, so it is a POST like them. It was recorded here as a GET while the controller mapped
+            // a POST; the region was right and the verb was not, and a table that misreports a verb
+            // cannot be the record of what the chain gates.
+            new DeliveredRoute(CardController.CARDS_BASE_PATH + CardController.CARD_DETAIL_PATH, "POST",
                     SecurityState.AUTHENTICATED, "CCDL"),
             new DeliveredRoute(CardController.CARDS_BASE_PATH + CardController.CARD_UPDATE_PATH, "POST",
                     SecurityState.AUTHENTICATED, "CCUP"),

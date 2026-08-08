@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 
@@ -318,7 +319,7 @@ class DailyTransactionTest {
             assertThat(record.getDalytranMerchantName()).isEqualTo(ROW_MERCHANT_NAME);
             assertThat(record.getDalytranMerchantCity()).isEqualTo(ROW_MERCHANT_CITY);
             assertThat(record.getDalytranMerchantZip()).isEqualTo(ROW_MERCHANT_ZIP);
-            assertThat(record.getDalytranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
             assertThat(record.getDalytranOrigTs()).isEqualTo(ROW_ORIG_TS);
             assertThat(record.getDalytranProcTs()).isEqualTo(BLANK_PROC_TS);
         }
@@ -334,7 +335,7 @@ class DailyTransactionTest {
 
             assertThat(record.getDalytranId()).isNotEqualTo(record.getDalytranCardNum());
             assertThat(record.getDalytranId()).isEqualTo(ROW_ID);
-            assertThat(record.getDalytranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
 
             assertThat(record.getDalytranMerchantName()).isNotEqualTo(record.getDalytranMerchantCity());
             assertThat(record.getDalytranMerchantName()).isEqualTo(ROW_MERCHANT_NAME);
@@ -373,7 +374,7 @@ class DailyTransactionTest {
             assertThat(record.getDalytranMerchantName()).isEqualTo("Zulauf-Rempel" + " ".repeat(37));
             assertThat(record.getDalytranMerchantCity()).isEqualTo("South Marvinport" + " ".repeat(34));
             assertThat(record.getDalytranMerchantZip()).isEqualTo("30303" + " ".repeat(5));
-            assertThat(record.getDalytranCardNum()).isEqualTo("4111111111111111");
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4111111111111111"));
             assertThat(record.getDalytranOrigTs()).isEqualTo("2022-06-11 08:15:00.000000");
             assertThat(record.getDalytranProcTs()).isEqualTo("2022-06-12 23:59:59.999999");
         }
@@ -605,7 +606,7 @@ class DailyTransactionTest {
             record.setDalytranCardNum(cardNumberInNoOtherTable);
             record.setDalytranMerchantId(merchantIdInNoOtherTable);
 
-            assertThat(record.getDalytranCardNum()).isEqualTo(cardNumberInNoOtherTable);
+            assertThat(SensitiveValues.fingerprint(record.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(cardNumberInNoOtherTable));
             assertThat(record.getDalytranMerchantId()).isEqualTo(merchantIdInNoOtherTable);
             assertThat(encodedBytes(record.getDalytranCardNum())).isEqualTo(WIDTH_CARD_NUM);
             assertThat(encodedBytes(record.getDalytranMerchantId())).isEqualTo(WIDTH_MERCHANT_ID);
@@ -1000,7 +1001,7 @@ class DailyTransactionTest {
             assertThat(second.getDalytranMerchantName()).isNotEqualTo(first.getDalytranMerchantName());
             assertThat(second.getDalytranMerchantCity()).isNotEqualTo(first.getDalytranMerchantCity());
             assertThat(second.getDalytranMerchantZip()).isNotEqualTo(first.getDalytranMerchantZip());
-            assertThat(second.getDalytranCardNum()).isNotEqualTo(first.getDalytranCardNum());
+            assertThat(SensitiveValues.fingerprint(second.getDalytranCardNum())).isNotEqualTo(SensitiveValues.fingerprint(first.getDalytranCardNum()));
             assertThat(second.getDalytranOrigTs()).isNotEqualTo(first.getDalytranOrigTs());
             assertThat(second.getDalytranProcTs()).isNotEqualTo(first.getDalytranProcTs());
 

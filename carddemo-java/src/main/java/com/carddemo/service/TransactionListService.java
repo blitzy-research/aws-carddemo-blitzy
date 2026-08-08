@@ -190,8 +190,8 @@ public final class TransactionListService {
     private static final int FIRST_PAGE_NUMBER = 1;
 
     // The browse's ordering is no longer declared here as a sort object. Both directions are part of
-    // the repository's derived query names, so the forward sequence the legacy reads with READNEXT and
-    // the backward sequence it reads with READPREV at line 352 each name their own ordered, bounded
+    // the repository's derived query names, so the forward sequence the legacy reads with its next-record
+    // browse and the backward sequence it reads at line 352 each name their own ordered, bounded
     // read. The key is the transaction identifier in both directions because that is the cluster's own
     // key at offset zero, and the backward rows arrive descending and are assembled into ascending slot
     // order, which is what reproduces the legacy fill from slot ten down to slot one.
@@ -403,7 +403,8 @@ public final class TransactionListService {
         Objects.requireNonNull(command, "command must not be null");
 
         final BrowseState state = new BrowseState();
-        // Lines 97-100: SET ERR-FLG-OFF, TRANSACT-NOT-EOF, NEXT-PAGE-NO, SEND-ERASE-YES.
+        // Lines 97-100 open the paragraph by clearing the error flag, clearing the end-of-file flag,
+        // clearing the next-page flag and raising the erase flag.
         state.errorFlag = false;
         state.endOfFile = false;
         state.nextPageAvailable = false;
@@ -425,8 +426,8 @@ public final class TransactionListService {
             return buildResult(state, command);
         }
 
-        // Line 111: MOVE DFHCOMMAREA TO CARDDEMO-COMMAREA - this restores the whole area, including
-        // the screen's private group, and therefore overwrites the next-page reset made at line 99.
+        // Line 111 restores the whole communication area, including the screen's private group, and
+        // therefore overwrites the next-page reset made at line 99.
         state.context = command.navigationContext();
         state.pageNumber = command.currentPageNumber();
         state.nextPageAvailable = command.nextPageAvailable();
@@ -434,11 +435,10 @@ public final class TransactionListService {
         state.lastTransactionId = blankToNull(command.pageCursor().nextCursorKey());
 
         if (state.context.firstEntry()) {
-            // Line 112: IF NOT CDEMO-PGM-REENTER.
-            // Line 113: SET CDEMO-PGM-REENTER TO TRUE.
+            // A first entry, tested against the re-entry gate at line 112; line 113 sets that gate.
             state.context = state.context.withReEntry();
-            // Line 114: MOVE LOW-VALUES TO the output map, which shares storage with the input map
-            // and so discards every submitted screen field on a first entry.
+            // Line 114 clears the output map to low values. It shares storage with the input map, so
+            // every submitted screen field is discarded on a first entry.
             clearScreenFieldsToLowValues(state);
             // Line 115.
             processEnterKey(state, command);
@@ -449,7 +449,8 @@ public final class TransactionListService {
         } else {
             // Line 118.
             receiveTrnlstScreen(state, command);
-            // Lines 119-134: EVALUATE EIBAID, clause order preserved, WHEN OTHER as the default arm.
+            // Lines 119-134: the attention-key dispatch, clause order preserved, its catch-all as the
+            // default arm.
             switch (command.keyAction()) {
                 case ENTER -> processEnterKey(state, command);
                 // Lines 122-124: nominate the user main menu, then return to it.
@@ -513,7 +514,7 @@ public final class TransactionListService {
      * counterpart here and is recorded as a decision-log entry; the digit test itself is exact.
      */
     private void processEnterKey(final BrowseState state, final TransactionListCommand command) {
-        // Lines 148-182: EVALUATE TRUE over the ten row selectors, first match wins.
+        // Lines 148-182: an ordered evaluation over the ten row selectors, first match wins.
         state.selectionFlag = BLANK;
         state.selectedTransactionId = BLANK;
         int selectedRow = 0;
@@ -530,7 +531,7 @@ public final class TransactionListService {
 
         // Lines 183-204.
         if (isPresent(state.selectionFlag) && isPresent(state.selectedTransactionId)) {
-            // Lines 185-203: EVALUATE CDEMO-CT00-TRN-SEL-FLG, clause order preserved.
+            // Lines 185-203: the selection-flag dispatch, clause order preserved.
             switch (state.selectionFlag) {
                 case SELECTION_VIEW_UPPER, SELECTION_VIEW_LOWER -> {
                     // Lines 186-195: transfer control to the transaction-view program.
@@ -557,7 +558,7 @@ public final class TransactionListService {
 
         // Lines 206-219: the transaction-id filter.
         if (isBlank(state.receivedFilter)) {
-            // Line 207: MOVE LOW-VALUES TO TRAN-ID - browse from the low end of the cluster.
+            // Line 207 positions the browse at the low end of the cluster.
             state.ridfldKey = null;
             state.ridfldHighValues = false;
         } else if (isCobolNumeric(state.receivedFilter)) {
@@ -616,7 +617,7 @@ public final class TransactionListService {
         // Lines 236-240.
         state.ridfldKey = isBlank(state.firstTransactionId) ? null : state.firstTransactionId;
         state.ridfldHighValues = false;
-        // Line 242: SET NEXT-PAGE-YES TO TRUE, with no condition attached.
+        // Line 242 raises the next-page flag, with no condition attached.
         state.nextPageAvailable = true;
         // Line 243.
         state.focusScreenFieldId = FOCUS_SCREEN_FIELD_ID;
@@ -656,7 +657,7 @@ public final class TransactionListService {
         // Lines 259-263.
         if (isBlank(state.lastTransactionId)) {
             state.ridfldKey = null;
-            // Line 260: MOVE HIGH-VALUES TO TRAN-ID.
+            // Line 260 positions the browse at the high end of the cluster.
             state.ridfldHighValues = true;
         } else {
             state.ridfldKey = state.lastTransactionId;
@@ -720,7 +721,8 @@ public final class TransactionListService {
             return;
         }
 
-        // Lines 285-287: IF EIBAID NOT = DFHENTER AND DFHPF7 AND DFHPF3.
+        // Lines 285-287: the guard read, taken for every attention key other than enter, the seventh
+        // program function key and the third.
         if (command.keyAction() != KeyAction.ENTER
                 && command.keyAction() != KeyAction.PFK07
                 && command.keyAction() != KeyAction.PFK03) {
@@ -734,10 +736,11 @@ public final class TransactionListService {
             }
         }
 
-        // Line 295: MOVE 1 TO WS-IDX.
+        // Line 295 starts the forward fill at the top slot.
         int screenRow = FIRST_SCREEN_ROW;
 
-        // Lines 297-303: PERFORM UNTIL WS-IDX >= 11 OR TRANSACT-EOF OR ERR-FLG-ON.
+        // Lines 297-303 fill upward while the slot index is inside the ten rows and neither the
+        // end-of-file flag nor the error flag is raised.
         while (screenRow <= SCREEN_ROW_COUNT && !state.endOfFile && !state.errorFlag) {
             final Transaction record = readnextTransactFile(state);
             if (!state.endOfFile && !state.errorFlag) {
@@ -765,7 +768,7 @@ public final class TransactionListService {
         // Line 322.
         endbrTransactFile(state);
         // Line 324: the page indicator is rendered from the settled page number when the result is built.
-        // Line 325: MOVE SPACE TO the echoed filter field.
+        // Line 325 blanks the echoed filter field.
         state.transactionIdFilterEcho = BLANK;
         LOG.debug("Transaction list assembled a forward page: rule=page-forward pageNumber={}"
                 + " rows={} morePages={}", state.pageNumber, screenRow - FIRST_SCREEN_ROW,
@@ -820,7 +823,8 @@ public final class TransactionListService {
             return;
         }
 
-        // Lines 339-341: IF EIBAID NOT = DFHENTER AND DFHPF8.
+        // Lines 339-341: the guard read, taken for every attention key other than enter and the
+        // eighth program function key.
         if (command.keyAction() != KeyAction.ENTER && command.keyAction() != KeyAction.PFK08) {
             readprevTransactFile(state);
         }
@@ -832,10 +836,11 @@ public final class TransactionListService {
             }
         }
 
-        // Line 349: MOVE 10 TO WS-IDX - the fill starts at the bottom slot.
+        // Line 349 starts the backward fill at the bottom slot.
         int screenRow = SCREEN_ROW_COUNT;
 
-        // Lines 351-357: PERFORM UNTIL WS-IDX <= 0 OR TRANSACT-EOF OR ERR-FLG-ON.
+        // Lines 351-357 fill downward while the slot index is still inside the ten rows and neither
+        // the end-of-file flag nor the error flag is raised.
         while (screenRow >= FIRST_SCREEN_ROW && !state.endOfFile && !state.errorFlag) {
             final Transaction record = readprevTransactFile(state);
             if (!state.endOfFile && !state.errorFlag) {
@@ -913,7 +918,8 @@ public final class TransactionListService {
         if (record == null) {
             return;
         }
-        // Lines 390-445: EVALUATE WS-IDX, clause order preserved, WHEN OTHER CONTINUE as the default.
+        // Lines 390-445: the slot-index dispatch, clause order preserved, its catch-all doing nothing
+        // as the default.
         switch (screenRow) {
             case 1 -> {
                 state.screenRows[screenRow - 1] = record;
@@ -927,7 +933,7 @@ public final class TransactionListService {
                 state.lastTransactionId = record.getTranId();
             }
             default -> {
-                // Lines 443-444: WHEN OTHER CONTINUE - an index outside the ten slots stores nothing.
+                // Lines 443-444: the catch-all - an index outside the ten slots stores nothing.
             }
         }
     }
@@ -953,11 +959,11 @@ public final class TransactionListService {
      * @param screenRow one-based slot index, matching the legacy row index
      */
     private void initializeTranData(final BrowseState state, final int screenRow) {
-        // Lines 452-505: EVALUATE WS-IDX, WHEN OTHER CONTINUE as the default.
+        // Lines 452-505: the slot-index dispatch, its catch-all doing nothing as the default.
         switch (screenRow) {
             case 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 -> state.screenRows[screenRow - 1] = null;
             default -> {
-                // Lines 503-504: WHEN OTHER CONTINUE - an index outside the ten slots blanks nothing.
+                // Lines 503-504: the catch-all - an index outside the ten slots blanks nothing.
             }
         }
     }
@@ -1012,7 +1018,7 @@ public final class TransactionListService {
     private void sendTrnlstScreen(final BrowseState state) {
         // Line 529.
         populateHeaderInfo(state);
-        // Line 531: MOVE WS-MESSAGE TO the screen's error message field.
+        // Line 531 copies the message work field into the screen's error message field.
         state.presentedMessage = state.message;
         // Lines 533-549: SEND MAP, with ERASE when the flag is set and without it otherwise.
         LOG.debug("Transaction list screen presented: rule=send-map erase={} error={}",
@@ -1069,7 +1075,7 @@ public final class TransactionListService {
      * stored twenty-six-character timestamps, which cross this class as the strings they are stored as.
      */
     private void populateHeaderInfo(final BrowseState state) {
-        // Line 569: MOVE FUNCTION CURRENT-DATE.
+        // Line 569 takes the current date and time once, here from the injected clock.
         final LocalDateTime now = LocalDateTime.now(clock);
         // Lines 571-572.
         state.screenTitle01 = messageCatalogService.screenTitle01();
@@ -1122,13 +1128,13 @@ public final class TransactionListService {
         try {
             final SequentialBrowse browse = openBrowse(state, ascending);
             if (browse != null) {
-                // Lines 603-604: WHEN DFHRESP(NORMAL) CONTINUE.
+                // Lines 603-604: the normal-response arm, which does nothing.
                 state.browse = browse;
                 LOG.trace("Transaction list browse opened: rule=startbr ascending={} lowValues={}"
                         + " highValues={}", ascending, state.ridfldKey == null,
                         state.ridfldHighValues);
             } else {
-                // Lines 605-611: WHEN DFHRESP(NOTFND). The error flag is deliberately left off.
+                // Lines 605-611: the record-not-found arm. The error flag is deliberately left off.
                 state.endOfFile = true;
                 state.message = MESSAGE_AT_TOP;
                 state.focusScreenFieldId = FOCUS_SCREEN_FIELD_ID;
@@ -1137,7 +1143,7 @@ public final class TransactionListService {
                 sendTrnlstScreen(state);
             }
         } catch (final DataAccessException failure) {
-            // Lines 612-618: WHEN OTHER.
+            // Lines 612-618: the catch-all arm.
             reportBrowseFailure(state, failure, "STARTBR");
         }
     }
@@ -1161,29 +1167,32 @@ public final class TransactionListService {
      * guard read and gets that response. It is reproduced rather than defended against, because the
      * message the operator sees differs between the two arms.
      *
+     * @param  state the turn's browse state, which supplies the open browse and receives the
+     *               end-of-file flag, the error flag and the message this paragraph sets
      * @return the record read, or {@code null} when the browse is exhausted or the read failed
      */
     private Transaction readnextTransactFile(final BrowseState state) {
         // Lines 626-634.
         try {
             if (state.browse == null) {
-                // The invalid-request response: no browse is open. Falls to WHEN OTHER, lines 646-652.
+                // The invalid-request response: no browse is open. Falls to the catch-all arm, lines
+                // 646-652.
                 reportBrowseFailure(state, null, "READNEXT");
                 return null;
             }
             final Transaction record = state.browse.read();
             if (record != null) {
-                // Lines 637-638: WHEN DFHRESP(NORMAL) CONTINUE.
+                // Lines 637-638: the normal-response arm, which does nothing.
                 return record;
             }
-            // Lines 639-645: WHEN DFHRESP(ENDFILE).
+            // Lines 639-645: the end-of-file arm.
             state.endOfFile = true;
             state.message = MESSAGE_REACHED_BOTTOM;
             state.focusScreenFieldId = FOCUS_SCREEN_FIELD_ID;
             sendTrnlstScreen(state);
             return null;
         } catch (final DataAccessException failure) {
-            // Lines 646-652: WHEN OTHER.
+            // Lines 646-652: the catch-all arm.
             reportBrowseFailure(state, failure, "READNEXT");
             return null;
         }
@@ -1207,29 +1216,31 @@ public final class TransactionListService {
      * backward page arrive in descending order and, once assembled into descending slot positions,
      * present ascending.
      *
+     * @param  state the turn's browse state, which supplies the open backward browse and receives the
+     *               end-of-file flag, the error flag and the message this paragraph sets
      * @return the record read, or {@code null} when the browse is exhausted or the read failed
      */
     private Transaction readprevTransactFile(final BrowseState state) {
         // Lines 660-668.
         try {
             if (state.browse == null) {
-                // The invalid-request response, as on the forward read. Falls to WHEN OTHER.
+                // The invalid-request response, as on the forward read. Falls to the catch-all arm.
                 reportBrowseFailure(state, null, "READPREV");
                 return null;
             }
             final Transaction record = state.browse.read();
             if (record != null) {
-                // Lines 671-672: WHEN DFHRESP(NORMAL) CONTINUE.
+                // Lines 671-672: the normal-response arm, which does nothing.
                 return record;
             }
-            // Lines 673-679: WHEN DFHRESP(ENDFILE).
+            // Lines 673-679: the end-of-file arm.
             state.endOfFile = true;
             state.message = MESSAGE_REACHED_TOP;
             state.focusScreenFieldId = FOCUS_SCREEN_FIELD_ID;
             sendTrnlstScreen(state);
             return null;
         } catch (final DataAccessException failure) {
-            // Lines 680-686: WHEN OTHER.
+            // Lines 680-686: the catch-all arm.
             reportBrowseFailure(state, failure, "READPREV");
             return null;
         }

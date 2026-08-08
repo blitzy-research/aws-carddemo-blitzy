@@ -47,6 +47,7 @@ import com.carddemo.service.SensitiveFieldEncryptionService;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.service.ValidationLookupService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -125,13 +126,17 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  *
  * <h2>Two shipped behaviours that are deliberately asserted as shipped</h2>
  *
- * <p>First, <strong>the four regulated customer values are withheld on the view turn for every
- * caller.</strong> The boundary holds one constant view authority and it is an unprivileged one, so the
- * national identifier, the birth date, the government-issued identifier and the transfer-account
- * identifier are published as masks of the same width the revealed values occupy. That is a deliberate,
- * documented divergence from the estate, which showed those values to any signed-on operator, and it is
- * recorded in {@code docs/decision-log.md}. This specification asserts the shipped behaviour rather than
- * the legacy one, and states the divergence here so a reader is not misled.
+ * <p>First, <strong>the four regulated customer values are withheld on the view turn from every caller
+ * that is not an administrator, and revealed to one that is.</strong> The boundary derives that authority
+ * from the established identity, by the same derivation the update turn reads, so the national identifier,
+ * the birth date, the government-issued identifier and the transfer-account identifier are published as
+ * masks of the same width the revealed values occupy for an ordinary caller and in the clear for an
+ * administrator. Withholding them from an ordinary caller is a deliberate, documented divergence from the
+ * estate, which showed those values to any signed-on operator, and it is recorded in
+ * {@code docs/decision-log.md}. The boundary previously held one <em>constant</em> unprivileged authority
+ * here, which masked them for an administrator too while the update turn revealed them - the two screens
+ * disagreeing about the same four values of the same record. This specification asserts the shipped
+ * behaviour rather than the legacy one, and states the divergence here so a reader is not misled.
  *
  * <p>Second, <strong>the update screen's two lock-failure texts stay distinct.</strong> The program has
  * one for the account record and one for the customer record, where the sibling card-update program has
@@ -1031,6 +1036,26 @@ class AccountControllerIT extends AbstractPostgresIT {
     }
 
     /**
+     * Returns a raw body with the sealed concurrency token's value replaced by a fixed stand-in.
+     *
+     * <p>Used only where a body is scanned for text the module must never publish. The token is an
+     * opaque envelope over a random initialisation vector, so the characters of its encoding are
+     * effectively drawn at random from the encoding alphabet and can spell any short fragment by
+     * chance - the two-character job-control marker among them. Scanning the envelope for module or
+     * legacy vocabulary therefore measures the cipher's output rather than the response contract, and
+     * would report a disclosure that is not one. The envelope itself is not left unasserted: a
+     * separate test refuses to publish a sealed value on either screen, and the token's own contract
+     * is asserted wherever a turn carries it forward.
+     *
+     * @param  body the raw response body
+     * @return the same body with the token's value elided, or the body unchanged when it carries no
+     *         token
+     */
+    private static String bodyWithoutTheSealedToken(final String body) {
+        return body.replaceAll("(\"" + CONCURRENCY_TOKEN + "\":\")[^\"]*(\")", "$1elided$2");
+    }
+
+    /**
      * Reads a textual component of a body, distinguishing absent from present-and-null.
      *
      * @param  body the parsed body
@@ -1240,13 +1265,14 @@ class AccountControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("withholds the four regulated values at the widths their revealed forms occupy")
-        void withholdsTheFourRegulatedValues() throws Exception {
-            // A DOCUMENTED DIVERGENCE, ASSERTED AS SHIPPED. The boundary holds one view authority and it
-            // is an unprivileged one, so these four are withheld for every caller - where the estate
-            // showed them to any signed-on operator. Recorded in docs/decision-log.md. The masks are the
-            // width of the values they replace so no client lays the screen out differently.
-            final JsonNode screen = viewedScreen(SEEDED_ACCOUNT_ID);
+        @DisplayName("withholds the four regulated values from an ordinary session at the widths their "
+                + "revealed forms occupy")
+        void withholdsTheFourRegulatedValuesFromAnOrdinarySession() throws Exception {
+            // A DOCUMENTED DIVERGENCE, ASSERTED AS SHIPPED. An ordinary caller receives stand-ins for
+            // these four, where the estate showed them to any signed-on operator. Recorded in
+            // docs/decision-log.md. The masks are the width of the values they replace so no client lays
+            // the screen out differently.
+            final JsonNode screen = bodyOf(viewTurn(SEEDED_ACCOUNT_ID, RE_ENTRY, ordinarySession()));
 
             assertThat(textOf(screen, "dateOfBirth"))
                     .as("the birth date is withheld at its own width")
@@ -1261,6 +1287,75 @@ class AccountControllerIT extends AbstractPostgresIT {
                     .isNull();
             assertThat(rawBodyOf(viewTurn(SEEDED_ACCOUNT_ID, RE_ENTRY, administrativeSession())))
                     .as("and no sealed column is ever published as its envelope")
+                    .doesNotContain(ENVELOPE_PREFIX);
+        }
+
+        @Test
+        @DisplayName("reveals the same four values to an administrator, because the two screens are the "
+                + "same regulated data behind the same policy and must not answer differently")
+        void revealsTheFourRegulatedValuesToAnAdministrator() throws Exception {
+            // The boundary used to hold one CONSTANT view authority, permanently unprivileged and carrying
+            // no user type, while the update turn derived its authority from the principal. An
+            // administrator therefore received masks here and cleartext there for the same four values of
+            // the same record - a policy that answers by which screen asked is not a policy. Both turns
+            // now read one derivation, and this is the assertion that would fail if the constant returned.
+            final JsonNode screen = viewedScreen(OWNED_ACCOUNT_ID);
+
+            assertThat(SensitiveValues.fingerprint(textOf(screen, "governmentIssuedId")))
+                    .as("the identifier itself, opened from its sealed column, not a stand-in")
+                    .isEqualTo(SensitiveValues.fingerprint(OWNED_GOVERNMENT_IDENTIFIER))
+                    .isNotEqualTo(SensitiveValues.fingerprint(maskOfWidth(GOVERNMENT_ID_WIDTH)));
+            assertThat(textOf(screen, "dateOfBirth"))
+                    .as("and the birth date, which must equal the stored value rather than merely differ "
+                            + "from the mask")
+                    .isEqualTo(AccountControllerIT.this.customers.findById(OWNED_CUSTOMER_ID)
+                            .orElseThrow().getCustDob())
+                    .isNotEqualTo(maskOfWidth(BIRTH_DATE_WIDTH));
+            assertThat(textOf(screen, "ssn").contains(OWNED_NATIONAL_IDENTIFIER.substring(0, 3)))
+                    .as("the national identifier reaches this screen as the single dashed item the view "
+                            + "map declared, in place of the three positions the update map declares, and "
+                            + "it carries the reserved row's digits")
+                    .isTrue();
+            assertThat(textOf(screen, "ssn").contains(MASK_CHARACTER))
+                    .as("and no part of it is stood in for")
+                    .isFalse();
+            assertThat(rawBodyOf(viewTurn(OWNED_ACCOUNT_ID, RE_ENTRY, administrativeSession())))
+                    .as("and revealing never publishes the envelope a value is stored in")
+                    .doesNotContain(ENVELOPE_PREFIX);
+        }
+
+        @Test
+        @DisplayName("decides the reveal from the established identity alone, so an ordinary caller that "
+                + "echoes back an administrative user type still receives stand-ins")
+        void decidesTheRevealFromTheEstablishedIdentityAlone() throws Exception {
+            // The echoed communication area is a client-supplied value. Were it consulted, a caller would
+            // grant itself the reveal by typing one character into a request body, and an authorization
+            // decided by request content is not an authorization. The forged record is well formed and
+            // claims the administrative type and an administrative identifier, so the only reason the
+            // screen can withhold is that the decision came from the token.
+            final MvcResult forged = AccountControllerIT.this.client.perform(
+                            MockMvcRequestBuilders.post(AccountController.ACCOUNT_VIEW_PATH)
+                                    .accept(MediaType.APPLICATION_JSON)
+                                    .characterEncoding(StandardCharsets.UTF_8)
+                                    .param(AccountController.ACCOUNT_ID_PARAM, OWNED_ACCOUNT_ID)
+                                    .header(HttpHeaders.AUTHORIZATION, ordinarySession())
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content(JSON.writeValueAsString(Map.of(
+                                            PROGRAM_CONTEXT, RE_ENTRY,
+                                            "userType", UserType.ADMIN.getCode(),
+                                            "userId", "ADMIN001"))))
+                    .andReturn();
+
+            final JsonNode screen = bodyOf(forged);
+
+            assertThat(textOf(screen, "governmentIssuedId"))
+                    .as("a forged user type in the echoed record grants nothing")
+                    .isEqualTo(maskOfWidth(GOVERNMENT_ID_WIDTH));
+            assertThat(textOf(screen, "dateOfBirth"))
+                    .as("nor does a forged identifier alongside it")
+                    .isEqualTo(maskOfWidth(BIRTH_DATE_WIDTH));
+            assertThat(rawBodyOf(forged))
+                    .as("and nothing sealed is published on the refused-reveal path either")
                     .doesNotContain(ENVELOPE_PREFIX);
         }
 
@@ -2782,7 +2877,7 @@ class AccountControllerIT extends AbstractPostgresIT {
 
             final MvcResult result = updateTurn(screen, textOf(presented, CONCURRENCY_TOKEN), RE_ENTRY,
                     KeyAction.ENTER, administrativeSession());
-            final String body = rawBodyOf(result);
+            final String body = bodyWithoutTheSealedToken(rawBodyOf(result));
 
             assertThat(body)
                     .as("no exception surface and no persistence surface")
@@ -2843,11 +2938,13 @@ class AccountControllerIT extends AbstractPostgresIT {
 
             final JsonNode updateScreen = fetchedScreen();
 
-            assertThat(textOf(updateScreen, "governmentIssuedId"))
+            assertThat(SensitiveValues.fingerprint(textOf(updateScreen, "governmentIssuedId")))
                     .as("and the update screen publishes the identifier itself to a caller entitled to "
                             + "see it, not the envelope it is stored in")
-                    .isEqualTo(OWNED_GOVERNMENT_IDENTIFIER)
-                    .doesNotStartWith(ENVELOPE_PREFIX);
+                    .isEqualTo(SensitiveValues.fingerprint(OWNED_GOVERNMENT_IDENTIFIER));
+            assertThat(textOf(updateScreen, "governmentIssuedId").startsWith(ENVELOPE_PREFIX))
+                    .as("and not the envelope it is stored in")
+                    .isFalse();
         }
 
         @Test
@@ -2946,4 +3043,3 @@ class AccountControllerIT extends AbstractPostgresIT {
         }
     }
 }
-

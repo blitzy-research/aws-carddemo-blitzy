@@ -149,10 +149,8 @@ class JobSubmissionExceptionTest {
      */
     private static final int SENTINEL_CARD_ORDINAL = 17;
 
-    /** A one-based ordinal in the middle of the image, used as a carried point of failure. */
     private static final int FAILING_CARD_ORDINAL = 9;
 
-    /** The first one-based ordinal in the image. */
     private static final int FIRST_CARD_ORDINAL = 1;
 
     /**
@@ -161,7 +159,6 @@ class JobSubmissionExceptionTest {
      */
     private static final String RESPONSE_CODE = "0012";
 
-    /** A reason code carrying a leading zero, for the same purpose. */
     private static final String REASON_CODE = "0080";
 
     /**

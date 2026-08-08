@@ -17,6 +17,7 @@
 package com.carddemo.service;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -52,6 +53,7 @@ import com.carddemo.domain.enums.KeyAction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -183,16 +185,13 @@ final class TransactionAddServiceTest {
      */
     private static final String EXPECTED_ONLINE_TIMESTAMP = "2022-06-10 19:27:53.000000";
 
-    /** Declared width of both record timestamp fields, from {@code app/cpy/CVTRA05Y.cpy}. */
     private static final int TIMESTAMP_WIDTH = 26;
 
     /** Zero-based index of the online form's date/time separator, which is a space and not a hyphen. */
     private static final int DATE_TIME_SEPARATOR_INDEX = 10;
 
-    /** Zero-based index of the online form's fraction separator. */
     private static final int FRACTION_SEPARATOR_INDEX = 19;
 
-    /** Zero-based index of the first digit of the six-digit fraction. */
     private static final int FRACTION_INDEX = 20;
 
     /** Zero-based index of the colon between hour and minute, which the batch form spells as a dot. */
@@ -204,13 +203,10 @@ final class TransactionAddServiceTest {
     /** The six-zero fraction the legacy construction forces, whatever the clock carries. */
     private static final String ZERO_FRACTION = "000000";
 
-    /** The header date the pinned instant yields, as {@code MM/DD/YY} with the legacy two-digit year. */
     private static final String EXPECTED_HEADER_DATE = "06/10/22";
 
-    /** The header time the pinned instant yields, as {@code HH:MM:SS}. */
     private static final String EXPECTED_HEADER_TIME = "19:27:53";
 
-    /** Declared width of the two {@code PIC X(50)} common messages of the catalogue. */
     private static final int COMMON_MESSAGE_WIDTH = 50;
 
     /**
@@ -224,50 +220,35 @@ final class TransactionAddServiceTest {
     /** A screen title at the catalogue's 40-character width, standing in for the real catalogue value. */
     private static final String TITLE01 = "AWS Mainframe Modernization" + " ".repeat(13);
 
-    /** The second screen title, likewise at 40 characters. */
     private static final String TITLE02 = "CardDemo" + " ".repeat(32);
 
     /** The declared width of the outbound message field, into which the 80-character work field moves. */
     private static final int ERROR_MESSAGE_WIDTH = 78;
 
-    /** The transaction identifier this screen re-arms, from {@code WS-TRANID} at line 37. */
     private static final String RE_ARMED_TRANSACTION_ID = "CT02";
 
-    /** The program name this screen stamps, from {@code WS-PGMNAME} at line 36. */
     private static final String PROGRAM_NAME = "COTRN02C";
 
     /** The dangling CICS program definition at {@code app/csd/CARDDEMO.CSD} line 211 with no member. */
     private static final String DANGLING_PROGRAM_NAME = "COCRDSEC";
 
-    // ==============================================================================================
-    // Screen input fixtures
-    // ==============================================================================================
-
-    /** A well-formed eleven-digit account key. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    /** A well-formed sixteen-digit card key. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** The nine-digit customer key the cross-reference row carries. */
     private static final String CUSTOMER_ID = "000000011";
 
-    /** A well-formed amount lexeme: a mandatory sign, eight digits, a point and two digits. */
     private static final String AMOUNT = "-00000100.00";
 
-    /** The origination date the operator keys, ten characters. */
     private static final String ORIG_DATE = "2022-07-19";
 
-    /** The processing date the operator keys - a <em>separate</em> field, ten characters. */
     private static final String PROC_DATE = "2022-07-20";
 
     /** The transaction source as keyed: eight characters into a ten-character field. */
     private static final String SOURCE = "POS TERM";
 
-    /** The transaction source as stored: the keyed value plus the two spaces the field pads with. */
     private static final String STORED_SOURCE = SOURCE + " ".repeat(2);
 
-    /** Declared width of the record source field. */
     private static final int SOURCE_WIDTH = 10;
 
     /** The description as keyed, carrying embedded spaces that must survive untouched. */
@@ -276,22 +257,23 @@ final class TransactionAddServiceTest {
     /** The merchant identifier as keyed: nine digits, because the field is tested for all digits. */
     private static final String MERCHANT_ID = "000000001";
 
-    /** A merchant name carrying an embedded space. */
     private static final String MERCHANT_NAME = "MERCHANT NAME";
 
-    /** A merchant city carrying an embedded space. */
     private static final String MERCHANT_CITY = "MERCHANT CITY";
 
     /** A merchant postal code, five characters into a ten-character field. */
     private static final String MERCHANT_ZIP = "10001";
 
-    /** The first identifier an empty transaction master yields: sixteen digits, zero filled. */
     private static final String FIRST_IDENTIFIER = "0000000000000001";
 
-    /** Declared width of the record key. */
     private static final int TRAN_ID_WIDTH = 16;
 
-    /** The four fragments of the success text, composed exactly as the source composes them. */
+    /** Declared width of {@code ACTIDINI PIC X(11)} in app/cpy-bms/COTRN02.CPY. */
+    private static final int ACCOUNT_ID_WIDTH = 11;
+
+    /** The account key field as the screen carries it when nothing was transmitted: blank-filled. */
+    private static final String BLANK_ACCOUNT_ID_FIELD = " ".repeat(ACCOUNT_ID_WIDTH);
+
     private static final String SUCCESS_MESSAGE = "Transaction added successfully. "
             + " Your Tran ID is " + FIRST_IDENTIFIER + ".";
 
@@ -299,37 +281,26 @@ final class TransactionAddServiceTest {
     // The message literals, in source order. Casing, spacing and dot counts are contractual.
     // ==============================================================================================
 
-    /** Line 178. */
     private static final String MSG_CONFIRM_TO_ADD = "Confirm to add this transaction...";
 
-    /** Line 184. */
     private static final String MSG_INVALID_CONFIRM = "Invalid value. Valid values are (Y/N)...";
 
-    /** Line 199. */
     private static final String MSG_ACCOUNT_ID_NOT_NUMERIC = "Account ID must be Numeric...";
 
-    /** Line 213. */
     private static final String MSG_CARD_NUMBER_NOT_NUMERIC = "Card Number must be Numeric...";
 
-    /** Line 226. */
     private static final String MSG_KEY_FIELD_REQUIRED = "Account or Card Number must be entered...";
 
-    /** Line 254. */
     private static final String MSG_TYPE_CD_EMPTY = "Type CD can NOT be empty...";
 
-    /** Line 272. */
     private static final String MSG_DESCRIPTION_EMPTY = "Description can NOT be empty...";
 
-    /** Line 278. */
     private static final String MSG_AMOUNT_EMPTY = "Amount can NOT be empty...";
 
-    /** Line 284. */
     private static final String MSG_ORIG_DATE_EMPTY = "Orig Date can NOT be empty...";
 
-    /** Line 290. */
     private static final String MSG_PROC_DATE_EMPTY = "Proc Date can NOT be empty...";
 
-    /** Line 325. */
     private static final String MSG_TYPE_CD_NOT_NUMERIC = "Type CD must be Numeric...";
 
     /** Line 345. No trailing dots, exactly as the source writes it. */
@@ -347,13 +318,10 @@ final class TransactionAddServiceTest {
     /** Line 421. The lower-case {@code date} is deliberate. */
     private static final String MSG_PROC_DATE_INVALID = "Proc Date - Not a valid date...";
 
-    /** Line 432. */
     private static final String MSG_MERCHANT_ID_NOT_NUMERIC = "Merchant ID must be Numeric...";
 
-    /** Line 593. */
     private static final String MSG_ACCOUNT_ID_NOT_FOUND = "Account ID NOT found...";
 
-    /** Line 626. */
     private static final String MSG_CARD_NUMBER_NOT_FOUND = "Card Number NOT found...";
 
     /** Line 633. The hash and the space before it are part of the literal. */
@@ -365,14 +333,12 @@ final class TransactionAddServiceTest {
     /** Line 738. The legacy spelling {@code exist} is contractual and is not corrected. */
     private static final String MSG_TRAN_ID_ALREADY_EXISTS = "Tran ID already exist...";
 
-    /** Line 745. */
     private static final String MSG_UNABLE_TO_ADD = "Unable to Add Transaction...";
 
     // ==============================================================================================
     // The two four-character acceptance-test codes, compared as text and never parsed
     // ==============================================================================================
 
-    /** The severity that accepts outright, lines 397 and 417. */
     private static final String ACCEPTED_SEVERITY = "0000";
 
     /** A non-zero severity, which alone decides nothing. */
@@ -384,38 +350,28 @@ final class TransactionAddServiceTest {
     /** Any other message number, which with a non-zero severity is an error. */
     private static final String REJECTED_MESSAGE_NUMBER = "2508";
 
-    /** The message number a successful validation reports. */
     private static final String SUCCESS_MESSAGE_NUMBER = "0000";
 
     // ==============================================================================================
     // Screen field identifiers, the cursor targets of the corresponding MOVE -1
     // ==============================================================================================
 
-    /** {@code ACTIDIN}. */
     private static final String FIELD_ACCOUNT_ID = "ACTIDIN";
 
-    /** {@code CARDNIN}. */
     private static final String FIELD_CARD_NUMBER = "CARDNIN";
 
-    /** {@code TTYPCD}. */
     private static final String FIELD_TYPE_CD = "TTYPCD";
 
-    /** {@code TDESC}. */
     private static final String FIELD_DESCRIPTION = "TDESC";
 
-    /** {@code TRNAMT}. */
     private static final String FIELD_AMOUNT = "TRNAMT";
 
-    /** {@code TORIGDT}. */
     private static final String FIELD_ORIG_DATE = "TORIGDT";
 
-    /** {@code TPROCDT}. */
     private static final String FIELD_PROC_DATE = "TPROCDT";
 
-    /** {@code MID}. */
     private static final String FIELD_MERCHANT_ID = "MID";
 
-    /** {@code CONFIRM}. */
     private static final String FIELD_CONFIRM = "CONFIRM";
 
     // ==============================================================================================
@@ -440,7 +396,6 @@ final class TransactionAddServiceTest {
     @Mock
     private OnlineTransactionBoundary transactionBoundary;
 
-    /** The service under test, built on the pinned clock. */
     private TransactionAddService service;
 
     @BeforeEach
@@ -486,49 +441,41 @@ final class TransactionAddServiceTest {
                 resultText, ORIG_DATE, DateFormat.YYYY_MM_DD.getValue());
     }
 
-    /** @return a block reporting outright acceptance: severity {@code 0000} */
     private static DateValidationService.SubprogramResult acceptedBlock() {
         return resultBlock(DateValidationService.DateFeedback.DATE_IS_VALID, ACCEPTED_SEVERITY,
                 SUCCESS_MESSAGE_NUMBER, "Date is valid  ");
     }
 
-    /** @return a block carrying a non-zero severity with the tolerated message number {@code 2513} */
     private static DateValidationService.SubprogramResult toleratedBlock() {
         return resultBlock(DateValidationService.DateFeedback.UNSUPPORTED_RANGE, ERROR_SEVERITY,
                 TOLERATED_MESSAGE_NUMBER, "Unsupp. Range  ");
     }
 
-    /** @return a block carrying the same non-zero severity with a message number that is not tolerated */
     private static DateValidationService.SubprogramResult rejectedBlock() {
         return resultBlock(DateValidationService.DateFeedback.BAD_DATE_VALUE, ERROR_SEVERITY,
                 REJECTED_MESSAGE_NUMBER, "Datevalue error");
     }
 
-    /** Stubs both date-validation call sites to answer with the same block. */
     private void datesAnswer(final DateValidationService.SubprogramResult block) {
         when(dateValidationService.validateDate(anyString(), any(DateFormat.class)))
                 .thenReturn(block);
     }
 
-    /** Stubs the origination site with the first block and the processing site with the second. */
     private void datesAnswer(final DateValidationService.SubprogramResult origination,
             final DateValidationService.SubprogramResult processing) {
         when(dateValidationService.validateDate(anyString(), any(DateFormat.class)))
                 .thenReturn(origination, processing);
     }
 
-    /** @return the cross-reference row the fixture account resolves to */
     private static CardCrossReference crossReferenceRow() {
         return new CardCrossReference(CARD_NUMBER, CUSTOMER_ID, ACCOUNT_ID);
     }
 
-    /** Stubs the alternate-index read so the supplied account key resolves the card number. */
     private void accountResolves() {
         when(cardCrossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
                 .thenReturn(Optional.of(crossReferenceRow()));
     }
 
-    /** Stubs the base-cluster read so the supplied card key resolves the account identifier. */
     private void cardResolves() {
         when(cardCrossReferenceRepository.findById(CARD_NUMBER))
                 .thenReturn(Optional.of(crossReferenceRow()));
@@ -548,7 +495,6 @@ final class TransactionAddServiceTest {
         });
     }
 
-    /** Fails the independent unit at commit, which is what a rolled-back write looks like to a caller. */
     private void boundaryFailsAfterRunning(final RuntimeException failure) {
         when(transactionBoundary.<Transaction>execute(any())).thenAnswer(invocation -> {
             final Supplier<Transaction> unit = invocation.getArgument(0);
@@ -567,7 +513,6 @@ final class TransactionAddServiceTest {
         when(transactionRepository.findAll(any(Pageable.class))).thenReturn(pageOf(highestKey));
     }
 
-    /** Stubs the insert to hand back exactly what it was given, as a flush does. */
     private void insertSucceeds() {
         when(transactionRepository.insertAndFlush(any(Transaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -596,13 +541,11 @@ final class TransactionAddServiceTest {
         return new PageImpl<>(rows, PageRequest.of(0, 1), rows.size());
     }
 
-    /** Stubs both screen titles, for the tests that assert the header the send paragraph populates. */
     private void catalogueTitlesAvailable() {
         when(messageCatalogService.screenTitle01()).thenReturn(TITLE01);
         when(messageCatalogService.screenTitle02()).thenReturn(TITLE02);
     }
 
-    /** @return a navigation state reading as this screen submitting back to itself */
     private static ScreenNavigationState reSubmission() {
         return new ScreenNavigationState(RE_ARMED_TRANSACTION_ID, PROGRAM_NAME,
                 RE_ARMED_TRANSACTION_ID, PROGRAM_NAME, "USER0001", "U",
@@ -610,7 +553,6 @@ final class TransactionAddServiceTest {
                 null, "COTRN2A", "COTRN02");
     }
 
-    /** @return a navigation state reading as a first entry onto this screen */
     private static ScreenNavigationState firstEntry() {
         return reSubmission().withFirstEntry();
     }
@@ -627,7 +569,6 @@ final class TransactionAddServiceTest {
                 MERCHANT_CITY, MERCHANT_ZIP, confirm, null, KeyAction.ENTER, reSubmission());
     }
 
-    /** @return the canonical affirmative turn, which inserts */
     private static TransactionAddService.TransactionAddScreenInput confirmedTurn() {
         return validTurn("Y");
     }
@@ -818,10 +759,6 @@ final class TransactionAddServiceTest {
                 .orElseThrow();
     }
 
-    // ==============================================================================================
-    // Construction
-    // ==============================================================================================
-
     @Nested
     @DisplayName("construction: all seven collaborators are mandatory")
     final class ConstructionContract {
@@ -872,10 +809,6 @@ final class TransactionAddServiceTest {
                     transactionBoundary, dateValidationService, navigationService);
         }
     }
-
-    // ==============================================================================================
-    // POPULATE-HEADER-INFO line 552, and the online 26-character timestamp of CSDAT01Y lines 42 to 55
-    // ==============================================================================================
 
     @Nested
     @DisplayName("POPULATE-HEADER-INFO line 552: the online 26-character timestamp")
@@ -1007,10 +940,6 @@ final class TransactionAddServiceTest {
                     () -> assertThat(TestDataFactory.TRANSACTION.recordLength()).isEqualTo(350));
         }
     }
-
-    // ==============================================================================================
-    // The two date-validation call sites at lines 393 and 413, and the two-level acceptance test
-    // ==============================================================================================
 
     @Nested
     @DisplayName("VALIDATE-INPUT-DATA-FIELDS lines 389 to 427: the severity and message-number pair")
@@ -1173,10 +1102,6 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // VALIDATE-INPUT-KEY-FIELDS line 193, READ-CXACAIX-FILE line 576, READ-CCXREF-FILE line 609
-    // ==============================================================================================
-
     /**
      * The two cross-reference reads, and the relationship resolution they stand for.
      *
@@ -1234,12 +1159,12 @@ final class TransactionAddServiceTest {
             final Transaction stored = insertedTransaction(confirmedTurn());
 
             assertAll(
-                    () -> assertThat(stored.getTranCardNum())
-                            .isEqualTo(candidates.get(0).getXrefCardNum()),
-                    () -> assertThat(stored.getTranCardNum())
-                            .isNotEqualTo(candidates.get(1).getXrefCardNum()),
-                    () -> assertThat(stored.getTranCardNum())
-                            .isNotEqualTo(candidates.get(2).getXrefCardNum()));
+                    () -> assertThat(SensitiveValues.fingerprint(stored.getTranCardNum()))
+                            .isEqualTo(SensitiveValues.fingerprint(candidates.get(0).getXrefCardNum())),
+                    () -> assertThat(SensitiveValues.fingerprint(stored.getTranCardNum()))
+                            .isNotEqualTo(SensitiveValues.fingerprint(candidates.get(1).getXrefCardNum())),
+                    () -> assertThat(SensitiveValues.fingerprint(stored.getTranCardNum()))
+                            .isNotEqualTo(SensitiveValues.fingerprint(candidates.get(2).getXrefCardNum())));
             verify(cardCrossReferenceRepository, never()).findByXrefAcctId(anyString());
         }
 
@@ -1292,7 +1217,8 @@ final class TransactionAddServiceTest {
             final ArgumentCaptor<Transaction> written = ArgumentCaptor.forClass(Transaction.class);
             verify(transactionRepository).insertAndFlush(written.capture());
             assertAll(
-                    () -> assertThat(written.getValue().getTranCardNum()).isEqualTo(CARD_NUMBER),
+                    () -> assertThat(SensitiveValues.fingerprint(written.getValue().getTranCardNum()))
+                            .isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER)),
                     () -> assertThat(result.transactionAdded()).isTrue());
             verify(cardCrossReferenceRepository, never()).findById(anyString());
         }
@@ -1311,7 +1237,8 @@ final class TransactionAddServiceTest {
 
             assertAll(
                     () -> assertThat(result.screen().accountId()).isEqualTo(ACCOUNT_ID),
-                    () -> assertThat(result.screen().cardNumber()).isEqualTo(CARD_NUMBER),
+                    () -> assertThat(SensitiveValues.fingerprint(result.screen().cardNumber()))
+                            .isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER)),
                     () -> assertThat(result.message()).isEqualTo(MSG_CONFIRM_TO_ADD));
             verify(cardCrossReferenceRepository, never())
                     .findFirstByXrefAcctIdOrderByXrefCardNumAsc(anyString());
@@ -1400,10 +1327,6 @@ final class TransactionAddServiceTest {
                             .isEqualTo(36));
         }
     }
-
-    // ==============================================================================================
-    // ADD-TRANSACTION line 442 with STARTBR line 642, READPREV line 673 and ENDBR line 702
-    // ==============================================================================================
 
     /**
      * Identifier allocation: the highest existing key plus one, rendered as a sixteen-character
@@ -1614,7 +1537,12 @@ final class TransactionAddServiceTest {
         void aDuplicateRaisedByTheFlushIsReportedAfterRollback() {
             accountResolves();
             datesAnswer(acceptedBlock());
-            boundaryFailsAfterRunning(new DataIntegrityViolationException("duplicate key"));
+            // The shape a real duplicate has, measured against PostgreSQL in
+            // RecordWriterDuplicateClassificationIT: the framework translates a JPA constraint failure
+            // to the BROAD integrity type, and what identifies it as a refused key rather than a
+            // foreign-key, not-null or check refusal is the complete SQL state the driver reported.
+            boundaryFailsAfterRunning(new DataIntegrityViolationException("duplicate key",
+                    new SQLException("duplicate key value violates unique constraint", "23505")));
             highestTransactionIs(null);
             insertSucceeds();
 
@@ -1645,10 +1573,6 @@ final class TransactionAddServiceTest {
                     () -> assertThat(result.errorFlag()).isTrue());
         }
     }
-
-    // ==============================================================================================
-    // Field-level fidelity: fixed widths, exact decimals, and values carried byte for byte
-    // ==============================================================================================
 
     @Nested
     @DisplayName("ADD-TRANSACTION lines 450 to 465: fixed-width and exact-decimal fidelity")
@@ -1802,10 +1726,6 @@ final class TransactionAddServiceTest {
                     () -> assertThat(stored.getMerchantId()).isEqualTo(MERCHANT_ID));
         }
     }
-
-    // ==============================================================================================
-    // The message contract and the two-state per-field error surface
-    // ==============================================================================================
 
     @Nested
     @DisplayName("VALIDATE-INPUT-DATA-FIELDS lines 251 to 320 and the message contract")
@@ -2021,7 +1941,6 @@ final class TransactionAddServiceTest {
         void aTurnWithSeveralFailingFieldsReportsExactlyOne() {
             accountResolves();
 
-            // The type code, the amount and both dates are blank together.
             final TransactionAddService.TransactionAddResult result = service.processTransactionAdd(
                     withDataFields(withCodes(confirmedTurn(), null, null), null, null, null));
 
@@ -2107,10 +2026,6 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // Interaction ordering and discipline
-    // ==============================================================================================
-
     @Nested
     @DisplayName("WRITE-TRANSACT-FILE line 711: interaction order and discipline")
     final class InteractionOrderContract {
@@ -2178,10 +2093,6 @@ final class TransactionAddServiceTest {
                     transactionBoundary, dateValidationService);
         }
     }
-
-    // ==============================================================================================
-    // MAIN-PARA line 107, RETURN-TO-PREV-SCREEN line 500 and the route contract
-    // ==============================================================================================
 
     @Nested
     @DisplayName("MAIN-PARA line 107 and RETURN-TO-PREV-SCREEN line 500: routing without forwarding")
@@ -2320,10 +2231,6 @@ final class TransactionAddServiceTest {
             verifyNoInteractions(dateValidationService, transactionBoundary);
         }
     }
-
-    // ==============================================================================================
-    // CLEAR-CURRENT-SCREEN 754, INITIALIZE-ALL-FIELDS 762, COPY-LAST-TRAN-DATA 471, RECEIVE 539
-    // ==============================================================================================
 
     @Nested
     @DisplayName("CLEAR-CURRENT-SCREEN 754, INITIALIZE-ALL-FIELDS 762, COPY-LAST-TRAN-DATA 471")
@@ -2471,10 +2378,6 @@ final class TransactionAddServiceTest {
         }
     }
 
-    // ==============================================================================================
-    // Absent and boundary input, and the whole public surface of the four nested records
-    // ==============================================================================================
-
     @Nested
     @DisplayName("absent and boundary input, and the whole reported surface")
     final class AbsentInputAndReportedSurfaceContract {
@@ -2506,8 +2409,56 @@ final class TransactionAddServiceTest {
         @DisplayName("a blank, a short and an over-long account key are all answered by a message and a "
                 + "cursor position, never by an index failure")
         void blankShortAndOverLongAccountKeysAreAnsweredWithAMessage(final String accountId) {
-            assertThatNoException().isThrownBy(() -> service.processTransactionAdd(
-                    withKeys(confirmedTurn(), accountId, null)));
+            final TransactionAddService.TransactionAddResult result =
+                    service.processTransactionAdd(withKeys(confirmedTurn(), accountId, null));
+
+            // The receive paragraph bounds the field to its declared width before anything tests it, so a
+            // twenty-two character submission is an eleven character key and the excess is simply gone.
+            // The first eleven characters of the over-long value are the fixture key, so that case reaches
+            // the cross-reference lookup; the blank and all-space cases never leave the key edit.
+            final String boundedKey = accountId.length() > ACCOUNT_ID_WIDTH
+                    ? accountId.substring(0, ACCOUNT_ID_WIDTH)
+                    : accountId;
+            final boolean keyReachesTheLookup = !boundedKey.isBlank();
+
+            assertAll(
+                    () -> assertThat(result.errorFlag())
+                            .as("every one of the three is refused")
+                            .isTrue(),
+                    () -> assertThat(result.transactionAdded()).isFalse(),
+                    () -> assertThat(result.transaction())
+                            .as("nothing is written on a refused turn")
+                            .isNull(),
+                    () -> assertThat(result.focusField())
+                            .as("the cursor lands on the account key, which is the field at fault")
+                            .isEqualTo(FIELD_ACCOUNT_ID),
+                    () -> assertThat(result.message())
+                            .as("a key that survives the bound is looked up and not found; one that does "
+                                    + "not is the key-required message")
+                            .isEqualTo(keyReachesTheLookup
+                                    ? MSG_ACCOUNT_ID_NOT_FOUND : MSG_KEY_FIELD_REQUIRED),
+                    () -> assertThat(result.fieldErrors()).singleElement()
+                            .extracting(ValidationException.FieldError::field)
+                            .isEqualTo("accountId"),
+                    () -> assertThat(result.screen().accountId())
+                            .as("the screen carries the field at its declared width: the bounded key "
+                                    + "when one survived, and a blank-filled field when none did - "
+                                    + "never the submitted characters")
+                            .isEqualTo(keyReachesTheLookup ? ACCOUNT_ID : BLANK_ACCOUNT_ID_FIELD),
+                    () -> assertThat(encodedWidth(result.screen().accountId()))
+                            .as("a fixed-width field is returned at its width, neither trimmed nor "
+                                    + "overflowing")
+                            .isEqualTo(ACCOUNT_ID_WIDTH));
+
+            if (keyReachesTheLookup) {
+                verify(cardCrossReferenceRepository)
+                        .findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID);
+                verifyNoInteractions(transactionRepository, transactionBoundary,
+                        dateValidationService);
+            } else {
+                verifyNoInteractions(transactionRepository, cardCrossReferenceRepository,
+                        transactionBoundary, dateValidationService);
+            }
         }
 
         @Test

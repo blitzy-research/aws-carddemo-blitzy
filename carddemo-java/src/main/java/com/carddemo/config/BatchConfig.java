@@ -72,21 +72,12 @@ import com.carddemo.service.JobCompletionEventPublisher;
  *
  * <p>{@code docs/traceability-matrix.md} carries the step-by-step inventory: which member and line each of
  * the nine application steps comes from, and which job configuration it becomes. Three further steps reach
- * the cataloged unload procedure rather than a program directly, and the procedure itself is one of the
- * fifty-two utility steps counted above. Three members &mdash; {@code app/jcl/CLOSEFIL.jcl},
- * {@code app/jcl/OPENFIL.jcl} and {@code app/jcl/CBADMCDJ.jcl} &mdash; only toggle online file
- * availability and drive the resource-definition utility; they are <strong>intentionally not
- * migrated</strong>, which is a recorded decision rather than an omission.
- *
- * <h2>The estate has two step-gate forms, and they must stay two</h2>
- *
- * <p>Three further steps reach the cataloged unload procedure rather than a program directly, at
- * {@code app/jcl/PRTCATBL.jcl:29}, {@code app/jcl/TRANBKP.jcl:23} and {@code app/jcl/TRANREPT.jcl:23};
- * the procedure itself, at {@code app/proc/REPROC.prc:21}, is one of the fifty-two utility steps counted
- * above. Three members &mdash; {@code app/jcl/CLOSEFIL.jcl}, {@code app/jcl/OPENFIL.jcl} and
- * {@code app/jcl/CBADMCDJ.jcl} &mdash; only toggle online file availability and drive the
- * resource-definition utility; they are <strong>intentionally not migrated</strong>, which is a recorded
- * decision rather than an omission.
+ * the cataloged unload procedure rather than a program directly, at {@code app/jcl/PRTCATBL.jcl:29},
+ * {@code app/jcl/TRANBKP.jcl:23} and {@code app/jcl/TRANREPT.jcl:23}; the procedure itself, at
+ * {@code app/proc/REPROC.prc:21}, is one of the fifty-two utility steps counted above. Three members
+ * &mdash; {@code app/jcl/CLOSEFIL.jcl}, {@code app/jcl/OPENFIL.jcl} and {@code app/jcl/CBADMCDJ.jcl}
+ * &mdash; only toggle online file availability and drive the resource-definition utility; they are
+ * <strong>intentionally not migrated</strong>, which is a recorded decision rather than an omission.
  *
  * <h2>All four step gates are the one strict form: every earlier step must have returned zero</h2>
  *
@@ -805,6 +796,13 @@ public final class BatchConfig {
             if (jobExecution.getStatus() != BatchStatus.COMPLETED) {
                 // Nothing was published, so nothing local names anything durable. Discard this
                 // execution's own allocations rather than leaving one dead artefact per failed run.
+                //
+                // "Its own" is exact: the store deletes only the paths THIS execution registered on its
+                // own context, plus the one working sibling it names for each of them, and re-checks each
+                // path is still a regular file this process owns before removing it. It does not sweep
+                // the root and it does not match on a name, which an earlier revision did - by
+                // predictable substring, so a file that merely contained this execution's token was
+                // removed whether or not the store had ever allocated it.
                 StagedGenerationStore.discardLocalArtifactsOf(jobExecution, this.stagingDirectory);
                 return;
             }

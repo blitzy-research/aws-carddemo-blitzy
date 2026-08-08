@@ -67,6 +67,7 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.TransactionPostingService.PostingResult;
 import com.carddemo.service.TransactionPostingService.PostingRunSummary;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1343,7 +1344,7 @@ class TransactionPostingServiceTest {
                             .isEqualTo(source.getDalytranMerchantCity()),
                     () -> assertThat(posted.getMerchantZip())
                             .isEqualTo(source.getDalytranMerchantZip()),
-                    () -> assertThat(posted.getTranCardNum()).isEqualTo(CARD));
+                    () -> assertThat(SensitiveValues.fingerprint(posted.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD)));
         }
     }
 

@@ -33,10 +33,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Audits the production tree so that the transaction-identifier allocation contract cannot be broken by a
- * new caller, which is the one way this defect can come back.
+ * Audits the ENROLMENT of the transaction-identifier allocation contract: which production files may mint an
+ * identifier from the stored maximum, and that each of them carries the obligations the contract records.
  *
- * <h2>What the contract is, and why a per-service test cannot protect it</h2>
+ * <h2>What the contract is, and what this class is and is not for</h2>
  *
  * <p>{@link TransactionRepository#findMaxId()} is the read half of the legacy identifier rule - the
  * highest stored key, incremented by the caller - and reading it in order to mint obliges the caller to
@@ -45,19 +45,26 @@ import org.junit.jupiter.api.Test;
  * the same maximum, derive the same successor and collide on the primary key: the loser is refused for a
  * reason that has nothing to do with its own work.
  *
- * <p>Each minting service tests its own locking, but no such test can see a <em>third</em> service that
- * arrives later, reads the maximum and forgets the lock - and that third service reopens the window for
- * every existing one, not only for itself. Serialisation is a property of the set of participants, so it
- * has to be asserted over the set. That is what this class does, and it is deliberately textual: it reads
- * the production sources rather than a context, because the failure it guards against is a call that was
- * never written.
+ * <p><strong>That the lock actually serialises is established behaviourally, not here.</strong>
+ * {@code BillPaymentConcurrencyIT} runs the shipped service from two threads against a real PostgreSQL
+ * server and observes the guarantees directly: a second caller blocking on the lock and acquiring it only
+ * after the holder's unit released it; a rolled-back unit releasing it and consuming no identifier; two
+ * concurrent turns minting distinct successors of the same stored maximum with neither refused; a real turn
+ * blocking on the lock another participant holds; and the lock being refused outright when taken outside a
+ * transaction. Those are properties of two simultaneous callers, and only a running pair can show them.
+ *
+ * <p>What no behavioural test can show is a <em>third</em> service that arrives later, reads the maximum and
+ * forgets the lock - because a test cannot exercise a call that was never written, and that third service
+ * reopens the window for every existing participant rather than only for itself. Serialisation is a property
+ * of the SET of participants, so membership of that set has to be asserted over the set. That is the whole
+ * of this class's remaining job, and it is deliberately textual for exactly that reason.
  *
  * <p>Provenance: the rule is that of {@code app/cbl/COBIL00C.cbl} lines 212 to 219 and
  * {@code app/cbl/COTRN02C.cbl} lines 444 to 451, read as read-only reference at commit SHA
  * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}, upstream release stamp
  * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. No COBOL statement is transcribed.
  */
-@DisplayName("Identifier allocation: every minting caller takes the lock, and only enrolled callers mint")
+@DisplayName("Identifier allocation enrolment: only enrolled callers mint, and each carries the obligations")
 final class IdentifierAllocationLockAuditTest {
 
     /** The production source tree, relative to the module directory the build runs in. */
@@ -115,6 +122,16 @@ final class IdentifierAllocationLockAuditTest {
     /** The explicit flush that keeps the insert inside the locked window and inside a local catch. */
     private static final String INSERT_FLUSH_CALL = "transactionRepository.insertAndFlush(";
 
+    /**
+     * The transaction boundary each enrolled caller must open around its allocation span.
+     *
+     * <p>The lock is declared {@code MANDATORY}, so a caller that took it outside a unit of work is refused
+     * rather than silently unserialised - which {@code BillPaymentConcurrencyIT} observes from both the
+     * repository proxy and the fragment itself. Auditing the boundary call here is what makes that refusal a
+     * design property of every enrolled caller rather than a runtime surprise for a new one.
+     */
+    private static final String TRANSACTION_BOUNDARY_CALL = "transactionBoundary.execute(";
+
     /** Creates the test class. */
     IdentifierAllocationLockAuditTest() {
     }
@@ -134,6 +151,7 @@ final class IdentifierAllocationLockAuditTest {
                 .as("both enrolled services declare the bound, so two files must match")
                 .hasSize(ENROLLED_MINTING_SOURCES.size());
         assertThat(sourcesContaining(sources, INSERT_FLUSH_CALL)).isNotEmpty();
+        assertThat(sourcesContaining(sources, TRANSACTION_BOUNDARY_CALL)).isNotEmpty();
         ENROLLED_MINTING_SOURCES.forEach((fileName, readCall) ->
                 assertThat(textOf(sources, fileName))
                         .as("the statement this audit expects %s to reach its read through must be "
@@ -163,8 +181,8 @@ final class IdentifierAllocationLockAuditTest {
     }
 
     @Test
-    @DisplayName("each enrolled service takes the lock BEFORE its allocation read, because a lock taken "
-            + "after the read serialises nothing at all")
+    @DisplayName("each enrolled service reaches its allocation read from inside its locking method, which is "
+            + "the shape BillPaymentConcurrencyIT then proves actually serialises")
     void theLockPrecedesTheAllocationReadInEverySource() {
         final List<Map.Entry<Path, String>> sources = productionSources();
 
@@ -196,8 +214,8 @@ final class IdentifierAllocationLockAuditTest {
     }
 
     @Test
-    @DisplayName("each enrolled service carries the bounded re-read and flushes its insert, which are the "
-            + "two remaining obligations the repository's contract records")
+    @DisplayName("each enrolled service carries the bounded re-read, flushes its insert, and opens a unit of "
+            + "work - the three remaining obligations the repository's contract records")
     void everySourceCarriesTheBoundedRetryAndFlushesTheInsert() {
         final List<Map.Entry<Path, String>> sources = productionSources();
 
@@ -211,6 +229,10 @@ final class IdentifierAllocationLockAuditTest {
                     .as("%s must flush its insert, so the row reaches the server while the lock is held "
                             + "and a refusal is classified by its own arms", fileName)
                     .contains(INSERT_FLUSH_CALL);
+            assertThat(text)
+                    .as("%s must open a unit of work around its allocation span; the lock is declared "
+                            + "mandatory, so outside one it is refused rather than granted", fileName)
+                    .contains(TRANSACTION_BOUNDARY_CALL);
         });
     }
 

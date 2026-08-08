@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.lang.reflect.Method;
@@ -291,9 +292,9 @@ class CardSecurityTest {
         void allSixArgumentsLandOnTheirOwnAccessors() {
             Card subject = card();
 
-            assertThat(subject.getCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(subject.getCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(subject.getCardAcctId()).isEqualTo(ACCOUNT_ID);
-            assertThat(subject.getCardCvvCd()).isEqualTo(CVV);
+            assertThat(SensitiveValues.fingerprint(subject.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint(CVV));
             assertThat(subject.getCardEmbossedName()).isEqualTo(EMBOSSED_NAME);
             assertThat(subject.getCardExpirationDate()).isEqualTo(EXPIRY);
             assertThat(subject.getCardActiveStatus()).isEqualTo(ACTIVE);
@@ -331,9 +332,10 @@ class CardSecurityTest {
             Card subject = new Card("0000000000000001", "00000000001", "007", "MARY ANN          ",
                     "2027-12-31", " ");
 
-            assertThat(subject.getCardNum()).isEqualTo("0000000000000001").hasSize(16);
+            assertThat(SensitiveValues.fingerprint(subject.getCardNum())).isEqualTo(SensitiveValues.fingerprint("0000000000000001"));
+            assertThat(subject.getCardNum().length()).isEqualTo(16);
             assertThat(subject.getCardAcctId()).isEqualTo("00000000001").hasSize(11);
-            assertThat(subject.getCardCvvCd()).isEqualTo("007");
+            assertThat(SensitiveValues.fingerprint(subject.getCardCvvCd())).isEqualTo(SensitiveValues.fingerprint("007"));
             assertThat(subject.getCardEmbossedName()).endsWith("          ").hasSize(18);
             assertThat(subject.getCardActiveStatus()).isEqualTo(" ");
         }

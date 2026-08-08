@@ -64,17 +64,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestClassOrder;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -92,6 +91,7 @@ import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.job.flow.FlowJob;
 import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.NoSuchJobException;
 import org.springframework.batch.core.step.tasklet.TaskletStep;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -192,9 +192,37 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
 
     private static final String ERROR_OPERATION = "READING";
 
-    private final Map<ProbeMode, JobExecution> executions = new EnumMap<>(ProbeMode.class);
+    // =============================================================================================
+    // ESTABLISHED-ON-DEMAND PROBE RUNS. Every assertion below that needs a launched probe asks for one
+    // through probeRun(mode), which launches it on the first request and returns the same capture to
+    // every later request. No test therefore depends on another test having run first, and any single
+    // test runs correctly on its own.
+    //
+    // The capture is memoised for the class rather than rebuilt per test, and that is a constraint of
+    // the framework rather than a convenience: the operational surface starts this job with exactly one
+    // parameter, the mode, so two launches of one mode carry identical parameters and the framework
+    // refuses the second as an instance that has already completed. Relaunching per test would only be
+    // possible by adding a parameter the operator never sends, which would stop this specification
+    // exercising the parameter set that is actually used. Memoising the run keeps the launch faithful
+    // AND removes the ordering dependence, which is the property that matters.
+    //
+    // The metadata store the framework writes to is one database shared by every specification in the
+    // run, so "this job has never run" is not a property of it. What is asserted instead is measured:
+    // the instance count read before this specification launched anything, plus the launches this
+    // specification has performed, must account for every instance the store holds.
+    // =============================================================================================
 
-    private final Map<ProbeMode, List<String>> diagnosticStreams = new EnumMap<>(ProbeMode.class);
+    /** One launched probe per mode: the execution the framework recorded and what the launch emitted. */
+    private final Map<ProbeMode, ProbeRun> probeRuns = new EnumMap<>(ProbeMode.class);
+
+    /**
+     * Instances of the probe job the shared store already held when this specification reached its
+     * first test, read before any launch it performs.
+     */
+    private static Long instancesBeforeThisSpecificationLaunched;
+
+    /** Launches this specification has performed, counted at the one launch site there is. */
+    private static final AtomicInteger LAUNCHES_BY_THIS_SPECIFICATION = new AtomicInteger();
 
     @Configuration(proxyBeanMethods = false)
     @EnableAutoConfiguration(exclude = PrometheusExemplarsAutoConfiguration.class)
@@ -277,6 +305,20 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
         this.customerRepository = suppliedCustomerRepository;
         this.crossReferenceRepository = suppliedCrossReferenceRepository;
         this.meterRegistry = suppliedMeterRegistry;
+    }
+
+    /**
+     * Reads the shared metadata baseline exactly once, on the first test this specification reaches.
+     *
+     * <p>The first invocation necessarily precedes the first test body and therefore every launch, so
+     * which test runs first does not matter: the baseline is taken before it, and the launch ledger
+     * accounts for whatever it then launches.
+     */
+    @BeforeEach
+    void readTheSharedMetadataBaselineOnce() {
+        if (instancesBeforeThisSpecificationLaunched == null) {
+            instancesBeforeThisSpecificationLaunched = instancesOfTheProbeJob();
+        }
     }
 
     @BeforeEach
@@ -385,8 +427,54 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
         parameters.setProperty(JobParameterValidators.FILE_PROBE_MODE_KEY, mode.parameterValue());
         final Long executionId =
                 this.jobOperator.start(FileProbeJobConfig.FILE_PROBE_JOB_NAME, parameters);
+        LAUNCHES_BY_THIS_SPECIFICATION.incrementAndGet();
         return Objects.requireNonNull(this.jobExplorer.getJobExecution(executionId),
                 "the operator returned an execution identifier that the explorer could not resolve");
+    }
+
+    /** One launched probe: the execution the framework recorded, and the diagnostics it emitted. */
+    private record ProbeRun(JobExecution execution, List<String> diagnostics) {
+    }
+
+    /**
+     * Returns the launched probe for one mode, launching it if this class has not launched it yet.
+     *
+     * <p>Only the events the launch itself emitted are captured, taken as the growth of the recorder
+     * across the launch rather than as its whole contents, so nothing a caller emitted beforehand is
+     * mistaken for output of the probe.
+     *
+     * @param mode the mode to probe
+     * @return the execution and the diagnostics of that mode's single launch
+     * @throws Exception if the launch is refused, which fails the test that asked for it
+     */
+    private ProbeRun probeRun(final ProbeMode mode) throws Exception {
+        final ProbeRun alreadyLaunched = this.probeRuns.get(mode);
+        if (alreadyLaunched != null) {
+            return alreadyLaunched;
+        }
+        final int emittedBeforeTheLaunch = messages().size();
+        final JobExecution execution = launch(mode);
+        final List<String> emitted = messages();
+        final ProbeRun captured = new ProbeRun(execution,
+                List.copyOf(emitted.subList(emittedBeforeTheLaunch, emitted.size())));
+        this.probeRuns.put(mode, captured);
+        return captured;
+    }
+
+    /**
+     * Counts every instance of the probe job the shared metadata store holds.
+     *
+     * <p>A job the store has never seen has no count at all, which is nought; the framework reports
+     * that as a refusal to answer, and answering nought is the same statement without the exception.
+     *
+     * @return how many instances exist, across everything that has launched this job in this store
+     */
+    private long instancesOfTheProbeJob() {
+        try {
+            return this.jobExplorer.getJobInstanceCount(FileProbeJobConfig.FILE_PROBE_JOB_NAME);
+        } catch (final NoSuchJobException neverLaunchedByAnyone) {
+            return 0L;
+        }
     }
 
     private List<String> messages() {
@@ -572,10 +660,15 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
             assertThat(environment.getProperty("spring.batch.job.name")).isNull();
             assertThat(applicationContext.getBeansOfType(JobLauncherApplicationRunner.class))
                     .isEmpty();
-            assertThat(jobExplorer.getJobInstances(
-                    FileProbeJobConfig.FILE_PROBE_JOB_NAME, 0, 1))
-                    .as("the context must be inert until an operator launches the job")
-                    .isEmpty();
+            assertThat(instancesOfTheProbeJob())
+                    .as("a refreshed context may launch nothing: every instance the shared store holds "
+                            + "is one that was already there when this specification began (%d of them) "
+                            + "or one this specification launched itself (%d so far), and a refresh "
+                            + "would add an instance beyond that sum",
+                            instancesBeforeThisSpecificationLaunched,
+                            LAUNCHES_BY_THIS_SPECIFICATION.get())
+                    .isEqualTo(instancesBeforeThisSpecificationLaunched
+                            + LAUNCHES_BY_THIS_SPECIFICATION.get());
 
             assertThat(jobRegistry.getJobNames())
                     .containsExactly(FileProbeJobConfig.FILE_PROBE_JOB_NAME);
@@ -622,13 +715,11 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
 
     @Nested
     @Order(2)
-    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     @DisplayName("four modes and step-scoped late binding")
     class FourModesAndLateBinding {
 
         @ParameterizedTest(name = "{0}")
         @EnumSource(ProbeMode.class)
-        @Order(1)
         @DisplayName("each legal mode launches the same job and binds its measured reader")
         void eachLegalModeLaunchesTheSameJobAndBindsItsMeasuredReader(final ProbeMode mode)
                 throws Exception {
@@ -649,9 +740,10 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                     assertThat(line.getBytes(StandardCharsets.US_ASCII).length)
                             .isEqualTo(contract.fixtureLayout().recordLength()));
 
-            final JobExecution execution = launch(mode);
+            final ProbeRun run = probeRun(mode);
+            final JobExecution execution = run.execution();
             final StepExecution step = onlyStep(execution);
-            final List<String> stream = messages();
+            final List<String> stream = run.diagnostics();
 
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(Objects.requireNonNull(execution.getJobInstance()).getJobName())
@@ -679,32 +771,39 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                             + " program=" + contract.programName()
                             + " resource=" + contract.resourceName()
                             + " recordsRead=" + SEEDED_ROWS);
-
-            executions.put(mode, execution);
-            diagnosticStreams.put(mode, List.copyOf(stream));
         }
 
         @Test
-        @Order(2)
         @DisplayName("the four launches are four instances of one named job and one named step")
         void fourLaunchesAreFourInstancesOfOneNamedJobAndOneNamedStep() throws Exception {
-            assertThat(executions)
-                    .containsOnlyKeys(ProbeMode.values())
+            final List<JobExecution> launched = new ArrayList<>();
+            for (final ProbeMode mode : ProbeMode.values()) {
+                launched.add(probeRun(mode).execution());
+            }
+
+            assertThat(launched)
+                    .as("one launch per mode and no mode launched twice")
                     .hasSize(ProbeMode.values().length);
-            assertThat(diagnosticStreams)
+            assertThat(probeRuns)
                     .containsOnlyKeys(ProbeMode.values())
                     .hasSize(ProbeMode.values().length);
 
-            assertThat(jobExplorer.getJobInstanceCount(
-                    FileProbeJobConfig.FILE_PROBE_JOB_NAME))
-                    .isEqualTo(ProbeMode.values().length);
+            final long instancesNow = instancesOfTheProbeJob();
+            assertThat(instancesNow)
+                    .as("the four launches produced four instances: the store holds what it already "
+                            + "held when this specification began (%d) plus every launch this "
+                            + "specification has performed (%d), and nothing else produces one",
+                            instancesBeforeThisSpecificationLaunched,
+                            LAUNCHES_BY_THIS_SPECIFICATION.get())
+                    .isEqualTo(instancesBeforeThisSpecificationLaunched
+                            + LAUNCHES_BY_THIS_SPECIFICATION.get());
             assertThat(jobExplorer.getJobInstances(
-                    FileProbeJobConfig.FILE_PROBE_JOB_NAME, 0, ProbeMode.values().length))
-                    .hasSize(ProbeMode.values().length)
+                    FileProbeJobConfig.FILE_PROBE_JOB_NAME, 0, (int) instancesNow))
+                    .hasSize((int) instancesNow)
                     .extracting(JobInstance::getJobName)
                     .containsOnly(FileProbeJobConfig.FILE_PROBE_JOB_NAME);
 
-            assertThat(executions.values())
+            assertThat(launched)
                     .allSatisfy(execution -> {
                         assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
                         assertThat(execution.getStepExecutions())
@@ -712,7 +811,7 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                                 .extracting(StepExecution::getStepName)
                                 .isEqualTo(FileProbeJobConfig.FILE_PROBE_STEP_NAME);
                     });
-            assertThat(executions.values())
+            assertThat(launched)
                     .extracting(execution ->
                             Objects.requireNonNull(execution.getJobInstance()).getInstanceId())
                     .doesNotHaveDuplicates();
@@ -732,8 +831,7 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
         @DisplayName("an unrecognised mode is rejected before any step execution exists")
         void unrecognisedModeIsRejectedBeforeAnyStepExecutionExists() throws Exception {
             final long stepsBefore = batchStepExecutionCount();
-            final long instancesBefore = jobExplorer.getJobInstanceCount(
-                    FileProbeJobConfig.FILE_PROBE_JOB_NAME);
+            final long instancesBefore = instancesOfTheProbeJob();
             final Properties parameters = new Properties();
             parameters.setProperty(JobParameterValidators.FILE_PROBE_MODE_KEY, UNKNOWN_MODE);
 
@@ -746,15 +844,14 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                     .hasMessageContaining(JobParameterValidators.FILE_PROBE_MODE_KEY)
                     .hasMessageContaining(UNKNOWN_MODE);
             assertThat(batchStepExecutionCount()).isEqualTo(stepsBefore);
-            assertThat(jobExplorer.getJobInstanceCount(
-                    FileProbeJobConfig.FILE_PROBE_JOB_NAME)).isEqualTo(instancesBefore);
+            assertThat(instancesOfTheProbeJob()).isEqualTo(instancesBefore);
             assertThat(messages())
                     .noneMatch(message -> message.startsWith("FILE PROBE STARTING"));
         }
 
         @Test
         @DisplayName("every enum constant selects exactly one reader and no arm falls through")
-        void everyEnumConstantSelectsExactlyOneReaderAndNoArmFallsThrough() {
+        void everyEnumConstantSelectsExactlyOneReaderAndNoArmFallsThrough() throws Exception {
             assertThat(ProbeMode.values()).containsExactly(
                     ProbeMode.ACCOUNT,
                     ProbeMode.CARD,
@@ -765,7 +862,7 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                 assertThat(ProbeMode.ofParameterValue(mode.parameterValue())).isSameAs(mode);
                 final String expectedPrefix =
                         "recordType=" + contractFor(mode).recordType() + " recordRef=";
-                assertThat(diagnosticStreams.get(mode))
+                assertThat(probeRun(mode).diagnostics())
                         .filteredOn(message -> message.startsWith("recordType="))
                         .allMatch(message -> message.startsWith(expectedPrefix));
             }
@@ -804,7 +901,7 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
         void emittedReferencesFollowTheIndependentlySortedFixtureKeys(final ProbeMode mode)
                 throws Exception {
             final ModeContract contract = contractFor(mode);
-            final List<String> stream = diagnosticStreams.get(mode);
+            final List<String> stream = probeRun(mode).diagnostics();
             final List<String> allReferences = recordReferences(stream, mode, false);
             final List<String> plainReferences = recordReferences(stream, mode, true);
             final List<String> oneReferencePerRecord =
@@ -826,10 +923,10 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
             assertThat(fixtureKeys(ProbeMode.CARD))
                     .containsExactlyElementsOf(fixtureKeys(ProbeMode.CROSS_REFERENCE));
             assertThat(collapseConsecutiveDuplicates(
-                    recordReferences(diagnosticStreams.get(ProbeMode.CARD),
+                    recordReferences(probeRun(ProbeMode.CARD).diagnostics(),
                             ProbeMode.CARD, true)))
                     .containsExactlyElementsOf(collapseConsecutiveDuplicates(
-                            recordReferences(diagnosticStreams.get(ProbeMode.CROSS_REFERENCE),
+                            recordReferences(probeRun(ProbeMode.CROSS_REFERENCE).diagnostics(),
                                     ProbeMode.CROSS_REFERENCE, true)));
         }
     }
@@ -939,7 +1036,10 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
 
         @Test
         @DisplayName("all-clear continues through every row and end of file stops cleanly")
-        void allClearContinuesAndEndOfFileStopsCleanly() {
+        void allClearContinuesAndEndOfFileStopsCleanly() throws Exception {
+            for (final ProbeMode mode : ProbeMode.values()) {
+                probeRun(mode);
+            }
             final FileMaintenanceService.FileReadSummary summary =
                     fileMaintenanceService.readAccountFile();
 
@@ -952,9 +1052,12 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
             assertThat(messages())
                     .noneMatch(message -> message.startsWith("ABENDING PROGRAM"));
 
-            assertThat(executions.values())
-                    .allSatisfy(execution ->
-                            assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED));
+            assertThat(probeRuns.values())
+                    .as("the coarse all-clear that carried this read is the same one every launched "
+                            + "probe ended on, so all four must have completed")
+                    .hasSize(ProbeMode.values().length)
+                    .allSatisfy(run ->
+                            assertThat(run.execution().getStatus()).isEqualTo(BatchStatus.COMPLETED));
         }
 
         @Test
@@ -1074,9 +1177,10 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
 
         @Test
         @DisplayName("each completed mode publishes a tagged timer and record counter")
-        void eachCompletedModePublishesATaggedTimerAndRecordCounter() {
+        void eachCompletedModePublishesATaggedTimerAndRecordCounter() throws Exception {
             for (final ProbeMode mode : ProbeMode.values()) {
                 final ModeContract contract = contractFor(mode);
+                probeRun(mode);
                 final Timer timer = Objects.requireNonNull(meterRegistry.find(STEP_TIMER)
                         .tag("mode", mode.parameterValue())
                         .tag("program", contract.programName())
@@ -1100,8 +1204,10 @@ final class FileProbeJobConfigIT extends AbstractPostgresIT {
                 assertThat(counter.getId().getTag("resource")).isEqualTo(contract.resourceName());
             }
 
-            assertThat(diagnosticStreams.values())
-                    .allSatisfy(stream -> assertThat(stream).isNotEmpty());
+            assertThat(probeRuns)
+                    .containsOnlyKeys(ProbeMode.values());
+            assertThat(probeRuns.values())
+                    .allSatisfy(run -> assertThat(run.diagnostics()).isNotEmpty());
         }
     }
 }

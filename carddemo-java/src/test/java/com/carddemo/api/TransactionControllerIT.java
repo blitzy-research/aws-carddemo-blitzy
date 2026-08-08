@@ -40,6 +40,7 @@ import com.carddemo.service.TransactionAddService;
 import com.carddemo.service.TransactionListService;
 import com.carddemo.service.TransactionViewService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -2969,7 +2970,7 @@ public class TransactionControllerIT extends AbstractPostgresIT {
             assertThat(stored.getTranTypeCd()).isEqualTo("01");
             assertThat(stored.getTranCatCd()).isEqualTo("0001");
             assertThat(stored.getTranAmt()).isEqualByComparingTo(new BigDecimal("-100.00"));
-            assertThat(stored.getTranCardNum()).isEqualTo(SEEDED_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(stored.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD_NUMBER));
             assertThat(stored.getTranDesc())
                     .as("the description is stored at the record's hundred characters, space filled to "
                             + "the right of the sixty the screen accepted")

@@ -52,18 +52,22 @@ import com.carddemo.util.ZonedDecimalCodec;
  * <h2>Provenance</h2>
  *
  * <p>Checkout SHA {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec}; upstream release stamp
- * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19, which is the trailer comment carried by
- * every COBOL and JCL member of the estate.
+ * {@code CardDemo_v1.0-15-g27d6c6f-68} dated 2022-07-19. The stamp is a provenance anchor for the
+ * migration as a whole and is carried by a measured subset of the estate rather than by every
+ * member, so it identifies the delivery this translation was taken from and is never a per-member
+ * assertion.
  *
  * <p>The primary authority is {@code app/cbl/CBTRN03C.cbl}, <strong>649 lines</strong>. Its
- * {@code PROCEDURE DIVISION} holds <strong>26 named paragraph labels</strong> plus the
- * <strong>unnamed driving body at lines 160-217</strong>, which is <strong>27 paragraph units in
- * total</strong>. Both counts are stated because they are both true of different things and the
- * project's own specification records only the smaller one: the Agent Action Plan describes this
- * member as having 26 paragraphs, which counts the labels alone, while a census that also counts
- * the unlabelled driving body - the unit that actually sequences the program - gives 27. Every one
- * of the 27 has a named Java method here, and the traceability matrix carries 27 rows for this
- * member.
+ * {@code PROCEDURE DIVISION} holds <strong>26 named paragraph labels</strong>, and
+ * <strong>26</strong> is this member's contribution to the traceability matrix: the action plan records
+ * 26, and {@code docs/traceability-matrix.md} carries <strong>exactly 26 rows</strong> for it, one per
+ * label, within the estate's 544. Those 26 are the mapped units, and each has its own named method below.
+ *
+ * <p>The member also has an <strong>unnamed driving body at lines 160-217</strong> - the statements that
+ * sequence the program before its first label. It carries no label, so it is not a traceability row and
+ * owes none: it is reproduced here as a <strong>Java driver helper</strong>, the private procedure-division
+ * driver the two public entry points delegate to, and it is called out that way so a reader does not
+ * mistake it for a twenty-seventh mapped paragraph. It is fully translated and fully covered.
  *
  * <p>Key line sites in the authority, cited so a reviewer can find each behaviour at its origin:
  * the 133-character report record at <strong>85</strong>; the eighty-character date-parameter
@@ -389,7 +393,9 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 1 of 27: the unnamed {@code PROCEDURE DIVISION} driving body at lines 160-217.
+     * The driver helper: the unnamed {@code PROCEDURE DIVISION} driving body at lines 160-217. It
+     * carries no paragraph label, so it is not one of the 26 traceability rows this member
+     * contributes; it sequences them.
      *
      * <p>The sequence is the source's own - six opens, the parameter read, the driving loop, six
      * closes - and the two console announcements that bracket it at lines 160 and 215 become
@@ -636,7 +642,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 2 of 27: {@code 0550-DATEPARM-READ} at line 220.
+     * Paragraph unit 1 of 26: {@code 0550-DATEPARM-READ} at line 220.
      *
      * <p>Reads the date-parameter record and normalises its status through the shared two-arm
      * evaluation of lines 222-229. On success the bounds are taken from the card by the shared
@@ -676,7 +682,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 3 of 27: {@code 1000-TRANFILE-GET-NEXT} at line 248.
+     * Paragraph unit 2 of 26: {@code 1000-TRANFILE-GET-NEXT} at line 248.
      *
      * <p>Advances the ordered input by one record, mirroring the sequential read of line 249 and the
      * status evaluation of lines 251-258. Exhaustion of the cursor is the at-end condition and yields
@@ -719,7 +725,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 4 of 27: {@code 1100-WRITE-TRANSACTION-REPORT} at line 274.
+     * Paragraph unit 3 of 26: {@code 1100-WRITE-TRANSACTION-REPORT} at line 274.
      *
      * <p>Three things happen here and their <strong>order is load-bearing</strong>:
      *
@@ -772,7 +778,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 5 of 27: {@code 1110-WRITE-PAGE-TOTALS} at line 293.
+     * Paragraph unit 4 of 26: {@code 1110-WRITE-PAGE-TOTALS} at line 293.
      *
      * <p>Performs the source's six steps in the source's order: write the page total (lines 294-296),
      * <strong>fold the page total into the grand total</strong> (line 297), zero the page total
@@ -800,7 +806,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 6 of 27: {@code 1120-WRITE-ACCOUNT-TOTALS} at line 306.
+     * Paragraph unit 5 of 26: {@code 1120-WRITE-ACCOUNT-TOTALS} at line 306.
      *
      * <p>Writes the account total (lines 307-309), zeroes it (line 310), increments the line counter
      * (line 311), writes the hyphen rule line (lines 312-313) and increments again (line 314).
@@ -826,7 +832,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 7 of 27: {@code 1110-WRITE-GRAND-TOTALS} at line 318.
+     * Paragraph unit 6 of 26: {@code 1110-WRITE-GRAND-TOTALS} at line 318.
      *
      * <p>Writes the grand total and nothing else (lines 319-321).
      *
@@ -844,7 +850,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 8 of 27: {@code 1120-WRITE-HEADERS} at line 324.
+     * Paragraph unit 7 of 26: {@code 1120-WRITE-HEADERS} at line 324.
      *
      * <p>Writes the four header records of lines 325-339, each followed by its own line-counter
      * increment. The records and their order - report name header, blank line, column header, hyphen
@@ -866,7 +872,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 9 of 27: {@code 1111-WRITE-REPORT-REC} at line 343 - <strong>the single
+     * Paragraph unit 8 of 26: {@code 1111-WRITE-REPORT-REC} at line 343 - <strong>the single
      * writer</strong>.
      *
      * <p>Every record the report emits passes through this method: the four header records, every
@@ -908,7 +914,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 10 of 27: {@code 1120-WRITE-DETAIL} at line 361.
+     * Paragraph unit 9 of 26: {@code 1120-WRITE-DETAIL} at line 361.
      *
      * <p>Assembles one detail record from the current transaction and the three descriptions the
      * lookups resolved, writes it through the single writer and increments the line counter
@@ -943,7 +949,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 11 of 27: {@code 0000-TRANFILE-OPEN} at line 376.
+     * Paragraph unit 10 of 26: {@code 0000-TRANFILE-OPEN} at line 376.
      *
      * <p>Opens the transaction input. In the target that resource is the frozen ordered generation
      * supplied by the batch layer, whose presence is enforced at the run boundary. The failure arm is
@@ -958,7 +964,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 12 of 27: {@code 0100-REPTFILE-OPEN} at line 394.
+     * Paragraph unit 11 of 26: {@code 0100-REPTFILE-OPEN} at line 394.
      *
      * <p>Opens the report output. This is the one open with genuine work to do: the legacy statement
      * opens the sequential report dataset for output, and here it arms the run's record count against
@@ -973,7 +979,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 13 of 27: {@code 0200-CARDXREF-OPEN} at line 412.
+     * Paragraph unit 12 of 26: {@code 0200-CARDXREF-OPEN} at line 412.
      *
      * @param run the per-invocation state
      */
@@ -983,7 +989,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 14 of 27: {@code 0300-TRANTYPE-OPEN} at line 430.
+     * Paragraph unit 13 of 26: {@code 0300-TRANTYPE-OPEN} at line 430.
      *
      * @param run the per-invocation state
      */
@@ -993,7 +999,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 15 of 27: {@code 0400-TRANCATG-OPEN} at line 448.
+     * Paragraph unit 14 of 26: {@code 0400-TRANCATG-OPEN} at line 448.
      *
      * @param run the per-invocation state
      */
@@ -1003,7 +1009,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 16 of 27: {@code 0500-DATEPARM-OPEN} at line 466.
+     * Paragraph unit 15 of 26: {@code 0500-DATEPARM-OPEN} at line 466.
      *
      * <p>Opens the date-parameter input. A sequential input opens successfully whether or not it
      * holds a record, so an absent parameter card is <strong>not</strong> a failed open: it surfaces
@@ -1017,7 +1023,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 17 of 27: {@code 1500-A-LOOKUP-XREF} at line 484.
+     * Paragraph unit 16 of 26: {@code 1500-A-LOOKUP-XREF} at line 484.
      *
      * <p>Resolves the current card number to its owning account. The legacy statement is a random
      * read on the cross-reference cluster whose record key is the sixteen-character card number, and
@@ -1065,7 +1071,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 18 of 27: {@code 1500-B-LOOKUP-TRANTYPE} at line 494.
+     * Paragraph unit 17 of 26: {@code 1500-B-LOOKUP-TRANTYPE} at line 494.
      *
      * <p>Resolves the transaction type description. The type entity's identifier is the two-character
      * type code, with no separate identifier class, so the identifier lookup is direct. An absent
@@ -1103,7 +1109,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 19 of 27: {@code 1500-C-LOOKUP-TRANCATG} at line 504.
+     * Paragraph unit 18 of 26: {@code 1500-C-LOOKUP-TRANCATG} at line 504.
      *
      * <p>Resolves the transaction category description through the composite key of type code and
      * category code, which the source assembles at lines 191-194. An absent record is the invalid-key
@@ -1181,7 +1187,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 20 of 27: {@code 9000-TRANFILE-CLOSE} at line 514.
+     * Paragraph unit 19 of 26: {@code 9000-TRANFILE-CLOSE} at line 514.
      *
      * <p>Releases the ordered input cursor. The source computes its pending value with an
      * {@code ADD ... GIVING} and clears it with a {@code SUBTRACT} rather than the {@code MOVE} the
@@ -1196,7 +1202,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 21 of 27: {@code 9100-REPTFILE-CLOSE} at line 532.
+     * Paragraph unit 20 of 26: {@code 9100-REPTFILE-CLOSE} at line 532.
      *
      * <p>Closes the report output, after which no further record can be offered to the sink. That is
      * what makes the record count a completed report's count rather than a running one.
@@ -1210,7 +1216,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 22 of 27: {@code 9200-CARDXREF-CLOSE} at line 551.
+     * Paragraph unit 21 of 26: {@code 9200-CARDXREF-CLOSE} at line 551.
      *
      * @param run the per-invocation state
      */
@@ -1219,7 +1225,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 23 of 27: {@code 9300-TRANTYPE-CLOSE} at line 569.
+     * Paragraph unit 22 of 26: {@code 9300-TRANTYPE-CLOSE} at line 569.
      *
      * @param run the per-invocation state
      */
@@ -1228,7 +1234,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 24 of 27: {@code 9400-TRANCATG-CLOSE} at line 587.
+     * Paragraph unit 23 of 26: {@code 9400-TRANCATG-CLOSE} at line 587.
      *
      * @param run the per-invocation state
      */
@@ -1237,7 +1243,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 25 of 27: {@code 9500-DATEPARM-CLOSE} at line 605.
+     * Paragraph unit 24 of 26: {@code 9500-DATEPARM-CLOSE} at line 605.
      *
      * @param run the per-invocation state
      */
@@ -1246,7 +1252,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 26 of 27: {@code 9999-ABEND-PROGRAM} at line 626.
+     * Paragraph unit 25 of 26: {@code 9999-ABEND-PROGRAM} at line 626.
      *
      * <p>The source announces the abend at line 627, sets its timing and abend-code fields, and calls
      * the language environment abort routine at line 630. The abend service performs the equivalent:
@@ -1269,7 +1275,7 @@ public class TransactionReportService {
     }
 
     /**
-     * Paragraph unit 27 of 27: {@code 9910-DISPLAY-IO-STATUS} at line 633.
+     * Paragraph unit 26 of 26: {@code 9910-DISPLAY-IO-STATUS} at line 633.
      *
      * <p>The source widens the raw two-byte status into a four-character display form and prints it
      * behind a fixed prefix, taking a different branch for a non-numeric status or a status whose

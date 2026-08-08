@@ -30,12 +30,14 @@ import com.carddemo.batch.PostTransactionJobConfig;
 import com.carddemo.batch.TransactionReportJobConfig;
 import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
+import com.carddemo.batch.step.RejectRecordWriter;
 import com.carddemo.batch.step.StagedGenerationStore;
 import com.carddemo.config.AwsConfig;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.BatchConfig;
 import com.carddemo.config.JpaAuditConfig;
 import com.carddemo.domain.Transaction;
+import com.carddemo.domain.enums.RejectReason;
 import com.carddemo.repository.RecordWriter;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.AbendService;
@@ -50,6 +52,8 @@ import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
+import com.carddemo.support.IsolatedStagingRoot;
+import com.carddemo.support.LegacyRejectReasons;
 import com.carddemo.support.RunScopedPerformanceRecorder;
 import com.carddemo.support.TestDataFactory;
 import io.micrometer.core.instrument.Counter;
@@ -72,6 +76,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -88,6 +93,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
@@ -106,6 +112,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Gate 1, Gate 3 and the pipeline half of Gate 4, executed: the delivered pipeline is driven end to
@@ -198,15 +206,14 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
         properties = {"spring.flyway.enabled=false", "spring.main.banner-mode=off",
                 "spring.jpa.hibernate.ddl-auto=none", "spring.batch.job.enabled=false",
                 "management.endpoint.health.validate-group-membership=false",
-                "management.tracing.enabled=false",
                 // ONE property serves every job: each job configuration falls back to the shared
                 // staging root before it falls back to the platform temporary directory, so binding the
                 // shared key is what makes the pipeline chain through one filesystem location exactly as
-                // it does in the application. It is a fixed expression rather than a temporary directory
-                // because the bindings are resolved while the context starts, which is before any
-                // per-test directory could exist.
-                "carddemo.batch.staging-directory="
-                        + BatchPipelineE2ETest.STAGING_DIRECTORY_EXPRESSION})
+                // it does in the application. It is registered from registerIsolatedStagingDirectory
+                // rather than named here, because the bindings are resolved while the context starts and
+                // the root has to carry this process's own identity, which no compile-time constant can.
+                "management.tracing.enabled=false"})
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("Gates 1, 3 and 4 executed: the committed input through the delivered pipeline, all four "
         + "goldens compared byte for byte, and every parity trap named")
@@ -216,12 +223,18 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     // THE RUN'S OWN SETTINGS
     // ===============================================================================================
 
-    /** Staging root this specification owns, as the property expression the context binds. */
-    static final String STAGING_DIRECTORY_EXPRESSION =
-            "${java.io.tmpdir}/carddemo-batch-pipeline-e2e";
+    /**
+     * This specification's label within this process's private staging namespace.
+     *
+     * <p>It was a fixed expression naming a directory directly beneath the platform temporary directory,
+     * so every run of this specification and every sibling clone on the host resolved the same absolute
+     * path. It is now one segment beneath a namespace unique to this process, bound from a property
+     * callback. See {@code support/IsolatedStagingRoot}.
+     */
+    static final String STAGING_LABEL = "batch-pipeline-e2e";
 
-    /** Leaf name of the staging root, resolved from the same platform setting the expression names. */
-    private static final String STAGING_DIRECTORY_NAME = "carddemo-batch-pipeline-e2e";
+    /** The one staging-directory key every job in the pipeline falls back to. */
+    private static final String STAGING_DIRECTORY_PROPERTY = "carddemo.batch.staging-directory";
 
     /**
      * Inclusive lower bound of the reporting window: the literal the cataloged procedure's sort symbols
@@ -348,31 +361,105 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     /** The one byte that must not appear in any produced artefact. */
     private static final byte LINE_FEED = 0x0A;
 
+    /**
+     * The extract no job stream invokes, which this tree launches by name or nothing does.
+     *
+     * <p>Named here because setup launches it and cleanup must delete it, and those two places have to
+     * agree on the name for the metadata row to be accounted for.
+     */
+    private static final String ORPHAN_JOB_NAME = "dailyTransactionReadJob";
+
     /** Name of the file the Gate 1 comparison report is published under. */
     private static final String COMPARISON_REPORT_FILE = "gate1-byte-equivalence.md";
 
     /** Name of the file the Gate 3 baseline is published under. */
     private static final String BASELINE_REPORT_FILE = "gate3-pipeline-baseline.md";
 
+    /**
+     * The tables whose row counts are observed BEFORE the first job is launched.
+     *
+     * <p>Every one of them is a statement about what the run started from, and none is observable once it
+     * has finished - the master is empty at the start and holds the consolidated rows at the end, and the
+     * daily-transaction landing table is what the posting job consumes.
+     */
+    private static final List<String> PRE_RUN_COUNTED_TABLES = List.of(
+            "account", "card", "customer", "card_cross_reference", "transaction_category_balance",
+            "disclosure_group", "transaction_category", "transaction_type", "daily_transaction",
+            "transaction");
+
+    /** The four generation bases the run produces, in the order the goldens are compared. */
+    private static final List<String> PRODUCED_BASES =
+            List.of(REJECT_BASE, REPORT_BASE, STATEMENT_BASE, STATEMENT_HTML_BASE);
+
+    /**
+     * The four fixed-width contracts the pipeline emits, each naming its generation base, its committed
+     * golden and the geometry both sides must satisfy.
+     *
+     * <p>Declared as data so that setup can build all four comparison rows in one loop, which is what
+     * makes the comparison report complete regardless of how many tests were selected.
+     */
+    private static final List<GoldenContract> GOLDEN_CONTRACTS = List.of(
+            new GoldenContract(REJECT_BASE, "daily-reject.txt", REJECT_WIDTH, REJECTED_RECORD_COUNT),
+            new GoldenContract(REPORT_BASE, "transaction-report.txt", REPORT_WIDTH,
+                    REPORT_RECORD_COUNT),
+            new GoldenContract(STATEMENT_BASE, "statement.txt", STATEMENT_WIDTH,
+                    STATEMENT_RECORD_COUNT),
+            new GoldenContract(STATEMENT_HTML_BASE, "statement-html.txt", STATEMENT_HTML_WIDTH,
+                    STATEMENT_HTML_RECORD_COUNT));
+
     // ===============================================================================================
-    // MUTABLE RUN STATE, SHARED BETWEEN THE ORDERED TESTS
+    // THE RUN, AS AN IMMUTABLE SNAPSHOT TAKEN ONCE IN FIXTURE SETUP
+    //
+    // -----------------------------------------------------------------------------------------------
+    // WHY THIS IS NOT A TEST THAT LATER TESTS DEPEND ON.
+    // -----------------------------------------------------------------------------------------------
+    // The pipeline used to be driven by an ORDERED TEST which wrote its results into static mutable
+    // collections that some thirty later tests then read. That made the class runnable only in its
+    // entirety and only in its declared order: selecting one method to diagnose a failure, or letting a
+    // runner reorder the methods, produced a cascade of failures whose cause was the harness rather than
+    // the code - and the helpers said so in as many words, failing with "the pipeline test must have run
+    // first".
+    //
+    // The run now happens exactly once, in fixture setup, and everything it observed is published as one
+    // immutable snapshot. Every test below reads only that snapshot, so each is valid on its own and in
+    // any order. The setup OBSERVES and RECORDS; the tests ASSERT. That split is deliberate: putting the
+    // assertions in setup would make every failure surface as "initialisation error" against the whole
+    // class instead of naming the behaviour that broke, which is the property this class is built around.
+    //
+    // Two consequences of the split are worth stating because they are easy to get wrong:
+    //
+    //   * The PRE-RUN observations - the applied migrations, the seeded row counts, the all-zero
+    //     category balances - are captured BEFORE the first job is launched and are asserted from the
+    //     snapshot afterwards. They could not be asserted live once the run moved into setup, and
+    //     dropping them would have lost the evidence that the accrual job cannot be placed first.
+    //   * The four golden COMPARISON ROWS are built in setup too, rather than accumulated by the four
+    //     comparison tests as they ran. Accumulation was the second ordering dependency in this class:
+    //     the report test asserted that four rows existed, which was true only if the four tests before
+    //     it had run. Building them up front makes the report complete however few tests are selected.
+    //
+    // The lifecycle is PER_CLASS so that setup can be an instance method and reach the injected
+    // collaborators. The ordering annotation is retained, but for readability of the report only - no
+    // assertion below depends on it any longer.
+    //
+    // The full reasoning, including why the snapshot is a class rather than a record, is recorded as
+    // DL-281 in docs/decision-log.md.
     // ===============================================================================================
 
     /**
-     * The artefacts the run produced, keyed by logical base, captured by the first test so that each
-     * later test asserts one artefact and names it in its own failure.
+     * Everything the run observed and produced, published once by setup and never mutated afterwards.
+     *
+     * <p>Null only outside the class's lifecycle. {@link #run()} is the accessor every test uses, and it
+     * fails with a readable message rather than a null dereference if setup did not complete.
      */
-    private static final Map<String, byte[]> PRODUCED = new LinkedHashMap<>();
+    private PipelineRun run;
 
-    /** The executions the run performed, in launch order, for the pipeline-status assertion. */
-    private static final List<JobExecution> EXECUTIONS = new ArrayList<>();
-
-    /** One row per contract compared, in the shape the Gate 1 evidence page carries. */
-    private static final List<ContractComparison> COMPARISONS = new ArrayList<>();
-
-    /** The Gate 3 recorder: three figures per measured run, and no threshold anywhere. */
-    private static final RunScopedPerformanceRecorder PERFORMANCE =
-            new RunScopedPerformanceRecorder();
+    /**
+     * The Gate 3 recorder: three figures per measured run, and no threshold anywhere.
+     *
+     * <p>An instance field rather than a static one, so it holds the figures of exactly this class's own
+     * run and is discarded with the instance.
+     */
+    private final RunScopedPerformanceRecorder performance = new RunScopedPerformanceRecorder();
 
     @Autowired
     private BatchLaunchCoordinator launcher;
@@ -405,40 +492,156 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     /**
      * Empties this specification's staging root and returns the shared server to its seeded state.
      *
-     * @throws IOException  if the staging root cannot be prepared
-     * @throws SQLException if the seeded state cannot be restored
+     * <p>Ordered exactly as written: the snapshot is discarded and the staging root emptied BEFORE the
+     * seed is restored and the run begins, so nothing a previous class or a previous run of this one left
+     * behind can be mistaken for this run's output.
+     *
+     * @throws Exception if the staging root cannot be prepared, the seeded state cannot be restored, or
+     *                   any job of the pipeline fails to complete
      */
     @BeforeAll
-    static void prepareSharedState() throws IOException, SQLException {
+    void driveTheDeliveredPipelineOnce() throws Exception {
+        this.run = null;
         clearStagingRoot();
         restoreSeededState();
+        this.run = executeDeliveredPipeline();
     }
 
     /**
-     * Publishes the two evidence artefacts, returns the shared server to its seeded state and removes
-     * what this run staged, whatever the outcome of the tests above.
+     * Publishes the two evidence artefacts, returns the shared server to its seeded state, removes what
+     * this run staged and discards the snapshot - whatever the outcome of the tests above.
      *
      * <p>The evidence is written first and unconditionally, because a failed comparison is exactly the
-     * case in which the report is worth having.
+     * case in which the report is worth having. It is written from the SNAPSHOT rather than from rows the
+     * tests accumulated, so the report is complete even when a single method was selected.
      *
      * @throws IOException  if the staging root cannot be emptied or the evidence cannot be written
      * @throws SQLException if the seeded state cannot be restored
      */
     @AfterAll
-    static void restoreSharedState() throws IOException, SQLException {
+    void publishEvidenceAndRestoreSharedState() throws IOException, SQLException {
         try {
-            publishComparisonReport();
-            if (!PERFORMANCE.baselines().isEmpty()) {
-                PERFORMANCE.publish(BASELINE_REPORT_FILE);
+            publishComparisonReport(this.run);
+            if (!this.performance.baselines().isEmpty()) {
+                this.performance.publish(BASELINE_REPORT_FILE);
             }
         } finally {
-            removeOwnJobInstances();
+            removeOwnJobInstances(this.run);
             restoreSeededState();
-            clearStagingRoot();
-            PRODUCED.clear();
-            EXECUTIONS.clear();
-            COMPARISONS.clear();
+            // Discarded outright rather than emptied and re-created: at the end of the run there is
+            // nothing left to stage, and an empty root left behind once per process accumulates on
+            // the host for no purpose. The set-up callback still empties-and-prepares, because it
+            // needs a root that exists and is empty.
+            IsolatedStagingRoot.discard(stagingRoot());
+            this.run = null;
         }
+    }
+
+    /**
+     * The snapshot of this class's run, insisting that setup completed.
+     *
+     * @return the snapshot
+     */
+    private PipelineRun run() {
+        assertThat(this.run)
+                .as("the delivered pipeline is driven once in fixture setup and published as an "
+                        + "immutable snapshot; a null snapshot here means that setup did not complete, "
+                        + "which is a harness failure rather than a contract failure")
+                .isNotNull();
+        return this.run;
+    }
+
+    /**
+     * Drives the six jobs of the plan's pipeline once, in the plan's own order, and returns everything
+     * observed.
+     *
+     * <p>Observation only: this method asserts nothing about the figures it records beyond what it must
+     * to fail fast and legibly - each launch insists its job COMPLETED, because a snapshot taken from a
+     * failed run would produce thirty confusing failures instead of one clear one. Every other assertion
+     * belongs to a named test below.
+     *
+     * @return the immutable snapshot
+     * @throws Exception if a job cannot be launched, an artefact cannot be read, or a golden is missing
+     */
+    private PipelineRun executeDeliveredPipeline() throws Exception {
+        // THE PRE-RUN OBSERVATIONS. Taken before the first launch, because they are statements about
+        // what the run STARTED from and none of them is observable once it has finished.
+        final List<String> migrations = List.copyOf(appliedMigrationVersions());
+        final List<String> tables = List.copyOf(applicationTableNames());
+        final Map<String, Long> seededCounts = new LinkedHashMap<>();
+        for (final String table : PRE_RUN_COUNTED_TABLES) {
+            seededCounts.put(table, Long.valueOf(rowCount(table)));
+        }
+        final List<String> seededBalances = List.copyOf(queryColumn(
+                "SELECT DISTINCT tran_cat_bal::text FROM transaction_category_balance"));
+
+        final byte[] input = classpathBytes(INPUT_FIXTURE);
+        Files.write(stagingRoot().resolve(LANDING_DATASET), input);
+
+        final List<JobExecution> executions = new ArrayList<>();
+
+        // 1. Posting. Reads the landing dataset, writes the master and the reject dataset. Measured for
+        // Gate 3 over the three hundred records it processes - a recorded figure, never a threshold.
+        final JobExecution posting = this.performance.measure("postTransactionJob",
+                INPUT_RECORD_COUNT + " daily-transaction records of " + SOURCE_IMAGE_WIDTH
+                        + " bytes, against 50 accounts, 50 cards, 50 cross-references and 50 seeded "
+                        + "category balances",
+                execution -> readCountOf(execution),
+                () -> launch("postTransactionJob", Map.of()));
+        executions.add(posting);
+        final long masterAfterPosting = this.transactions.count();
+
+        // 2. Accrual. Writes its synthesised transactions to its OWN dataset, not to the master.
+        executions.add(this.performance.measure("interestCalculationJob",
+                "50 accounts and the category-balance rows posting left behind them, against three "
+                        + "17-row disclosure groups",
+                // The accrual step's own read count is the category-balance rows it consumed, which the
+                // step's counter reports directly; the execution carries the same figure across its
+                // steps and either is the run's own evidence.
+                accrual -> Math.round(counterTotal("carddemo.batch.interest.rows")),
+                () -> launch("interestCalculationJob",
+                        Map.of(JobParameterValidators.INTEREST_PARM_DATE_KEY, INTEREST_PARM_DATE))));
+        final long masterAfterAccrual = this.transactions.count();
+
+        // 3. Archive, then 4. consolidate. The consolidation is what merges the two into the master.
+        executions.add(launch("backupTransactionJob", Map.of()));
+        executions.add(launch("combineTransactionsJob", Map.of()));
+        final long masterAfterConsolidation = this.transactions.count();
+
+        // 5. Report and 6. statements, both readers of the consolidated master.
+        executions.add(launch("transactionReportJob", Map.of(
+                JobParameterValidators.REPORT_START_DATE_KEY, REPORT_START_DATE,
+                JobParameterValidators.REPORT_END_DATE_KEY, REPORT_END_DATE)));
+        executions.add(launch("createStatementJob", Map.of()));
+
+        final Map<String, byte[]> produced = new LinkedHashMap<>();
+        for (final String base : PRODUCED_BASES) {
+            produced.put(base, capture(base));
+        }
+
+        // THE ORPHAN PROBE, launched after the six and after the captures, exactly where the ordered test
+        // used to launch it. It is recorded on the snapshot rather than left to a test method for one
+        // concrete reason: the framework metadata store is shared by every integration test in the run,
+        // and this class deletes only the instance identifiers it recorded. A launch performed inside a
+        // test would leave a row nothing here could account for, and the specification that asserts the
+        // orphan has never been launched would fail depending on which of the two ran first.
+        final JobExecution orphan = launch(ORPHAN_JOB_NAME, Map.of());
+        final long masterAfterOrphan = this.transactions.count();
+
+        // THE FOUR COMPARISON ROWS, built here rather than accumulated by the four comparison tests as
+        // they ran. Accumulation was this class's second ordering dependency: the report test asserted
+        // four rows existed, which held only if the four tests before it had run.
+        final List<ContractComparison> comparisons = new ArrayList<>(GOLDEN_CONTRACTS.size());
+        for (final GoldenContract contract : GOLDEN_CONTRACTS) {
+            comparisons.add(compare(contract, produced.get(contract.logicalBase())));
+        }
+
+        final StepExecution postingStep = posting.getStepExecutions().iterator().next();
+        return new PipelineRun(migrations, tables, seededCounts, seededBalances,
+                postingStep.getReadCount(), postingStep.getWriteCount(), masterAfterPosting,
+                masterAfterAccrual, masterAfterConsolidation, input.length,
+                this.awsProperties.s3().batchStagingBucket(), executions, orphan, masterAfterOrphan,
+                produced, comparisons);
     }
 
     /**
@@ -449,19 +652,23 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * can move. Deletion is by the instance identifiers this class recorded - never by job name - so an
      * instance another specification created is untouched whichever order the two ran in.
      *
+     * <p>It covers {@link PipelineRun#ownExecutions()} and not just the pipeline, because the orphan
+     * probe is a launch this class performed and therefore a row this class owes. Deleting the six and
+     * leaving the seventh is what makes the orphan's own specification fail on ordering.
+     *
      * <p>The order of the six statements is the order the foreign keys require and is not
      * interchangeable.
      *
      * @throws SQLException if the metadata cannot be amended
      */
-    private static void removeOwnJobInstances() throws SQLException {
-        if (EXECUTIONS.isEmpty()) {
+    private static void removeOwnJobInstances(final PipelineRun completed) throws SQLException {
+        if (completed == null || completed.ownExecutions().isEmpty()) {
             return;
         }
         try (Connection connection =
                 DriverManager.getConnection(jdbcUrl(), databaseUser(), databasePassword())) {
             connection.setAutoCommit(false);
-            for (final JobExecution execution : EXECUTIONS) {
+            for (final JobExecution execution : completed.ownExecutions()) {
                 final Long instanceId = execution.getJobInstance().getId();
                 final Long executionId = execution.getId();
                 if (instanceId == null || executionId == null) {
@@ -515,11 +722,13 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @Order(1)
     @DisplayName("the schema is the migrations' own: exactly the four delivered versions applied, and "
             + "exactly the eleven application tables they create")
-    void theMigratedSchemaIsTheOneTheGoldensWereProducedAgainst() throws SQLException {
-        assertThat(appliedMigrationVersions())
-                .as("the four delivered migrations, and no fifth version, are what the run reads from")
+    void theMigratedSchemaIsTheOneTheGoldensWereProducedAgainst() {
+        // From the snapshot, so this is the schema the run ACTUALLY read from rather than the schema as it
+        // stands now - which is the claim the goldens depend on.
+        assertThat(run().appliedMigrations())
+                .as("the four delivered migrations, and no fifth version, are what the run read from")
                 .containsExactly("1", "2", "3", "4");
-        assertThat(applicationTableNames())
+        assertThat(run().applicationTables())
                 .as("the framework's own metadata tables and the migration history are excluded by the "
                         + "shared base, so this count is the record schema and nothing else")
                 .hasSize(11)
@@ -704,18 +913,24 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @Order(8)
     @DisplayName("Gate 4 - the eight non-sequential artefacts reach the run as seeded rows, at the row "
             + "counts their files hold, and the master starts empty")
-    void theSeededServerHoldsWhatTheEightRemainingArtefactsHold() throws SQLException {
-        assertThat(rowCount("account")).isEqualTo(50L);
-        assertThat(rowCount("card")).isEqualTo(50L);
-        assertThat(rowCount("customer")).isEqualTo(50L);
-        assertThat(rowCount("card_cross_reference")).isEqualTo(50L);
-        assertThat(rowCount("transaction_category_balance")).isEqualTo(50L);
-        assertThat(rowCount("disclosure_group")).isEqualTo(51L);
-        assertThat(rowCount("transaction_category")).isEqualTo(18L);
-        assertThat(rowCount("transaction_type")).isEqualTo(7L);
-        assertThat(rowCount("daily_transaction")).isEqualTo((long) INPUT_RECORD_COUNT);
-        assertThat(rowCount("transaction"))
-                .as("the master starts empty, so every row the goldens describe was written by this run")
+    void theSeededServerHoldsWhatTheEightRemainingArtefactsHold() {
+        // READ FROM THE SNAPSHOT, NOT FROM THE SERVER. These are statements about what the run STARTED
+        // from, and the last of them - an empty master - stops being true the moment the run posts its
+        // first record. Asserting them live once the run moved into fixture setup would assert the
+        // finished state and call it the starting state, which is how a passing test can describe the
+        // opposite of what it claims.
+        final PipelineRun completed = run();
+        assertThat(completed.seededRowCount("account")).isEqualTo(50L);
+        assertThat(completed.seededRowCount("card")).isEqualTo(50L);
+        assertThat(completed.seededRowCount("customer")).isEqualTo(50L);
+        assertThat(completed.seededRowCount("card_cross_reference")).isEqualTo(50L);
+        assertThat(completed.seededRowCount("transaction_category_balance")).isEqualTo(50L);
+        assertThat(completed.seededRowCount("disclosure_group")).isEqualTo(51L);
+        assertThat(completed.seededRowCount("transaction_category")).isEqualTo(18L);
+        assertThat(completed.seededRowCount("transaction_type")).isEqualTo(7L);
+        assertThat(completed.seededRowCount("daily_transaction")).isEqualTo((long) INPUT_RECORD_COUNT);
+        assertThat(completed.seededRowCount("transaction"))
+                .as("the master started empty, so every row the goldens describe was written by this run")
                 .isZero();
     }
 
@@ -723,9 +938,10 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @Order(9)
     @DisplayName("Gate 4 - every seeded category balance is positive zero before posting, which is the "
             + "reason the accrual run cannot be placed first")
-    void everySeededCategoryBalanceIsPositiveZero() throws SQLException {
-        final List<String> balances = queryColumn(
-                "SELECT DISTINCT tran_cat_bal::text FROM transaction_category_balance");
+    void everySeededCategoryBalanceIsPositiveZero() {
+        // From the snapshot, for the same reason as the test above: posting moves these balances, so the
+        // pre-run observation is the only one that can support the claim.
+        final List<String> balances = run().seededCategoryBalances();
         assertThat(balances)
                 .as("one distinct balance across all fifty rows; an accrual run placed before posting "
                         + "would multiply every rate by it and truncation would be unobservable")
@@ -741,91 +957,70 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
 
     @Test
     @Order(10)
-    @DisplayName("Gate 1 - the committed 300-record input drives the whole delivered pipeline to "
+    @DisplayName("Gate 1 - the committed 300-record input drove the whole delivered pipeline to "
             + "completion against a real server and a real object store, in the plan's own order")
-    void theCommittedInputDrivesTheWholePipeline() throws Exception {
-        assertThat(this.awsProperties.s3().batchStagingBucket())
-                .as("the publication path addresses the bucket the emulator was provisioned with, so "
-                        + "the object store this run writes into is the real one")
-                .isEqualTo(PROVISIONED_STAGING_BUCKET);
+    void theCommittedInputDrivesTheWholePipeline() {
+        final PipelineRun completed = run();
 
-        final byte[] input = classpathBytes(INPUT_FIXTURE);
-        assertThat(input)
+        assertThat(completed.stagingBucket())
+                .as("the publication path addresses the bucket the emulator was provisioned with, so "
+                        + "the object store this run wrote into is the real one")
+                .isEqualTo(PROVISIONED_STAGING_BUCKET);
+        assertThat(completed.inputByteCount())
                 .as("the sample input is the estate's own newline-delimited rendering: %d records of "
                         + "%d bytes plus one terminator each", INPUT_RECORD_COUNT, SOURCE_IMAGE_WIDTH)
-                .hasSize(INPUT_RECORD_COUNT * (SOURCE_IMAGE_WIDTH + 1));
-        Files.write(stagingRoot().resolve(LANDING_DATASET), input);
+                .isEqualTo(INPUT_RECORD_COUNT * (SOURCE_IMAGE_WIDTH + 1));
 
-        // 1. Posting. Reads the landing dataset, writes the master and the reject dataset. Measured for
-        // Gate 3 over the three hundred records it processes - a recorded figure, never a threshold.
-        final JobExecution posting = PERFORMANCE.measure("postTransactionJob",
-                INPUT_RECORD_COUNT + " daily-transaction records of " + SOURCE_IMAGE_WIDTH
-                        + " bytes, against 50 accounts, 50 cards, 50 cross-references and 50 seeded "
-                        + "category balances",
-                execution -> readCountOf(execution),
-                () -> launch("postTransactionJob", Map.of()));
-        assertThat(posting.getStepExecutions())
-                .singleElement()
-                .satisfies(step -> {
-                    assertThat(step.getReadCount()).isEqualTo(INPUT_RECORD_COUNT);
-                    assertThat(step.getWriteCount()).isEqualTo(REJECTED_RECORD_COUNT);
-                });
-        assertThat(this.transactions.count())
+        // 1. POSTING. Reads the landing dataset, writes the master and the reject dataset.
+        assertThat(completed.postingReadCount())
+                .as("the posting step read the whole committed input")
+                .isEqualTo(INPUT_RECORD_COUNT);
+        assertThat(completed.postingWriteCount())
+                .as("and wrote one reject record per refused record")
+                .isEqualTo(REJECTED_RECORD_COUNT);
+        assertThat(completed.masterCountAfterPosting())
                 .as("the posting run accepts %d of the %d records", POSTED_RECORD_COUNT,
                         INPUT_RECORD_COUNT)
                 .isEqualTo(POSTED_RECORD_COUNT);
 
-        // 2. Accrual. Writes its synthesised transactions to its OWN dataset, not to the master.
-        PERFORMANCE.measure("interestCalculationJob",
-                "50 accounts and the category-balance rows posting left behind them, against three "
-                        + "17-row disclosure groups",
-                // The accrual step's own read count is the category-balance rows it consumed, which the
-                // step's counter reports directly; the execution carries the same figure across its
-                // steps and either is the run's own evidence.
-                accrual -> Math.round(counterTotal("carddemo.batch.interest.rows")),
-                () -> launch("interestCalculationJob",
-                        Map.of(JobParameterValidators.INTEREST_PARM_DATE_KEY, INTEREST_PARM_DATE)));
-        assertThat(this.transactions.count())
+        // 2. ACCRUAL. Writes its synthesised transactions to its OWN dataset, not to the master.
+        assertThat(completed.masterCountAfterAccrual())
                 .as("the accrual run writes to a sequential dataset, so the master is unchanged - this "
                         + "is why the two reading jobs must run after the consolidation and not before")
                 .isEqualTo(POSTED_RECORD_COUNT);
 
-        // 3. Archive, then 4. consolidate. The consolidation is what merges the two into the master.
-        launch("backupTransactionJob", Map.of());
-        launch("combineTransactionsJob", Map.of());
-        assertThat(this.transactions.count())
+        // 3. ARCHIVE, then 4. CONSOLIDATE. The consolidation is what merges the two into the master.
+        assertThat(completed.masterCountAfterConsolidation())
                 .as("the consolidation merges the %d archived and the %d synthesised records",
                         POSTED_RECORD_COUNT, SYNTHESISED_RECORD_COUNT)
                 .isEqualTo(CONSOLIDATED_RECORD_COUNT);
 
-        // 5. Report and 6. statements, both readers of the consolidated master.
-        launch("transactionReportJob", Map.of(
-                JobParameterValidators.REPORT_START_DATE_KEY, REPORT_START_DATE,
-                JobParameterValidators.REPORT_END_DATE_KEY, REPORT_END_DATE));
-        launch("createStatementJob", Map.of());
-
-        assertThat(EXECUTIONS)
+        // 5. REPORT and 6. STATEMENTS, both readers of the consolidated master.
+        assertThat(completed.executions())
                 .as("all six jobs of the plan's pipeline ran")
                 .hasSize(6)
                 .allSatisfy(execution -> assertThat(execution.getStatus())
                         .as("%s must complete", execution.getJobInstance().getJobName())
                         .isEqualTo(BatchStatus.COMPLETED));
+        assertThat(completed.executions().stream()
+                        .map(execution -> execution.getJobInstance().getJobName())
+                        .toList())
+                .as("and in the plan's own order, which is not interchangeable: the accrual writes to "
+                        + "its own dataset, so both readers must follow the consolidation")
+                .containsExactly("postTransactionJob", "interestCalculationJob",
+                        "backupTransactionJob", "combineTransactionsJob", "transactionReportJob",
+                        "createStatementJob");
 
-        capture(REJECT_BASE);
-        capture(REPORT_BASE);
-        capture(STATEMENT_BASE);
-        capture(STATEMENT_HTML_BASE);
-        assertThat(PRODUCED)
+        assertThat(completed.artefactBases())
                 .as("the run produced one generation for each of the four goldens")
-                .hasSize(4);
+                .containsExactlyInAnyOrderElementsOf(PRODUCED_BASES);
     }
 
     @Test
     @Order(11)
     @DisplayName("Gate 1 - the reject dataset the run produced is byte-identical to daily-reject.txt")
     void theRejectDatasetMatchesItsGolden() throws IOException {
-        assertGolden(REJECT_BASE, "daily-reject.txt", REJECT_WIDTH, REJECTED_RECORD_COUNT,
-                INPUT_FIXTURE_NAME);
+        assertGolden(goldenContract(REJECT_BASE));
     }
 
     @Test
@@ -833,24 +1028,21 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @DisplayName("Gate 1 - the transaction report the run produced is byte-identical to "
             + "transaction-report.txt")
     void theTransactionReportMatchesItsGolden() throws IOException {
-        assertGolden(REPORT_BASE, "transaction-report.txt", REPORT_WIDTH, REPORT_RECORD_COUNT,
-                INPUT_FIXTURE_NAME);
+        assertGolden(goldenContract(REPORT_BASE));
     }
 
     @Test
     @Order(13)
     @DisplayName("Gate 1 - the text statement the run produced is byte-identical to statement.txt")
     void theTextStatementMatchesItsGolden() throws IOException {
-        assertGolden(STATEMENT_BASE, "statement.txt", STATEMENT_WIDTH, STATEMENT_RECORD_COUNT,
-                INPUT_FIXTURE_NAME);
+        assertGolden(goldenContract(STATEMENT_BASE));
     }
 
     @Test
     @Order(14)
     @DisplayName("Gate 1 - the HTML statement the run produced is byte-identical to statement-html.txt")
     void theHtmlStatementMatchesItsGolden() throws IOException {
-        assertGolden(STATEMENT_HTML_BASE, "statement-html.txt", STATEMENT_HTML_WIDTH,
-                STATEMENT_HTML_RECORD_COUNT, INPUT_FIXTURE_NAME);
+        assertGolden(goldenContract(STATEMENT_HTML_BASE));
     }
 
     @Test
@@ -858,9 +1050,9 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @DisplayName("Gate 1 - every artefact the run produced carries no record separator, because every "
             + "dataset it stands for is declared fixed-length")
     void noProducedArtefactCarriesASeparator() {
-        assertThat(PRODUCED).isNotEmpty();
-        PRODUCED.forEach((base, image) -> {
-            final String text = new String(image, StandardCharsets.US_ASCII);
+        assertThat(run().artefactBases()).isNotEmpty();
+        run().artefactBases().forEach(base -> {
+            final String text = new String(run().artefact(base), StandardCharsets.US_ASCII);
             assertThat(text)
                     .as("%s must carry no line feed", base)
                     .doesNotContain(String.valueOf((char) LINE_FEED));
@@ -883,17 +1075,28 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @Order(17)
     @DisplayName("the extract job no job stream invokes is launched here, because nothing in the "
             + "delivered application will ever call it")
-    void theOrphanExtractJobIsLaunchedByThisTreeOrByNothing() throws Exception {
-        final JobExecution extract = launch("dailyTransactionReadJob", Map.of());
+    void theOrphanExtractJobIsLaunchedByThisTreeOrByNothing() {
+        final JobExecution extract = run().orphanExecution();
+        assertThat(extract.getJobInstance().getJobName())
+                .as("the probe launched the orphan by name, which is the only way it is reachable")
+                .isEqualTo(ORPHAN_JOB_NAME);
+        assertThat(extract.getStatus())
+                .as("launching it by name completes it, so being unwired is not being unusable")
+                .isEqualTo(BatchStatus.COMPLETED);
         assertThat(extract.getStepExecutions())
                 .as("the member is one indivisible pass, so it is one step - it carries no condition "
                         + "gate, no parameter and no place in any sequence, and those absences are the "
                         + "job rather than gaps in it")
                 .singleElement()
                 .satisfies(step -> assertThat(step.getStatus()).isEqualTo(BatchStatus.COMPLETED));
-        assertThat(this.transactions.count())
+        assertThat(run().masterCountAfterOrphan())
                 .as("the extract reads and reports; it writes nothing, so the master is untouched")
                 .isEqualTo(CONSOLIDATED_RECORD_COUNT);
+        assertThat(run().executions())
+                .as("the orphan is a probe beside the pipeline, never a step within it, so it must not "
+                        + "appear among the six the pipeline performed")
+                .noneSatisfy(execution -> assertThat(execution.getJobInstance().getJobName())
+                        .isEqualTo(ORPHAN_JOB_NAME));
     }
 
     // ===============================================================================================
@@ -911,6 +1114,14 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     void theRejectReasonIsFourDigitsAndItsDescriptionFillsTheField() {
         final List<String> rejects = producedRecords(REJECT_BASE, REJECT_WIDTH);
         assertThat(rejects).hasSize(REJECTED_RECORD_COUNT);
+
+        // The expectation is the HAND TRANSCRIPTION of the legacy source, not the shipped enumeration.
+        // Reading the enumeration here would assert the implementation against itself: a code recorded
+        // as 0104 would produce an expectation of 0104 and this gate would pass over a file no consumer
+        // could read.
+        final LegacyRejectReasons.Reason overlimit = LegacyRejectReasons.requireByCode(
+                LegacyRejectReasons.OVERLIMIT_TRANSACTION_CODE);
+
         for (final String reject : rejects) {
             final String reason = reject.substring(SOURCE_IMAGE_WIDTH,
                     SOURCE_IMAGE_WIDTH + REJECT_REASON_WIDTH);
@@ -918,34 +1129,81 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
             assertThat(reason)
                     .as("the field is four digits wide, so the overlimit reason is written 0102 and "
                             + "never 102")
-                    .isEqualTo("0102");
+                    .isEqualTo("0102")
+                    .isEqualTo(overlimit.fourDigitCode());
             assertThat(description)
                     .as("the description is 76 bytes: 21 of text and 55 of space")
                     .hasSize(REJECT_DESCRIPTION_WIDTH)
-                    .isEqualTo("OVERLIMIT TRANSACTION" + " ".repeat(55));
+                    .isEqualTo("OVERLIMIT TRANSACTION" + " ".repeat(55))
+                    .isEqualTo(overlimit.paddedDescription());
         }
     }
 
     @Test
     @Order(21)
     @DisplayName("trap - the other four reject reasons are emitted on no record, which is a measured "
-            + "property of the unmodified input and not a gap to be filled with a synthetic path")
+            + "property of the unmodified input and not a gap to be filled with a synthetic path - and "
+            + "the trailer contract is still measured for all five")
     void theOtherRejectReasonsAreNotEmitted() {
         final List<String> reasons = producedRecords(REJECT_BASE, REJECT_WIDTH).stream()
                 .map(reject -> reject.substring(SOURCE_IMAGE_WIDTH,
                         SOURCE_IMAGE_WIDTH + REJECT_REASON_WIDTH))
                 .toList();
         // 0100 needs a card the cross-reference does not hold, and every card in the input is held.
-        // 0101 needs a cross-referenced account the account file does not hold, and every one is held.
+        // 0101 needs the account read to report nothing, and every cross-referenced account is held -
+        // and in the migrated schema the cross-reference table's foreign key makes a dangling row
+        // impossible, so no INPUT can reach it. That is a statement about the state, not about the code
+        // path: the path IS reached, positively, in RejectReasonArmsIT.
         // 0103 needs an account expiring before the single origination date the input carries, and none
         // expires that early - and because its unguarded block runs after the overlimit block, a
         // doubly-invalid record would surface as 0103 rather than 0102, so its absence here is also
         // evidence that no record is doubly invalid.
         // 0109 is assigned inside the account rewrite, which is only reached once the reason is already
-        // zero, and the next iteration clears the reason before anything writes it: set, never written.
+        // zero, and nothing re-tests it afterwards: set, never written. Also reached positively in
+        // RejectReasonArmsIT, which watches the run set it and post the record regardless.
+        //
+        // THE FOUR ABSENT CODES ARE NAMED FROM THE TRANSCRIPTION, NOT FROM FOUR LITERALS AND NOT FROM
+        // THE SHIPPED ENUMERATION. A bare doesNotContain over hand-typed literals passes vacuously the
+        // moment a code drifts - the drifted code is not among the literals, so nothing is contained and
+        // nothing fails. Deriving the four from LegacyRejectReasons removes that escape: whatever the
+        // legacy source sets, this asserts about.
+        final List<String> absentCodes = LegacyRejectReasons.REASONS.stream()
+                .filter(reason -> reason.code() != LegacyRejectReasons.OVERLIMIT_TRANSACTION_CODE)
+                .map(LegacyRejectReasons.Reason::fourDigitCode)
+                .toList();
+        assertThat(absentCodes)
+                .as("four of the five transcribed reasons, the overlimit one excepted")
+                .containsExactly("0100", "0101", "0103", "0109");
         assertThat(reasons)
-                .as("no synthetic path is invented to reach these, and no fifth expected file exists")
-                .doesNotContain("0100", "0101", "0103", "0109");
+                .as("no synthetic path is invented to reach these inside the byte-parity gate, and no"
+                        + " fifth expected file exists: the delivered input is processed UNMODIFIED,"
+                        + " which is the whole point of this gate")
+                .doesNotContainAnyElementsOf(absentCodes);
+
+        // AND THE TRAILER CONTRACT IS CARRIED FOR ALL FIVE, NOT ONLY FOR THE ONE THIS RUN EMITS. The
+        // run's output legitimately carries one reason, because the delivered input reaches one. That
+        // does not licence leaving the other four unmeasured here: each is put through the PRODUCTION
+        // trailer assembler and compared against the eighty characters the legacy source's own values
+        // produce, so a drift in any of the five fails this gate rather than only the one in use.
+        assertThat(LegacyRejectReasons.REASONS).hasSize(5);
+        for (final LegacyRejectReasons.Reason transcribed : LegacyRejectReasons.REASONS) {
+            final RejectReason shipped = RejectReason.byReasonCode(transcribed.code())
+                    .orElseThrow(() -> new AssertionError("the legacy source sets reason "
+                            + transcribed.fourDigitCode() + " at " + transcribed.sourceLocation()
+                            + ", but the shipped enumeration recognises no such code"));
+            assertThat(shipped.name())
+                    .as("%s must be the reason that arises when %s: the two account-not-found reasons"
+                            + " share one description and are told apart by nothing but these four"
+                            + " digits, so a transposition would be invisible to a code-only check",
+                            transcribed.fourDigitCode(), transcribed.role())
+                    .isEqualTo(transcribed.shippedConstantName());
+            assertThat(RejectRecordWriter.validationTrailer(shipped))
+                    .as("the eighty-character trailer for %s: four digits zero-filled on the left,"
+                            + " then the description the source moves at %s blank-padded on the right",
+                            transcribed.fourDigitCode(), transcribed.sourceLocation())
+                    .isEqualTo(transcribed.trailer())
+                    .hasSize(REJECT_REASON_WIDTH + REJECT_DESCRIPTION_WIDTH);
+        }
     }
 
     @Test
@@ -1516,7 +1774,8 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @DisplayName("Gate 3 - the baseline is recorded with the fixture volumes it was measured over, "
             + "because a figure without its volumes cannot be compared to anything later")
     void theBaselineIsRecordedWithTheVolumesItWasMeasuredOver() {
-        final List<RunScopedPerformanceRecorder.RunBaseline> baselines = PERFORMANCE.baselines();
+        final List<RunScopedPerformanceRecorder.RunBaseline> baselines =
+                this.performance.baselines();
         assertThat(baselines)
                 .as("the posting run and the accrual run were both measured")
                 .hasSize(2)
@@ -1552,19 +1811,24 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @DisplayName("Gate 1 - the comparison report names the input, the golden, both byte lengths, both "
             + "record counts and the match status, one row per contract")
     void theComparisonReportCoversAllFourContracts() throws IOException {
-        assertThat(COMPARISONS)
+        // The rows are built in fixture setup, one per declared contract, so this holds whichever tests
+        // were selected. Accumulating them as the four comparison tests ran was the second ordering
+        // dependency in this class: this assertion was then a statement about which tests had executed
+        // rather than about what the run produced.
+        final List<ContractComparison> comparisons = run().comparisons();
+        assertThat(comparisons)
                 .as("one row per fixed-width contract the pipeline emits")
                 .hasSize(4)
                 .extracting(ContractComparison::recordWidth)
                 .containsExactly(REJECT_WIDTH, REPORT_WIDTH, STATEMENT_WIDTH, STATEMENT_HTML_WIDTH);
-        assertThat(COMPARISONS).allSatisfy(row -> {
+        assertThat(comparisons).allSatisfy(row -> {
             assertThat(row.inputResource()).isEqualTo(INPUT_DIRECTORY + INPUT_FIXTURE_NAME);
             assertThat(row.goldenResource()).startsWith(GOLDEN_DIRECTORY);
             assertThat(row.matched()).as("%s must match", row.goldenResource()).isTrue();
             assertThat(row.actualByteCount()).isEqualTo(row.expectedByteCount());
             assertThat(row.actualRecordCount()).isEqualTo(row.expectedRecordCount());
         });
-        final Path published = publishComparisonReport();
+        final Path published = publishComparisonReport(run());
         assertThat(published)
                 .as("the report is written where the evidence page can take it up")
                 .isNotNull()
@@ -1603,7 +1867,6 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         final JobExecution execution = Objects.requireNonNull(
                 this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
                 () -> "the coordinator reported execution " + executionId + " but the store has none");
-        EXECUTIONS.add(execution);
         assertThat(execution.getStatus())
                 .as("%s must complete; failures were %s", jobName, execution.getAllFailureExceptions())
                 .isEqualTo(BatchStatus.COMPLETED);
@@ -1634,7 +1897,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @param  logicalBase the generation base whose newest local generation is wanted
      * @throws IOException if the staging root cannot be listed or the artefact cannot be read
      */
-    private static void capture(final String logicalBase) throws IOException {
+    private static byte[] capture(final String logicalBase) throws IOException {
         final Path newest;
         try (Stream<Path> entries = Files.list(stagingRoot())) {
             newest = entries.filter(Files::isRegularFile)
@@ -1643,7 +1906,43 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                     .orElseThrow(() -> new AssertionError(
                             "the run produced no generation for logical base " + logicalBase));
         }
-        PRODUCED.put(logicalBase, Files.readAllBytes(newest));
+        return Files.readAllBytes(newest);
+    }
+
+    /**
+     * The declared contract of one generation base.
+     *
+     * @param  logicalBase the generation base
+     * @return its contract
+     */
+    private static GoldenContract goldenContract(final String logicalBase) {
+        return GOLDEN_CONTRACTS.stream()
+                .filter(contract -> contract.logicalBase().equals(logicalBase))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "no fixed-width contract is declared for " + logicalBase));
+    }
+
+    /**
+     * Builds the comparison row of one contract, without asserting anything about it.
+     *
+     * <p>Called from setup for all four contracts, so the Gate 1 report is complete however few tests are
+     * selected. The row records what was expected and what was produced and whether the two matched; the
+     * ASSERTION that they matched belongs to {@link #assertGolden(GoldenContract)} and to the report test.
+     *
+     * @param  contract the contract to compare
+     * @param  produced the artefact the run produced for it
+     * @return the comparison row
+     * @throws IOException if the committed golden cannot be read
+     */
+    private static ContractComparison compare(final GoldenContract contract, final byte[] produced)
+            throws IOException {
+        final String goldenResource = GOLDEN_DIRECTORY + contract.goldenName();
+        final byte[] golden = classpathBytes(goldenResource);
+        return new ContractComparison(contract.logicalBase(), INPUT_DIRECTORY + INPUT_FIXTURE_NAME,
+                goldenResource, contract.recordWidth(), contract.recordCount(), golden.length,
+                produced.length / contract.recordWidth(), produced.length,
+                Arrays.equals(produced, golden));
     }
 
     /**
@@ -1656,11 +1955,8 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @param  recordWidth the record width, which is the whole stride
      * @return the records, in the order the artefact holds them
      */
-    private static List<String> producedRecords(final String logicalBase, final int recordWidth) {
-        final byte[] image = PRODUCED.get(logicalBase);
-        assertThat(image)
-                .as("the pipeline test must have run first and captured %s", logicalBase)
-                .isNotNull();
+    private List<String> producedRecords(final String logicalBase, final int recordWidth) {
+        final byte[] image = run().artefact(logicalBase);
         assertThat(image.length % recordWidth)
                 .as("%s must be an exact multiple of its %d-byte record width", logicalBase,
                         recordWidth)
@@ -1687,19 +1983,12 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @param  inputName    the input file name the comparison report names as the run's source
      * @throws IOException if the golden cannot be read
      */
-    private static void assertGolden(final String logicalBase, final String goldenName,
-            final int recordWidth, final int recordCount, final String inputName) throws IOException {
-        final byte[] produced = PRODUCED.get(logicalBase);
-        assertThat(produced)
-                .as("the pipeline test must have run first and captured %s", logicalBase)
-                .isNotNull();
-        final String goldenResource = GOLDEN_DIRECTORY + goldenName;
-        final byte[] golden = classpathBytes(goldenResource);
-
-        COMPARISONS.add(new ContractComparison(logicalBase, INPUT_DIRECTORY + inputName,
-                goldenResource, recordWidth, recordCount, golden.length,
-                produced.length / recordWidth, produced.length,
-                Arrays.equals(produced, golden)));
+    private void assertGolden(final GoldenContract contract) throws IOException {
+        final String goldenName = contract.goldenName();
+        final int recordWidth = contract.recordWidth();
+        final int recordCount = contract.recordCount();
+        final byte[] produced = run().artefact(contract.logicalBase());
+        final byte[] golden = classpathBytes(GOLDEN_DIRECTORY + goldenName);
 
         assertThat(golden)
                 .as("%s is %d records of %d bytes with no separator", goldenName, recordCount,
@@ -1731,6 +2020,18 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         assertThat(produced)
                 .as("%s must be reproduced byte for byte, whole", goldenName)
                 .isEqualTo(golden);
+
+        // AND the row the snapshot recorded for this contract agrees with what was just measured. The row
+        // is what the Gate 1 report publishes, so a row that disagreed with the comparison would publish
+        // a status no test had established.
+        final ContractComparison row = run().comparison(contract.logicalBase());
+        assertThat(row.matched())
+                .as("the comparison row the snapshot carries for %s records a match", goldenName)
+                .isTrue();
+        assertThat(row.actualByteCount()).isEqualTo(produced.length);
+        assertThat(row.expectedByteCount()).isEqualTo(golden.length);
+        assertThat(row.actualRecordCount()).isEqualTo(recordCount);
+        assertThat(row.goldenResource()).isEqualTo(GOLDEN_DIRECTORY + goldenName);
     }
 
     /**
@@ -1818,7 +2119,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      *
      * @return the statements, in the order the artefact holds them
      */
-    private static List<List<String>> statementBlocks() {
+    private List<List<String>> statementBlocks() {
         final String closing = "*".repeat(32) + "END OF STATEMENT" + "*".repeat(32);
         final List<List<String>> blocks = new ArrayList<>(STATEMENT_COUNT);
         List<String> current = new ArrayList<>();
@@ -1935,7 +2236,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @param  kind the kind wanted
      * @return the records of that kind
      */
-    private static List<String> reportRecordsOfKind(final ReportRecordKind kind) {
+    private List<String> reportRecordsOfKind(final ReportRecordKind kind) {
         return producedRecords(REPORT_BASE, REPORT_WIDTH).stream()
                 .filter(record -> kindOf(record) == kind)
                 .toList();
@@ -1947,7 +2248,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @param  kind the kind whose amounts are summed
      * @return their sum
      */
-    private static BigDecimal sumOfReportAmounts(final ReportRecordKind kind) {
+    private BigDecimal sumOfReportAmounts(final ReportRecordKind kind) {
         return reportRecordsOfKind(kind).stream()
                 .map(record -> editedAmount(reportAmountOf(record)))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -2135,31 +2436,40 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     // ===============================================================================================
 
     /**
-     * Resolves the staging root the context bound, from the same two settings the expression names.
+     * Resolves the staging root the context bound, which is the one this run published.
      *
      * @return the staging root, created if absent
      * @throws IOException if it cannot be created
      */
-    private static Path stagingRoot() throws IOException {
-        final Path root = Path.of(System.getProperty("java.io.tmpdir"), STAGING_DIRECTORY_NAME);
-        Files.createDirectories(root);
-        return root;
+    private static Path stagingRoot() {
+        return IsolatedStagingRoot.forSpecification(STAGING_LABEL);
     }
 
     /**
-     * Empties this specification's staging root without touching anything above it.
+     * Binds the shared staging key to a root private to this process, before the context is created.
      *
-     * @throws IOException if the root cannot be emptied
+     * <p>A property callback rather than an entry in the annotation above, because the value cannot be a
+     * compile-time constant: it carries the process identifier so that no other run of this specification,
+     * and no sibling clone sharing this host, resolves the same absolute path. The callback runs before the
+     * context starts, which is what a binding resolved during start-up requires.
+     *
+     * @param registry the registry the framework supplies
      */
-    private static void clearStagingRoot() throws IOException {
-        final Path root = stagingRoot();
-        try (Stream<Path> entries = Files.list(root)) {
-            for (final Path entry : entries.toList()) {
-                if (Files.isRegularFile(entry)) {
-                    Files.delete(entry);
-                }
-            }
-        }
+    @DynamicPropertySource
+    static void registerIsolatedStagingDirectory(final DynamicPropertyRegistry registry) {
+        registry.add(STAGING_DIRECTORY_PROPERTY, () -> IsolatedStagingRoot.pathFor(STAGING_LABEL));
+    }
+
+    /**
+     * Removes this specification's own staging root and prepares an empty one.
+     *
+     * <p>The root is a tree this process owns, so the removal cannot reach a file another run or another
+     * clone staged. The sweep that stood here removed every regular file beneath a directory all of them
+     * shared, which could take away a file a concurrently running sibling was still composing.
+     */
+    private static void clearStagingRoot() {
+        IsolatedStagingRoot.discard(stagingRoot());
+        IsolatedStagingRoot.forSpecification(STAGING_LABEL);
     }
 
     // ===============================================================================================
@@ -2172,7 +2482,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * @return the file written
      * @throws IOException if it cannot be written
      */
-    private static Path publishComparisonReport() throws IOException {
+    private static Path publishComparisonReport(final PipelineRun completed) throws IOException {
         final String newline = System.lineSeparator();
         final StringBuilder rendered = new StringBuilder(1024);
         rendered.append("<!-- Gate 1, measured by BatchPipelineE2ETest. Copy into docs/gate-evidence.md")
@@ -2187,10 +2497,12 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                 .append("Actual records | Expected bytes | Actual bytes | Status |").append(newline)
                 .append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | :---: |")
                 .append(newline);
-        for (final ContractComparison row : COMPARISONS) {
+        final List<ContractComparison> rows =
+                completed == null ? List.of() : completed.comparisons();
+        for (final ContractComparison row : rows) {
             rendered.append(row.asTableRow()).append(newline);
         }
-        if (COMPARISONS.isEmpty()) {
+        if (rows.isEmpty()) {
             rendered.append("| _no contract was compared: the pipeline run did not reach the ")
                     .append("comparison_ | | | | | | | | FAIL |").append(newline);
         }
@@ -2211,6 +2523,330 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     // ===============================================================================================
     // NESTED VALUE TYPES
     // ===============================================================================================
+
+    /**
+     * One fixed-width contract the pipeline emits: where its output lands, which committed golden it is
+     * compared against, and the geometry both sides must satisfy.
+     *
+     * @param logicalBase the generation base the run writes it under
+     * @param goldenName  the committed golden's file name
+     * @param recordWidth the record width, which is the whole stride
+     * @param recordCount the record count both sides must carry
+     */
+    private record GoldenContract(String logicalBase, String goldenName, int recordWidth,
+            int recordCount) {
+    }
+
+    /**
+     * Everything one run of the delivered pipeline observed and produced, as an immutable value.
+     *
+     * <h4>Why this is a class and not a record</h4>
+     * A record's accessor hands back the component itself, and two of these components are mutable in a
+     * way an unmodifiable wrapper does not fix: a {@code Map<String, byte[]>} can be wrapped, but the
+     * arrays inside it stay writable, so any test could rewrite the run's output and the next test would
+     * assert against the rewrite. {@link #artefact(String)} therefore returns a copy, and the map is not
+     * exposed at all. That is the whole point of publishing a snapshot rather than a scratchpad.
+     *
+     * <p>Recorded as DL-281 in {@code docs/decision-log.md}.
+     */
+    private static final class PipelineRun {
+
+        /** The migration versions applied to the server the run read from. */
+        private final List<String> appliedMigrations;
+
+        /** The application tables those migrations created. */
+        private final List<String> applicationTables;
+
+        /** Row count per table, observed BEFORE the first job was launched. */
+        private final Map<String, Long> seededRowCounts;
+
+        /** The distinct category balances observed before the run, as text. */
+        private final List<String> seededCategoryBalances;
+
+        /** Records the posting step read. */
+        private final long postingReadCount;
+
+        /** Records the posting step wrote, which is the refused ones. */
+        private final long postingWriteCount;
+
+        /** Master row count immediately after posting. */
+        private final long masterCountAfterPosting;
+
+        /** Master row count immediately after the accrual run. */
+        private final long masterCountAfterAccrual;
+
+        /** Master row count immediately after the consolidation. */
+        private final long masterCountAfterConsolidation;
+
+        /** Byte length of the staged input image. */
+        private final int inputByteCount;
+
+        /** The object-store bucket the publication path addressed. */
+        private final String stagingBucket;
+
+        /** The executions the run performed, in launch order. */
+        private final List<JobExecution> executions;
+
+        /**
+         * The launch of the orphan extract, which is a probe beside the pipeline and not a part of it.
+         *
+         * <p>Held apart from {@link #executions} because that list is the pipeline, and one assertion
+         * counts it. Held at all because this class launches the orphan, and a launch this class does not
+         * record is a metadata row it cannot clean up.
+         */
+        private final JobExecution orphanExecution;
+
+        /** Master row count immediately after the orphan probe, which must not have written. */
+        private final long masterCountAfterOrphan;
+
+        /** The artefacts the run produced, keyed by logical base. */
+        private final Map<String, byte[]> produced;
+
+        /** One comparison row per fixed-width contract, built in setup. */
+        private final List<ContractComparison> comparisons;
+
+        /**
+         * Publishes one run's observations.
+         *
+         * @param appliedMigrations             the migration versions applied
+         * @param applicationTables             the application tables
+         * @param seededRowCounts               row count per table before the run
+         * @param seededCategoryBalances        distinct category balances before the run
+         * @param postingReadCount              records the posting step read
+         * @param postingWriteCount             records the posting step wrote
+         * @param masterCountAfterPosting       master rows after posting
+         * @param masterCountAfterAccrual       master rows after the accrual run
+         * @param masterCountAfterConsolidation master rows after the consolidation
+         * @param inputByteCount                byte length of the staged input
+         * @param stagingBucket                 the object-store bucket addressed
+         * @param executions                    the executions performed, in launch order
+         * @param orphanExecution               the launch of the orphan extract probe
+         * @param masterCountAfterOrphan        master rows after the orphan probe
+         * @param produced                      the artefacts produced, keyed by logical base
+         * @param comparisons                   one comparison row per contract
+         */
+        PipelineRun(final List<String> appliedMigrations, final List<String> applicationTables,
+                final Map<String, Long> seededRowCounts, final List<String> seededCategoryBalances,
+                final long postingReadCount, final long postingWriteCount,
+                final long masterCountAfterPosting, final long masterCountAfterAccrual,
+                final long masterCountAfterConsolidation, final int inputByteCount,
+                final String stagingBucket, final List<JobExecution> executions,
+                final JobExecution orphanExecution, final long masterCountAfterOrphan,
+                final Map<String, byte[]> produced, final List<ContractComparison> comparisons) {
+            this.appliedMigrations = List.copyOf(appliedMigrations);
+            this.applicationTables = List.copyOf(applicationTables);
+            this.seededRowCounts = Map.copyOf(seededRowCounts);
+            this.seededCategoryBalances = List.copyOf(seededCategoryBalances);
+            this.postingReadCount = postingReadCount;
+            this.postingWriteCount = postingWriteCount;
+            this.masterCountAfterPosting = masterCountAfterPosting;
+            this.masterCountAfterAccrual = masterCountAfterAccrual;
+            this.masterCountAfterConsolidation = masterCountAfterConsolidation;
+            this.inputByteCount = inputByteCount;
+            this.stagingBucket = stagingBucket;
+            this.executions = List.copyOf(executions);
+            this.orphanExecution = orphanExecution;
+            this.masterCountAfterOrphan = masterCountAfterOrphan;
+            final Map<String, byte[]> copied = new LinkedHashMap<>();
+            produced.forEach((base, image) -> copied.put(base, image.clone()));
+            this.produced = Collections.unmodifiableMap(copied);
+            this.comparisons = List.copyOf(comparisons);
+        }
+
+        /**
+         * The migration versions applied to the server the run read from.
+         *
+         * @return the versions, in order
+         */
+        List<String> appliedMigrations() {
+            return this.appliedMigrations;
+        }
+
+        /**
+         * The application tables those migrations created.
+         *
+         * @return the table names
+         */
+        List<String> applicationTables() {
+            return this.applicationTables;
+        }
+
+        /**
+         * The row count one table carried before the first job was launched.
+         *
+         * @param  table the table name
+         * @return its pre-run row count
+         */
+        long seededRowCount(final String table) {
+            final Long count = this.seededRowCounts.get(table);
+            assertThat(count)
+                    .as("the snapshot records no pre-run row count for %s; add it to the counted "
+                            + "tables if a test needs it", table)
+                    .isNotNull();
+            return count.longValue();
+        }
+
+        /**
+         * The distinct category balances observed before the run, as text.
+         *
+         * @return the distinct values
+         */
+        List<String> seededCategoryBalances() {
+            return this.seededCategoryBalances;
+        }
+
+        /**
+         * Records the posting step read.
+         *
+         * @return the read count
+         */
+        long postingReadCount() {
+            return this.postingReadCount;
+        }
+
+        /**
+         * Records the posting step wrote, which is the refused ones.
+         *
+         * @return the write count
+         */
+        long postingWriteCount() {
+            return this.postingWriteCount;
+        }
+
+        /**
+         * Master row count immediately after posting.
+         *
+         * @return the count
+         */
+        long masterCountAfterPosting() {
+            return this.masterCountAfterPosting;
+        }
+
+        /**
+         * Master row count immediately after the accrual run.
+         *
+         * @return the count
+         */
+        long masterCountAfterAccrual() {
+            return this.masterCountAfterAccrual;
+        }
+
+        /**
+         * Master row count immediately after the consolidation.
+         *
+         * @return the count
+         */
+        long masterCountAfterConsolidation() {
+            return this.masterCountAfterConsolidation;
+        }
+
+        /**
+         * Byte length of the staged input image.
+         *
+         * @return the byte count
+         */
+        int inputByteCount() {
+            return this.inputByteCount;
+        }
+
+        /**
+         * The object-store bucket the publication path addressed.
+         *
+         * @return the bucket name
+         */
+        String stagingBucket() {
+            return this.stagingBucket;
+        }
+
+        /**
+         * The executions the run performed, in launch order.
+         *
+         * @return the executions
+         */
+        List<JobExecution> executions() {
+            return this.executions;
+        }
+
+        /**
+         * The launch of the orphan extract, kept out of {@link #executions()} because it is not pipeline.
+         *
+         * @return the orphan's execution
+         */
+        JobExecution orphanExecution() {
+            return this.orphanExecution;
+        }
+
+        /**
+         * Master row count immediately after the orphan probe.
+         *
+         * @return the count
+         */
+        long masterCountAfterOrphan() {
+            return this.masterCountAfterOrphan;
+        }
+
+        /**
+         * Every execution this class launched, pipeline and probe alike, for cleanup by recorded id.
+         *
+         * @return the executions this class is answerable for
+         */
+        List<JobExecution> ownExecutions() {
+            final List<JobExecution> own = new ArrayList<>(this.executions);
+            if (this.orphanExecution != null) {
+                own.add(this.orphanExecution);
+            }
+            return List.copyOf(own);
+        }
+
+        /**
+         * The logical bases the run produced an artefact for.
+         *
+         * @return the bases
+         */
+        Set<String> artefactBases() {
+            return this.produced.keySet();
+        }
+
+        /**
+         * One produced artefact, as a copy.
+         *
+         * <p>A copy, so a test that indexes into the bytes cannot alter what the next test sees. Cheap at
+         * these sizes and the only way a snapshot of arrays is genuinely immutable.
+         *
+         * @param  logicalBase the base whose artefact is wanted
+         * @return its bytes
+         */
+        byte[] artefact(final String logicalBase) {
+            final byte[] image = this.produced.get(logicalBase);
+            assertThat(image)
+                    .as("the run produced no artefact for logical base %s", logicalBase)
+                    .isNotNull();
+            return image.clone();
+        }
+
+        /**
+         * One comparison row per fixed-width contract, in contract order.
+         *
+         * @return the rows
+         */
+        List<ContractComparison> comparisons() {
+            return this.comparisons;
+        }
+
+        /**
+         * The comparison row of one contract.
+         *
+         * @param  logicalBase the contract's generation base
+         * @return its comparison row
+         */
+        ContractComparison comparison(final String logicalBase) {
+            return this.comparisons.stream()
+                    .filter(row -> row.contract().equals(logicalBase))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "the snapshot carries no comparison row for " + logicalBase));
+        }
+    }
 
     /**
      * One contract's comparison, in the shape the Gate 1 evidence page carries.

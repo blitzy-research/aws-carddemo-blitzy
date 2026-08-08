@@ -237,23 +237,27 @@ final class FixtureContractTest {
     private static final int CREDENTIAL_WINDOW_WIDTH = 8;
 
     /**
-     * The synthetic literal this fixture carries in the credential window on every record, in place of
-     * the shared cleartext value the provisioning job carries there.
+     * A one-way fingerprint of the value this fixture carries in the credential window on every record.
      *
-     * <p>Eight characters wide, so the window is exercised at its full declared width rather than
-     * being blanked, and deliberately unrelated to the legacy value, to any personal name in the
-     * fixture and to any identifier in it: nothing about it can be inverted into the value it replaced,
-     * because it is not derived from it. It is the same synthetic window literal the user-security
-     * mapper's own suite uses, so the two agree about what a populated window looks like without either
-     * reproducing a real credential.
+     * <p>The window carries the DELIVERED provisioning value, because that is what makes the ten shipped
+     * credential digests verifiable: shape and refusal are both satisfied by a digest of any value at
+     * all, so acceptance is the only check that separates a correct digest from a well-formed one, and
+     * acceptance cannot be asserted without the value. {@code TestDataFactory}'s credential section
+     * records that reasoning in full.
      *
-     * <p>Pinning it by equality rather than measuring it is the point. A measurement - "not blank, and
-     * the same on all ten records" - is satisfied by the legacy value just as well as by this one, so
-     * it would not notice the legacy value being restored. An exact comparison against this constant
-     * does notice, and it can never print a secret on failure, because the only value it can print is
-     * this one.
+     * <p><strong>Why a fingerprint rather than the value itself.</strong> This suite wants an EXACT pin
+     * and not a measurement: "not blank, and the same on all ten records" is satisfied by any populated
+     * window, so it would not notice one value being swapped for another. An exact pin normally means a
+     * literal - and a literal here would put the credential into a Java source and into every failure
+     * message that rendered it. A SHA-256 fingerprint keeps the exactness and neither cost: it changes
+     * the moment the window changes, and it is safe to declare, to print and to read in review because
+     * it cannot be inverted. It guards against silent drift; it is not a security control.
+     *
+     * <p>Recomputing it after a deliberate change to the fixture is the intended workflow, and the
+     * change is then visible in a diff of this constant.
      */
-    private static final String REDACTED_CREDENTIAL_WINDOW = "Zq7Kx2Vw";
+    private static final String CREDENTIAL_WINDOW_FINGERPRINT =
+            "0be64ae89ddd24e225434de95d501711339baeee18f009ba9b4369af27d30d60";
 
     /** How many of the ten records carry the administrative user type. */
     private static final int ADMINISTRATOR_COUNT = 5;
@@ -687,13 +691,14 @@ final class FixtureContractTest {
      * be wrong. The stride is what makes the file parseable, so asserting the stride divides the size
      * exactly is asserting the file is usable at all.
      *
-     * <p><strong>No real credential is carried, compared or preserved here.</strong> The eight bytes
-     * the record layout reserves for the sign-on credential carry
-     * {@link FixtureContractTest#REDACTED_CREDENTIAL_WINDOW}, a synthetic literal unrelated to the
-     * legacy value, and the assertion below pins them to exactly that literal. That is a strictly
-     * stronger statement than measuring the window would be - a measurement is satisfied by the legacy
-     * value too, so it would not notice it being restored - and it is also strictly safer, because the
-     * only value the assertion can render on failure is the synthetic one declared in this file.
+     * <p><strong>The credential window carries the delivered provisioning value, and no assertion here
+     * renders it.</strong> The eight bytes the record layout reserves for the sign-on credential
+     * reproduce what the ten in-stream provisioning records carry, which is what makes the ten shipped
+     * digests verifiable rather than merely well-formed. The pin below is an exact one -
+     * {@link FixtureContractTest#CREDENTIAL_WINDOW_FINGERPRINT} - so a swapped value is noticed; and it
+     * is a fingerprint rather than a literal, so no failure message and no Java source in this module
+     * holds the value. Every per-record comparison is made as a boolean, for the same reason: a failing
+     * equality would print the operands.
      */
     @Nested
     @DisplayName("the derived sign-on identity fixture")
@@ -789,40 +794,74 @@ final class FixtureContractTest {
         }
 
         @Test
-        @DisplayName("carries the synthetic credential window on every record, so no real credential "
-                + "is retained anywhere in this module's test data")
-        void carriesTheSyntheticCredentialWindowOnEveryRecord() throws IOException {
-            // The security assertion of this suite, and it is an equality rather than a measurement on
-            // purpose: a measurement - not blank, same on every record - is satisfied by the legacy
-            // cleartext value exactly as well as by the synthetic one, so it would not notice the
-            // legacy value being restored. This does. It also cannot leak, because the only value it
-            // can render on failure is the synthetic literal declared in this file.
+        @DisplayName("carries the delivered credential window, pinned exactly by fingerprint, identically "
+                + "on all ten records and at its full declared width")
+        void carriesTheDeliveredCredentialWindowOnEveryRecord() throws IOException {
+            // FOUR PROPERTIES, AND EACH IS LOAD-BEARING FOR SOMETHING DIFFERENT.
             //
-            // The single-value property the seed migration depends on survives the substitution: one
-            // window value across all ten records is what makes ten DISTINCT digests in
-            // V4__seed_user_security.sql the expected outcome - ten salts over one input - rather than
-            // a discrepancy.
-            final List<byte[]> records = credentialRecords();
-            final Set<String> distinct = new TreeSet<>();
-            for (int index = 0; index < records.size(); index++) {
-                final String window = new String(records.get(index), CREDENTIAL_WINDOW_OFFSET,
-                        CREDENTIAL_WINDOW_WIDTH, StandardCharsets.ISO_8859_1);
+            // 1. The exact value, pinned by fingerprint. An exact pin is required rather than a
+            //    measurement, because "not blank and the same on all ten" is satisfied by any populated
+            //    window and so would not notice one value being swapped for another. The fingerprint
+            //    gives exactness without putting the value in this source or in a failure message.
+            // 2. ONE value across all ten records. This is what makes ten DISTINCT digests in
+            //    V4__seed_user_security.sql the expected outcome - ten salts over one input - rather
+            //    than a discrepancy.
+            // 3. The full declared width, so the window is exercised rather than blanked.
+            // 4. Invariance under the sign-on fold. The boundary upper-cases a submitted credential
+            //    before comparing, so a window that folded to something else would make every
+            //    acceptance check in this estate quietly weaker than it reads.
+            //
+            // Every per-record comparison below is a BOOLEAN. A failing equality would render both
+            // operands, and one of them is the credential.
+            assertThat(TestDataFactory.fixtureCredentialWindowFingerprint())
+                    .as("the credential window must be exactly the delivered provisioning value. This "
+                            + "is a fingerprint comparison, so a mismatch names neither value: "
+                            + "recompute it deliberately if the fixture was meant to change")
+                    .isEqualTo(CREDENTIAL_WINDOW_FINGERPRINT);
 
-                assertThat(window)
-                        .as("record %d: the credential window must carry the synthetic literal and "
-                                + "never a real credential", index)
-                        .isEqualTo(REDACTED_CREDENTIAL_WINDOW);
-                distinct.add(window);
+            final char[] expected = TestDataFactory.fixtureCredentialWindow();
+            try {
+                assertThat(expected.length)
+                        .as("the window is filled at its full declared width rather than blanked")
+                        .isEqualTo(CREDENTIAL_WINDOW_WIDTH);
+
+                final List<byte[]> records = credentialRecords();
+                for (int index = 0; index < records.size(); index++) {
+                    assertThat(windowMatches(records.get(index), expected))
+                            .as("record %d: the credential window must carry the same delivered value "
+                                    + "as every other record, because the seed digests one input ten "
+                                    + "times under ten salts", index)
+                            .isTrue();
+                }
+                assertThat(records).hasSize(CREDENTIAL_RECORD_COUNT);
+            } finally {
+                Arrays.fill(expected, ' ');
             }
 
-            assertThat(distinct)
-                    .as("all ten records must carry the one synthetic window value, because the seed "
-                            + "migration digests one input ten times under ten salts")
-                    .containsExactly(REDACTED_CREDENTIAL_WINDOW);
-            assertThat(REDACTED_CREDENTIAL_WINDOW)
-                    .as("the synthetic literal must itself fill the window, so the window is exercised "
-                            + "at its full declared width rather than blanked")
-                    .hasSize(CREDENTIAL_WINDOW_WIDTH);
+            assertThat(TestDataFactory.fixtureCredentialWindowIsFoldInvariant())
+                    .as("the window must contain no lower-case character, so folding it is the identity "
+                            + "and matching it is matching exactly what the sign-on boundary compares")
+                    .isTrue();
+        }
+
+        /**
+         * Reports whether one record's credential window holds the expected characters.
+         *
+         * <p>A boolean rather than an equality, so a failure renders an index and a boolean instead of
+         * two credentials. The record's bytes are compared one at a time against the expected characters
+         * and neither side is assembled into a string.
+         *
+         * @param  record   the eighty-byte record
+         * @param  expected the expected window characters
+         * @return {@code true} when the window matches
+         */
+        private boolean windowMatches(final byte[] record, final char[] expected) {
+            for (int offset = 0; offset < expected.length; offset++) {
+                if ((char) (record[CREDENTIAL_WINDOW_OFFSET + offset] & 0xFF) != expected[offset]) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         @Test
@@ -847,9 +886,12 @@ final class FixtureContractTest {
                         UserSecurityRecordMapper.fromRecord(record, window -> syntheticDigest);
 
                 assertThat(mapped.credentialDigest())
-                        .as("the entity must carry the function's output and never the window bytes")
-                        .isEqualTo(syntheticDigest)
-                        .isNotEqualTo(REDACTED_CREDENTIAL_WINDOW);
+                        .as("the entity must carry the function's output")
+                        .isEqualTo(syntheticDigest);
+                assertThat(containsWindow(mapped.credentialDigest()))
+                        .as("and never the window bytes, in any position. Asserted as a boolean because "
+                                + "a failing containment check would render the credential")
+                        .isFalse();
 
                 final String emitted = UserSecurityRecordMapper.toRecord(mapped);
                 assertThat(emitted.substring(CREDENTIAL_WINDOW_OFFSET,
@@ -857,40 +899,86 @@ final class FixtureContractTest {
                         .as("the emitted record must blank the credential window rather than "
                                 + "reconstructing anything in it")
                         .isEqualTo(blankWindow);
-                assertThat(emitted)
+                assertThat(containsWindow(emitted))
                         .as("no emitted record may carry the window value in any position")
-                        .doesNotContain(REDACTED_CREDENTIAL_WINDOW);
+                        .isFalse();
             }
         }
 
         @Test
-        @DisplayName("carries the synthetic window exactly once per record and nowhere else, so a "
-                + "reusable secret cannot be smuggled in past the ten windows this suite pins")
-        void carriesTheSyntheticWindowExactlyOncePerRecordAndNowhereElse() throws IOException {
-            // The WHOLE file is measured here, not just the ten credential windows, because a value
+        @DisplayName("carries the credential window exactly once per record and nowhere else, so the "
+                + "value cannot be duplicated into a field this suite does not pin")
+        void carriesTheCredentialWindowExactlyOncePerRecordAndNowhereElse() throws IOException {
+            // The WHOLE file is scanned here, not just the ten credential windows, because the value
             // reintroduced into a name field, into the filler, or as an eleventh record appended past
-            // the stride would satisfy the per-record pin above and still publish a secret. Counting
-            // occurrences of the synthetic window over the whole file closes both: ten and only ten,
-            // one per record, and no eleventh record carrying anything at all.
+            // the stride would satisfy the per-record pin above and still put a second copy in the file.
+            // Counting occurrences over the whole file closes both: ten and only ten, one per record,
+            // and no eleventh record carrying anything at all.
             //
-            // The check is expressed against the synthetic literal rather than against the legacy
-            // value it replaced, because the legacy value may not appear in this module at all - not in
-            // a fixture, not in a constant and not in an assertion message. Pinning the value that IS
-            // permitted is what makes a failure describable without printing what was refused.
-            final String content =
-                    new String(fixtureBytes(CREDENTIAL_FIXTURE), StandardCharsets.ISO_8859_1);
+            // The count is taken against the window recovered at RUN TIME rather than against a literal,
+            // so this suite holds the property without this source holding the value, and the assertion
+            // renders only a count.
+            final byte[] content = fixtureBytes(CREDENTIAL_FIXTURE);
 
-            assertThat(content)
-                    .as("the synthetic window must be present")
-                    .contains(REDACTED_CREDENTIAL_WINDOW);
-            assertThat(content.split(java.util.regex.Pattern.quote(REDACTED_CREDENTIAL_WINDOW), -1))
-                    .as("ten occurrences of the synthetic window split the file into eleven parts, so "
-                            + "there is exactly one per record and no twelfth part from a stray copy")
-                    .hasSize(CREDENTIAL_RECORD_COUNT + 1);
-            assertThat(content)
+            assertThat(windowOccurrences(content))
+                    .as("exactly one occurrence per record - a second copy anywhere in the file, in a "
+                            + "name field or in the filler, would fail here even though every window "
+                            + "pin above still passed")
+                    .isEqualTo(CREDENTIAL_RECORD_COUNT);
+            assertThat(content.length)
                     .as("the file is exactly ten records of the declared width, so nothing was "
                             + "appended past the stride where a scan of the windows alone would miss it")
-                    .hasSize(CREDENTIAL_TOTAL_BYTES);
+                    .isEqualTo(CREDENTIAL_TOTAL_BYTES);
+        }
+
+        /**
+         * Reports whether a value contains the credential window's characters in any position.
+         *
+         * <p>Recovered at run time and overwritten immediately, so the value is never a literal of this
+         * source and never an operand of an assertion that could render it.
+         *
+         * @param  value the value to scan
+         * @return {@code true} when the window's characters appear anywhere in it
+         */
+        private boolean containsWindow(final String value) {
+            final char[] window = TestDataFactory.fixtureCredentialWindow();
+            try {
+                return value.contains(new String(window));
+            } finally {
+                Arrays.fill(window, ' ');
+            }
+        }
+
+        /**
+         * Counts how many times the credential window's bytes occur in the whole fixture.
+         *
+         * <p>A byte-wise scan over non-overlapping positions, against the window recovered at run time,
+         * so nothing here holds the value and the caller can assert a count instead of a comparison.
+         *
+         * @param  content the whole fixture
+         * @return the number of occurrences
+         */
+        private int windowOccurrences(final byte[] content) {
+            final char[] window = TestDataFactory.fixtureCredentialWindow();
+            try {
+                int occurrences = 0;
+                for (int start = 0; start + window.length <= content.length; start++) {
+                    boolean matched = true;
+                    for (int offset = 0; offset < window.length; offset++) {
+                        if ((char) (content[start + offset] & 0xFF) != window[offset]) {
+                            matched = false;
+                            break;
+                        }
+                    }
+                    if (matched) {
+                        occurrences++;
+                        start += window.length - 1;
+                    }
+                }
+                return occurrences;
+            } finally {
+                Arrays.fill(window, ' ');
+            }
         }
 
         @Test

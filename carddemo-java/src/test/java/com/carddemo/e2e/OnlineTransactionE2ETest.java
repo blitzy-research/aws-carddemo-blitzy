@@ -32,6 +32,7 @@ import com.carddemo.api.ReportContractAdapter;
 import com.carddemo.api.ReportController;
 import com.carddemo.api.ScreenStateAdapter;
 import com.carddemo.api.SignOnContractAdapter;
+import com.carddemo.batch.CategoryBalanceReportJobConfig;
 import com.carddemo.config.AwsConfig;
 import com.carddemo.config.AwsProperties;
 import com.carddemo.config.JwtProperties;
@@ -49,8 +50,10 @@ import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.PostgresJobSubmissionCoordinator;
 import com.carddemo.service.ReportRequestService;
+import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.CobolStringUtils;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -61,6 +64,8 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
@@ -69,6 +74,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -151,8 +157,12 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * deduplication trap that would otherwise swallow five of the seventeen cards in silence, and the
  * ignore-on-error path, which must return the operator a message and never abort the caller.
  *
- * <p><strong>Contract three - the four fixed-width record formats.</strong> Eighty, one hundred, one
- * hundred and thirty-three and four hundred and thirty bytes. Their staging interface is the object
+ * <p><strong>Contract three - the fixed-width record formats.</strong> Eighty, one hundred, one
+ * hundred and thirty-three and four hundred and thirty bytes are the four this specification stages,
+ * because they are the four expected outputs Gate 1 names. The estate emits a <strong>fifth</strong>
+ * fixed width - the forty-byte category-balance report line - which has no golden and is verified at its
+ * own width and ordering by {@code batch/CategoryBalanceReportJobConfigIT}; it is asserted here as a fifth
+ * width so that a reader counting widths from this class cannot arrive at four. Their staging interface is the object
  * store that replaced sequential-dataset staging, so each delivered golden is put through that real
  * store and read back, and the bytes that came back are compared to the bytes on the class path with no
  * decoding, no trimming and no normalisation of any kind. The deep byte-equivalence of a
@@ -163,13 +173,26 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * The estate's ten identities share one eight-character cleartext credential. It appears nowhere in
  * this file - not in a literal, a comment, a method name, a display name or an assertion message -
  * because the point of digesting it in the target is that the cleartext stops existing in the module.
- * Where a successful sign-on is needed, a digest is installed on the delivered record from the
- * class-path fixture's own credential window, read by offset at run time into a character array that is
- * overwritten before the frame returns, and the request body is encoded straight out of that array into
- * bytes so the value never becomes a string this class holds. About the <em>delivered</em> digests this
- * class asserts only what a module that deliberately does not hold the legacy value can honestly
- * assert: their shape, their cost, their mutual distinctness, and that they refuse a value they were
- * not derived from.
+ * Where a successful sign-on is needed, the credential is read by offset at run time from the
+ * class-path fixture's own credential window into a character array that is overwritten before the frame
+ * returns, and the request body is encoded straight out of that array into bytes so the value never
+ * becomes a string this class holds.
+ *
+ * <p><strong>No sign-on here installs a digest of its own.</strong> It did not always: a digest of the
+ * fixture's window used to be installed on the record first, because the fixture then carried a fabricated
+ * window that no delivered digest could accept. Substituting the stored digest before authenticating meant
+ * the one property that distinguishes a correct shipped digest from a merely well-formed one - that it
+ * accepts the credential - was never exercised by a sign-on at all: a suite that installed its own digest
+ * first would have passed unchanged had all ten frozen digests been wrong. The fixture now reproduces the
+ * delivered provisioning records, so nothing is installed and nothing is substituted, and
+ * {@link TheDeliveredIdentities#aSuccessfulSignOnVerifiesAgainstTheDeliveredDigest()} observes that the
+ * stored digest is byte-identical before and after an admitted sign-on.
+ *
+ * <p>About the <em>delivered</em> digests this class therefore asserts four things and not three: their
+ * shape and cost, their mutual distinctness, that they refuse a value they were not derived from, and -
+ * the claim a frozen digest exists to support - that all ten accept the credential the read-only
+ * provisioning member {@code app/jcl/DUSRSECJ.jcl} provisions, recovered at run time by offset from its
+ * own in-stream card images, under both an independent encoder and the module's own shipped verifier.
  *
  * <h2>Why the name and the package are load-bearing</h2>
  * The build partitions the suite by file name into two strictly complementary sets. The fast tier
@@ -551,7 +574,7 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     private static final String ROUND_TRIP_KEY_PREFIX = "gate5/interface-contract/";
 
     /**
-     * The four record formats, each with its contractual width and its delivered golden.
+     * The four golden-backed record formats, each with its contractual width and its delivered golden.
      *
      * <p>The widths are the contract and are written out rather than derived: eighty for the statement
      * record, one hundred for its hypertext counterpart - which is the resolution of the eighty-against-
@@ -560,12 +583,30 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      * thirty for the rejected daily transaction, being its three-hundred-and-fifty-byte source image
      * followed by an eighty-byte trailer of a four-digit reason code and a seventy-six-character
      * description.
+     *
+     * <p><strong>These four are the goldens, not the whole width contract.</strong> The estate emits a
+     * fifth fixed width - {@link #CATEGORY_BALANCE_REPORT_WIDTH} bytes, the category-balance report the
+     * {@code PRTCATBL} job stream produces - which has no golden here because Gate 1 names four expected
+     * outputs and this specification stages exactly those. It is verified at its own width and its own
+     * ordering by {@code batch/CategoryBalanceReportJobConfigIT}, and it is asserted below so that a reader
+     * of this list cannot mistake four goldens for the estate's whole set of fixed widths.
      */
     private static final List<RecordFormat> RECORD_FORMATS = List.of(
             new RecordFormat("statement text record", "statement.txt", 80),
             new RecordFormat("statement hypertext record", "statement-html.txt", 100),
             new RecordFormat("transaction report line", "transaction-report.txt", 133),
             new RecordFormat("rejected daily transaction", "daily-reject.txt", 430));
+
+    /**
+     * The fifth fixed width the estate emits: the category-balance report line.
+     *
+     * <p>Read from the delivered job configuration rather than repeated as a literal, so this specification
+     * and the job cannot drift apart. The job stream declares {@code SORTOUT DCB=(LRECL=40)} over a sort of
+     * account identifier, type code and category code, all ascending - which is the fourth of the estate's
+     * four external sort specifications, and the one the plan's "three distinct specifications" omits.
+     */
+    private static final int CATEGORY_BALANCE_REPORT_WIDTH =
+            CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH;
 
     /** The batch-control surface, which starts a job and is therefore administrator-only. */
     private static final String BATCH_CONTROL_PATH = "/api/batch/jobs";
@@ -578,6 +619,20 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
 
     /** Prefix a bearer session is presented behind. */
     private static final String BEARER_PREFIX = "Bearer ";
+
+    /** Number of dot-delimited parts a signed session token carries. */
+    private static final int TOKEN_PART_COUNT = 3;
+
+    /**
+     * Width of the non-reversible fingerprint a session is identified by in a diagnostic.
+     *
+     * <p>Long enough to tell two sessions apart in a failure report, far too short to be worth
+     * attacking, and derived by a one-way digest so it cannot be turned back into the token.
+     */
+    private static final int FINGERPRINT_CHARACTERS = 8;
+
+    /** Alphabet the fingerprint is rendered in, written out so no locale-sensitive formatter is used. */
+    private static final String HEXADECIMAL = "0123456789abcdef";
 
     /**
      * Capacity of the buffer one sign-on body is composed in.
@@ -622,7 +677,15 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     @Autowired
     private AwsProperties aws;
 
-    /** The shipped encoder, used to produce a digest at the module's own cost factor. */
+    /**
+     * The shipped verifier, asked whether it agrees with an independent encoder about a stored digest.
+     *
+     * <p>Nothing is installed with it. An independent encoder answers whether a delivered digest is a
+     * digest of the provisioned value; it does not answer whether the module the migration ships would
+     * agree, because a cost factor, a version marker or a pre-comparison transformation the module applies
+     * and a bare encoder does not would separate the two. Asking both, and requiring the same answer, is
+     * what closes that gap.</p>
+     */
     @Autowired
     private CredentialDigestService digests;
 
@@ -654,6 +717,28 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      */
     @BeforeAll
     static void restoreDeliveredIdentities() throws SQLException {
+        restoreSeededState();
+    }
+
+    /**
+     * Returns the shared server to its seeded state once this specification has finished with it.
+     *
+     * <h4>Why an exit restore is owed even though no test here rewrites a digest</h4>
+     * Nothing in this class replaces a delivered credential digest any more - that is the whole point of
+     * {@link #admitSignOn(String)} presenting the provisioned value instead - so the ten digests are the
+     * delivered ones throughout. What this class does write is submission state: every accepted report
+     * request reaches the shipped coordinator, which records the submission on the shared server. A
+     * neighbouring specification that counts submissions, or that asserts a table is as the seed left it,
+     * would otherwise be answering for rows this class created.
+     *
+     * <p>Paired with {@link #restoreDeliveredIdentities()} rather than replacing it: the entry restore
+     * makes this class independent of whatever ran before, and the exit restore makes whatever runs next
+     * independent of this class. Neither is inferred from the other.
+     *
+     * @throws SQLException if the seeded state cannot be restored
+     */
+    @AfterAll
+    static void leaveTheSeededStateBehind() throws SQLException {
         restoreSeededState();
     }
 
@@ -765,9 +850,9 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
         @Test
         @DisplayName("carry ten stored digests, each of the required shape and cost, and no two alike")
         void theStoredDigestsAreShapedAndDistinct() throws SQLException {
-            // Asserted about the DELIVERED digests, so the seed is reapplied first: an admitted sign-on
-            // elsewhere in this class installs a digest of its own, and a claim about what the migration
-            // delivered must not be answered by what a neighbouring test wrote.
+            // Asserted about the DELIVERED digests, so the seed is reapplied first. No test in this class
+            // replaces a digest, but the shared server outlives the class and a claim about what the
+            // migration delivered must be answered by the migration's own rows and nothing else.
             restoreSeededState();
 
             final List<String> stored = new ArrayList<>(DELIVERED_IDENTITIES.size());
@@ -801,6 +886,45 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
         }
 
         @Test
+        @DisplayName("accept the credential the read-only provisioning member provisions, which is the "
+                + "one claim a frozen digest exists to support")
+        void theDeliveredDigestsAcceptTheProvisionedCredential() throws SQLException {
+            // The digests being interrogated are the ones V4 froze, so the seed is reapplied first and
+            // nothing between here and the assertion writes to the credential column.
+            restoreSeededState();
+
+            final PasswordEncoder encoder =
+                    new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR);
+            int accepted = 0;
+            for (final DeliveredIdentity expected : DELIVERED_IDENTITIES) {
+                final String digest = identity(expected.userId()).credentialDigest();
+
+                assertThat(TestDataFactory.digestAcceptsProvisioningCredential(encoder, digest))
+                        .as("the digest the migration froze for %s must accept the credential the "
+                                + "read-only provisioning member %s carries in its own credential "
+                                + "window, recovered by offset at run time. This is the whole claim a "
+                                + "frozen digest makes: ten digests nobody can verify are ten digests "
+                                + "that could each be wrong while every shape, distinctness and "
+                                + "refusal check still passed. Neither the credential nor the digest "
+                                + "is named in this diagnostic, and neither may ever be",
+                                expected.userId(), TestDataFactory.PROVISIONING_MEMBER)
+                        .isTrue();
+                assertThat(OnlineTransactionE2ETest.this.shippedVerifierAccepts(digest))
+                        .as("and the module's own shipped verifier must reach the same conclusion for "
+                                + "%s; agreement between an independent encoder and the shipped one is "
+                                + "what rules out a cost factor or version marker the module accepts "
+                                + "and nothing else does", expected.userId())
+                        .isTrue();
+                accepted++;
+            }
+
+            assertThat(accepted)
+                    .as("all ten delivered digests must have been interrogated; a loop that ran over "
+                            + "fewer would report success for identities nobody checked")
+                    .isEqualTo(TestDataFactory.SEEDED_DIGEST_COUNT);
+        }
+
+        @Test
         @DisplayName("refuse a value they were not derived from, so acceptance is not vacuous")
         void theStoredDigestsRefuseAValueTheyWereNotDerivedFrom() throws SQLException {
             restoreSeededState();
@@ -815,6 +939,70 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
                                 + "and be worthless", expected.userId())
                         .isTrue();
             }
+        }
+
+        @Test
+        @DisplayName("ACCEPT the delivered credential - all ten, read off a real server, with nothing "
+                + "installed and nothing substituted")
+        void everyDeliveredDigestAcceptsTheDeliveredCredential() throws SQLException {
+            // THE PROPERTY THE TWO TESTS ABOVE CANNOT ESTABLISH, AND THE REASON THEY CANNOT.
+            //
+            // Shape, cost, distinctness and refusal are every one of them satisfied by a digest of ANY
+            // value at all. A wrong literal in V4__seed_user_security.sql yields sixty characters, a
+            // recognised marker, the module's cost factor, ten independent salts, and a refusal of the
+            // probe - and admits nobody. Acceptance is the only property that separates a CORRECT
+            // shipped digest from a well-formed one.
+            //
+            // The seed is reapplied first so this is a claim about what the MIGRATION delivered rather
+            // than about anything a neighbouring test may have written.
+            restoreSeededState();
+
+            final PasswordEncoder encoder =
+                    new BCryptPasswordEncoder(TestDataFactory.BCRYPT_WORK_FACTOR);
+
+            assertThat(TestDataFactory.fixtureCredentialWindowIsFoldInvariant())
+                    .as("the sign-on transaction folds a submitted credential to upper case before "
+                            + "comparing it, so a direct match against the credential equals a real "
+                            + "sign-on only while the credential is invariant under that fold")
+                    .isTrue();
+
+            for (final DeliveredIdentity expected : DELIVERED_IDENTITIES) {
+                assertThat(TestDataFactory.digestAcceptsFixtureCredentialWindow(encoder,
+                        identity(expected.userId()).credentialDigest()))
+                        .as("the digest delivered for %s must accept the delivered credential; the "
+                                + "credential is deliberately not named in this diagnostic",
+                                expected.userId())
+                        .isTrue();
+            }
+            assertThat(DELIVERED_IDENTITIES).hasSize(TestDataFactory.SEEDED_USER_COUNT);
+        }
+
+        @Test
+        @DisplayName("are what a successful sign-on actually verifies against: the stored digest is "
+                + "byte-identical before and after an admitted request")
+        void aSuccessfulSignOnVerifiesAgainstTheDeliveredDigest() throws Exception {
+            // The end-to-end half of the statement above, and the one that closes the substitution.
+            // Every admitted sign-on in this class used to install a digest of its own onto the record
+            // first, so the request was verified against a value this class had just written and the
+            // delivered digest was never exercised. Capturing the stored digest either side of an
+            // admitted request is what proves that is no longer happening: an installation would show
+            // up here as a changed digest.
+            restoreSeededState();
+            final String before = identity(SOME_ADMIN_ID).credentialDigest();
+
+            final ResponseEntity<String> reply = admitSignOn(SOME_ADMIN_ID);
+
+            assertThat(reply.getHeaders().getFirst(HttpHeaders.AUTHORIZATION))
+                    .as("the request is admitted, so the delivered digest genuinely accepted the "
+                            + "submitted credential across a real boundary")
+                    .isNotNull();
+            assertThat(identity(SOME_ADMIN_ID).credentialDigest())
+                    .as("and the stored digest is untouched, character for character - so what was "
+                            + "verified against is what the migration delivered, not a substitute")
+                    .isEqualTo(before);
+            assertThat(TestDataFactory.hasStoredDigestShape(before))
+                    .as("the digest verified against is a digest, not a cleartext value in the column")
+                    .isTrue();
         }
 
         @Test
@@ -1133,17 +1321,22 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
         void theSessionIsIssuedInTheHeaderAndNotTheBody() {
             final ResponseEntity<String> reply = admitSignOn(SOME_ADMIN_ID);
             final String token = bearerTokenOf(reply);
+            final String[] parts = token.split("\\.", -1);
 
-            assertThat(token)
+            // Both assertions are made through a predicate rather than over the token itself. A failed
+            // pattern match prints its subject, and a failed doesNotContain prints the needle AND the
+            // haystack, so the assertion that proves a session token is not disclosed would have been the
+            // thing that disclosed it - into a build log, at precisely the moment something is wrong.
+            assertThat(SensitiveValues.hasSignedTokenShape(token))
                     .as("the session must be a signed three-part token rather than a server-side "
                             + "session identifier, because the migrated tier carries its state in the "
-                            + "token instead of in a communication area")
-                    .isNotBlank()
-                    .matches("[^.]+\\.[^.]+\\.[^.]+");
-            assertThat(reply.getBody())
+                            + "token instead of in a communication area. Token: %s",
+                            SensitiveValues.describe(token))
+                    .isTrue();
+            assertThat(SensitiveValues.absentFrom(reply.getBody(), token))
                     .as("and it must not also travel in the body, which anything that logs a response "
                             + "body would then record")
-                    .doesNotContain(token);
+                    .isTrue();
         }
 
         @Test
@@ -1179,8 +1372,12 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
             assertThat(reply.getStatusCode())
                     .as("starting a batch job was never a screen transaction on the estate, so the "
                             + "surface that starts one is administrator-only; an ordinary session must "
-                            + "be refused rather than merely undirected")
-                    .isIn(HttpStatus.FORBIDDEN, HttpStatus.UNAUTHORIZED);
+                            + "be refused rather than merely undirected. Exactly forbidden, and not "
+                            + "either-of-two: this caller presented a session the module itself issued a "
+                            + "moment earlier, so an unauthorized answer would mean the credential was "
+                            + "not accepted at all - which is a broken session, a different defect, and "
+                            + "one an alternative would have hidden here")
+                    .isEqualTo(HttpStatus.FORBIDDEN);
         }
 
         @Test
@@ -1224,14 +1421,19 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
                 + "batch-control surface, so nothing above depends on either being open")
         void anUnauthenticatedRequestReachesNeitherProtectedSurface() {
             assertThat(get(BATCH_CONTROL_PATH, null).getStatusCode())
-                    .as("the batch-control surface refuses an unauthenticated caller")
-                    .isIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
+                    .as("the batch-control surface refuses a caller presenting no credential at all, and "
+                            + "it must say so as unauthorized: no identity was established, so there is "
+                            + "no entitlement to have been found wanting. Accepting forbidden here as an "
+                            + "alternative would let the two refusals become interchangeable, and the "
+                            + "distinction is the one the estate drew - a wrong password and an "
+                            + "insufficient user type were never the same answer")
+                    .isEqualTo(HttpStatus.UNAUTHORIZED);
             assertThat(postJson(REPORT_REQUEST_PATH,
                     JSON.createObjectNode().toString().getBytes(StandardCharsets.UTF_8), null)
                     .getStatusCode())
-                    .as("and so does the report-request boundary, which is why every submission below "
-                            + "presents a session")
-                    .isIn(HttpStatus.UNAUTHORIZED, HttpStatus.FORBIDDEN);
+                    .as("and so does the report-request boundary, on the same terms and for the same "
+                            + "reason, which is why every submission below presents a session")
+                    .isEqualTo(HttpStatus.UNAUTHORIZED);
         }
     }
 
@@ -1853,8 +2055,8 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     // =================================================================================================
 
     @Nested
-    @DisplayName("contract three: the four fixed-width record formats, round-tripped through the real "
-            + "staging interface")
+    @DisplayName("contract three: the four golden-backed fixed-width formats round-tripped through the "
+            + "real staging interface, and the fifth width the estate emits beside them")
     class TheFourRecordFormats {
 
         /** Creates the nested specification. */
@@ -1883,19 +2085,51 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
         }
 
         @Test
-        @DisplayName("the four widths are eighty, one hundred, one hundred and thirty-three, and four "
-                + "hundred and thirty, and no two are the same")
+        @DisplayName("the four golden-backed widths are eighty, one hundred, one hundred and thirty-three, "
+                + "and four hundred and thirty, and no two are the same")
         void theFourWidthsAreTheContractualOnes() {
             final List<Integer> widths = RECORD_FORMATS.stream().map(RecordFormat::width).toList();
 
             assertThat(widths)
-                    .as("the four record formats of the estate. One hundred is the resolution of the "
-                            + "eighty-against-one-hundred conflict between two steps of the statement "
-                            + "job, settled in favour of the emitting program's own field width; four "
-                            + "hundred and thirty is a three-hundred-and-fifty-byte source image plus "
-                            + "an eighty-byte failure trailer")
+                    .as("the four record formats this specification stages. One hundred is the resolution "
+                            + "of the eighty-against-one-hundred conflict between two steps of the "
+                            + "statement job, settled in favour of the emitting program's own field "
+                            + "width; four hundred and thirty is a three-hundred-and-fifty-byte source "
+                            + "image plus an eighty-byte failure trailer")
                     .containsExactly(80, 100, 133, 430)
                     .doesNotHaveDuplicates();
+        }
+
+        @Test
+        @DisplayName("the estate emits FIVE fixed widths, not four: the four staged above plus the forty-"
+                + "byte category-balance report line, which has no golden and is verified at its own "
+                + "width by batch/CategoryBalanceReportJobConfigIT")
+        void theFifthFixedWidthIsPartOfTheContract() {
+            // WHY THIS TEST EXISTS. The four widths above are the four Gate 1 expected outputs, and it is
+            // easy to read that list as the estate's whole fixed-width contract - the plan's own width
+            // inventory did exactly that, and so omitted the category-balance report. The report is a
+            // genuine external file format: the PRTCATBL job stream declares SORTOUT DCB=(LRECL=40) and
+            // sorts by account, type and category, all ascending, which is the fourth of the estate's four
+            // external sort specifications. It carries no golden because Gate 1 names four expected
+            // outputs; it is verified at its width and its ordering by its own job integration test.
+            final List<Integer> stagedWidths = RECORD_FORMATS.stream().map(RecordFormat::width).toList();
+
+            assertThat(CATEGORY_BALANCE_REPORT_WIDTH)
+                    .as("the category-balance report line is forty bytes, read from the job configuration "
+                            + "the batch tier delivers rather than repeated as a literal here")
+                    .isEqualTo(40);
+            assertThat(stagedWidths)
+                    .as("and it is a fifth width rather than one of the four staged above, so a reader "
+                            + "counting widths from this class alone cannot arrive at four")
+                    .doesNotContain(CATEGORY_BALANCE_REPORT_WIDTH);
+
+            final List<Integer> everyWidth = new ArrayList<>(stagedWidths);
+            everyWidth.add(Integer.valueOf(CATEGORY_BALANCE_REPORT_WIDTH));
+            assertThat(everyWidth)
+                    .as("five distinct fixed widths in the whole estate: 40, 80, 100, 133 and 430")
+                    .hasSize(5)
+                    .doesNotHaveDuplicates()
+                    .containsExactlyInAnyOrder(40, 80, 100, 133, 430);
         }
 
         @Test
@@ -2088,26 +2322,33 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     // =================================================================================================
     // SIGN-ON HELPERS
     //
-    // The credential never becomes a string this class holds. It is read by offset from the class-path
-    // fixture into a character array, encoded straight into the request bytes, and both the array and the
-    // buffer that carried it are overwritten before the frame returns.
+    // The credential never becomes a string this class holds. It is read by offset out of the read-only
+    // provisioning member's own in-stream card images into a character array, encoded straight into the
+    // request bytes, and both the array and the buffer that carried it are overwritten before the frame
+    // returns. Nothing here writes to the credential column.
     // =================================================================================================
 
     /**
-     * Signs the given delivered identity on successfully, over the real boundary.
+     * Signs the given delivered identity on successfully, over the real boundary and against the
+     * <strong>delivered</strong> credential digest.
      *
-     * <h4>Why a digest is installed first, and why that keeps the verification real</h4>
-     * The ten delivered digests were produced from the estate's provisioning value, which this module
-     * deliberately does not hold - that is the whole point of digesting it - so no value this module can
-     * reach will satisfy them, and the support fixture's own documentation records that measurement. A
-     * digest of the class-path fixture's credential window is therefore installed on the record first,
-     * produced by the module's own encoder at the module's own cost factor.
+     * <h4>Nothing is installed, and that is the point</h4>
+     * A digest of the fixture's credential window used to be installed on the record before the request
+     * was sent. It had to be, because the fixture then carried a fabricated window that none of the ten
+     * delivered digests could accept - so every admitted sign-on in this class was authenticating against
+     * a digest this class had just written, and the ten digests the migration actually delivered were
+     * never exercised by any of them. The consequence was that the one property distinguishing a correct
+     * shipped digest from a merely well-formed one, that it accepts the credential, was never exercised
+     * end to end: a wrong literal in the seed migration would have left every test here green.
      *
-     * <p>Everything that then happens is real and is the thing under test: a real request crosses a real
-     * HTTP boundary on a real bound port, through the shipped filter chain, into the shipped service,
-     * where the shipped encoder compares the submitted value against the stored digest read off a real
-     * server. What is substituted is the value the digest was made from; what is <em>not</em> substituted
-     * is any part of the verification, the routing or the reply.
+     * <p>The fixture now reproduces the delivered provisioning records, so nothing is installed and
+     * nothing is substituted, and the value presented is the one the legacy provisioning member
+     * provisions, folded exactly as the boundary folds it. All ten delivered digests accept it, which
+     * {@link TheDeliveredIdentities#theDeliveredDigestsAcceptTheProvisionedCredential()} asserts directly
+     * against the value recovered from the read-only estate. Everything here is therefore real end to
+     * end: a real request crosses a real HTTP boundary on a real bound port, through the shipped filter
+     * chain, into the shipped service, where the shipped encoder compares the submitted value against the
+     * digest the migration itself loaded onto a real server.
      *
      * @param  userId the delivered identity to admit
      * @return the whole reply, status and headers included
@@ -2116,7 +2357,6 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
         final char[] credential = presentableCredential();
         byte[] body = null;
         try {
-            installDigestOf(credential, userId);
             body = signOnBodyBytes(userId, credential, SUBMIT_KEY);
             return postJson(SIGN_ON_PATH, body, null);
         } finally {
@@ -2128,16 +2368,19 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     }
 
     /**
-     * Reads the class-path fixture's credential window and folds it, in place, to the form the boundary
+     * Reads the provisioning member's credential window and folds it, in place, to the form the boundary
      * will compare.
      *
      * <h4>Why the fold has to happen here</h4>
      * The sign-on program upper-cases both submitted fields before it compares anything, using a
-     * twenty-six character ASCII substitution table rather than a locale-aware routine, and the fixture's
-     * window carries lower-case characters. A digest of the unfolded window would therefore be compared
-     * against the folded submission and would never match - the request would be refused for a reason
-     * that has nothing to do with any contract. Folding here makes the presented value invariant under
-     * the boundary's own transformation, so the comparison tests the comparison.
+     * twenty-six character ASCII substitution table rather than a locale-aware routine. Folding here
+     * makes the presented value invariant under the boundary's own transformation, so a refusal can only
+     * mean that the digest refused the value and never that the two sides disagreed about case.
+     *
+     * <p>The provisioned window happens to carry no lower-case character today, so the fold is currently
+     * a no-op over it. That is a measurement of the read-only member, not a property this specification
+     * may rely on: dropping the fold would leave a member edited to carry a lower-case window failing
+     * every admitted sign-on here for a reason unrelated to any contract, and the fold costs nothing.
      *
      * <p>The fold is applied over the character array rather than by calling the module's string utility,
      * because that utility takes a {@code String} and the value must not become one:
@@ -2147,7 +2390,7 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      * @return the folded window, freshly allocated, for the caller to overwrite
      */
     private static char[] presentableCredential() {
-        final char[] window = TestDataFactory.fixtureCredentialWindow();
+        final char[] window = TestDataFactory.provisioningCredentialWindow();
         asciiUpperFoldInPlace(window);
         return window;
     }
@@ -2170,19 +2413,28 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     }
 
     /**
-     * Installs a digest of the given characters on one delivered record, using the module's own encoder.
+     * Reports whether the <em>shipped</em> verifier accepts the provisioned credential for one digest.
      *
-     * <p>The entity refuses anything that is not structurally a digest of at least its own minimum cost,
-     * so this cannot be the route by which a cleartext value reaches the column. The characters are
-     * wrapped rather than copied into a string, so they never leave the array the caller will overwrite.
+     * <h4>Why the shipped verifier is asked as well as an independent one</h4>
+     * An independent encoder answers whether the digest is a digest of the provisioned value. It does not
+     * answer whether the module the migration ships would agree - a cost factor, a version marker or a
+     * pre-comparison transformation the module applies and a bare encoder does not would separate the
+     * two. Asking both, and requiring the same answer, is what closes that gap.
      *
-     * @param credential the characters to digest, which are not modified here
-     * @param userId     the delivered identity to install onto
+     * <p>The credential window is read, wrapped, compared and overwritten inside this frame. It never
+     * becomes a {@code String}, never reaches the caller and therefore cannot appear in an assertion
+     * message, a diagnostic or a log line.
+     *
+     * @param  digest the stored digest to interrogate
+     * @return {@code true} when the shipped verifier accepts the provisioned credential for that digest
      */
-    private void installDigestOf(final char[] credential, final String userId) {
-        final UserSecurity record = identity(userId);
-        record.replaceCredentialDigest(this.digests.encode(CharBuffer.wrap(credential)));
-        this.users.save(record);
+    private boolean shippedVerifierAccepts(final String digest) {
+        final char[] credential = TestDataFactory.provisioningCredentialWindow();
+        try {
+            return this.digests.matches(CharBuffer.wrap(credential), digest);
+        } finally {
+            Arrays.fill(credential, ' ');
+        }
     }
 
     /**
@@ -2268,18 +2520,53 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      * Recovers the bearer session from a reply, asserting that it travels in the header rather than the
      * body.
      *
+     * <p>The two assertions are made over booleans, because the header value <em>is</em> the session: an
+     * assertion that named it would put a live credential into the diagnostic of every failure that
+     * reached this helper, and this helper is reached by most of the class.
+     *
      * @param  reply the whole reply
      * @return the bare token, without its presentation prefix
      */
     private static String bearerTokenOf(final ResponseEntity<String> reply) {
         final String header = reply.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-        assertThat(header)
+        assertThat(header != null)
                 .as("an admitted sign-on must issue its session in the authorization header; a "
                         + "body-carried credential would be recorded by anything that logs a response "
                         + "body")
-                .isNotNull()
-                .startsWith(BEARER_PREFIX);
+                .isTrue();
+        assertThat(header.startsWith(BEARER_PREFIX))
+                .as("and it must be presented behind the '%s' scheme prefix; reported as a verdict "
+                        + "because the value being inspected is the session itself", BEARER_PREFIX)
+                .isTrue();
         return header.substring(BEARER_PREFIX.length());
+    }
+
+    /**
+     * Renders a non-reversible short fingerprint of a value, for naming it in a diagnostic safely.
+     *
+     * <p>A one-way digest truncated to {@link #FINGERPRINT_CHARACTERS} characters: enough to tell two
+     * sessions apart across a failure report, useless for recovering either. Rendered through an explicit
+     * alphabet rather than a formatter, so no locale can influence the output.
+     *
+     * @param  value the value to fingerprint
+     * @return the fingerprint
+     */
+    private static String fingerprintOf(final String value) {
+        final byte[] digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+        } catch (final NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException(
+                    "SHA-256 is required of every Java platform, so its absence is not a condition this "
+                            + "specification can report around", unavailable);
+        }
+        final StringBuilder rendered = new StringBuilder(FINGERPRINT_CHARACTERS);
+        for (int index = 0; rendered.length() < FINGERPRINT_CHARACTERS; index++) {
+            final int unsigned = digest[index] & 0xFF;
+            rendered.append(HEXADECIMAL.charAt(unsigned >>> 4)).append(HEXADECIMAL.charAt(unsigned & 0xF));
+        }
+        return rendered.substring(0, FINGERPRINT_CHARACTERS);
     }
 
     // =================================================================================================
@@ -2619,6 +2906,21 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      *                          communication area
      */
     private record Session(String token, JsonNode navigationContext) {
+
+        /**
+         * Renders the session without its token, so a diagnostic that names the record cannot leak it.
+         *
+         * <p>The generated rendering of a record names every component, and one of these components is a
+         * live session credential. Overriding it means a future assertion written as {@code .as("%s",
+         * session)} is safe by construction rather than by the author having remembered.
+         *
+         * @return a rendering carrying a non-reversible fingerprint in place of the token
+         */
+        @Override
+        public String toString() {
+            return "Session[token=<redacted:" + fingerprintOf(this.token) + "> navigationContext="
+                    + this.navigationContext + "]";
+        }
     }
 
     /**
@@ -2716,7 +3018,8 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
     @Import({AuthController.class, ReportController.class, ModuleErrorController.class,
             SignOnContractAdapter.class, ReportContractAdapter.class, ConversationStateAdapter.class,
             ScreenStateAdapter.class, GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class,
-            AuthenticationService.class, CredentialDigestService.class, SignOnStateService.class,
+            AuthenticationService.class, SignOnAttemptGovernor.class,
+            CredentialDigestService.class, SignOnStateService.class,
             MessageCatalogService.class, NavigationService.class, DateValidationService.class,
             ReportRequestService.class, JobSubmissionService.class,
             PostgresJobSubmissionCoordinator.class,

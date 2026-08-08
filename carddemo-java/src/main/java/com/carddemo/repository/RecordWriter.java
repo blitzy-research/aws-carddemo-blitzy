@@ -20,12 +20,17 @@ import jakarta.persistence.EntityExistsException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.orm.jpa.SharedEntityManagerCreator;
 import org.springframework.stereotype.Repository;
@@ -111,18 +116,21 @@ public class RecordWriter {
     private static final Logger LOG = LoggerFactory.getLogger(RecordWriter.class);
 
     /**
-     * The ANSI/ISO SQL state class that means a constraint refused the write.
+     * The complete ANSI/ISO SQL state that means the write was refused because the key was already
+     * present.
      *
-     * <p>The two-character class is the first half of the five-character state every JDBC driver publishes;
-     * class {@code 23} is <em>integrity constraint violation</em>, which for an insert is the key already
-     * being present. It is deliberately the class rather than a complete state, because the four subclasses
-     * a store may report - unique, primary key, foreign key, check - are all the same answer to the only
-     * question asked here, and pinning a full state would tie this to one store's choice among them.
+     * <p>It is the <strong>whole five characters</strong> and not the two-character class, and that is
+     * load-bearing. Class {@code 23} is <em>integrity constraint violation</em>, which is a family rather
+     * than a condition: PostgreSQL reports {@code 23505} for a unique or primary-key violation, but also
+     * {@code 23502} when a column that may not be null is null, {@code 23503} when a foreign key names a
+     * row that does not exist, {@code 23514} when a check constraint refuses the value and {@code 23001}
+     * for a restrict violation. Only the first is the key already being present. Reading the class alone
+     * told every one of them apart from none of them, so an operator who typed a name the store refuses,
+     * or a record whose card number names no card, was told the identifier they had chosen was already
+     * taken - which was both untrue and unactionable, because no other identifier could clear it. Each of
+     * those refusals has its own arm in the source: the write member's catch-all, which was being bypassed.
      */
-    private static final String SQLSTATE_CLASS_INTEGRITY_CONSTRAINT = "23";
-
-    /** The number of leading characters of an SQL state that carry its class. */
-    private static final int SQLSTATE_CLASS_LENGTH = 2;
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
 
     /**
      * The transaction-bound entity manager.
@@ -267,104 +275,152 @@ public class RecordWriter {
      * exactly this classification of exactly this writer's failures. One definition means the three arms
      * cannot drift apart.
      *
-     * <p>The classification reads the store's own report of the failure where one was made, and otherwise
-     * matches on the persistence provider's duplicate-entity type and the framework's two translated
-     * integrity types. It never reads a message and never reads a vendor error number, so it holds whatever
-     * database is configured and whatever locale a message is rendered in.
+     * <h2>The rule, in one sentence</h2>
+     *
+     * <p>When the store reported an SQL state, that state alone decides, and only the complete state
+     * {@value #SQLSTATE_UNIQUE_VIOLATION} is the refused key; when the store reported no state anywhere in
+     * the failure, a type that means <em>duplicate</em> and nothing else decides. Nothing here reads a
+     * message, a vendor error number or a constraint name, so the classification holds whatever locale a
+     * message renders in.
+     *
+     * <h2>Why the state has to be complete rather than its class</h2>
+     *
+     * <p>Reading the two-character class {@code 23} accepted every <em>integrity constraint violation</em>
+     * as a refused key, and that family is far wider than the condition the duplicate arms handle - see
+     * {@link #SQLSTATE_UNIQUE_VIOLATION} for the five states PostgreSQL actually reports inside it. A
+     * not-null, foreign-key or check refusal reached the duplicate arm and the operator was told the
+     * identifier was already taken; retrying under another identifier could not clear it, because the
+     * identifier was never the problem. Each of those refusals has its own arm in the source - the write
+     * paragraph's catch-all - and narrowing the state to the complete unique-violation code is what routes
+     * it there. Class {@code 22}, <em>data exception</em>, is excluded by the same rule rather than by a
+     * second one.
      *
      * <h2>Why the framework's translated type cannot decide this on its own</h2>
      *
-     * <p>{@code DataIntegrityViolationException} is broader than the condition the duplicate arms handle.
-     * The framework's state-based translation groups several SQL state classes onto that one type, and
-     * only one of them is a refused key: class {@code 23} is <em>integrity constraint violation</em>,
-     * while class {@code 22} is <em>data exception</em> - a value the column cannot hold at all. Read as a
-     * duplicate, a class {@code 22} failure told an operator that the identifier they had chosen was
-     * already taken when in fact it was free and their name field held a character the store refuses, and
-     * no amount of retrying under a different identifier could clear it. The user-add member's own
-     * catch-all write-failure arm is the arm the source specifies for that failure, and it was being
-     * bypassed.
+     * <p>{@code DataIntegrityViolationException} is the framework's type for the whole integrity family and
+     * is raised for a foreign-key, not-null or check refusal exactly as readily as for a duplicate; only
+     * its {@code DuplicateKeyException} subtype means <em>this key is already present</em>. The broad type
+     * is therefore no longer consulted at all, and the two types that are consulted -
+     * {@code DuplicateKeyException} and the provider's {@code EntityExistsException} - each mean the
+     * refused key and nothing else. That fallback is reached only when the whole failure carries no SQL
+     * state, which is the one situation in which the store said nothing that could demote it.
      *
-     * <p>So when the store has reported for itself, its report decides and the translated type is not
-     * consulted: a JDBC integrity-constraint type, or an SQL state in class {@code 23}, is the refused
-     * key; any other state class is not. This keeps the method's own rule intact - an SQL state is the
-     * ANSI/ISO standard code every driver publishes in the same five characters, not a vendor error
-     * number and not a message, so nothing here depends on which database is configured or on the
-     * locale a message renders in. The provider's exception hierarchy is deliberately not consulted
-     * either, which keeps this class free of any dependency on which JPA provider is in use.
+     * <h2>Why the whole failure is searched, in both directions</h2>
      *
-     * <p>When no state is available the typed test stands as before, because a failure that carries no
-     * report from the store carries no evidence to demote it: a provider that raises the duplicate-entity
-     * type from its own persistence context, and a translated integrity failure built without an
-     * underlying driver exception, both still classify as the refused key.
+     * <p>A driver exception reports two chains, not one. {@link Throwable#getCause()} is the wrapping
+     * chain the framework builds as it translates; {@link SQLException#getNextException()} is the chain the
+     * driver itself builds, and PostgreSQL uses it to carry the refusal that a batch or a multi-statement
+     * flush actually met. Following only the cause chain therefore reached a wrapper whose own state was
+     * {@code null} and stopped, missing the {@value #SQLSTATE_UNIQUE_VIOLATION} hanging off it. Both chains
+     * are walked, breadth first, and every visited failure is remembered by identity so a chain that points
+     * back at itself terminates instead of looping.
      *
      * @param  failure the failure an insert raised; may be {@code null}, which is not a duplicate
      * @return {@code true} when the key was already present
      */
     public static boolean isDuplicateKey(final Throwable failure) {
-        final SQLException reported = decisiveStoreReport(failure);
-        if (reported != null) {
-            return reportsRefusedKey(reported);
-        }
-        for (Throwable candidate = failure; candidate != null; candidate = candidate.getCause()) {
-            if (candidate instanceof EntityExistsException
-                    || candidate instanceof DuplicateKeyException
-                    || candidate instanceof DataIntegrityViolationException) {
-                return true;
+        return switch (storeVerdictOn(failure)) {
+            case REFUSED_KEY -> true;
+            case OTHER_REFUSAL -> false;
+            case SILENT -> declaresDuplicateByType(failure);
+        };
+    }
+
+    /**
+     * What the store itself said about the failure, read from every SQL state the failure carries.
+     *
+     * @param  failure the failure an insert raised; may be {@code null}
+     * @return the refused-key verdict when any reported state is the unique violation, the other-refusal
+     *         verdict when a state was reported and none of them was, and the silent verdict when the
+     *         failure carries no SQL state at all
+     */
+    private static StoreVerdict storeVerdictOn(final Throwable failure) {
+        StoreVerdict verdict = StoreVerdict.SILENT;
+        for (final Throwable reported : failureChainOf(failure)) {
+            if (!(reported instanceof SQLException driverFailure)) {
+                continue;
             }
-            if (candidate.getCause() == candidate) {
-                return false;
+            final String state = driverFailure.getSQLState();
+            if (SQLSTATE_UNIQUE_VIOLATION.equals(state)) {
+                return StoreVerdict.REFUSED_KEY;
+            }
+            if (state != null) {
+                verdict = StoreVerdict.OTHER_REFUSAL;
+            }
+        }
+        return verdict;
+    }
+
+    /**
+     * Reports whether the failure is one of the two types that mean the refused key and nothing else.
+     *
+     * <p>Consulted only when the store reported no SQL state anywhere in the failure. The broad translated
+     * integrity type is deliberately absent: it is raised for every member of the integrity family.
+     *
+     * @param  failure the failure an insert raised; may be {@code null}
+     * @return {@code true} when a duplicate-specific type appears anywhere in the failure
+     */
+    private static boolean declaresDuplicateByType(final Throwable failure) {
+        for (final Throwable candidate : failureChainOf(failure)) {
+            if (candidate instanceof EntityExistsException
+                    || candidate instanceof DuplicateKeyException) {
+                return true;
             }
         }
         return false;
     }
 
     /**
-     * Finds the store's own report of the failure, when it made one this method can act on.
+     * Every failure reachable from the one given, over both chains a driver exception publishes.
      *
-     * <p>A report is only decisive if it identifies the condition: either it is the JDBC type reserved for
-     * an integrity-constraint violation, or it carries an SQL state long enough to read a class from. A
-     * driver exception with no state says no more than the translated type above it already said, so it is
-     * passed over and the typed test is left to decide.
+     * <p>Breadth first over {@link Throwable#getCause()} and {@link SQLException#getNextException()}, with
+     * every failure remembered by identity, so a self-referencing or mutually-referencing chain is visited
+     * once and the traversal terminates. A {@code null} failure yields nothing.
      *
-     * @param  failure the failure an insert raised; may be {@code null}
-     * @return the first driver exception in the chain that identifies the condition, or {@code null}
+     * @param  failure the failure to walk; may be {@code null}
+     * @return the failures reachable from it, in visit order, never {@code null}
      */
-    private static SQLException decisiveStoreReport(final Throwable failure) {
-        for (Throwable candidate = failure; candidate != null; candidate = candidate.getCause()) {
-            if (candidate instanceof SQLException reported
-                    && (reported instanceof SQLIntegrityConstraintViolationException
-                            || hasReadableState(reported))) {
-                return reported;
+    private static List<Throwable> failureChainOf(final Throwable failure) {
+        final List<Throwable> visited = new ArrayList<>();
+        final Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Deque<Throwable> pending = new ArrayDeque<>();
+        enqueue(pending, failure);
+        while (!pending.isEmpty()) {
+            final Throwable candidate = pending.removeFirst();
+            if (!seen.add(candidate)) {
+                continue;
             }
-            if (candidate.getCause() == candidate) {
-                return null;
+            visited.add(candidate);
+            if (candidate instanceof SQLException driverFailure) {
+                enqueue(pending, driverFailure.getNextException());
             }
+            enqueue(pending, candidate.getCause());
         }
-        return null;
+        return visited;
     }
 
     /**
-     * Reports whether a driver exception carries an SQL state a class can be read from.
+     * Adds a failure to the traversal queue when there is one to add.
      *
-     * @param  reported the driver exception; must not be {@code null}
-     * @return {@code true} when a state class is readable
+     * @param pending the queue; must not be {@code null}
+     * @param failure the failure to enqueue; may be {@code null}, which enqueues nothing
      */
-    private static boolean hasReadableState(final SQLException reported) {
-        final String state = reported.getSQLState();
-        return state != null && state.length() >= SQLSTATE_CLASS_LENGTH;
+    private static void enqueue(final Deque<Throwable> pending, final Throwable failure) {
+        if (failure != null) {
+            pending.addLast(failure);
+        }
     }
 
-    /**
-     * Reports whether the store's own report is the refused-key condition.
-     *
-     * @param  reported the driver exception; must not be {@code null}
-     * @return {@code true} when the store refused the write because the key was already present
-     */
-    private static boolean reportsRefusedKey(final SQLException reported) {
-        if (reported instanceof SQLIntegrityConstraintViolationException) {
-            return true;
-        }
-        final String state = reported.getSQLState();
-        return state != null && state.startsWith(SQLSTATE_CLASS_INTEGRITY_CONSTRAINT);
+    /** What the store's own report of a refused write says about the condition that caused it. */
+    private enum StoreVerdict {
+
+        /** A reported SQL state is the complete unique violation: the key was already present. */
+        REFUSED_KEY,
+
+        /** A state was reported and none of them was the unique violation. */
+        OTHER_REFUSAL,
+
+        /** The failure carries no SQL state at all, so the store said nothing about it. */
+        SILENT
     }
 }

@@ -805,8 +805,19 @@ public final class AccountUpdateService {
      * <p>This exists so the service itself can stay a stateless singleton. The legacy initialises these
      * areas at line 866 on every entry, so a per-invocation holder is the faithful translation as well
      * as the thread-safe one: nothing survives a turn except what the response carries back.
+     *
+     * <p><strong>Package-private rather than private, and only for the three paragraphs the driver
+     * deliberately does not reach.</strong> Three of this member's edits &mdash;
+     * {@code 1230-EDIT-ALPHANUM-REQD}, {@code 1235-EDIT-ALPHA-OPT} and {@code 1240-EDIT-ALPHANUM-OPT}
+     * &mdash; are translated but unwired, each for a reason recorded on the method itself. A paragraph
+     * nothing calls can still be verified, but only by calling it, and calling it needs this holder plus
+     * the two readers below. Widening the holder to the package is the whole of that seam: no new type is
+     * introduced, no behaviour changes, and nothing outside {@code com.carddemo.service} can see it. The
+     * alternative &mdash; reaching the paragraphs reflectively &mdash; is refused, because the production
+     * tree is held to a reflection count of zero and a test that reaches past access control proves
+     * nothing about a call the driver could make.
      */
-    private static final class EditState {
+    static final class EditState {
 
         /** {@code WS-NON-KEY-FLAGS} and its neighbours: one three-state flag per decorated field. */
         private final Map<ScreenField, FieldFlag> flags = new EnumMap<>(ScreenField.class);
@@ -895,7 +906,7 @@ public final class AccountUpdateService {
          */
         private List<String> unprotectedFieldIds = List.of();
 
-        private EditState() {
+        EditState() {
             for (final ScreenField field : ScreenField.values()) {
                 this.flags.put(field, FieldFlag.ISVALID);
             }
@@ -913,8 +924,24 @@ public final class AccountUpdateService {
             this.decoration = FieldErrorMarks.none();
         }
 
-        private FieldFlag flag(final ScreenField field) {
+        FieldFlag flag(final ScreenField field) {
             return this.flags.get(field);
+        }
+
+        /**
+         * The text a failing edit composed against one field, or {@code null} when that field did not
+         * fail.
+         *
+         * <p>Part of the seam described on this class: an edit's outcome is a flag <em>and</em> a message,
+         * and asserting only the flag would leave the message contract &mdash; label, then suffix, in that
+         * order &mdash; unverified for the three paragraphs the driver does not reach. Reads the same map
+         * {@link #fail} writes, so there is one authority for the text rather than two.
+         *
+         * @param  field the field to read the composed text of
+         * @return the composed text, or {@code null} when no edit failed on that field
+         */
+        String messageFor(final ScreenField field) {
+            return this.fieldMessages.get(field);
         }
 
         private void setFlag(final ScreenField field, final FieldFlag value) {
@@ -1917,11 +1944,17 @@ public final class AccountUpdateService {
      * leaves it. The misspelled flag name {@code FLG-ALPHNANUM-*} at line 1995 is preserved as the
      * field-flag identity it names, and the misspelling itself is surfaced elsewhere in the module.
      *
+     * <p><strong>Package-private, which is the seam and not an invitation to wire it.</strong> No caller
+     * may be added: the driver reaching this paragraph would apply a character-class test the source never
+     * applies to any field. It is package-private so that
+     * {@code AccountUpdateServiceTest.DeliberatelyUnwiredEdits} can call it directly and prove all three
+     * of its arms, which is also what executes its paired exit; see the seam note on {@link EditState}.
+     *
      * @param  state the per-turn state, whose label slot this edit composes against
      * @param  field the field being edited
      * @param  value the keyed value
      */
-    private void editAlphanumericRequired(final EditState state, final ScreenField field,
+    void editAlphanumericRequired(final EditState state, final ScreenField field,
             final String value) {
         state.label = field.getLegacyLabel();
         final String keyed = screenValue(value);
@@ -1970,11 +2003,17 @@ public final class AccountUpdateService {
      * <p>The paragraph is kept rather than dropped because every one of the member's paragraphs maps to a
      * named method, and it is left unreached rather than wired because the directive forbids the wiring.
      *
+     * <p><strong>Package-private, which is the seam and not an invitation to wire it.</strong> Adding a
+     * caller would attach a constraint to the middle name and reject input the directive requires the
+     * module to accept. It is package-private so that
+     * {@code AccountUpdateServiceTest.DeliberatelyUnwiredEdits} can call it directly and prove all three
+     * of its arms, which is also what executes its paired exit; see the seam note on {@link EditState}.
+     *
      * @param  state the per-turn state, whose label slot this edit composes against
      * @param  field the field being edited
      * @param  value the keyed value
      */
-    private void editAlphaOptional(final EditState state, final ScreenField field,
+    void editAlphaOptional(final EditState state, final ScreenField field,
             final String value) {
         state.label = field.getLegacyLabel();
         final String keyed = screenValue(value);
@@ -2007,11 +2046,16 @@ public final class AccountUpdateService {
      * alphanumeric table, so digits pass. <strong>The code governs and the comment is a recorded
      * finding.</strong> No call site in this member reaches this paragraph.
      *
+     * <p><strong>Package-private, which is the seam and not an invitation to wire it.</strong> No caller
+     * may be added, for the same reason as its required sibling. It is package-private so that
+     * {@code AccountUpdateServiceTest.DeliberatelyUnwiredEdits} can call it directly and prove all three
+     * of its arms, which is also what executes its paired exit; see the seam note on {@link EditState}.
+     *
      * @param  state the per-turn state, whose label slot this edit composes against
      * @param  field the field being edited
      * @param  value the keyed value
      */
-    private void editAlphanumericOptional(final EditState state, final ScreenField field,
+    void editAlphanumericOptional(final EditState state, final ScreenField field,
             final String value) {
         state.label = field.getLegacyLabel();
         final String keyed = screenValue(value);

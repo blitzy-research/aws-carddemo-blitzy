@@ -99,7 +99,27 @@ import java.util.Objects;
  * <p>Two guards remain in front of every substituted value, and both are refusals rather than
  * rewrites: the value must be printable US-ASCII, and the account-number slot is narrowed further to
  * ASCII digits and the ASCII space. A refusal never alters a byte, so neither guard can disturb parity;
- * what they stop is a control byte splitting one fixed-length record into two.</p>
+ * what they stop is a control byte splitting one fixed-length record into two.
+ *
+ * <p><strong>Those guards are no longer the first line, and that matters.</strong> A control byte used
+ * to be refused only here - which meant a value carrying one was accepted online, stored, and met for
+ * the first time by this class during a batch run, failing that run at a point where the only remedy is
+ * to correct stored data. The transport now refuses a control character in an inbound text value where
+ * it arrives, in {@code WebMvcConfig}, so the online path can no longer deposit one. The guards below
+ * are kept rather than withdrawn, because a stored value predating that rule, a value seeded by a
+ * fixture, or a value arriving by any route other than the request boundary is still stopped before it
+ * can split a record.
+ *
+ * <p><strong>What is deliberately still not closed, stated plainly.</strong> Printable markup remains
+ * storable and is emitted here byte for byte, so a description or an address line carrying angle
+ * brackets reaches the HTML artefact as markup rather than as text. That is not an oversight and it is
+ * not closed by escaping, because escaping would shift every byte after the substitution and fail the
+ * byte comparison this artefact exists to satisfy. The consequence is that the emitted file is a
+ * <em>parity artefact</em> and not a document to be served to a browser from untrusted storage; any
+ * consumer that renders it inherits the legacy design's exposure and must encode at its own boundary.
+ * The residual is recorded in {@code docs/decision-log.md} entries DL-209 and DL-267 alongside this note, and the
+ * boundary rule that removes the control-byte half of it is asserted by
+ * {@code TransportControlCharacterRefusalTest}.</p>
  *
  * <p><strong>No templating engine.</strong> A templating engine, and any general-purpose format-string
  * abstraction that could reorder or re-space content, is forbidden for this output: either would

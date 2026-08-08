@@ -28,6 +28,7 @@ import com.carddemo.domain.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
+import com.carddemo.support.IsolatedStagingRoot;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -47,6 +48,7 @@ import java.util.List;
 import java.util.Locale;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
@@ -75,6 +77,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
@@ -235,25 +239,54 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
         properties = {"spring.flyway.enabled=false", "spring.main.banner-mode=off",
                 "spring.jpa.hibernate.ddl-auto=none",
                 "management.endpoint.health.validate-group-membership=false",
-                "management.tracing.enabled=false",
                 // The archive is composed in a file before it is published, so the job needs a staging
-                // root. It is bound here, namespaced to this specification, because the value is read
-                // while the context is built - which is before any temporary directory exists and
-                // before any test method runs.
-                "carddemo.batch.backup-transaction.staging-directory=${java.io.tmpdir}/"
-                        + BackupTransactionJobConfigIT.STAGING_SUBDIRECTORY})
+                // root. It is registered from registerIsolatedStagingDirectory rather than named here:
+                // the value is read while the context is built, and the root has to carry this process's
+                // own identity, which no compile-time constant can.
+                "management.tracing.enabled=false"})
 @DisplayName("BackupTransactionJobConfigIT - archives the master into a real store, clears it "
         + "idempotently, and changes no schema")
 class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
 
     /**
-     * The staging root this specification's archives are composed within.
+     * This specification's label within this process's private staging namespace.
      *
-     * <p>Namespaced to this class so a neighbouring specification cannot collide with it, and a
-     * compile-time constant because it is interpolated into the property above. The job removes each
-     * published generation from it, so nothing accumulates there.
+     * <p>It was namespaced to this class, which kept a neighbouring specification out but not another run
+     * of this one and not a sibling clone: every one of them resolved the same absolute path beneath the
+     * platform temporary directory. It is now one segment beneath a namespace unique to this process. The
+     * job removes each published generation from the root, so nothing accumulates there either way. See
+     * {@link IsolatedStagingRoot}.
      */
-    static final String STAGING_SUBDIRECTORY = "carddemo-backup-transaction-it";
+    static final String STAGING_LABEL = "backup-transaction-it";
+
+    /** The key the job reads its staging root from. */
+    private static final String STAGING_DIRECTORY_PROPERTY =
+            "carddemo.batch.backup-transaction.staging-directory";
+
+    /**
+     * Binds the staging directory to a root private to this process, before the context is created.
+     *
+     * <p>A property callback rather than an entry in the annotation above, because the value cannot be a
+     * compile-time constant: it carries the process identifier so that no other run of this specification,
+     * and no sibling clone sharing this host, resolves the same absolute path.
+     *
+     * @param registry the registry the framework supplies
+     */
+    @DynamicPropertySource
+    static void registerIsolatedStagingDirectory(final DynamicPropertyRegistry registry) {
+        registry.add(STAGING_DIRECTORY_PROPERTY, () -> IsolatedStagingRoot.pathFor(STAGING_LABEL));
+    }
+
+    /**
+     * Removes this specification's own staging root once the class is done with it.
+     *
+     * <p>The job removes each generation it publishes, so this is the belt to that brace rather than the
+     * only cleanup - and it removes a tree this process owns rather than sweeping anything shared.
+     */
+    @AfterAll
+    static void discardIsolatedStagingDirectory() {
+        IsolatedStagingRoot.discard(IsolatedStagingRoot.forSpecification(STAGING_LABEL));
+    }
 
     /**
      * The bucket every archive of this specification is expected to reach.

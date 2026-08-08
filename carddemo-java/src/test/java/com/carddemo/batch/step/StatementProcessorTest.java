@@ -46,6 +46,7 @@ import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.StatementGenerationService.StatementRun;
 import com.carddemo.service.StatementLineSummary;
 import com.carddemo.service.StatementTransactionSource;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.StatementHtmlTemplates;
 import com.carddemo.util.StatementTextTemplates;
@@ -2872,7 +2873,8 @@ class StatementProcessorTest {
                     () -> assertThat(walk.readAt(0)).contains(xref),
                     () -> assertThat(walk.readAt(1)).isEmpty(),
                     () -> assertThat(xref.getXrefAcctId()).isEqualTo(SAMPLE_ACCOUNT_ID),
-                    () -> assertThat(xref.getXrefCardNum()).isEqualTo(SAMPLE_CARD_NUMBER));
+                    () -> assertThat(SensitiveValues.fingerprint(xref.getXrefCardNum()))
+                            .isEqualTo(SensitiveValues.fingerprint(SAMPLE_CARD_NUMBER)));
             verify(statementDataAccessService).openCrossReferenceSource();
         }
 

@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.carddemo.domain.CardCrossReference;
+import com.carddemo.support.SensitiveValues;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -1152,7 +1153,7 @@ class CardXrefRecordMapperTest {
             final CardCrossReference mutating = row0Entity();
 
             mutating.setXrefCardNum(ROW_1_CARD_NUM);
-            assertThat(mutating.getXrefCardNum()).isEqualTo(ROW_1_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(mutating.getXrefCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_1_CARD_NUM));
             assertThat(mutating.getXrefCustId()).isEqualTo(ROW_0_CUST_ID);
             assertThat(mutating.getXrefAcctId()).isEqualTo(ROW_0_ACCT_ID);
 

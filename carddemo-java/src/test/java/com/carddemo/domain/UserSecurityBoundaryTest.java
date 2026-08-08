@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -96,14 +97,14 @@ class UserSecurityBoundaryTest {
             assertThat(identity.getSecUsrId()).isEqualTo(ADMIN_ID);
             assertThat(identity.getSecUsrFname()).isEqualTo("MARGARET");
             assertThat(identity.getSecUsrLname()).isEqualTo("GOLD");
-            assertThat(identity.credentialDigest()).isEqualTo(DIGEST);
+            assertThat(SensitiveValues.fingerprint(identity.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(DIGEST));
             assertThat(identity.getSecUsrType()).isEqualTo("A");
         }
 
         @Test
         @DisplayName("carries all sixty characters of a digest, not the legacy width of eight")
         void carriesTheFullDigestWidth() {
-            assertThat(administrator().credentialDigest()).hasSize(60);
+            assertThat(administrator().credentialDigest().length()).isEqualTo(60);
         }
 
         @Test

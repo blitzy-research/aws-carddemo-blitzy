@@ -17,6 +17,7 @@
 package com.carddemo.batch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.DynamicTest.dynamicTest;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -43,11 +44,10 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
@@ -71,9 +71,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import com.carddemo.batch.step.AdvisoryGenerationPublicationLock;
 import com.carddemo.batch.step.FixedWidthFlatFileReaderFactory;
@@ -89,6 +93,7 @@ import com.carddemo.service.FileMaintenanceService;
 import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.IsolatedStagingRoot;
 import com.carddemo.support.TestDataFactory;
 
 /**
@@ -188,12 +193,10 @@ import com.carddemo.support.TestDataFactory;
             // none, so no table, index or constraint here comes from anywhere but a delivered migration.
             "spring.flyway.enabled=false",
             "management.endpoint.health.validate-group-membership=false",
-            // ONE key configures both jobs. Each job configuration falls back to this shared directory
-            // when its own is unset, so setting this one resolves every staged dataset of both the
-            // prerequisite posting run and the subject run. It is fixed rather than temporary because the
-            // value is bound while the context starts, which is before a temporary directory could exist.
-            CategoryBalanceReportJobConfigIT.SHARED_STAGING_DIRECTORY_PROPERTY
-                    + "=${java.io.tmpdir}/" + CategoryBalanceReportJobConfigIT.STAGING_SUBDIRECTORY,
+            // ONE key configures both jobs, and it is registered from a property callback rather than
+            // written here - see registerIsolatedStagingDirectory. A literal cannot carry the value: the
+            // root has to be unique to this process, and a @TestPropertySource entry is a compile-time
+            // constant.
             // Both logical names are stated rather than left to their defaults, so that the destinations
             // this class inspects are provably the ones configuration resolved and not paths it invented.
             CategoryBalanceReportJobConfigIT.BACKUP_DATASET_BASE_PROPERTY
@@ -201,7 +204,6 @@ import com.carddemo.support.TestDataFactory;
             CategoryBalanceReportJobConfigIT.REPORT_DATASET_PROPERTY
                     + "=" + CategoryBalanceReportJobConfigIT.REPORT_DATASET})
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DisplayName("category-balance report job against a real server: three ungated steps, a fifty-byte "
         + "unload and a forty-byte report of thirty-two content bytes and eight blanks")
 class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
@@ -222,8 +224,15 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     static final String REPORT_DATASET_PROPERTY =
             "carddemo.batch.category-balance-report.report-dataset";
 
-    /** Directory beneath the platform temporary directory that this class's staged datasets resolve in. */
-    static final String STAGING_SUBDIRECTORY = "carddemo-category-balance-report-it";
+    /**
+     * This specification's label within this process's private staging namespace.
+     *
+     * <p>It was a directory name beneath the platform temporary directory, which made the root shared with
+     * every other run and every sibling clone on the host; it is now one segment beneath a namespace unique
+     * to this process. See {@link IsolatedStagingRoot} for why that mattered rather than merely being
+     * untidy.
+     */
+    static final String STAGING_LABEL = "category-balance-report-it";
 
     /** Logical name of the backup generation-group base, as the legacy stream names that resource. */
     static final String BACKUP_DATASET_BASE = "AWS.M2.CARDDEMO.TCATBALF.BKUP";
@@ -245,44 +254,34 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     // not an echo. Every figure below is measured from the copybook and from the member.
     // -----------------------------------------------------------------------------------------------
 
-    /** Width of the account identifier, the first key part. */
     private static final int ACCOUNT_ID_WIDTH = 11;
 
     /** Width of the transaction type code, the second key part and the only character-typed key. */
     private static final int TYPE_CODE_WIDTH = 2;
 
-    /** Width of the transaction category code, the third key part. */
     private static final int CATEGORY_CODE_WIDTH = 4;
 
-    /** Width of the whole composite key: eleven plus two plus four. */
     private static final int COMPOSITE_KEY_WIDTH = ACCOUNT_ID_WIDTH + TYPE_CODE_WIDTH
             + CATEGORY_CODE_WIDTH;
 
-    /** Width of the signed zoned-decimal balance field. */
     private static final int BALANCE_WIDTH = 11;
 
-    /** Implied decimal positions the balance carries. */
     private static final int BALANCE_SCALE = 2;
 
     /** Integer digit positions the balance carries, and the index of the mask's decimal point. */
     private static final int BALANCE_INTEGER_DIGITS = BALANCE_WIDTH - BALANCE_SCALE;
 
-    /** Width of the trailing filler run of the record. */
     private static final int FILLER_WIDTH = 22;
 
-    /** Bytes of the record the key and the balance occupy: seventeen plus eleven. */
     private static final int MAPPED_PREFIX_WIDTH = COMPOSITE_KEY_WIDTH + BALANCE_WIDTH;
 
-    /** Encoded width of one unloaded record: twenty-eight mapped bytes plus twenty-two filler bytes. */
     private static final int UNLOAD_RECORD_WIDTH = MAPPED_PREFIX_WIDTH + FILLER_WIDTH;
 
     /** Width of the edited balance the reprojection emits: nine digits, a point and two decimals. */
     private static final int BALANCE_MASK_WIDTH = BALANCE_WIDTH + 1;
 
-    /** Width of one blank separator the reprojection places between two fields. */
     private static final int SEPARATOR_WIDTH = 1;
 
-    /** Content bytes the reprojection emits before its trailing blank run. */
     private static final int REPORT_CONTENT_WIDTH = ACCOUNT_ID_WIDTH + SEPARATOR_WIDTH + TYPE_CODE_WIDTH
             + SEPARATOR_WIDTH + CATEGORY_CODE_WIDTH + SEPARATOR_WIDTH + BALANCE_MASK_WIDTH;
 
@@ -310,10 +309,8 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /** Key width of the transaction-category record, kept only to keep the two composites distinct. */
     private static final int TRANSACTION_CATEGORY_KEY_WIDTH = 6;
 
-    /** Rows the delivered reference seed loads into the category-balance table. */
     private static final int SEEDED_ROWS = 50;
 
-    /** Distinct balance values across those seeded rows, measured over the whole fixture. */
     private static final int SEEDED_DISTINCT_BALANCES = 1;
 
     // -----------------------------------------------------------------------------------------------
@@ -327,13 +324,10 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /** Final-byte encodings of a negative zero through a negative nine. */
     private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
 
-    /** The digit that left pads a numeric field to its declared width. */
     private static final char ZERO_DIGIT = '0';
 
-    /** The blank that separates two projected fields and fills the report's trailing run. */
     private static final char BLANK = ' ';
 
-    /** The point the edit mask places between the integer and the fractional digits. */
     private static final char DECIMAL_POINT = '.';
 
     /** Filler character the delivered category-balance fixture measurably uses. */
@@ -374,16 +368,12 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /** Legacy step name the order-and-reproject equivalent reports, and its metric tag value. */
     private static final String LEGACY_SORT_STEP = "STEP10R";
 
-    /** Metric the shared batch-program skeleton records one timer per lifecycle under. */
     private static final String COBOL_STEP_TIMER = "carddemo.batch.cobol.step";
 
-    /** Tag naming the legacy step a timer belongs to. */
     private static final String TIMER_STEP_TAG = "step";
 
-    /** Tag naming the outcome a timer belongs to. */
     private static final String TIMER_OUTCOME_TAG = "outcome";
 
-    /** Outcome tag value a completed lifecycle records. */
     private static final String TIMER_COMPLETED_OUTCOME = "COMPLETED";
 
     // -----------------------------------------------------------------------------------------------
@@ -415,7 +405,6 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /** Category code whose zoned reading is plus two. */
     private static final String HIGHER_CATEGORY_CODE = "0002";
 
-    /** Balance of the row whose category reads minus one. */
     private static final BigDecimal BALANCE_ON_NEGATIVE_CATEGORY = new BigDecimal("7.00");
 
     /** Balance of the row whose category reads plus one, and the negative value the mask must render. */
@@ -469,29 +458,14 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     @Value("${" + SHARED_STAGING_DIRECTORY_PROPERTY + "}")
     private String stagingDirectory;
 
-    /** Logical name of the report dataset, as configuration resolved it. */
     @Value("${" + REPORT_DATASET_PROPERTY + "}")
     private String reportDatasetName;
 
-    /** Logical name of the backup generation-group base, as configuration resolved it. */
     @Value("${" + BACKUP_DATASET_BASE_PROPERTY + "}")
     private String backupDatasetBaseName;
 
-    /** The report lines the two runs produced, captured once so each contract is asserted separately. */
-    private final List<String> reportLines = new ArrayList<>();
-
-    /** The unloaded records the first run produced, captured for the same reason. */
-    private final List<String> unloadedRecords = new ArrayList<>();
-
-    /** Encoded size of the report artefact, captured before anything reads its contents. */
-    private long reportArtefactBytes;
-
-    /** Encoded size of the unloaded artefact, captured for the same reason. */
-    private long unloadArtefactBytes;
-
     /** Creates the test class. */
     CategoryBalanceReportJobConfigIT() {
-        // Intentionally empty: every collaborator arrives by injection and every fixture by measurement.
     }
 
     /**
@@ -527,9 +501,7 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = TransactionCategoryBalance.class)
     static class JobsUnderTest {
 
-        /** Creates the configuration. */
         JobsUnderTest() {
-            // Intentionally empty: this configuration publishes two beans and holds no state.
         }
 
         /**
@@ -571,8 +543,25 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
      * @throws IOException if the directory cannot be created
      */
     @BeforeEach
-    void prepareStagingDirectory() throws IOException {
-        Files.createDirectories(stagingRoot());
+    void prepareStagingDirectory() {
+        IsolatedStagingRoot.forSpecification(STAGING_LABEL);
+    }
+
+    /**
+     * Binds the staging directory to a root private to this process, before the context is created.
+     *
+     * <p>A property callback rather than a {@code @TestPropertySource} entry, because the value cannot be a
+     * compile-time constant: the root carries the process identifier so that no other run of this
+     * specification, and no sibling clone sharing this host, resolves the same absolute path. The callback
+     * runs before the context starts, which is what a staging directory being bound during start-up
+     * requires.
+     *
+     * @param registry the registry the framework supplies
+     */
+    @DynamicPropertySource
+    static void registerIsolatedStagingDirectory(final DynamicPropertyRegistry registry) {
+        registry.add(SHARED_STAGING_DIRECTORY_PROPERTY,
+                () -> IsolatedStagingRoot.pathFor(STAGING_LABEL));
     }
 
     /**
@@ -583,25 +572,18 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
      * on its own connections, so no rollback can reach it, and the server is shared by every integration
      * class in the run - leaving posted transactions and moved balances behind would break classes that
      * assert against the delivered seed for a reason unrelated to what they test. The staged datasets are
-     * removed because the directory outlives a single Maven run while the framework's execution
-     * identifiers restart, so a stale generation could otherwise appear to belong to a later execution.
+     * removed because a staged generation is named from a batch execution identifier and those restart in a
+     * fresh metadata schema, so a generation left behind would reappear as though it belonged to a later
+     * execution. What is removed is this specification's own root and nothing else - the sweep of every
+     * regular file beneath a shared directory that stood here could reach a file a concurrently running
+     * sibling was still composing.
      *
      * @throws Exception if the server cannot be restored or the staged datasets cannot be removed
      */
     @AfterAll
     void restoreSharedState() throws Exception {
         restoreSeededState();
-        final Path root = stagingRoot();
-        if (!Files.isDirectory(root)) {
-            return;
-        }
-        try (Stream<Path> staged = Files.list(root)) {
-            for (final Path artefact : staged.toList()) {
-                if (Files.isRegularFile(artefact)) {
-                    Files.deleteIfExists(artefact);
-                }
-            }
-        }
+        IsolatedStagingRoot.discard(stagingRoot());
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -609,7 +591,6 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     // -----------------------------------------------------------------------------------------------
 
     @Test
-    @Order(1)
     @DisplayName("registered under its own name with exactly three steps and no condition-code gate, and "
             + "nothing whatsoever ran when the context came up")
     void theJobIsRegisteredWithThreeUngatedStepsAndNothingRanAtStartUp() throws Exception {
@@ -657,11 +638,78 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isEmpty();
     }
 
-    @Test
-    @Order(2)
-    @DisplayName("the posting run supplies the non-zero balances the delivered seed cannot, because all "
-            + "fifty seeded rows carry one and the same zero balance")
-    void thePostingRunSuppliesTheBalancesTheSeedCannotSupply() throws Exception {
+    // -----------------------------------------------------------------------------------------------
+    // WHY THE TWO RUNS AND THEIR SIX CONSUMERS ARE ONE FACTORY RATHER THAN EIGHT ORDERED TESTS
+    //
+    // The subject job reports category balances, and every one of the fifty delivered rows carries the
+    // same zero balance - so a report produced against the seed alone renders the same zero on every
+    // line and neither the edit mask nor the sign handling is observable. The posting run has to move
+    // those balances first, and the subject job then has to run twice for the clear-down contract to be
+    // observable at all. That prerequisite chain is one indivisible act.
+    //
+    // Six further assertions read what those runs produced. Expressed as @Order-ed methods over
+    // PER_CLASS instance fields, each was untrue in isolation: run alone - which -Dit.test=Class#method
+    // does - it found an empty capture and failed for a reason unrelated to its subject, and the class's
+    // correctness rested on MethodOrderer rather than on anything a reader could see.
+    //
+    // A factory drives the chain once and hands each consumer the capture as a VALUE. Every consumer is
+    // still separately named and separately reported, none can execute without a capture to read, and
+    // there is no order left to get wrong.
+    // -----------------------------------------------------------------------------------------------
+
+    @TestFactory
+    @DisplayName("the posting run supplies the non-zero balances the delivered seed cannot, the subject "
+            + "job then runs twice over with an idempotent clear-down, and every contract of what those "
+            + "runs produced holds")
+    Stream<DynamicTest> theTwoRunsAndEveryContractOfWhatTheyProduced() throws Exception {
+        final CapturedRuns runs = driveTheTwoRuns();
+        return Stream.of(
+                dynamicTest(
+                        "the unload is the fifty-byte CATEGORY-BALANCE layout - eleven-digit "
+                                + "account, two-character type, four-digit category, eleven-byte "
+                                + "signed balance, twenty-two-byte filler - and provably not the "
+                                + "equally fifty-byte cross-reference layout",
+                        () -> theUnloadCarriesTheCategoryBalanceDecomposition(runs)),
+                dynamicTest(
+                        "every report line is exactly forty encoded bytes - thirty-two content "
+                                + "bytes and EXACTLY EIGHT blanks, never the forty-one the "
+                                + "reprojection's own nine-byte run would give",
+                        () -> theReportResolvesTheOneByteConflictToForty(runs)),
+                dynamicTest(
+                        "ordered by account, then type, then category, all ascending, with the two "
+                                + "zoned keys read as signed numbers and the character key "
+                                + "lexicographically - and the balance is no key",
+                        () -> theOrderingIsAccountThenTypeThenCategoryAscending(runs)),
+                dynamicTest(
+                        "the delivered fixture carries this record's own measured census: fifty "
+                                + "fifty-byte records, a seventeen-byte composite key and a "
+                                + "twenty-two-byte ASCII-zero filler",
+                        this::theDeliveredFixtureCarriesTheMeasuredCensusForThisRecord),
+                dynamicTest(
+                        "the unload's sequential pass is the shared discipline's GENERIC "
+                                + "category-balance entry point, read once, in composite key "
+                                + "order, and ending at end of file",
+                        this::theUnloadUsesTheGenericCategoryBalanceEntryPoint),
+                dynamicTest(
+                        "one lifecycle timer per legacy step, tagged by step name and completed "
+                                + "outcome - presence and shape only, because the estate documents "
+                                + "no performance figure",
+                        this::theProgramLifecycleTimersArePresentAndTagged));
+    }
+
+    /**
+     * Drives the prerequisite posting run and the two subject runs, once, and captures what they made.
+     *
+     * <p>Every assertion here is a fact about the driving itself and has to be made while it happens: the
+     * seeded census has to be measured before the posting run moves it, and the clear-down contract needs
+     * the report absent before the first launch and present before the second. What the runs produced is
+     * returned as a value rather than stored on the instance, so no later assertion can find it by
+     * accident.
+     *
+     * @return the captured artefacts of the two runs
+     * @throws Exception if a launch is refused, or a staged artefact cannot be read
+     */
+    private CapturedRuns driveTheTwoRuns() throws Exception {
         // The one server is shared by every integration class in the run, and a batch job commits per
         // record on its own connections so no rollback can reach it. Starting from the state a fresh
         // migration leaves - which is the opt-in reset the shared base offers rather than a context
@@ -696,13 +744,7 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isGreaterThan(SEEDED_ROWS);
 
         addDiscriminatingRows();
-    }
 
-    @Test
-    @Order(3)
-    @DisplayName("runs twice over: three completed steps every time, a clear-down that succeeds whether or "
-            + "not a prior report exists, and no date parameter on either launch")
-    void theJobRunsTwiceOverWithAnIdempotentClearDown() throws Exception {
         removeStaleArtefactsOfThisJob();
         final int instancesBefore = reportJobInstanceCount();
 
@@ -744,40 +786,67 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         + "difference here would mean the unload was not a function of the cluster alone")
                 .isEqualTo(firstGeneration);
 
-        this.unloadArtefactBytes = Files.size(generations.get(0));
-        this.unloadedRecords.clear();
-        this.unloadedRecords.addAll(firstGeneration);
-        this.reportArtefactBytes = Files.size(reportDataset());
-        this.reportLines.clear();
-        this.reportLines.addAll(fixedWidthRecordsOf(reportDataset(), REPORT_RECORD_WIDTH));
+        final long unloadBytes = Files.size(generations.get(0));
+        final long reportBytes = Files.size(reportDataset());
+        final List<String> capturedReport =
+                fixedWidthRecordsOf(reportDataset(), REPORT_RECORD_WIDTH);
 
-        assertThat(this.unloadedRecords).isNotEmpty();
-        assertThat(this.reportLines)
+        assertThat(firstGeneration)
+                .as("the unloaded generation of the first run was captured; an empty capture would mean"
+                        + " the run that produces it did not complete")
+                .isNotEmpty();
+        assertThat(capturedReport)
                 .as("the reprojection emits one line per unloaded record")
-                .hasSameSizeAs(this.unloadedRecords);
+                .isNotEmpty()
+                .hasSameSizeAs(firstGeneration);
+
+        return new CapturedRuns(firstGeneration, capturedReport, unloadBytes, reportBytes);
     }
 
-    @Test
-    @Order(4)
-    @DisplayName("the unload is the fifty-byte CATEGORY-BALANCE layout - eleven-digit account, "
-            + "two-character type, four-digit category, eleven-byte signed balance, twenty-two-byte "
-            + "filler - and provably not the equally fifty-byte cross-reference layout")
-    void theUnloadCarriesTheCategoryBalanceDecomposition() {
-        requireCapturedArtefacts();
+    /**
+     * What the two subject runs produced, as one immutable value.
+     *
+     * <p>This is what replaced four mutable instance fields shared between eight ordered tests. It is
+     * handed to each consumer as a parameter, so the dependency is in the signature and an assertion
+     * cannot be written that silently requires another test to have run first.
+     *
+     * @param unloadedRecords     the fifty-byte unload records of the first run, in written order
+     * @param reportLines         the forty-byte report lines of the second run, in written order
+     * @param unloadArtefactBytes encoded size of the unloaded artefact
+     * @param reportArtefactBytes encoded size of the report artefact
+     */
+    private record CapturedRuns(List<String> unloadedRecords, List<String> reportLines,
+            long unloadArtefactBytes, long reportArtefactBytes) {
 
-        final long content = encodedLengthOf(this.unloadedRecords);
+        /** Copies both lists defensively, so a consumer cannot alter what another consumer reads. */
+        CapturedRuns {
+            unloadedRecords = List.copyOf(unloadedRecords);
+            reportLines = List.copyOf(reportLines);
+        }
+    }
+
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     *
+     * @param runs the captured artefacts of the two runs, handed in rather than
+     *             found, so this assertion cannot run without them
+     */
+    private void theUnloadCarriesTheCategoryBalanceDecomposition(final CapturedRuns runs) {
+
+        final long content = encodedLengthOf(runs.unloadedRecords());
         assertThat(content % UNLOAD_RECORD_WIDTH)
                 .as("the unloaded artefact is a whole number of fifty-byte records; %d encoded byte(s) "
-                        + "over %d record(s) leaves a remainder", content, this.unloadedRecords.size())
+                        + "over %d record(s) leaves a remainder", content, runs.unloadedRecords().size())
                 .isZero();
-        assertThat(content).isEqualTo((long) this.unloadedRecords.size() * UNLOAD_RECORD_WIDTH);
-        assertThat(this.unloadArtefactBytes)
+        assertThat(content).isEqualTo((long) runs.unloadedRecords().size() * UNLOAD_RECORD_WIDTH);
+        assertThat(runs.unloadArtefactBytes())
                 .as("the staged dataset carries NOTHING between two records, so the file measures exactly"
                         + " what its records measure - the declared fixed record format has no separator"
                         + " (DL-213)")
-                .isEqualTo((long) this.unloadedRecords.size() * UNLOAD_RECORD_WIDTH);
+                .isEqualTo((long) runs.unloadedRecords().size() * UNLOAD_RECORD_WIDTH);
 
-        for (final String record : this.unloadedRecords) {
+        for (final String record : runs.unloadedRecords()) {
             assertThat(record.getBytes(StandardCharsets.US_ASCII).length)
                     .as("every unloaded record is the declared fifty encoded bytes, never trimmed: <%s>",
                             record)
@@ -836,19 +905,21 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
         final List<TransactionCategoryBalance> rows = rowsInClusterKeyOrder();
         final List<String> expected = new ArrayList<>();
         rows.forEach(row -> expected.add(expectedUnloadRecord(row)));
-        assertThat(this.unloadedRecords)
+        assertThat(runs.unloadedRecords())
                 .as("byte for byte against an image this class builds from the layout alone, in the "
                         + "cluster's own composite-key order, which is the order a sequential read of an "
                         + "indexed cluster returns")
                 .isEqualTo(expected);
     }
 
-    @Test
-    @Order(5)
-    @DisplayName("every report line is exactly forty encoded bytes - thirty-two content bytes and EXACTLY "
-            + "EIGHT blanks, never the forty-one the reprojection's own nine-byte run would give")
-    void theReportResolvesTheOneByteConflictToForty() {
-        requireCapturedArtefacts();
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     *
+     * @param runs the captured artefacts of the two runs, handed in rather than
+     *             found, so this assertion cannot run without them
+     */
+    private void theReportResolvesTheOneByteConflictToForty(final CapturedRuns runs) {
 
         assertThat(OVER_RUN_RECORD_WIDTH)
                 .as("the conflict, stated as arithmetic: thirty-two content bytes plus the nine-byte "
@@ -860,17 +931,17 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isEqualTo(DECLARED_TRAILING_BLANKS - 1)
                 .isEqualTo(8);
 
-        final long content = encodedLengthOf(this.reportLines);
+        final long content = encodedLengthOf(runs.reportLines());
         assertThat(content % REPORT_RECORD_WIDTH)
                 .as("the reprojected artefact is a whole number of forty-byte records; %d encoded byte(s) "
-                        + "over %d line(s) leaves a remainder", content, this.reportLines.size())
+                        + "over %d line(s) leaves a remainder", content, runs.reportLines().size())
                 .isZero();
-        assertThat(content).isEqualTo((long) this.reportLines.size() * REPORT_RECORD_WIDTH);
-        assertThat(this.reportArtefactBytes)
+        assertThat(content).isEqualTo((long) runs.reportLines().size() * REPORT_RECORD_WIDTH);
+        assertThat(runs.reportArtefactBytes())
                 .as("no separator byte on the staged dataset either, as with the unload")
-                .isEqualTo((long) this.reportLines.size() * REPORT_RECORD_WIDTH);
+                .isEqualTo((long) runs.reportLines().size() * REPORT_RECORD_WIDTH);
 
-        for (final String line : this.reportLines) {
+        for (final String line : runs.reportLines()) {
             final int encoded = line.getBytes(StandardCharsets.US_ASCII).length;
             assertThat(encoded)
                     .as("the declared record length is the dataset contract, measured in encoded bytes "
@@ -922,51 +993,53 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                     .containsOnlyDigits();
         }
 
-        assertThat(reportLineFor(SEEDED_TYPE_CODE, NEGATIVE_CATEGORY_CODE))
+        assertThat(reportLineFor(runs, SEEDED_TYPE_CODE, NEGATIVE_CATEGORY_CODE))
                 .as("a positive balance renders its digits with the point fixed")
                 .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
                         NEGATIVE_CATEGORY_CODE, BALANCE_ON_NEGATIVE_CATEGORY));
-        assertThat(reportLineFor(SEEDED_TYPE_CODE, SEEDED_CATEGORY_CODE))
+        assertThat(reportLineFor(runs, SEEDED_TYPE_CODE, SEEDED_CATEGORY_CODE))
                 .as("a NEGATIVE balance renders the same twelve-character shape at the same fixed point. "
                         + "The specification requests no sign character, so the magnitude is what appears "
                         + "and a negative balance is indistinguishable from its positive counterpart in "
                         + "this report - a property of the specification, not of the translation")
                 .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
                         SEEDED_CATEGORY_CODE, NEGATIVE_BALANCE));
-        assertThat(reportLineFor(SEEDED_TYPE_CODE, HIGHER_CATEGORY_CODE))
+        assertThat(reportLineFor(runs, SEEDED_TYPE_CODE, HIGHER_CATEGORY_CODE))
                 .as("a balance filling every one of the nine declared integer digits still fits the mask")
                 .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, SEEDED_TYPE_CODE,
                         HIGHER_CATEGORY_CODE, WIDEST_BALANCE));
-        assertThat(reportLineFor(TRAILING_TYPE_CODE, SEEDED_CATEGORY_CODE))
+        assertThat(reportLineFor(runs, TRAILING_TYPE_CODE, SEEDED_CATEGORY_CODE))
                 .as("and a balance of exactly zero renders nine zeros, the point and two more zeros "
                         + "rather than blanking the field")
                 .isEqualTo(expectedReportLine(DISCRIMINATING_ACCOUNT, TRAILING_TYPE_CODE,
                         SEEDED_CATEGORY_CODE, ZERO_BALANCE));
     }
 
-    @Test
-    @Order(6)
-    @DisplayName("ordered by account, then type, then category, all ascending, with the two zoned keys "
-            + "read as signed numbers and the character key lexicographically - and the balance is no key")
-    void theOrderingIsAccountThenTypeThenCategoryAscending() {
-        requireCapturedArtefacts();
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     *
+     * @param runs the captured artefacts of the two runs, handed in rather than
+     *             found, so this assertion cannot run without them
+     */
+    private void theOrderingIsAccountThenTypeThenCategoryAscending(final CapturedRuns runs) {
 
         final List<TransactionCategoryBalance> rows = rowsInClusterKeyOrder();
         final List<TransactionCategoryBalance> ordered = new ArrayList<>(rows);
         ordered.sort(expectedSortSpecification());
         final List<String> expected = new ArrayList<>();
         ordered.forEach(row -> expected.add(expectedReportLine(row)));
-        assertThat(this.reportLines)
+        assertThat(runs.reportLines())
                 .as("byte for byte against a projection this class orders itself, by decoding the two "
                         + "zoned keys and comparing the character key as characters. No level of the "
                         + "ordering is reordered and none is dropped")
                 .isEqualTo(expected);
 
         final List<String> keys = new ArrayList<>();
-        this.reportLines.forEach(line -> keys.add(keyPrefixOf(line)));
+        runs.reportLines().forEach(line -> keys.add(keyPrefixOf(line)));
 
         final List<Long> accounts = new ArrayList<>();
-        this.reportLines.forEach(line ->
+        runs.reportLines().forEach(line ->
                 accounts.add(decodeZonedKey(accountIdentifierOf(line), ACCOUNT_ID_WIDTH)));
         assertThat(accounts)
                 .as("first level: the account identifier ascending across the whole report")
@@ -1000,11 +1073,11 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isNotEqualTo(keysByBalance);
     }
 
-    @Test
-    @Order(7)
-    @DisplayName("the delivered fixture carries this record's own measured census: fifty fifty-byte "
-            + "records, a seventeen-byte composite key and a twenty-two-byte ASCII-zero filler")
-    void theDeliveredFixtureCarriesTheMeasuredCensusForThisRecord() {
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     */
+    private void theDeliveredFixtureCarriesTheMeasuredCensusForThisRecord() {
         final List<String> fixture = readFixtureRecords(CATEGORY_BALANCE_FIXTURE);
 
         assertThat(fixture)
@@ -1067,11 +1140,11 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                         .isEqualTo(CROSS_REFERENCE_FIXTURE_RECORD_WIDTH));
     }
 
-    @Test
-    @Order(8)
-    @DisplayName("the unload's sequential pass is the shared discipline's GENERIC category-balance entry "
-            + "point, read once, in composite key order, and ending at end of file")
-    void theUnloadUsesTheGenericCategoryBalanceEntryPoint() {
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     */
+    private void theUnloadUsesTheGenericCategoryBalanceEntryPoint() {
         final List<String> observed = new ArrayList<>();
         final FileMaintenanceService.FileReadSummary summary =
                 this.fileMaintenanceService.readTransactionCategoryBalanceFile(record ->
@@ -1100,11 +1173,11 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isEqualTo(expected);
     }
 
-    @Test
-    @Order(9)
-    @DisplayName("one lifecycle timer per legacy step, tagged by step name and completed outcome - "
-            + "presence and shape only, because the estate documents no performance figure")
-    void theProgramLifecycleTimersArePresentAndTagged() {
+    /**
+     * Asserts one contract of the two runs, as one dynamic test of
+     * {@link #theTwoRunsAndEveryContractOfWhatTheyProduced()}.
+     */
+    private void theProgramLifecycleTimersArePresentAndTagged() {
         for (final String legacyStep : List.of(LEGACY_CLEAR_STEP, LEGACY_UNLOAD_STEP, LEGACY_SORT_STEP)) {
             final Timer timer = this.meterRegistry.find(COBOL_STEP_TIMER)
                     .tag(TIMER_STEP_TAG, legacyStep)
@@ -1202,13 +1275,17 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     // -----------------------------------------------------------------------------------------------
 
     /**
-     * The directory configuration resolved for every staged dataset of both jobs.
+     * The staging root the context resolved for this run, as a path.
      *
-     * @return the staging root
+     * <p>Read from the injected configuration value rather than recomputed, so this is by construction the
+     * very directory both job configurations were given.
+     *
+     * @return this run's own staging root
      */
     private Path stagingRoot() {
         return Path.of(this.stagingDirectory);
     }
+
 
     /**
      * The report dataset, resolved by its configured logical name within the configured directory.
@@ -1240,14 +1317,23 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * Removes datasets of this job's own two logical names left by an earlier build.
+     * Removes datasets of this job's own two logical names left by an <em>earlier assertion of this
+     * class</em>.
      *
-     * <p>The staging directory outlives one build while the framework's execution identifiers restart with
-     * a fresh database, so a generation from an earlier build could otherwise appear to belong to an
-     * execution of this one. Only the two logical names this job owns are touched, so the prerequisite
-     * run's own staged input and reject generations are left alone. This establishes the precondition the
-     * clear-down contract is then asserted against rather than standing in for it: the job, not this
-     * method, is what has to survive an absent output.
+     * <p>The assertions of this class are ordered and share one staging root, and an earlier one produces a
+     * report. This removes it so the next can assert that the job clears down an output that is not there.
+     * Only the two logical names this job owns are touched, so the prerequisite run's own staged input and
+     * reject generations are left alone. This establishes the precondition the clear-down contract is then
+     * asserted against rather than standing in for it: the job, not this method, is what has to survive an
+     * absent output.
+     *
+     * <p><strong>It is not protection against an earlier build.</strong> It used to be described that way,
+     * and while the root was a fixed directory beneath the platform temporary directory that description
+     * was accurate: the directory outlived the build while the framework's execution identifiers restarted
+     * against a fresh database, so a generation from an earlier build could appear to belong to an
+     * execution of this one. The root is now private to this process and discarded when the class finishes
+     * (DL-273), so no artefact of another build or another clone can be present to remove, and a reader
+     * should not infer from this method that one could be.
      *
      * @throws IOException if the staging directory cannot be listed or an entry cannot be removed
      */
@@ -1362,24 +1448,6 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     private List<TransactionCategoryBalance> rowsInClusterKeyOrder() {
         return this.categoryBalanceRepository.findAll(
                 Sort.by(Sort.Direction.ASC, "trancatAcctId", "trancatTypeCd", "trancatCd"));
-    }
-
-    /**
-     * Fails with a diagnostic naming what is missing when the artefacts of the two runs were not captured.
-     *
-     * <p>Never skips and is never conditional: a missing artefact means the run that produces it did not
-     * complete, and that is a failure rather than a reason to pass quietly.
-     */
-    private void requireCapturedArtefacts() {
-        assertThat(this.unloadedRecords)
-                .as("the unloaded generation of the first run was not captured, which means the run that "
-                        + "produces it did not complete; it is written to the configured generation of <%s> "
-                        + "beneath <%s>", this.backupDatasetBaseName, this.stagingDirectory)
-                .isNotEmpty();
-        assertThat(this.reportLines)
-                .as("the report of the second run was not captured; it is written to <%s> beneath <%s>",
-                        this.reportDatasetName, this.stagingDirectory)
-                .isNotEmpty();
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -1739,13 +1807,15 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     /**
      * The one report line belonging to one key on the discriminating account.
      *
+     * @param runs the captured artefacts of the two runs, so the lines searched are provably those runs'
      * @param typeCode the type code
      * @param categoryCode the category code
      * @return the forty-character report line
      */
-    private String reportLineFor(final String typeCode, final String categoryCode) {
+    private static String reportLineFor(final CapturedRuns runs, final String typeCode,
+            final String categoryCode) {
         final String wanted = keyPrefix(DISCRIMINATING_ACCOUNT, typeCode, categoryCode);
-        final List<String> matches = this.reportLines.stream()
+        final List<String> matches = runs.reportLines().stream()
                 .filter(line -> keyPrefixOf(line).equals(wanted))
                 .toList();
         assertThat(matches)

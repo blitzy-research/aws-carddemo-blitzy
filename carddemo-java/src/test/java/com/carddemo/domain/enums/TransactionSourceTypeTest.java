@@ -80,7 +80,6 @@ class TransactionSourceTypeTest {
     /** Point-of-sale value: an eight-character literal holding one interior blank, then two blanks. */
     private static final String POINT_OF_SALE_VALUE = "POS TERM  ";
 
-    /** Operator value: an eight-character literal, then two blanks. */
     private static final String OPERATOR_VALUE = "OPERATOR  ";
 
     /** Synthesised value: a six-character mixed-case literal, then four blanks. */
@@ -113,40 +112,28 @@ class TransactionSourceTypeTest {
      */
     private static final String SYNTHESISED_VALUE_UPPER_CASE_RENDERING = "SYSTEM\s\s\s\s";
 
-    /** The lower-case rendering of the synthesised value, present only as a negative expectation. */
     private static final String SYNTHESISED_VALUE_LOWER_CASE_RENDERING = "system    ";
 
-    /** The lower-case rendering of the point-of-sale value, present only as a negative expectation. */
     private static final String POINT_OF_SALE_LOWER_CASE_RENDERING = "pos term  ";
 
-    /** The lower-case rendering of the operator value, present only as a negative expectation. */
     private static final String OPERATOR_LOWER_CASE_RENDERING = "operator  ";
 
-    /** The blank byte the field is filled with. */
     private static final byte ASCII_BLANK = (byte) 0x20;
 
-    /** Number of values in the vocabulary: one per distinct literal the estate writes. */
     private static final int EXPECTED_VALUE_COUNT = 3;
 
-    /** Blanks that fill the point-of-sale value out to the declared field width. */
     private static final int POINT_OF_SALE_TRAILING_BLANKS = 2;
 
-    /** Blanks that fill the operator value out to the declared field width. */
     private static final int OPERATOR_TRAILING_BLANKS = 2;
 
-    /** Blanks that fill the synthesised value out to the declared field width. */
     private static final int SYNTHESISED_TRAILING_BLANKS = 4;
 
-    /** Characters of the point-of-sale value that come from its literal rather than from padding. */
     private static final int POINT_OF_SALE_POPULATED_WIDTH = 8;
 
-    /** Characters of the operator value that come from its literal rather than from padding. */
     private static final int OPERATOR_POPULATED_WIDTH = 8;
 
-    /** Characters of the synthesised value that come from its literal rather than from padding. */
     private static final int SYNTHESISED_POPULATED_WIDTH = 6;
 
-    /** Zero-based position of the interior blank inside the point-of-sale value. */
     private static final int INTERIOR_BLANK_INDEX = 3;
 
     /**
@@ -167,10 +154,8 @@ class TransactionSourceTypeTest {
         16, 2, 4, 10, 100, 11, 9, 50, 50, 10, 16, 26, 26, 20
     };
 
-    /** Fields each layout declares. */
     private static final int DECLARED_FIELD_COUNT = 14;
 
-    /** One-based position of the origination field in declaration order. */
     private static final int SOURCE_FIELD_POSITION = 4;
 
     /** Bytes the three fields ahead of the origination field occupy: 16 plus 2 plus 4. */
@@ -182,10 +167,8 @@ class TransactionSourceTypeTest {
     /** One-based last byte of the origination field within the record image. */
     private static final int SOURCE_FIELD_LAST_BYTE = 32;
 
-    /** Record length both copybooks announce in their banner. */
     private static final int DECLARED_RECORD_LENGTH = 350;
 
-    /** Width of the filler that closes each record. */
     private static final int TRAILING_FILLER_WIDTH = 20;
 
     /** Records of the seeded daily file measured as carrying the point-of-sale value. */
@@ -200,7 +183,6 @@ class TransactionSourceTypeTest {
     /** Size of {@code app/data/ASCII/dailytran.txt} in bytes. */
     private static final int SEEDED_FILE_BYTE_TOTAL = 105_300;
 
-    /** Bytes each record of the seeded text fixture spends on its line terminator. */
     private static final int RECORD_TERMINATOR_WIDTH = 1;
 
     /** The vocabulary in declaration order, named rather than discovered. */
@@ -216,7 +198,6 @@ class TransactionSourceTypeTest {
     /** The two values the seeded daily file actually carries, in the order the vocabulary lists them. */
     private static final List<String> SEEDED_VALUES = List.of("POS TERM  ", "OPERATOR  ");
 
-    /** Stable identifiers of the three constants, in declaration order. */
     private static final List<String> DECLARED_IDENTIFIERS_IN_ORDER =
             List.of("POS_TERM", "OPERATOR", "SYSTEM");
 

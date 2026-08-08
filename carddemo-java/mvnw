@@ -17,10 +17,10 @@
 # ----------------------------------------------------------------------------
 #
 # Two Apache License, Version 2.0 grants stand side by side here, which is complete
-# attribution rather than a conflict: the CardDemo header above covers this file as a
-# project artefact and matches the header every member of the legacy estate carries,
-# while the Apache Software Foundation notice below covers the upstream work the
-# executable body embeds. Neither grant may be removed.
+# attribution rather than a conflict: the CardDemo header above covers this generated
+# file as a project artefact, in the same form every generated artefact of this module
+# carries, while the Apache Software Foundation notice below covers the upstream work
+# the executable body embeds. Neither grant may be removed.
 #
 # ----------------------------------------------------------------------------
 # Licensed to the Apache Software Foundation (ASF) under one

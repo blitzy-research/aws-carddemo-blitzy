@@ -51,6 +51,7 @@ import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.TransactionRecordMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -60,6 +61,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -82,7 +84,8 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  * <p>A pure unit test: no Spring context, no connection, no container, no persistence, and no reading
  * of the legacy tree at run time. The interest service is a Mockito mock, because every behaviour it
  * owns has its own suite; what is asserted here is the read loop this stage owns - the control break,
- * the mandatory final flush, the suffix threading, preservation of the service's rate-gate decision,
+ * the mandatory final flush and the control break that flush names, the suffix threading, preservation
+ * of the service's rate-gate decision,
  * and the fixed-width output contract the stage guards before handing a group on.
  *
  * <p>Every expected value in this file is an <strong>independent oracle</strong>. No amount, key,
@@ -160,11 +163,19 @@ import org.springframework.batch.test.MetaDataInstanceFactory;
  * consequence is that the last account group's break never fires: that account's synthesized interest
  * transactions are written while its current balance and its two cycle accumulators are never updated,
  * so one account lists its interest and reports a balance excluding it. <strong>The production stage
- * takes the faithful-outcome choice and posts the final group when the step ends successfully</strong>,
- * because omitting it silently loses the last account's interest; this suite asserts that single
- * outcome and never the dead arm. It deliberately contains <strong>no reconciliation assertion</strong>
- * - nothing here claims that a final account's balance equals the sum of its emitted interest
- * transactions, because that is precisely the invariant the legacy breaks. Reproduce, do not reconcile.
+ * reproduces both halves of that outcome. When the step ends successfully it accrues the final group
+ * and emits every record the group synthesized - omitting it would silently lose the last account's
+ * interest - and it closes that group under
+ * {@link com.carddemo.service.InterestCalculationService.AccountControlBreak#WITHHELD_AT_END_OF_FILE},
+ * so paragraph {@code 1050-UPDATE-ACCOUNT} does not run: the balance is not posted and neither cycle
+ * accumulator is zeroed.</strong> Only a group closed on a key change is rewritten, under
+ * {@link com.carddemo.service.InterestCalculationService.AccountControlBreak#REWRITE}. This suite
+ * asserts each of the two closes against the outcome that close actually has, and it names the control
+ * break explicitly in the decisive verifications rather than accepting either one, because a stage that
+ * regressed to rewriting the final account would otherwise still pass. It deliberately contains
+ * <strong>no reconciliation assertion</strong> - nothing here claims that a final account's balance
+ * equals the sum of its emitted interest transactions, because that is precisely the invariant the
+ * legacy breaks. Reproduce, do not reconcile.
  *
  * <p><strong>Seeded data reaches only one of the two disclosure paths.</strong> All fifty seeded
  * accounts leave the group identifier blank at its ten-character width, so the seeded run misses the
@@ -181,10 +192,8 @@ final class InterestCalculationProcessorTest {
     /** The run date the job stream supplies at {@code app/jcl/INTCALC.jcl:L22}. */
     private static final String RUN_DATE = "2022071800";
 
-    /** First account of the fixture stream. */
     private static final String ACCOUNT_A = "00000000011";
 
-    /** Second account of the fixture stream. */
     private static final String ACCOUNT_B = "00000000022";
 
     /** The account group identifier every row of the fixture probes the disclosure group with. */
@@ -193,10 +202,8 @@ final class InterestCalculationProcessorTest {
     /** A sixteen-character card number, as the cross-reference supplies it. */
     private static final String CARD_NUMBER = "4111111111111111";
 
-    /** Transaction type code of the fixture rows. */
     private static final String TYPE_CD = "01";
 
-    /** Transaction category code of the fixture rows. */
     private static final String CATEGORY_CD = "0005";
 
     /**
@@ -253,6 +260,28 @@ final class InterestCalculationProcessorTest {
     /** Fraction digits every monetary and rate field of the estate carries. */
     private static final int MONETARY_FRACTION_DIGITS = 2;
 
+    /**
+     * The account balance every fixture group is read with, before any control break.
+     *
+     * <p>The key-change break adds the group's running total to it; the end-of-file arm leaves it here.
+     */
+    private static final BigDecimal OPENING_BALANCE = new BigDecimal("1000.00");
+
+    /** The cycle credit the fixture account is read with: non-zero, so a withheld close is detectable. */
+    private static final BigDecimal OPENING_CYCLE_CREDIT = new BigDecimal("250.00");
+
+    /** The cycle debit the fixture account is read with, non-zero for the same reason. */
+    private static final BigDecimal OPENING_CYCLE_DEBIT = new BigDecimal("125.00");
+
+    /**
+     * Zero-based position of the control-break argument in the accrual's parameter list.
+     *
+     * <p>Named because every stub below reads it. The stage states which invocation site of
+     * {@code 1050-UPDATE-ACCOUNT} a close stands for, and a fixture that ignored it would answer the same
+     * rewritten account to a transition and to the end-of-file arm alike.
+     */
+    private static final int CONTROL_BREAK_ARGUMENT = 5;
+
     /** Encoded width of the disclosure key: ten for the group, two for the type, four for the category. */
     private static final int DISCLOSURE_KEY_WIDTH = 16;
 
@@ -298,10 +327,8 @@ final class InterestCalculationProcessorTest {
     /** A real registry, so the supplementary meters are genuinely registered. */
     private MeterRegistry meterRegistry;
 
-    /** The stage under test. */
     private InterestCalculationProcessor processor;
 
-    /** The step execution the stage is opened against. */
     private StepExecution stepExecution;
 
     @BeforeEach
@@ -334,10 +361,46 @@ final class InterestCalculationProcessorTest {
                 new BigDecimal("1000.00"));
     }
 
+    /**
+     * The account as the key-change control break rewrote it: the running total added to the balance and
+     * both cycle accumulators zeroed, which is what paragraph {@code 1050-UPDATE-ACCOUNT} leaves behind.
+     *
+     * @param  accountId the account the group keys on
+     * @return the rewritten account
+     */
     private static Account postedAccount(final String accountId) {
-        return new Account(accountId, "Y", new BigDecimal("1004.37"), new BigDecimal("5000.00"),
+        return new Account(accountId, "Y", OPENING_BALANCE.add(MULTIPLY_THEN_DIVIDE),
+                new BigDecimal("5000.00"), new BigDecimal("500.00"), "2020-01-01", "2030-01-01",
+                "2025-01-01", new BigDecimal("0.00"), new BigDecimal("0.00"), "12345", GROUP_ID);
+    }
+
+    /**
+     * The account exactly as the group read it, which is what the end-of-file arm leaves behind.
+     *
+     * <p>Both cycle accumulators are deliberately <strong>non-zero</strong>. The withheld close neither
+     * posts the balance nor zeroes them, so a fixture whose accumulators were already zero could not tell a
+     * withheld close from a rewrite - the two would agree on every value that matters. With these values,
+     * an assertion that the balance and both accumulators are unchanged is a real one.
+     *
+     * @param  accountId the account the group keys on
+     * @return the account as read, untouched
+     */
+    private static Account openingAccount(final String accountId) {
+        return new Account(accountId, "Y", OPENING_BALANCE, new BigDecimal("5000.00"),
                 new BigDecimal("500.00"), "2020-01-01", "2030-01-01", "2025-01-01",
-                new BigDecimal("0.00"), new BigDecimal("0.00"), "12345", GROUP_ID);
+                OPENING_CYCLE_CREDIT, OPENING_CYCLE_DEBIT, "12345", GROUP_ID);
+    }
+
+    /**
+     * The account the named close leaves behind.
+     *
+     * @param  accountId    the account the group keys on
+     * @param  controlBreak the close the stage asked for
+     * @return the rewritten account for the key-change break, the account as read for the end-of-file arm
+     */
+    private static Account accountAfter(final String accountId,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
+        return controlBreak.rewritesAccount() ? postedAccount(accountId) : openingAccount(accountId);
     }
 
     private static Transaction interestTransaction(final String accountId, final long suffix,
@@ -371,7 +434,8 @@ final class InterestCalculationProcessorTest {
 
     private static InterestCalculationService.GroupInterestResult group(final String accountId,
             final List<InterestCalculationService.CategoryInterest> rows, final BigDecimal total,
-            final long lastSuffix, final Account account) {
+            final long lastSuffix, final Account account,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
         final List<Transaction> transactions = new ArrayList<>();
         for (final InterestCalculationService.CategoryInterest each : rows) {
             if (each.interestTransaction() != null) {
@@ -385,13 +449,21 @@ final class InterestCalculationProcessorTest {
             fellBack |= each.defaultGroupUsed();
         }
         return new InterestCalculationService.GroupInterestResult(accountId, total, rows, transactions,
-                account, true, gated, fellBack, rows.size(), lastSuffix);
+                account, controlBreak.rewritesAccount(), gated, fellBack, rows.size(), lastSuffix);
     }
 
-    /** One account, one row, one transaction: the smallest group that posts interest. */
+    /**
+     * One account, one row, one transaction: the smallest group that accrues interest.
+     *
+     * @param  accountId     the account the group keys on
+     * @param  initialSuffix the suffix the group continues from
+     * @param  controlBreak  which invocation site of {@code 1050-UPDATE-ACCOUNT} this close stands for
+     * @return the group result the stubbed service reports
+     */
     private static InterestCalculationService.GroupInterestResult singleRowGroup(
-            final String accountId, final long initialSuffix) {
-        return sizedGroup(accountId, 1, initialSuffix);
+            final String accountId, final long initialSuffix,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
+        return sizedGroup(accountId, 1, initialSuffix, controlBreak);
     }
 
     /**
@@ -401,10 +473,12 @@ final class InterestCalculationProcessorTest {
      * @param  accountId     the account the group keys on
      * @param  rowCount      how many rows the group contains, all accruing
      * @param  initialSuffix the suffix the group continues from
+     * @param  controlBreak  which invocation site of {@code 1050-UPDATE-ACCOUNT} this close stands for
      * @return the group result the stubbed service reports
      */
     private static InterestCalculationService.GroupInterestResult sizedGroup(final String accountId,
-            final int rowCount, final long initialSuffix) {
+            final int rowCount, final long initialSuffix,
+            final InterestCalculationService.AccountControlBreak controlBreak) {
         final List<InterestCalculationService.CategoryInterest> rows = new ArrayList<>(rowCount);
         BigDecimal total = new BigDecimal("0.00");
         long suffix = initialSuffix;
@@ -415,10 +489,48 @@ final class InterestCalculationProcessorTest {
                     interestTransaction(accountId, suffix, MULTIPLY_THEN_DIVIDE)));
             total = total.add(MULTIPLY_THEN_DIVIDE);
         }
-        return group(accountId, rows, total, suffix, postedAccount(accountId));
+        return group(accountId, rows, total, suffix, accountAfter(accountId, controlBreak), controlBreak);
     }
 
+    /**
+     * Stubs the accrual so the group it answers with is closed under the control break the stage asked for.
+     *
+     * <p><strong>This is the whole point of the parameter.</strong> The stage names its control break on
+     * every call - the key-change break on a transition, the end-of-file arm on the final flush - and a
+     * stub that ignored it answers a rewritten account on both, which is the outcome the source does not
+     * have for the last account of a run. An earlier revision of this file did exactly that:
+     * {@code accountRewritten} was hard-coded true in the fixture and the matcher was {@code any()}, so
+     * the suite blessed a final group whose balance had been posted and whose accumulators had been zeroed,
+     * and would not have noticed the production stage regressing to it.
+     *
+     * @param accountId the account whose group is stubbed
+     * @param closer    builds the group for the control break the stage requests
+     */
     private void stubGroup(final String accountId,
+            final Function<InterestCalculationService.AccountControlBreak,
+                    InterestCalculationService.GroupInterestResult> closer) {
+        when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(), any(),
+                any())).thenAnswer(invocation ->
+                        closer.apply(invocation.getArgument(CONTROL_BREAK_ARGUMENT)));
+    }
+
+    /**
+     * Stubs the accrual with one prepared group, whichever control break is requested.
+     *
+     * <p>For the fixtures that are deliberately ill-formed - a group reported for another account, a row
+     * count that disagrees, a cycle accumulator left un-zeroed - where the point is the exact shape of the
+     * answer rather than which close asked for it. Each such fixture states its own control break.
+     *
+     * <p>Every caller of this method reports a <strong>rewritten</strong> account, so every one of them
+     * closes its group on the key change and none at end of file. A fixture that answered a rewrite to
+     * the end-of-file arm would be answering a close that never asks for one, which is the inconsistency
+     * described on {@link #stubGroup}; keep any new fixture here on the key-change close, or thread the
+     * control break through {@link #stubGroup} instead.
+     *
+     * @param accountId the account whose group is stubbed
+     * @param result    the prepared group, returned unchanged
+     */
+    private void stubGroupExactly(final String accountId,
             final InterestCalculationService.GroupInterestResult result) {
         when(this.service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(), any(),
                 any())).thenReturn(result);
@@ -434,7 +546,8 @@ final class InterestCalculationProcessorTest {
                     final String accountId = invocation.getArgument(1);
                     final List<?> buffered = invocation.getArgument(2);
                     final long initialSuffix = invocation.getArgument(3);
-                    return sizedGroup(accountId, buffered.size(), initialSuffix);
+                    return sizedGroup(accountId, buffered.size(), initialSuffix,
+                            invocation.getArgument(CONTROL_BREAK_ARGUMENT));
                 });
     }
 
@@ -446,7 +559,6 @@ final class InterestCalculationProcessorTest {
     @DisplayName("The synthesized-record writer this stage binds for the step that owns the generation")
     final class TheBoundRecordWriter {
 
-        /** Creates the nest. */
         TheBoundRecordWriter() {
         }
 
@@ -460,7 +572,8 @@ final class InterestCalculationProcessorTest {
             when(service.calculateGroupInterest(anyString(), eq(accountId), anyList(), anyLong(),
                     any(), any())).thenAnswer(invocation -> {
                         final InterestCalculationService.GroupInterestResult group =
-                                sizedGroup(accountId, 1, invocation.getArgument(3));
+                                sizedGroup(accountId, 1, invocation.getArgument(3),
+                                        invocation.getArgument(CONTROL_BREAK_ARGUMENT));
                         final Consumer<Transaction> writer = invocation.getArgument(4);
                         group.interestTransactions().forEach(writer);
                         return group;
@@ -576,7 +689,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a change of account closes the PREVIOUS group, with every row it buffered, "
                 + "before the new group opens")
         void aChangeOfAccountClosesThePreviousGroup() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
@@ -607,19 +720,23 @@ final class InterestCalculationProcessorTest {
             assertThat(closed.totalInterest()).hasScaleOf(MONETARY_FRACTION_DIGITS)
                     .isEqualTo(MULTIPLY_THEN_DIVIDE);
             assertThat(closed.updatedAccount().getAcctId()).isEqualTo(ACCOUNT_A);
+            assertThat(closed.accountRewritten()).isTrue();
+            assertThat(closed.updatedAccount().getAcctCurrBal())
+                    .isEqualByComparingTo(OPENING_BALANCE.add(MULTIPLY_THEN_DIVIDE));
             assertThat(closed.updatedAccount().getAcctCurrCycCredit()).isEqualByComparingTo("0.00");
             assertThat(closed.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
 
             final InOrder ordered = inOrder(service);
             ordered.verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(),
+                    eq(InterestCalculationService.AccountControlBreak.REWRITE));
             ordered.verifyNoMoreInteractions();
         }
 
         @Test
         @DisplayName("every buffered row of a group reaches the accrual, in the order it arrived")
         void everyBufferedRowReachesTheAccrualInOrder() {
-            stubGroup(ACCOUNT_A, sizedGroup(ACCOUNT_A, 2, 0L));
+            stubGroup(ACCOUNT_A, close -> sizedGroup(ACCOUNT_A, 2, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -636,17 +753,19 @@ final class InterestCalculationProcessorTest {
         }
 
         @Test
-        @DisplayName("the FINAL group is flushed after the last row, because it has no successor "
-                + "row to break on and omitting it would lose the account silently")
+        @DisplayName("the FINAL group is accrued and emitted after the last row - it has no successor "
+                + "row to break on and omitting it would lose the account silently - and the stage "
+                + "names the END-OF-FILE arm, not the key-change break, when it closes it")
         void theFinalGroupIsFlushedAfterTheLastRow() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
             processor.afterStep(stepExecution);
 
             verify(service).calculateGroupInterest(eq(RUN_DATE), eq(ACCOUNT_A),
-                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(), any());
+                    eq(List.of(row(ACCOUNT_A, "0005"))), eq(0L), any(),
+                    eq(InterestCalculationService.AccountControlBreak.WITHHELD_AT_END_OF_FILE));
             assertThat(processor.finalAccruedGroup())
                     .map(InterestCalculationProcessor.AccruedAccountGroup::accountId)
                     .contains(ACCOUNT_A);
@@ -680,8 +799,8 @@ final class InterestCalculationProcessorTest {
         @DisplayName("the identifier suffix is threaded from one group into the next, because it "
                 + "belongs to the run and not to any one group")
         void theSuffixIsThreadedFromOneGroupIntoTheNext() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
-            stubGroup(ACCOUNT_B, singleRowGroup(ACCOUNT_B, 1L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
+            stubGroup(ACCOUNT_B, close -> singleRowGroup(ACCOUNT_B, 1L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_B, "0005"));
@@ -719,7 +838,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("the run's counters and flags reach the execution context, and nothing "
                 + "financial or card-bearing does")
         void theCountersReachTheExecutionContext() {
-            stubGroup(ACCOUNT_A, sizedGroup(ACCOUNT_A, 2, 0L));
+            stubGroup(ACCOUNT_A, close -> sizedGroup(ACCOUNT_A, 2, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -747,7 +866,7 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("the supplementary meters are registered and never replace whole-step timing")
         void theSupplementaryMetersAreRegistered() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.afterStep(stepExecution);
@@ -801,7 +920,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a second execution starts from the legacy's own initial values, so no figure "
                 + "survives from the previous one")
         void aSecondExecutionStartsClean() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.afterStep(stepExecution);
@@ -936,17 +1055,21 @@ final class InterestCalculationProcessorTest {
     final class TheAccountFlush {
 
         @Test
-        @DisplayName("the closed group carries the posted total and the rewritten account with "
-                + "BOTH cycle accumulators zeroed")
-        void theClosedGroupCarriesThePostedTotalAndTheRewrittenAccount() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+        @DisplayName("a group closed on a KEY CHANGE carries the posted total and the rewritten "
+                + "account - the total added to the balance and BOTH cycle accumulators zeroed")
+        void theTransitionClosedGroupCarriesThePostedTotalAndTheRewrittenAccount() {
+            stubGroupsFromArguments();
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
-            processor.afterStep(stepExecution);
 
             final InterestCalculationProcessor.AccruedAccountGroup closed =
-                    processor.finalAccruedGroup().orElseThrow();
+                    processor.process(row(ACCOUNT_B, "0005"));
+
+            assertThat(closed).isNotNull();
             assertThat(closed.totalInterest()).isEqualByComparingTo(MULTIPLY_THEN_DIVIDE);
+            assertThat(closed.accountRewritten()).isTrue();
+            assertThat(closed.updatedAccount().getAcctCurrBal())
+                    .isEqualByComparingTo(OPENING_BALANCE.add(MULTIPLY_THEN_DIVIDE));
             assertThat(closed.updatedAccount().getAcctCurrCycCredit()).isEqualByComparingTo("0.00");
             assertThat(closed.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
             assertThat(closed.recordCount()).isEqualTo(1);
@@ -955,19 +1078,50 @@ final class InterestCalculationProcessorTest {
         }
 
         @Test
+        @DisplayName("the group closed at END OF FILE still accrues and still emits its interest "
+                + "transaction, and leaves the account exactly as it was read - the balance NOT "
+                + "posted and NEITHER cycle accumulator zeroed - because the legacy reaches "
+                + "1050-UPDATE-ACCOUNT only from the key-change break")
+        void theFinalGroupAccruesAndEmitsWhileWithholdingTheAccountRewrite() {
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
+            processor.beforeStep(stepExecution);
+            processor.process(row(ACCOUNT_A, "0005"));
+            processor.afterStep(stepExecution);
+
+            final InterestCalculationProcessor.AccruedAccountGroup closed =
+                    processor.finalAccruedGroup().orElseThrow();
+            assertThat(closed.totalInterest()).isEqualByComparingTo(MULTIPLY_THEN_DIVIDE);
+            assertThat(closed.interestTransactions()).hasSize(1);
+            assertThat(closed.recordCount()).isEqualTo(1);
+            assertThat(closed.transactionCount()).isEqualTo(1);
+            assertThat(closed.accruedAt()).isEqualTo(FIXED_TIMESTAMP);
+            assertThat(closed.accountRewritten()).isFalse();
+            assertThat(closed.updatedAccount().getAcctCurrBal()).isEqualByComparingTo(OPENING_BALANCE);
+            assertThat(closed.updatedAccount().getAcctCurrCycCredit())
+                    .isEqualByComparingTo(OPENING_CYCLE_CREDIT);
+            assertThat(closed.updatedAccount().getAcctCurrCycDebit())
+                    .isEqualByComparingTo(OPENING_CYCLE_DEBIT);
+        }
+
+        @Test
         @DisplayName("a cycle CREDIT left un-zeroed is refused, because a half-closed cycle "
                 + "compounds silently in every later run")
         void aCycleCreditLeftUnZeroedIsRefused() {
             final Account halfClosed = postedAccount(ACCOUNT_A);
             halfClosed.setAcctCurrCycCredit(new BigDecimal("12.34"));
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroupExactly(ACCOUNT_A, group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    MULTIPLY_THEN_DIVIDE, 1L, halfClosed));
+                    MULTIPLY_THEN_DIVIDE, 1L, halfClosed,
+                    InterestCalculationService.AccountControlBreak.REWRITE));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.afterStep(stepExecution))
+            // Closed by the key change rather than at end of file, because the key change is the close
+            // that performs the rewrite, and the guard applies to a rewrite and to nothing else: the
+            // end-of-file arm never zeroes an accumulator, so it has none to leave un-zeroed.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> processor.process(row(ACCOUNT_B, "0005")))
                     .withMessageContaining("un-zeroed");
         }
 
@@ -976,21 +1130,26 @@ final class InterestCalculationProcessorTest {
         void aCycleDebitLeftUnZeroedIsRefused() {
             final Account halfClosed = postedAccount(ACCOUNT_A);
             halfClosed.setAcctCurrCycDebit(new BigDecimal("12.34"));
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroupExactly(ACCOUNT_A, group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    MULTIPLY_THEN_DIVIDE, 1L, halfClosed));
+                    MULTIPLY_THEN_DIVIDE, 1L, halfClosed,
+                    InterestCalculationService.AccountControlBreak.REWRITE));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.afterStep(stepExecution))
+            // Closed by the key change rather than at end of file, because the key change is the close
+            // that performs the rewrite, and the guard applies to a rewrite and to nothing else: the
+            // end-of-file arm never zeroes an accumulator, so it has none to leave un-zeroed.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> processor.process(row(ACCOUNT_B, "0005")))
                     .withMessageContaining("un-zeroed");
         }
 
         @Test
         @DisplayName("a group closed for another account than the one buffered is refused")
         void aGroupClosedForAnotherAccountIsRefused() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_B, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_B, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
@@ -1001,7 +1160,7 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("a group whose row count disagrees with the rows buffered is refused")
         void aGroupWithADisagreeingRowCountIsRefused() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -1015,7 +1174,7 @@ final class InterestCalculationProcessorTest {
                 + "because both figures describe the same group")
         void aGroupWithADisagreeingDetailCountIsRefused() {
             final Transaction transaction = interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE);
-            stubGroup(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
+            stubGroupExactly(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
                     MULTIPLY_THEN_DIVIDE,
                     List.of(accruedRow(ACCOUNT_A, "0005", MULTIPLY_THEN_DIVIDE, transaction),
                             accruedRow(ACCOUNT_A, "0006", MULTIPLY_THEN_DIVIDE, transaction)),
@@ -1023,7 +1182,11 @@ final class InterestCalculationProcessorTest {
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.afterStep(stepExecution))
+            // Closed by the key change, because this fixture reports a rewritten account and the key
+            // change is the only close that asks for one. Closing it at end of file would make the
+            // fixture answer a rewrite to a close that never requests one.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> processor.process(row(ACCOUNT_B, "0005")))
                     .withMessageContaining("2 detailed");
         }
 
@@ -1116,8 +1279,8 @@ final class InterestCalculationProcessorTest {
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             new BigDecimal("1000.00"), new BigDecimal("5.25"), MULTIPLY_THEN_DIVIDE,
                             false, true, transaction);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(fellBack), MULTIPLY_THEN_DIVIDE, 1L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, List.of(fellBack), MULTIPLY_THEN_DIVIDE, 1L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -1135,7 +1298,7 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("a row that resolved directly reports its primary key as effective")
         void aDirectHitReportsItsPrimaryKeyAsEffective() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -1153,10 +1316,10 @@ final class InterestCalculationProcessorTest {
         void anAccountWithoutAGroupIdentifierIsRefused() {
             final Account groupless = postedAccount(ACCOUNT_A);
             groupless.setAcctGroupId(null);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    MULTIPLY_THEN_DIVIDE, 1L, groupless));
+                    MULTIPLY_THEN_DIVIDE, 1L, groupless, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1177,8 +1340,8 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a zero rate emits NO transaction and invokes NO fee, because the gate "
                 + "encloses both the computation and the fee call")
         void aZeroRateEmitsNoTransactionAndInvokesNoFee() {
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(gatedRow(ACCOUNT_A, CATEGORY_CD)),
-                    new BigDecimal("0.00"), 0L, postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, List.of(gatedRow(ACCOUNT_A, CATEGORY_CD)),
+                    new BigDecimal("0.00"), 0L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -1205,8 +1368,8 @@ final class InterestCalculationProcessorTest {
                             gatedRow(ACCOUNT_A, "0006"),
                             accruedRow(ACCOUNT_A, "0007", MULTIPLY_THEN_DIVIDE,
                                     interestTransaction(ACCOUNT_A, 2L, MULTIPLY_THEN_DIVIDE)));
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, rows, new BigDecimal("8.74"), 2L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, rows, new BigDecimal("8.74"), 2L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -1226,7 +1389,7 @@ final class InterestCalculationProcessorTest {
                 + "category, and no addend beyond the interest the rows computed")
         void theInvokedFeeParagraphProducesNothing() {
             final BigDecimal handSummedTotal = new BigDecimal("13.11");
-            stubGroup(ACCOUNT_A, sizedGroup(ACCOUNT_A, 3, 0L));
+            stubGroup(ACCOUNT_A, close -> sizedGroup(ACCOUNT_A, 3, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -1247,8 +1410,14 @@ final class InterestCalculationProcessorTest {
             });
             assertThat(closed.transactionCount()).isEqualTo(closed.rows().size());
             assertThat(closed.totalInterest()).isEqualTo(handSummedTotal);
-            assertThat(closed.updatedAccount().getAcctCurrCycCredit()).isEqualByComparingTo("0.00");
-            assertThat(closed.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo("0.00");
+            // This group closed at end of file, so the account it carries is the account as read.
+            // The fee paragraph moves no monetary field of it: no fee has been added to the balance
+            // and neither cycle accumulator has been disturbed.
+            assertThat(closed.updatedAccount().getAcctCurrBal()).isEqualByComparingTo(OPENING_BALANCE);
+            assertThat(closed.updatedAccount().getAcctCurrCycCredit())
+                    .isEqualByComparingTo(OPENING_CYCLE_CREDIT);
+            assertThat(closed.updatedAccount().getAcctCurrCycDebit())
+                    .isEqualByComparingTo(OPENING_CYCLE_DEBIT);
         }
 
         @Test
@@ -1259,13 +1428,16 @@ final class InterestCalculationProcessorTest {
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             new BigDecimal("1000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                             true, false, interestTransaction(ACCOUNT_A, 1L, BigDecimal.ZERO));
-            stubGroup(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
+            stubGroupExactly(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
                     new BigDecimal("0.00"), List.of(contradiction), List.of(), postedAccount(ACCOUNT_A),
                     true, true, false, 1, 0L));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.afterStep(stepExecution))
+            // Closed by the key change, because this fixture reports a rewritten account and the key
+            // change is the only close that asks for one.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> processor.process(row(ACCOUNT_B, CATEGORY_CD)))
                     .withMessageContaining("yet carried a synthesized transaction");
         }
 
@@ -1276,8 +1448,8 @@ final class InterestCalculationProcessorTest {
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             new BigDecimal("1000.00"), new BigDecimal("0.00"), MULTIPLY_THEN_DIVIDE,
                             true, false, null);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(contradiction), new BigDecimal("0.00"), 0L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, List.of(contradiction), new BigDecimal("0.00"), 0L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1292,8 +1464,8 @@ final class InterestCalculationProcessorTest {
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             new BigDecimal("1000.00"), new BigDecimal("5.25"), new BigDecimal("0.00"),
                             true, false, null);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(contradiction), new BigDecimal("0.00"), 0L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, List.of(contradiction), new BigDecimal("0.00"), 0L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1308,8 +1480,8 @@ final class InterestCalculationProcessorTest {
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             new BigDecimal("1000.00"), new BigDecimal("5.25"), MULTIPLY_THEN_DIVIDE,
                             false, false, null);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, List.of(contradiction), MULTIPLY_THEN_DIVIDE, 1L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, List.of(contradiction), MULTIPLY_THEN_DIVIDE, 1L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1339,7 +1511,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a group total that is the multiply-first sum of its truncated row amounts "
                 + "is accepted")
         void theMultiplyFirstTotalIsAccepted() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1352,10 +1524,10 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a group total that is the divide-first result is refused, so a rearranged "
                 + "expression cannot reach the output")
         void theDivideFirstTotalIsRefused() {
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    DIVIDE_THEN_MULTIPLY, 1L, postedAccount(ACCOUNT_A)));
+                    DIVIDE_THEN_MULTIPLY, 1L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1372,8 +1544,8 @@ final class InterestCalculationProcessorTest {
                                     interestTransaction(ACCOUNT_A, 1L, new BigDecimal("0.01"))),
                             accruedRow(ACCOUNT_A, "0006", new BigDecimal("0.02"),
                                     interestTransaction(ACCOUNT_A, 2L, new BigDecimal("0.02"))));
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A, rows, new BigDecimal("0.03"), 2L,
-                    postedAccount(ACCOUNT_A)));
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A, rows, new BigDecimal("0.03"), 2L,
+                    accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -1384,10 +1556,10 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("a suffix that advanced by more than one per transaction is refused")
         void aSuffixThatJumpedIsRefused() {
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    MULTIPLY_THEN_DIVIDE, 7L, postedAccount(ACCOUNT_A)));
+                    MULTIPLY_THEN_DIVIDE, 7L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1399,7 +1571,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a transaction count that disagrees with the identifiers minted is refused")
         void aDisagreeingTransactionCountIsRefused() {
             final Transaction transaction = interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE);
-            stubGroup(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
+            stubGroupExactly(ACCOUNT_A, new InterestCalculationService.GroupInterestResult(ACCOUNT_A,
                     MULTIPLY_THEN_DIVIDE,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE, transaction)),
                     List.of(transaction, transaction), postedAccount(ACCOUNT_A), true, false, false, 1,
@@ -1407,7 +1579,10 @@ final class InterestCalculationProcessorTest {
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
-            assertThatIllegalStateException().isThrownBy(() -> processor.afterStep(stepExecution))
+            // Closed by the key change, because this fixture reports a rewritten account and the key
+            // change is the only close that asks for one.
+            assertThatIllegalStateException()
+                    .isThrownBy(() -> processor.process(row(ACCOUNT_B, CATEGORY_CD)))
                     .withMessageContaining("minted an identifier for");
         }
     }
@@ -1484,7 +1659,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a well-formed transaction reaches the emitted group with both timestamps "
                 + "identical and the card number taken from the cross-reference")
         void aWellFormedTransactionReachesTheEmittedGroup() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -1500,8 +1675,8 @@ final class InterestCalculationProcessorTest {
             assertThat(emitted.getMerchantName()).isBlank();
             assertThat(emitted.getMerchantCity()).isBlank();
             assertThat(emitted.getMerchantZip()).isBlank();
-            assertThat(emitted.getTranCardNum()).isEqualTo(CARD_NUMBER)
-                    .isNotEqualTo(ACCOUNT_A);
+            assertThat(SensitiveValues.fingerprint(emitted.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER))
+                    .isNotEqualTo(SensitiveValues.fingerprint(ACCOUNT_A));
             assertThat(emitted.getTranOrigTs()).isEqualTo(emitted.getTranProcTs())
                     .isEqualTo(FIXED_TIMESTAMP);
             assertThat(emitted.getTranOrigTs().getBytes(StandardCharsets.US_ASCII))
@@ -1517,9 +1692,9 @@ final class InterestCalculationProcessorTest {
                     InterestCalculationProcessor.interestDescriptionFor(ACCOUNT_A)
                             + blank(InterestCalculationProcessor.TRAN_DESC_WIDTH - 24);
             padded.setTranDesc(paddedDescription);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE, padded)),
-                    MULTIPLY_THEN_DIVIDE, 1L, postedAccount(ACCOUNT_A)));
+                    MULTIPLY_THEN_DIVIDE, 1L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1608,9 +1783,9 @@ final class InterestCalculationProcessorTest {
         @DisplayName("an identifier that does not carry the expected suffix is refused")
         void anIdentifierWithTheWrongSuffixIsRefused() {
             final Transaction wrong = interestTransaction(ACCOUNT_A, 9L, MULTIPLY_THEN_DIVIDE);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE, wrong)),
-                    MULTIPLY_THEN_DIVIDE, 1L, postedAccount(ACCOUNT_A)));
+                    MULTIPLY_THEN_DIVIDE, 1L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -1741,10 +1916,10 @@ final class InterestCalculationProcessorTest {
             final Transaction first = interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE);
             final Transaction second = interestTransaction(ACCOUNT_A, 2L, MULTIPLY_THEN_DIVIDE);
             second.setTranCardNum("4111111111111112");
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, "0005", MULTIPLY_THEN_DIVIDE, first),
                             accruedRow(ACCOUNT_A, "0006", MULTIPLY_THEN_DIVIDE, second)),
-                    new BigDecimal("8.74"), 2L, postedAccount(ACCOUNT_A)));
+                    new BigDecimal("8.74"), 2L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -1756,7 +1931,7 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("the emitted group defends its collections against later mutation")
         void theEmittedGroupDefendsItsCollections() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -1779,9 +1954,9 @@ final class InterestCalculationProcessorTest {
             final Transaction transaction =
                     interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE);
             change.accept(transaction);
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE, transaction)),
-                    MULTIPLY_THEN_DIVIDE, 1L, postedAccount(ACCOUNT_A)));
+                    MULTIPLY_THEN_DIVIDE, 1L, accountAfter(ACCOUNT_A, close), close));
             final StepExecution execution = stepExecutionWith(RUN_DATE);
             processor.beforeStep(execution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
@@ -1800,7 +1975,7 @@ final class InterestCalculationProcessorTest {
         @Test
         @DisplayName("it carries the row's three-part key, its balance, its rate and its interest")
         void itCarriesTheRowsKeyBalanceRateAndInterest() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -2002,7 +2177,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("both timestamp fields of a synthesized record carry that one value, so the "
                 + "origination and the processing stamps are byte-identical")
         void bothTimestampFieldsCarryTheOneValue() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -2062,10 +2237,10 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a group carrying the nearest-even cent instead of the truncated one cannot "
                 + "reach the output, because its total no longer sums the rows it reports")
         void aGroupCarryingTheNearestEvenCentIsRefused() {
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, CATEGORY_CD, MULTIPLY_THEN_DIVIDE,
                             interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE))),
-                    BANKERS_ROUNDED_CENT, 1L, postedAccount(ACCOUNT_A)));
+                    BANKERS_ROUNDED_CENT, 1L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
 
@@ -2077,7 +2252,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("the interest carried, the running total posted and the amount emitted all "
                 + "stand at the receiving field's two fraction digits")
         void everyMonetaryValueStandsAtTwoFractionDigits() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -2103,12 +2278,12 @@ final class InterestCalculationProcessorTest {
             final BigDecimal firstAddend = new BigDecimal("0.01");
             final BigDecimal secondAddend = new BigDecimal("0.02");
             final BigDecimal handSummedTotal = new BigDecimal("0.03");
-            stubGroup(ACCOUNT_A, group(ACCOUNT_A,
+            stubGroup(ACCOUNT_A, close -> group(ACCOUNT_A,
                     List.of(accruedRow(ACCOUNT_A, "0005", firstAddend,
                                     interestTransaction(ACCOUNT_A, 1L, firstAddend)),
                             accruedRow(ACCOUNT_A, "0006", secondAddend,
                                     interestTransaction(ACCOUNT_A, 2L, secondAddend))),
-                    handSummedTotal, 2L, postedAccount(ACCOUNT_A)));
+                    handSummedTotal, 2L, accountAfter(ACCOUNT_A, close), close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, "0005"));
             processor.process(row(ACCOUNT_A, "0006"));
@@ -2249,14 +2424,15 @@ final class InterestCalculationProcessorTest {
          * @return the group result the stubbed accrual reports
          */
         private InterestCalculationService.GroupInterestResult groupResolvedThrough(
-                final Account account, final boolean defaultGroupUsed) {
+                final Account account, final boolean defaultGroupUsed,
+                final InterestCalculationService.AccountControlBreak controlBreak) {
             final Transaction synthesized =
                     interestTransaction(ACCOUNT_A, 1L, MULTIPLY_THEN_DIVIDE);
             final InterestCalculationService.CategoryInterest resolved =
                     new InterestCalculationService.CategoryInterest(ACCOUNT_A, TYPE_CD, CATEGORY_CD,
                             CATEGORY_BALANCE, DISCLOSED_RATE, MULTIPLY_THEN_DIVIDE, false,
                             defaultGroupUsed, synthesized);
-            return group(ACCOUNT_A, List.of(resolved), MULTIPLY_THEN_DIVIDE, 1L, account);
+            return group(ACCOUNT_A, List.of(resolved), MULTIPLY_THEN_DIVIDE, 1L, account, controlBreak);
         }
 
         @Test
@@ -2284,7 +2460,7 @@ final class InterestCalculationProcessorTest {
         void aConstructedAccountNamingARealGroupResolvesWithoutTheFallback() {
             final Account directHit = TestDataFactory.directHitDisclosureAccount()
                     .acctId(ACCOUNT_A).build();
-            stubGroup(ACCOUNT_A, groupResolvedThrough(directHit, false));
+            stubGroup(ACCOUNT_A, close -> groupResolvedThrough(directHit, false, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -2308,7 +2484,7 @@ final class InterestCalculationProcessorTest {
         void aBlankGroupFallsBackToThePaddedDefaultExactlyOnce() {
             final Account fallbackAccount = TestDataFactory.fallbackDisclosureAccount()
                     .acctId(ACCOUNT_A).build();
-            stubGroup(ACCOUNT_A, groupResolvedThrough(fallbackAccount, true));
+            stubGroup(ACCOUNT_A, close -> groupResolvedThrough(fallbackAccount, true, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);
@@ -2405,7 +2581,8 @@ final class InterestCalculationProcessorTest {
             when(service.calculateGroupInterest(anyString(), eq(ACCOUNT_A), anyList(), anyLong(),
                     any(), any())).thenAnswer(invocation -> {
                         final InterestCalculationService.GroupInterestResult accrued =
-                                sizedGroup(ACCOUNT_A, 1, invocation.getArgument(3));
+                                sizedGroup(ACCOUNT_A, 1, invocation.getArgument(3),
+                                        invocation.getArgument(CONTROL_BREAK_ARGUMENT));
                         final Consumer<Transaction> writer = invocation.getArgument(4);
                         accrued.interestTransactions().forEach(writer);
                         return accrued;
@@ -2464,7 +2641,7 @@ final class InterestCalculationProcessorTest {
         @DisplayName("a successful run announces its start and its end, and the end carries the "
                 + "counters the legacy program maintained")
         void aSuccessfulRunAnnouncesItsStartAndItsEnd() {
-            stubGroup(ACCOUNT_A, singleRowGroup(ACCOUNT_A, 0L));
+            stubGroup(ACCOUNT_A, close -> singleRowGroup(ACCOUNT_A, 0L, close));
             processor.beforeStep(stepExecution);
             processor.process(row(ACCOUNT_A, CATEGORY_CD));
             processor.afterStep(stepExecution);

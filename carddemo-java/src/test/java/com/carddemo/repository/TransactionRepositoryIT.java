@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.carddemo.domain.Transaction;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -30,6 +31,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -496,7 +499,8 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
                 // 10 of 13 - merchant postal code at offset 252, width 10. UNPREFIXED column.
                 assertThat(reloaded.getMerchantZip()).isEqualTo(FIXTURE_MERCHANT_ZIP);
                 // 11 of 13 - card number at offset 262, one-based 263, width 16.
-                assertThat(reloaded.getTranCardNum()).isEqualTo(SEEDED_CARD).hasSize(KEY_WIDTH);
+                assertThat(SensitiveValues.fingerprint(reloaded.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(SEEDED_CARD));
+                assertThat(reloaded.getTranCardNum().length()).isEqualTo(KEY_WIDTH);
                 // 12 of 13 - origination timestamp at offset 278, character data of width 26.
                 assertThat(reloaded.getTranOrigTs())
                         .isEqualTo(FIXED_ORIGINAL_TIMESTAMP)
@@ -721,7 +725,20 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
      * <p>Under the isolation this module runs at, an insert another transaction has not committed is
      * invisible, so two allocators sharing nothing but a transaction each can read the same maximum and
      * collide. The advisory lock the insert fragment publishes is the concurrency policy that admits one
-     * allocator at a time, and these tests exercise the shipped lock rather than a lookalike.
+     * allocator at a time.
+     *
+     * <p><strong>Which tests here call the production fragment, and which deliberately do not.</strong> The
+     * two tests that assert the lock's behaviour call {@code repository.lockIdentifierAllocation} - the
+     * shipped method, through the repository proxy, over a pooled connection enlisted in a real Spring
+     * transaction - because the property under test is a property of the shipped operation and of nothing
+     * else. The remaining test is the <em>counterfactual</em>: it shows two allocators genuinely colliding
+     * when no lock is taken at all, and it necessarily uses raw sessions, since there is no production
+     * method that reads the maximum without locking first. A hand-written statement is the right instrument
+     * for demonstrating the absence of the shipped one and the wrong instrument for demonstrating its
+     * presence.
+     *
+     * <p>The service-level counterpart lives in {@code service/BillPaymentConcurrencyIT}, which runs whole
+     * turns of the shipped bill-payment service from two threads.
      */
     @Nested
     @DisplayName("the allocation lock under genuine concurrency")
@@ -732,28 +749,73 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("the lock is EXCLUSIVE across sessions: while one transaction holds it a second "
-                + "session cannot take it, which is what admits one allocator at a time")
-        void theLockIsExclusiveAcrossSessions() throws SQLException {
-            try (Connection holder = connect(); Connection probe = connect()) {
-                holder.setAutoCommit(false);
+        @DisplayName("the PRODUCTION fragment's lock is EXCLUSIVE across sessions: while the shipped method "
+                + "holds it a second session cannot take it, and the shipped unit's commit releases it")
+        void theProductionFragmentsLockIsExclusiveAcrossSessions() throws Exception {
+            final ExecutorService prober = Executors.newSingleThreadExecutor();
+            try (Connection probe = connect()) {
                 probe.setAutoCommit(false);
                 try {
-                    takeAllocationLock(holder);
+                    // The shipped method, called through the repository proxy inside a real Spring
+                    // transaction. That is what proves the production connection is enlisted: an
+                    // unenlisted call would run in its own implicit transaction and the lock would already
+                    // have been released by the time the probe below ran.
+                    final boolean refusedWhileHeld = transactionTemplate.execute(status -> {
+                        repository.lockIdentifierAllocation(
+                                TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+                        try {
+                            return !prober.submit(() -> tryTakeAllocationLock(probe))
+                                    .get(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                        } catch (final InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException("the probe was interrupted", interrupted);
+                        } catch (final ExecutionException | TimeoutException problem) {
+                            throw new IllegalStateException("the probe did not report", problem);
+                        }
+                    });
 
-                    assertThat(tryTakeAllocationLock(probe))
-                            .as("a second session is refused while the first transaction holds the lock")
-                            .isFalse();
+                    assertThat(refusedWhileHeld)
+                            .as("a second session is refused while the shipped method's transaction holds "
+                                    + "the lock, which is what admits one allocator at a time")
+                            .isTrue();
 
-                    // Releasing is the commit; there is no explicit unlock to forget.
-                    holder.commit();
-
+                    // Releasing is the commit of the unit the shipped method ran in; there is no explicit
+                    // unlock to forget, and by here that unit has completed.
                     assertThat(tryTakeAllocationLock(probe))
                             .as("the lock is released by the commit, so the next allocator is admitted")
                             .isTrue();
                 } finally {
                     probe.rollback();
-                    holder.rollback();
+                }
+            } finally {
+                prober.shutdownNow();
+                assertThat(prober.awaitTermination(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                        .as("no probing thread outlives this test")
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("a ROLLED-BACK shipped unit releases the lock too, so a failed allocation does not "
+                + "wedge every later one")
+        void aRolledBackShippedUnitReleasesTheLock() throws SQLException {
+            transactionTemplate.execute(status -> {
+                repository.lockIdentifierAllocation(
+                        TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+                status.setRollbackOnly();
+                return null;
+            });
+
+            try (Connection probe = connect()) {
+                probe.setAutoCommit(false);
+                try {
+                    assertThat(tryTakeAllocationLock(probe))
+                            .as("the lock is transaction scoped, so a rollback releases it exactly as a "
+                                    + "commit does - a lock a failed allocator kept would stop every "
+                                    + "later one")
+                            .isTrue();
+                } finally {
+                    probe.rollback();
                 }
             }
         }
@@ -800,47 +862,80 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
         }
 
         @Test
-        @DisplayName("UNDER the lock the second allocator waits for the first to commit and then reads a "
-                + "maximum that already includes the first row, so both succeed and neither collides")
+        @DisplayName("UNDER the PRODUCTION lock the second allocator waits for the first shipped unit to "
+                + "commit and then reads a maximum that already includes the first row, so neither collides")
         void underTheLockTheSecondAllocatorWaitsAndSeesTheFirstRow() throws Exception {
             final ExecutorService waiter = Executors.newSingleThreadExecutor();
-            try (Connection first = connect()) {
+            final ExecutorService contender = Executors.newSingleThreadExecutor();
+            final CountDownLatch firstHoldsTheLock = new CountDownLatch(1);
+            final CountDownLatch firstMayCommit = new CountDownLatch(1);
+            final String firstIdentifier = successorOf(CONCURRENCY_IDS.get(0));
+            try {
                 seedConcurrencyBase();
-                first.setAutoCommit(false);
-                takeAllocationLock(first);
-                final String firstIdentifier = successorOf(highestIdentifier(first));
-                insertTransaction(first, firstIdentifier);
 
-                // The second allocator takes the lock before reading, exactly as the services do, so it
-                // cannot proceed until the first transaction ends.
-                final Future<String> secondIdentifier = waiter.submit(() -> {
-                    try (Connection second = connect()) {
-                        second.setAutoCommit(false);
-                        takeAllocationLock(second);
-                        final String minted = successorOf(highestIdentifier(second));
-                        insertTransaction(second, minted);
-                        second.commit();
-                        return minted;
-                    }
-                });
+                // Every step of both allocators is a shipped method: the lock, the maximum, the insert.
+                // Nothing here is a lookalike statement, so what is observed is the production allocation
+                // span under real contention.
+                final Future<String> firstAllocation = waiter.submit(() -> transactionTemplate
+                        .execute(status -> {
+                            repository.lockIdentifierAllocation(
+                                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+                            final String minted =
+                                    successorOf(repository.findMaxId().orElse(ZERO_SEED));
+                            repository.insertAndFlush(fixture(minted));
+                            firstHoldsTheLock.countDown();
+                            try {
+                                firstMayCommit.await(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                            } catch (final InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                            }
+                            return minted;
+                        }));
+
+                assertThat(firstHoldsTheLock.await(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                        .as("the first allocator must hold the lock before the second one starts")
+                        .isTrue();
+
+                // The second allocator runs on a thread of its own, so the timeout probe below observes
+                // the shipped method actually waiting on the lock.
+                final Future<String> secondAllocation = contender
+                        .submit(() -> transactionTemplate.execute(status -> {
+                            repository.lockIdentifierAllocation(
+                                    TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
+                            final String minted =
+                                    successorOf(repository.findMaxId().orElse(ZERO_SEED));
+                            repository.insertAndFlush(fixture(minted));
+                            return minted;
+                        }));
 
                 assertThatExceptionOfType(TimeoutException.class)
-                        .as("the second allocator is still waiting on the lock, which is the "
-                                + "serialisation the legacy region obtained from its held browse")
-                        .isThrownBy(() -> secondIdentifier.get(LOCK_WAIT_PROBE_MILLIS,
+                        .as("the second allocator is still waiting on the lock the shipped method took, "
+                                + "which is the serialisation the legacy region obtained from its held "
+                                + "browse")
+                        .isThrownBy(() -> secondAllocation.get(LOCK_WAIT_PROBE_MILLIS,
                                 TimeUnit.MILLISECONDS));
 
-                first.commit();
+                firstMayCommit.countDown();
 
-                assertThat(secondIdentifier.get(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                assertThat(firstAllocation.get(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                        .as("the first allocator minted the successor of the seeded base")
+                        .isEqualTo(firstIdentifier);
+                assertThat(secondAllocation.get(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                         .as("the re-read under the lock sees the committed row, so the successor is the "
                                 + "next value and not a duplicate")
                         .isEqualTo(successorOf(firstIdentifier));
             } finally {
                 waiter.shutdownNow();
+                contender.shutdownNow();
                 assertThat(waiter.awaitTermination(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                         .as("no waiting thread outlives this test")
                         .isTrue();
+                assertThat(contender.awaitTermination(LOCK_HANDOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+                        .as("no contending thread outlives this test either")
+                        .isTrue();
+                repository.deleteById(successorOf(firstIdentifier));
+                repository.deleteById(firstIdentifier);
+                repository.flush();
                 removeConcurrencyRows();
             }
         }
@@ -1405,13 +1500,15 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
      * every record processed on the end date, because a longer string whose prefix equals a shorter one
      * sorts above it.
      *
-     * <p>The reporting tier applies that predicate today, in character comparisons over the frozen
-     * ordered generation its job step hands it, and no range-selecting query is declared on the
-     * repository. What is proved here is the half the schema owns and the character semantics the whole
-     * design rests on: that the prefix comparison admits the end-date record while the whole-column
-     * comparison does not, that both bounds are inclusive, that an unprocessed record is excluded by the
-     * lower bound alone, that the ordering is by card number ascending, and that the bare lower bound is
-     * the predicate able to drive the shipped index.
+     * <p>That predicate is a <strong>declared repository contract</strong>, and every assertion below
+     * calls it: {@link TransactionRepository#findByProcessingDateWindowOrderedByCardNumber(String, String)}
+     * is the selection the reporting job's second step issues, and it is the only reader of the
+     * processing-timestamp alternate index in the module. What is proved here is therefore the callable
+     * contract and not a statement this class invented: that the prefix upper bound admits the end-date
+     * record while a whole-column bound does not, that both bounds are inclusive, that an unprocessed
+     * record is excluded by the lower bound alone with no emptiness test anywhere, that the ordering is by
+     * card number ascending, that a window matching nothing yields an empty list, and that the bare lower
+     * bound is the predicate able to drive the shipped index.
      *
      * <p>Every row here is constructed. The table is seeded with no rows at all, and the delivered daily
      * fixture carries a blank processing timestamp on every one of its records, so no seeded data can
@@ -1571,6 +1668,12 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
             try {
                 seedWindowRows();
 
+                assertThat(selectWindowByPlannedStatement(WINDOW_START, WINDOW_END))
+                        .as("the statement whose plan is read below selects exactly what the production "
+                                + "query selects, in exactly the same order, so the plan is evidence "
+                                + "about the shipped predicate and not about a lookalike")
+                        .isEqualTo(selectWindow(WINDOW_START, WINDOW_END));
+
                 final String plan = String.join(System.lineSeparator(), explainWindowSelection());
 
                 assertThat(plan)
@@ -1618,7 +1721,7 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
             FROM transaction t
             WHERE t.tran_proc_ts >= ?
               AND SUBSTRING(t.tran_proc_ts, 1, 10) <= ?
-            ORDER BY t.tran_card_num ASC
+            ORDER BY t.tran_card_num ASC, t.tran_id ASC
             """;
 
     /**
@@ -1660,10 +1763,14 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     /** The read half of the allocation rule, expressed directly so a raw session can perform it. */
     private static final String MAX_IDENTIFIER_SQL = "SELECT MAX(tran_id) FROM transaction";
 
-    /** Takes the shipped allocation lock for the life of the calling transaction. */
-    private static final String TAKE_LOCK_SQL = "SELECT 1 FROM pg_advisory_xact_lock(?)";
-
-    /** Attempts the shipped allocation lock without waiting, reporting whether it was granted. */
+    /**
+     * Attempts the shipped allocation lock without waiting, reporting whether it was granted.
+     *
+     * <p>This is the one lock statement this class still writes by hand, and it is written by hand because
+     * there is no production method for it: the shipped fragment WAITS, which is exactly the behaviour under
+     * test, so a probe that reports whether the lock is currently held has to be a non-waiting attempt. It
+     * is only ever used by an observer session, never by an allocator.
+     */
     private static final String TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(?)";
 
     /**
@@ -1799,13 +1906,32 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     }
 
     /**
-     * Selects the reporting window through the contract's own comparison.
+     * Selects the reporting window through the PRODUCTION repository contract.
+     *
+     * <p>This is the method the report job's record-selection step calls, so every window assertion in
+     * this class exercises the shipped query rather than a statement written here.
+     *
+     * @param startBound the inclusive ten-character lower bound
+     * @param endBound   the inclusive ten-character upper bound
+     * @return the selected identifiers, ordered by card number ascending then identifier ascending
+     */
+    private List<String> selectWindow(final String startBound, final String endBound) {
+        return identifiersOf(
+                repository.findByProcessingDateWindowOrderedByCardNumber(startBound, endBound));
+    }
+
+    /**
+     * Selects the reporting window through the statement whose access plan is asserted.
+     *
+     * <p>It exists so the plan assertion is about a statement provably equivalent to the production
+     * query: the equivalence is asserted, row for row and in order, rather than assumed.
      *
      * @param startBound the inclusive ten-character lower bound
      * @param endBound   the inclusive ten-character upper bound
      * @return the selected identifiers, ordered by card number ascending
      */
-    private List<String> selectWindow(final String startBound, final String endBound) {
+    private List<String> selectWindowByPlannedStatement(final String startBound,
+            final String endBound) {
         return jdbcTemplate.queryForList(WINDOW_SELECT_SQL, String.class, startBound, endBound);
     }
 
@@ -1900,25 +2026,6 @@ final class TransactionRepositoryIT extends AbstractPostgresIT {
     private void removeWindowRows() {
         WINDOW_IDS.forEach(id -> repository.deleteById(id));
         repository.flush();
-    }
-
-    /**
-     * Takes the allocation lock on the supplied session, through the very statement the repository
-     * fragment declares, so that what the concurrency tests exercise is the shipped lock and not a
-     * lookalike.
-     *
-     * @param connection the session to take the lock on, with autocommit already disabled
-     * @throws SQLException if the statement fails
-     */
-    private static void takeAllocationLock(final Connection connection) throws SQLException {
-        try (PreparedStatement lock = connection.prepareStatement(TAKE_LOCK_SQL)) {
-            lock.setLong(1, TransactionRepository.IDENTIFIER_ALLOCATION_LOCK_KEY);
-            try (ResultSet held = lock.executeQuery()) {
-                assertThat(held.next())
-                        .as("the projection exists only because a select must project something")
-                        .isTrue();
-            }
-        }
     }
 
     /**

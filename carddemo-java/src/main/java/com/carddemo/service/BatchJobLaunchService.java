@@ -27,13 +27,9 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobInstance;
 import org.springframework.batch.core.JobParametersInvalidException;
-import org.springframework.batch.core.UnexpectedJobExecutionException;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
-import org.springframework.batch.core.launch.JobParametersNotFoundException;
-import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.NoSuchJobException;
-import org.springframework.batch.core.launch.NoSuchJobExecutionException;
 import org.springframework.batch.core.repository.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteException;
 import org.springframework.batch.core.repository.JobRestartException;
@@ -132,30 +128,30 @@ public class BatchJobLaunchService {
     /** Guarded launch port implemented by the batch tier. */
     private final BatchLaunchGateway batchLaunchGateway;
 
-    /** Operator used only for deliberate next-instance and restart operations. */
-    private final JobOperator jobOperator;
-
     /** Metadata reader an execution is reported from; supplied by the framework. */
     private final JobExplorer jobExplorer;
 
     /**
-     * Takes the four framework collaborators and refuses a missing one, so the bean cannot exist half
+     * Takes the three framework collaborators and refuses a missing one, so the bean cannot exist half
      * wired.
+     *
+     * <p>Three and not four. An earlier revision also took the framework's {@code JobOperator}, for a
+     * repeat and a resume operation that the delivered surface does not offer - the control surface maps
+     * exactly the launch and the status read, and its integration contract asserts that a repeat address
+     * and a resume address both answer as absent. A collaborator held for an operation nobody can reach is
+     * a dependency the bean does not have, so it is not taken.
      *
      * @param jobRegistry the registry a stable job name is resolved through
      * @param batchLaunchGateway the guarded server-identity launch boundary
-     * @param jobOperator the operator used for next-instance and restart operations
      * @param jobExplorer the metadata reader an execution is reported from
      * @throws NullPointerException if any collaborator is {@code null}
      */
     public BatchJobLaunchService(final JobRegistry jobRegistry,
                                 final BatchLaunchGateway batchLaunchGateway,
-                                final JobOperator jobOperator,
                                 final JobExplorer jobExplorer) {
         this.jobRegistry = Objects.requireNonNull(jobRegistry, "jobRegistry must not be null");
         this.batchLaunchGateway = Objects.requireNonNull(
                 batchLaunchGateway, "batchLaunchGateway must not be null");
-        this.jobOperator = Objects.requireNonNull(jobOperator, "jobOperator must not be null");
         this.jobExplorer = Objects.requireNonNull(jobExplorer, "jobExplorer must not be null");
     }
 
@@ -182,25 +178,6 @@ public class BatchJobLaunchService {
     }
 
     /**
-     * Resolves an allow-listed name through the framework's registry and answers the name the registered
-     * job carries.
-     *
-     * <p>The registry's answer is used rather than the value that arrived, so a launch is issued against
-     * the identity the framework holds. The two agree for every one of the nine - each job is built with
-     * the constant the catalogue publishes - and reading it back is what makes that agreement checked
-     * rather than assumed.
-     *
-     * @param jobName an allow-listed stable job name
-     * @return the name the registered job carries
-     * @throws NoSuchJobException if the framework holds no job under that name, which is a wiring fault
-     *                            rather than a caller fault and is left for the caller to render
-     */
-    public String registeredNameOf(final String jobName) throws NoSuchJobException {
-        final Job registered = this.jobRegistry.getJob(jobName);
-        return registered.getName();
-    }
-
-    /**
      * Starts one job and answers the execution identifier the framework assigned.
      *
      * <p>Nothing is added to the parameters, so the same name with the same values is the same job
@@ -223,25 +200,6 @@ public class BatchJobLaunchService {
         final Job registered = this.jobRegistry.getJob(stableJobName);
         return this.batchLaunchGateway.start(
                 registered, acceptedParametersFrom(stableJobName, jobParameters));
-    }
-
-    /**
-     * Starts the next framework instance of one allow-listed job.
-     */
-    public long startNextInstance(final String stableJobName)
-            throws NoSuchJobException, JobParametersNotFoundException, JobRestartException,
-            JobExecutionAlreadyRunningException, JobInstanceAlreadyCompleteException,
-            UnexpectedJobExecutionException, JobParametersInvalidException {
-        return this.jobOperator.startNextInstance(stableJobName);
-    }
-
-    /**
-     * Restarts one framework execution without changing its existing job identity.
-     */
-    public long restart(final long executionId)
-            throws JobInstanceAlreadyCompleteException, NoSuchJobExecutionException,
-            NoSuchJobException, JobRestartException, JobParametersInvalidException {
-        return this.jobOperator.restart(executionId);
     }
 
     /**

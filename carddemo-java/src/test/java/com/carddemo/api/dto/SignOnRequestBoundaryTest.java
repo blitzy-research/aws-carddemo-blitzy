@@ -24,6 +24,7 @@ import java.util.Set;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.carddemo.config.FixedLocaleMessageInterpolator;
 import com.carddemo.domain.enums.KeyAction;
+import com.carddemo.support.SensitiveValues;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -572,7 +573,7 @@ class SignOnRequestBoundaryTest {
             Set<ConstraintViolation<SignOnRequest>> violations = violationsOf(request);
             assertThat(violations).isEmpty();
             assertThat(request.userId()).hasSize(USER_ID_WIDTH);
-            assertThat(request.password()).hasSize(CREDENTIAL_WIDTH);
+            assertThat(request.password().length()).isEqualTo(CREDENTIAL_WIDTH);
         }
 
         @Test
@@ -1083,7 +1084,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = parse(document);
 
             assertThat(request.userId()).isEqualTo(USER_ID_AT_WIDTH);
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
         }
 
         @Test
@@ -1174,7 +1175,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = parse(document);
 
             assertThat(request.userId()).isEqualTo(USER_ID_AT_WIDTH);
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
         }
 
         @Test
@@ -1271,7 +1272,7 @@ class SignOnRequestBoundaryTest {
 
             SignOnRequest request = parse(document);
 
-            assertThat(request.password()).isEqualTo(candidate);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(candidate));
         }
 
         @Test
@@ -1390,7 +1391,8 @@ class SignOnRequestBoundaryTest {
 
             SignOnRequest request = parse(document);
 
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL).hasSize(CREDENTIAL_WIDTH);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
+            assertThat(request.password().length()).isEqualTo(CREDENTIAL_WIDTH);
         }
 
         @Test
@@ -1432,7 +1434,8 @@ class SignOnRequestBoundaryTest {
             String padded = "ABCD    ";
             SignOnRequest request = parse("{\"password\":\"" + padded + "\"}");
 
-            assertThat(request.password()).isEqualTo(padded).hasSize(CREDENTIAL_WIDTH);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(padded));
+            assertThat(request.password().length()).isEqualTo(CREDENTIAL_WIDTH);
         }
 
         @Test
@@ -1444,7 +1447,7 @@ class SignOnRequestBoundaryTest {
                     + "\",\"password\":\"" + leadingCredential + "\"}");
 
             assertThat(request.userId()).isEqualTo(leading);
-            assertThat(request.password()).isEqualTo(leadingCredential);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(leadingCredential));
         }
 
         @Test
@@ -1453,7 +1456,8 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = parse("{\"userId\":\"AB\",\"password\":\"CD\"}");
 
             assertThat(request.userId()).isEqualTo("AB").hasSize(2);
-            assertThat(request.password()).isEqualTo("CD").hasSize(2);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("CD"));
+            assertThat(request.password().length()).isEqualTo(2);
             assertThat(request.userId()).doesNotContain(" ");
         }
 
@@ -1471,7 +1475,7 @@ class SignOnRequestBoundaryTest {
             String mixedCase = "aBcD1234";
             SignOnRequest request = parse("{\"password\":\"" + mixedCase + "\"}");
 
-            assertThat(request.password()).isEqualTo(mixedCase);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(mixedCase));
         }
 
         @Test
@@ -1490,7 +1494,7 @@ class SignOnRequestBoundaryTest {
         void aLowerCaseCredentialIsCarriedVerbatimInbound() throws JsonProcessingException {
             SignOnRequest request = parse("{\"password\":\"abcd1234\"}");
 
-            assertThat(request.password()).isEqualTo("abcd1234");
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("abcd1234"));
         }
 
         @Test
@@ -1509,7 +1513,7 @@ class SignOnRequestBoundaryTest {
         void aPaddedCredentialIsCarriedVerbatimInbound() throws JsonProcessingException {
             SignOnRequest request = parse("{\"password\":\"  ABCD  \"}");
 
-            assertThat(request.password()).isEqualTo("  ABCD  ");
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint("  ABCD  "));
         }
 
         @Test
@@ -1596,7 +1600,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest restored = parse(document);
 
             assertThat(restored.userId()).isEqualTo("00000001");
-            assertThat(restored.password()).isEqualTo("00000009");
+            assertThat(SensitiveValues.fingerprint(restored.password())).isEqualTo(SensitiveValues.fingerprint("00000009"));
         }
 
         @Test
@@ -1605,7 +1609,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = new SignOnRequest(null, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request.userId()).isNull();
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
         }
 
         @Test
@@ -1629,7 +1633,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = new SignOnRequest(USER_ID_AT_WIDTH, SYNTHETIC_CREDENTIAL, null);
 
             assertThat(request.userId()).isSameAs(request.userId());
-            assertThat(request.password()).isSameAs(request.password());
+            assertThat(request.password() == request.password()).isTrue();
         }
 
         @Test
@@ -1640,7 +1644,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = new SignOnRequest(suppliedUserId, suppliedCredential, null);
 
             assertThat(request.userId()).isSameAs(suppliedUserId);
-            assertThat(request.password()).isSameAs(suppliedCredential);
+            assertThat(request.password() == suppliedCredential).isTrue();
         }
 
         @Test
@@ -1650,9 +1654,9 @@ class SignOnRequestBoundaryTest {
             SignOnRequest second = new SignOnRequest("USER0002", OTHER_SYNTHETIC_CREDENTIAL, null);
 
             assertThat(first.userId()).isEqualTo(USER_ID_AT_WIDTH);
-            assertThat(first.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(first.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
             assertThat(second.userId()).isEqualTo("USER0002");
-            assertThat(second.password()).isEqualTo(OTHER_SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(second.password())).isEqualTo(SensitiveValues.fingerprint(OTHER_SYNTHETIC_CREDENTIAL));
             assertThat(first).isNotEqualTo(second);
         }
 
@@ -1728,7 +1732,7 @@ class SignOnRequestBoundaryTest {
             SignOnRequest request = parse(DOCUMENT_OFFERING_EVERY_OMITTED_MEMBER);
 
             assertThat(request.userId()).isEqualTo(USER_ID_AT_WIDTH);
-            assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
+            assertThat(SensitiveValues.fingerprint(request.password())).isEqualTo(SensitiveValues.fingerprint(SYNTHETIC_CREDENTIAL));
         }
 
         @Test

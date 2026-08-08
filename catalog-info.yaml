@@ -8,6 +8,14 @@ metadata:
   - COBOL
   - cobol
   - java
+  - java-25
+  - spring-boot
+  - spring-batch
+  - spring-data-jpa
+  - postgresql
+  - maven
+  - aws
+  - testcontainers
   - migration
   - modernization
   - new-feature
@@ -32,7 +40,7 @@ metadata:
     title: Blitzy Documentation
     icon: docs
 spec:
-  type: website
+  type: service
   lifecycle: experimental
   owner: blitzy-sandbox
   system: blitzy-typescript

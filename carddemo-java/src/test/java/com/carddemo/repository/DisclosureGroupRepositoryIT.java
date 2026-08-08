@@ -1110,4 +1110,3 @@ class DisclosureGroupRepositoryIT extends AbstractPostgresIT {
         }
     }
 }
-

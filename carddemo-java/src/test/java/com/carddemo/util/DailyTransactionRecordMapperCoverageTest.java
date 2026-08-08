@@ -23,6 +23,7 @@ import java.util.stream.Stream;
 
 import com.carddemo.domain.DailyTransaction;
 import com.carddemo.support.SeededRecordFixture;
+import com.carddemo.support.SensitiveValues;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -501,7 +502,7 @@ class DailyTransactionRecordMapperCoverageTest {
                     .isEqualTo(padded("North Enoshaven", EXPECTED_MERCHANT_CITY_WIDTH));
             assertThat(decoded.getDalytranMerchantZip())
                     .isEqualTo(padded("72112", EXPECTED_MERCHANT_ZIP_WIDTH));
-            assertThat(decoded.getDalytranCardNum()).isEqualTo("4859452612877065");
+            assertThat(SensitiveValues.fingerprint(decoded.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877065"));
             assertThat(decoded.getDalytranOrigTs()).isEqualTo(FIXTURE_ORIG_TS);
             assertThat(decoded.getDalytranProcTs())
                     .isEqualTo(run(' ', EXPECTED_TIMESTAMP_WIDTH));
@@ -632,7 +633,7 @@ class DailyTransactionRecordMapperCoverageTest {
                     .isEqualTo(fromText.getDalytranMerchantCity());
             assertThat(fromBytes.getDalytranMerchantZip())
                     .isEqualTo(fromText.getDalytranMerchantZip());
-            assertThat(fromBytes.getDalytranCardNum()).isEqualTo(fromText.getDalytranCardNum());
+            assertThat(SensitiveValues.fingerprint(fromBytes.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(fromText.getDalytranCardNum()));
             assertThat(fromBytes.getDalytranOrigTs()).isEqualTo(fromText.getDalytranOrigTs());
             assertThat(fromBytes.getDalytranProcTs()).isEqualTo(fromText.getDalytranProcTs());
         }
@@ -1069,7 +1070,7 @@ class DailyTransactionRecordMapperCoverageTest {
                     .isEqualTo(padded("POS TERM", EXPECTED_SOURCE_WIDTH));
             assertThat(first.getDalytranAmt()).isEqualByComparingTo("504.77");
             assertThat(first.getDalytranMerchantId()).isEqualTo(FIXTURE_MERCHANT_ID);
-            assertThat(first.getDalytranCardNum()).isEqualTo("4859452612877065");
+            assertThat(SensitiveValues.fingerprint(first.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877065"));
             assertThat(first.getDalytranOrigTs()).isEqualTo(FIXTURE_ORIG_TS);
             assertThat(first.getDalytranProcTs()).isEqualTo(run(' ', EXPECTED_TIMESTAMP_WIDTH));
             assertThat(first.getDalytranDesc()).startsWith("Purchase at Abshire-Lowe");
@@ -1098,7 +1099,7 @@ class DailyTransactionRecordMapperCoverageTest {
 
             assertThat(last.getDalytranId()).isEqualTo("0000000996722787");
             assertThat(last.getDalytranAmt()).isEqualByComparingTo("603.22");
-            assertThat(last.getDalytranCardNum()).isEqualTo("3260763612337560");
+            assertThat(SensitiveValues.fingerprint(last.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("3260763612337560"));
             assertThat(last.getDalytranDesc()).startsWith("Purchase at Kilback LLC");
         }
 
@@ -1230,7 +1231,7 @@ class DailyTransactionRecordMapperCoverageTest {
             assertThat(round.getDalytranMerchantCity())
                     .isEqualTo(original.getDalytranMerchantCity());
             assertThat(round.getDalytranMerchantZip()).isEqualTo(original.getDalytranMerchantZip());
-            assertThat(round.getDalytranCardNum()).isEqualTo(original.getDalytranCardNum());
+            assertThat(SensitiveValues.fingerprint(round.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(original.getDalytranCardNum()));
             assertThat(round.getDalytranOrigTs()).isEqualTo(original.getDalytranOrigTs());
             assertThat(round.getDalytranProcTs()).isEqualTo(original.getDalytranProcTs());
         }

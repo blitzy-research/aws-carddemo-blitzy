@@ -70,10 +70,11 @@
 #                                               a credential - opened here, closed in the baseline
 #
 #   THESE SIX PATHS UNDER carddemo.aws ARE THE MIGRATION PLAN'S OWN CONTRACT, and AwsProperties binds
-#   exactly them. An earlier revision of this overlay published a different set here - s3.bucket,
-#   sqs.job-submission-queue, six s3.prefix.* keys, and no region or endpoint key - and the binder was
-#   written to match, so every binding test passed against a contract the plan does not state. The plan
-#   is the authority for these paths; this list follows it.
+#   exactly them. The plan is the authority for these paths and this list follows it: no key may be
+#   added, renamed or dropped here to match a binder, because a binding test then passes against a
+#   contract the plan does not state. Any other spelling - an s3.bucket key, a differently named queue
+#   key, per-prefix keys, or an overlay that states no region and no endpoint - is wrong however
+#   consistently it is applied.
 #
 #   The region and the endpoint override ARE in the carddemo namespace, and the AWS integration's own
 #   properties under spring.cloud.aws further down derive from them: the region reads
@@ -126,15 +127,15 @@
 #   for a named legacy resource, so only the queue carries a legacy name and only the queue carries a
 #   suffix.
 #
-#   AN EARLIER REVISION RENAMED THE QUEUE to a module-namespaced form and asserted that the plan
-#   mandated that form. The plan does not: it names this resource twice and names it JOBS both times.
-#   The prescribed name is therefore restored rather than argued about again. See
-#   docs/decision-log.md DL-092 for the full record, DL-045 for how the four names divide between
-#   legacy-derived and module-namespaced, and DL-047 for why this overlay widens the shared
-#   baseline's fail-closed defaults one concession at a time rather than in bulk.
+#   THE QUEUE NAME IS NOT THE MODULE'S TO CHOOSE. The plan names this resource twice and names it
+#   JOBS both times, so a module-namespaced form is not admissible here however consistent it would
+#   look beside the other three names. See docs/decision-log.md DL-092 for the full record, DL-045
+#   for how the four names divide between legacy-derived and module-namespaced, and DL-047 for why
+#   this overlay widens the shared baseline's fail-closed defaults one concession at a time rather
+#   than in bulk.
 #
-#   WHAT SURVIVES FROM THAT REVISION IS ITS WARNING, and it is kept: a well-formed name that names
-#   nothing is exactly the input a create-on-absence default resolves by provisioning a queue nothing
+#   A WELL-FORMED NAME THAT NAMES NOTHING is the hazard this rationale exists to guard against: it
+#   is exactly the input a create-on-absence default resolves by provisioning a queue nothing
 #   consumes, so a submission would report complete while the cards sat unread. That is why the value
 #   appears once per place and why a disagreement is made loud rather than silent. A collision with an
 #   unrelated queue in a shared account remains a deployment concern, answered by the environment
@@ -262,14 +263,21 @@ spring:
   # a start-up path to delete. ProductionSeedRejectionCallbackIT asserts all of it.
   #
   # clean-disabled is relaxed here and only here, so a developer iterating on a migration can drop
-  # and re-apply. The baseline and the production overlay both forbid it.
+  # and re-apply. The baseline and the production overlay both forbid it. Dropping is destructive; the
+  # paragraph below states the precondition it is permitted under.
   #
-  # ONE-TIME NOTE: a local database created against an earlier revision of this module may carry
-  # migration history that no longer matches the delivered scripts - a checksum for a script that has
-  # since moved between locations, or a version that no longer exists. Flyway reports that as a
-  # validation failure rather than silently reconciling it, which is the correct behaviour. Re-create
-  # the database once (`docker compose down -v` for the Compose stack, or `./mvnw flyway:clean` with
-  # the relaxed clean-disabled above). Test databases are per-run and are never affected.
+  # WHEN A LOCAL DATABASE DISAGREES WITH THE DELIVERED SCRIPTS. validate-on-migrate is true, so a
+  # local database whose migration history does not match the delivered scripts - a checksum for a
+  # changed script, or a version that is not delivered - fails start-up rather than being silently
+  # reconciled. That refusal is the correct behaviour and must not be relaxed to get past it.
+  #
+  # !! DESTRUCTIVE RECOVERY - DATA LOSS !! Re-creating the database is the recovery, and it DELETES
+  # every row and every migration record it holds, irreversibly and without a prompt. It is permitted
+  # ONLY against a disposable local database that carries nothing but the seeded fixtures of this
+  # profile - never against a database holding anything anybody needs, and never against a shared or
+  # production instance, where a history mismatch is an incident to investigate rather than data to
+  # delete. carddemo-java/README.md documents the Compose form of this recovery and exactly which
+  # named volumes it discards. Test databases are per-run and are never affected.
   flyway:
     enabled: true
     # See docs/decision-log.md DL-127.
@@ -295,11 +303,11 @@ spring:
   # initialize-schema is inherited as `always` from the baseline and is NOT overridden here. The six
   # framework metadata tables and three sequences are created by Spring Batch itself under this
   # profile exactly as they are under production, from the same bundled PostgreSQL script, so a job
-  # launched locally runs against the same tables production will have. Setting a different value here
-  # is what an earlier revision did in the opposite direction, and it produced the one failure mode
-  # this arrangement exists to prevent: a job repository that exists in one environment and not in
-  # another. The value is deliberately not restated in this document - inheriting it is what keeps the
-  # two environments identical, and there is no local-only relaxation to be tempted by.
+  # launched locally runs against the same tables production will have. Setting any different value
+  # here produces the one failure mode this arrangement exists to prevent: a job repository that
+  # exists in one environment and not in the other. The value is deliberately not restated in this
+  # document - inheriting it is what keeps the two environments identical, and there is no local-only
+  # relaxation to be tempted by.
 
   # -----------------------------------------------------------------------------------------------
   # AWS integration, aimed at the LocalStack Community container.
@@ -333,12 +341,7 @@ spring:
       sns:
         endpoint: http://${LOCALSTACK_HOST:localhost}:${LOCALSTACK_PORT:4566}
 
-# Observability, bound to the compose stack. Two paths are resolved literally by sibling files and
-# may not be narrowed here: /actuator/health, because publishing it is what makes its groups reachable
-# and carddemo-java/Dockerfile's HEALTHCHECK asks for the /actuator/health/liveness group; and
-# /actuator/prometheus, which is the scrape target of
-# config/prometheus/prometheus.yml and the surface every panel of
-# config/grafana/dashboards/carddemo-overview.json reads.
+# Observability, bound to the compose stack.
 #
 # CROSS-FILE CONTRACTS - two paths here are resolved literally by sibling files and neither the
 # paths nor their reachability may be narrowed by this overlay:
@@ -359,9 +362,9 @@ spring:
 #                         config/grafana/dashboards/carddemo-overview.json reads. It is also where the
 #                         performance baseline is measured. An application started on the host rather
 #                         than beside the stack is therefore not collected by that job: read the
-#                         endpoint directly, or run the application as part of the stack. Adding a host
-#                         target to the same job is what an earlier revision did, and it doubled every
-#                         series whenever both answered.
+#                         endpoint directly, or run the application as part of the stack. A host target
+#                         must not be added to the same job: both would answer and every series would
+#                         be doubled.
 #
 # THIS PROFILE PUBLISHES NO EXTRA MANAGEMENT ENDPOINT. The shared four are sufficient for health,
 # build identity and the Gate-3 metrics surface. Environment, bean, mapping, migration and writable
@@ -558,11 +561,11 @@ carddemo:
     # override would therefore not rotate anything - it cannot re-key a literal - it would simply
     # leave fifty rows of regulated data unreadable, and the marker check that decides whether a
     # column holds an envelope cannot see that, because an envelope sealed under a foreign key still
-    # looks like an envelope. The failure used to surface only at the moment something happened to
-    # decrypt a row. Removing the override removes the ordinary way into that state; the key invariant
-    # enforced by com.carddemo.config.SeededIdentifierSealingCallback refuses it however else it
-    # arises, by OPENING every stored value at the end of each migration rather than recognising its
-    # shape, and failing start-up on the first one that will not open. Production is the only profile
+    # looks like an envelope - so a state of that kind surfaces only at the moment something happens
+    # to decrypt a row. Declaring no override is what keeps the ordinary way into that state closed;
+    # the key invariant enforced by com.carddemo.config.SeededIdentifierSealingCallback refuses it
+    # however else it arises, by OPENING every stored value at the end of each migration rather than
+    # recognising its shape, and failing start-up on the first one that will not open. Production is the only profile
     # that resolves this property from the environment, and it has no fallback there for the opposite
     # reason: it owns real data and must never run under a default key.
     #
@@ -579,16 +582,16 @@ carddemo:
     # the loopback interface on one machine, which is the only situation this profile describes.
     # Production does not re-require HTTPS - it inherits the requirement.
     #
-    # AND THAT "ONLY SITUATION" IS NOW ENFORCED RATHER THAN ASSERTED. This paragraph used to rest on a
-    # claim about intent while docker-compose.yml published every port on every interface, which made
-    # the claim false for anyone who ran the documented command: plaintext bearer tokens crossed a
-    # network the profile had assumed away. Every mapping in that file now binds
+    # AND THAT "ONLY SITUATION" IS ENFORCED RATHER THAN ASSERTED, because a concession resting on a
+    # claim about intent is worthless: if docker-compose.yml published a port on every interface, the
+    # loopback premise would be false for anyone running the documented command and plaintext bearer
+    # tokens would cross a network this profile had assumed away. Every mapping in that file binds
     # ${*_BIND_ADDRESS:-127.0.0.1}, so the loopback-only premise holds by default, and
     # LocalValidationStackExposureTest fails the build if a mapping loses it. An operator who widens the
     # exposure has left the situation this concession was reasoned about, and the paragraph above the
     # signing secret states what that costs.
     #
-    # The relaxation is now load-bearing rather than decorative. SecurityConfig binds this key, and
+    # The relaxation is load-bearing rather than decorative. SecurityConfig binds this key, and
     # when it is set it redirects every insecure request instead of serving it. Left at the baseline's
     # value, a plain `curl localhost:8080/...` against this profile would be answered with a redirect
     # to a port nothing is listening on. Clearing it here is what keeps local development over the

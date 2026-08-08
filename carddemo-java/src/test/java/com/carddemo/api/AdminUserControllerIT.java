@@ -36,10 +36,12 @@ import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
 import com.carddemo.service.OnlineTransactionBoundary;
 import com.carddemo.service.SensitiveFieldEncryptionService;
+import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.service.SignOnStateService;
 import com.carddemo.service.UserListPageTokenService;
 import com.carddemo.service.UserManagementService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.ApiRoutePaths;
 import com.carddemo.util.CobolStringUtils;
@@ -182,10 +184,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 @DisplayName("Gate 5: the administrative user transactions CU00 to CU03 over the shipped boundary")
 public class AdminUserControllerIT extends AbstractPostgresIT {
 
-    // ===============================================================================================
-    // THE CONTRACT, RESTATED HERE RATHER THAN IMPORTED
-    // ===============================================================================================
-
     /**
      * The text an unaccepted row marker composes, from {@code app/cbl/COUSR00C.cbl} line 212.
      *
@@ -200,7 +198,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     /** The forward pager's refusal when no further row follows, from L272-L276. */
     private static final String ALREADY_AT_BOTTOM_MESSAGE = "You are already at the bottom of the page...";
 
-    /** The catch-all arm of every browse verb on the list screen. */
     private static final String UNABLE_TO_LOOKUP_MESSAGE = "Unable to lookup User...";
 
     /** First arm of the add cascade, from {@code app/cbl/COUSR01C.cbl} L118-L123. */
@@ -209,7 +206,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     /** Second arm of the add cascade, from L124-L129. */
     private static final String ADD_LAST_NAME_EMPTY_MESSAGE = "Last Name can NOT be empty...";
 
-    /** Third arm of the add cascade - the identifier, which the update screen tests first. */
     private static final String ADD_USER_ID_EMPTY_MESSAGE = "User ID can NOT be empty...";
 
     /** Fourth arm of the add cascade. The English word here is screen text, never a stored value. */
@@ -249,13 +245,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     /** The text a submission that changed nothing composes, from L241-L243. */
     private static final String UPDATE_NO_CHANGE_MESSAGE = "Please modify to update ...";
 
-    /** The prompt a successful retrieval composes on the update screen. */
     private static final String UPDATE_PRESS_TO_SAVE_MESSAGE = "Press PF5 key to save your updates ...";
 
     /** The prompt a successful retrieval composes on the delete screen, from COUSR03C L285-L289. */
     private static final String DELETE_PRESS_TO_DELETE_MESSAGE = "Press PF5 key to delete this user ...";
 
-    /** The keyed read reported no such record; shared verbatim by the update and delete screens. */
     private static final String USER_ID_NOT_FOUND_MESSAGE = "User ID NOT found...";
 
     /**
@@ -270,13 +264,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final String DELETE_FAILURE_MESSAGE = "Unable to Update User...";
 
-    /** Prefix of the three success texts, which are built by concatenation in the source. */
     private static final String SUCCESS_PREFIX = "User ";
 
     /** Suffix the add screen's success text carries, from COUSR01C L255-L258. */
     private static final String ADD_SUCCESS_SUFFIX = " has been added ...";
 
-    /** Suffix the update screen's success text carries. */
     private static final String UPDATE_SUCCESS_SUFFIX = " has been updated ...";
 
     /** Suffix the delete screen's success text carries, from COUSR03C L314-L322. */
@@ -292,13 +284,10 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final int USER_LIST_ROWS = 10;
 
-    /** Width of a user identifier on all four maps and in the stored record. */
     private static final int USER_ID_WIDTH = 8;
 
-    /** Width of each name part on the three single-record maps and in the stored record. */
     private static final int NAME_PART_WIDTH = 20;
 
-    /** Width of the raw role code: one character, on every map and in the stored record. */
     private static final int USER_TYPE_WIDTH = 1;
 
     /**
@@ -311,58 +300,40 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final int CREDENTIAL_WIDTH = 8;
 
-    /** Width of one row's selection item. */
     private static final int SELECTOR_WIDTH = 1;
 
-    /** Wire value of the destination an accepted update marker nominates. */
     private static final String USER_UPDATE_ROUTE = "user-update";
 
-    /** Wire value of the destination an accepted delete marker nominates. */
     private static final String USER_DELETE_ROUTE = "user-delete";
 
-    /** Symbolic name of the list and maintenance screens' identifier field. */
     private static final String FIELD_LIST_USER_ID = "USRIDIN";
 
-    /** Symbolic name of the add screen's own identifier field, which differs from the list screen's. */
     private static final String FIELD_ADD_USER_ID = "USERID";
 
-    /** Symbolic name of the given-name field. */
     private static final String FIELD_FIRST_NAME = "FNAME";
 
-    /** Symbolic name of the family-name field. */
     private static final String FIELD_LAST_NAME = "LNAME";
 
-    /** Symbolic name of the credential field, which only two of the four maps declare. */
     private static final String FIELD_CREDENTIAL_ITEM = "PASSWD";
 
-    /** Symbolic name of the role-code field. */
     private static final String FIELD_USER_TYPE = "USRTYPE";
 
-    /** The role code the administrative branch tests for. */
     private static final String ADMIN_ROLE_CODE = "A";
 
-    /** The role code every other identity carries. */
     private static final String USER_ROLE_CODE = "U";
 
-    /** Presentation prefix an issued session travels behind. */
     private static final String BEARER_PREFIX = "Bearer ";
 
-    /** Summary a refusal for want of a session carries. */
     private static final String AUTHENTICATION_REQUIRED = "Authentication required";
 
-    /** Summary a refusal for want of the entitlement carries. */
     private static final String ACCESS_DENIED = "Access denied";
 
-    /** The marker that nominates the update screen, in the case the source lists first. */
     private static final String MARKER_UPDATE_UPPER = "U";
 
-    /** The same marker in the other case the source lists. */
     private static final String MARKER_UPDATE_LOWER = "u";
 
-    /** The marker that nominates the delete screen. */
     private static final String MARKER_DELETE_UPPER = "D";
 
-    /** The same marker in the other case the source lists. */
     private static final String MARKER_DELETE_LOWER = "d";
 
     /** A blank selection, which is a value and not an omission: it means "this row was not marked". */
@@ -375,19 +346,14 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     // The credential is not, and is not: it appears nowhere in this file in any form.
     // ===============================================================================================
 
-    /** Number of identities the credential seed loads: five administrative and five ordinary. */
     private static final int DELIVERED_IDENTITY_COUNT = 10;
 
-    /** Number of the delivered identities that carry the administrative role code. */
     private static final int DELIVERED_ADMINISTRATOR_COUNT = 5;
 
-    /** Number of the delivered identities that carry the ordinary role code. */
     private static final int DELIVERED_ORDINARY_COUNT = 5;
 
-    /** A delivered administrative identity, named for what its stored role code is asserted to be. */
     private static final String DELIVERED_ADMIN_IDENTITY = "ADMIN001";
 
-    /** A delivered ordinary identity, in the same terms. */
     private static final String DELIVERED_USER_IDENTITY = "USER0001";
 
     /**
@@ -418,10 +384,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             "USER0005", "USER0004", "USER0003", "USER0002", "USER0001",
             "ADMIN005", "ADMIN004", "ADMIN003", "ADMIN002", "ADMIN001");
 
-    // ===============================================================================================
-    // THE IDENTITIES THIS SPECIFICATION OWNS
-    // ===============================================================================================
-
     /**
      * Prefix of the eight-character identifier range this specification reserves.
      *
@@ -434,10 +396,8 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final String RESERVED_PREFIX = "ZZUSER";
 
-    /** Administrative identity, whose session every admitted turn below is made under. */
     private static final String OWNED_ADMIN = RESERVED_PREFIX + "01";
 
-    /** Ordinary identity, whose session every refused-for-entitlement turn is made under. */
     private static final String OWNED_ORDINARY = RESERVED_PREFIX + "02";
 
     /**
@@ -450,25 +410,20 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final String UPDATE_SUBJECT = RESERVED_PREFIX + "03";
 
-    /** The disposable identity the delete turns remove, for the same reason. */
     private static final String DELETE_SUBJECT = RESERVED_PREFIX + "04";
 
     /** A fifth written identity, so the population exceeds one page and a second page genuinely exists. */
     private static final String PAGE_FILLER = RESERVED_PREFIX + "05";
 
-    /** The identifier the successful add turn creates. */
     private static final String ADDED_IDENTITY = RESERVED_PREFIX + "06";
 
-    /** A second created identifier, for the assertion about what a write actually stored. */
     private static final String SECOND_ADDED_IDENTITY = RESERVED_PREFIX + "07";
 
-    /** An identifier inside the reserved range that is never written, for the not-found arms. */
     private static final String ABSENT_IDENTITY = RESERVED_PREFIX + "99";
 
     /** Given name every identity this specification writes carries; identity, never a secret. */
     private static final String RESERVED_FIRST_NAME = "INTEGRATION";
 
-    /** Family name every identity this specification writes carries. */
     private static final String RESERVED_LAST_NAME = "USERADMIN";
 
     /** A given name an update turn stores, distinct from the written one so a change is observable. */
@@ -534,11 +489,9 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
      */
     private static final String DIGEST_OF_FOLDED_WINDOW = digestOfFoldedCredentialWindow();
 
-    /** The shipped servlet boundary, with the shipped filter chain in front of it. */
     @Autowired
     private MockMvc mockMvc;
 
-    /** The credential master, for writing, reading back and removing owned identities. */
     @Autowired
     private UserSecurityRepository users;
 
@@ -546,7 +499,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
-    /** Creates the specification. */
     public AdminUserControllerIT() {
         super();
     }
@@ -594,10 +546,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             }
         }
     }
-
-    // ===============================================================================================
-    // HELPERS
-    // ===============================================================================================
 
     /**
      * Writes one owned identity through the credential master.
@@ -994,12 +942,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         return List.copyOf(names);
     }
 
-    /**
-     * Walks a document, collecting property names.
-     *
-     * @param node  the node to walk
-     * @param names the collector
-     */
     private static void collectPropertyNames(final JsonNode node, final List<String> names) {
         if (node.isObject()) {
             for (final Map.Entry<String, JsonNode> property : node.properties()) {
@@ -1119,16 +1061,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 1. ALL FOUR ROUTES ARE ADMINISTRATOR-GATED
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Admin gating on all four routes: refused without a session, refused with an ordinary "
             + "one, admitted with an administrative one")
     class AdminGatingOnAllFourRoutes {
 
-        /** Creates the nested specification. */
         AdminGatingOnAllFourRoutes() {
             // Intentionally empty: the enclosing instance holds every collaborator.
         }
@@ -1254,17 +1191,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 2. THE PAGE PRESENTS TEN ROWS
-    // ===============================================================================================
-
     @Nested
     @DisplayName("List page size 10: the shape of the screen, not a tunable figure")
     class ListPageSizeIsTen {
 
-        /** Creates the nested specification. */
         ListPageSizeIsTen() {
-            // Intentionally empty.
         }
 
         @Test
@@ -1330,17 +1261,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 3. THE FORWARD WALK FILLS ROWS ONE THROUGH TEN
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Forward fill ascending: rows one through ten, in key order")
     class ForwardFillAscending {
 
-        /** Creates the nested specification. */
         ForwardFillAscending() {
-            // Intentionally empty.
         }
 
         @Test
@@ -1467,9 +1392,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             + "last, so the page presents in screen order")
     class BackwardFillDescendingFromTheTenthSlot {
 
-        /** Creates the nested specification. */
         BackwardFillDescendingFromTheTenthSlot() {
-            // Intentionally empty.
         }
 
         @Test
@@ -1493,9 +1416,10 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         @DisplayName("★ the fill order is the tenth slot down to the first: reading the page backwards "
                 + "reproduces the previous-record sequence exactly")
         void theFillOrderIsTheTenthSlotDownToTheFirst() throws Exception {
-            // L352-L360: MOVE 10 TO WS-IDX, then read the previous record and COMPUTE WS-IDX = WS-IDX - 1.
-            // The sequence below is the order those reads hand rows out - slot ten first, slot one last -
-            // and it is stated as its own literal rather than derived from the answer.
+            // L352-L360: the backward walk starts at the bottom slot and steps upward one slot per
+            // previous record read. The sequence below is the order those reads hand rows out - slot ten
+            // first, slot one last - and it is stated as its own literal rather than derived from the
+            // answer.
             final List<String> page = rowIdentifiersOf(backwardFromTheSecondPage());
 
             assertThat(reversedCopy(page))
@@ -1561,17 +1485,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 5. THE ROW MARKERS: THE FIRST NON-BLANK ONE WINS
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Selector first-non-blank U/D and the invalid-selection message")
     class SelectorFirstNonBlankWins {
 
-        /** Creates the nested specification. */
         SelectorFirstNonBlankWins() {
-            // Intentionally empty.
         }
 
         @Test
@@ -1731,17 +1649,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 6. THE ADD SCREEN'S ORDERED CASCADE
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Add cascade order: given name, family name, identifier, credential, role code")
     class AddCascadeOrder {
 
-        /** Creates the nested specification. */
         AddCascadeOrder() {
-            // Intentionally empty.
         }
 
         @Test
@@ -1925,18 +1837,12 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 7. THE UPDATE SCREEN'S ORDERED CASCADE - WHICH IS A DIFFERENT ORDER
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Update cascade order - divergent: identifier, given name, family name, credential, "
             + "role code")
     class UpdateCascadeOrderIsDivergent {
 
-        /** Creates the nested specification. */
         UpdateCascadeOrderIsDivergent() {
-            // Intentionally empty.
         }
 
         @Test
@@ -2134,9 +2040,7 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             + "readable anywhere")
     class PasswordHashingAndNonDisclosure {
 
-        /** Creates the nested specification. */
         PasswordHashingAndNonDisclosure() {
-            // Intentionally empty.
         }
 
         @Test
@@ -2156,7 +2060,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
             assertThat(TestDataFactory.hasStoredDigestShape(stored))
                     .as("sixty characters, a recognised version marker and the module's own cost factor")
                     .isTrue();
-            assertThat(stored).hasSize(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+            // Asserted on the length rather than over the digest: hasSize prints its subject, and the
+            // subject is stored credential material.
+            assertThat(stored.length())
+                    .as("sixty characters, the width the one intentionally widened column carries")
+                    .isEqualTo(TestDataFactory.BCRYPT_DIGEST_LENGTH);
             assertThat(revealsTheKeyedCredential(stored))
                     .as("what was stored is not the submitted value, is not its folded form, and does not "
                             + "contain either")
@@ -2291,17 +2199,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 9. THE DELETE SCREEN: NO CREDENTIAL ITEM, AND ONE PRESERVED DEFECT
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Delete - no password field and the preserved Update message")
     class DeleteHasNoCredentialAndKeepsTheUpdateMessage {
 
-        /** Creates the nested specification. */
         DeleteHasNoCredentialAndKeepsTheUpdateMessage() {
-            // Intentionally empty.
         }
 
         @Test
@@ -2448,17 +2350,11 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 10. THE DELIVERED POPULATION
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Seeded ten-user baseline: five administrative identities and five ordinary ones")
     class SeededTenUserBaseline {
 
-        /** Creates the nested specification. */
         SeededTenUserBaseline() {
-            // Intentionally empty.
         }
 
         @Test
@@ -2508,7 +2404,9 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
                 assertThat(TestDataFactory.hasStoredDigestShape(digest))
                         .as("%s carries a digest at the module's own cost factor", identifier)
                         .isTrue();
-                assertThat(digest).hasSize(TestDataFactory.BCRYPT_DIGEST_LENGTH);
+                assertThat(digest.length())
+                        .as("%s carries a digest of the stored width", identifier)
+                        .isEqualTo(TestDataFactory.BCRYPT_DIGEST_LENGTH);
                 assertThat(TestDataFactory.digestRefusesOtherValues(
                         AdminUserControllerIT.this.passwordEncoder, digest))
                         .as("%s refuses a value its digest was not derived from", identifier)
@@ -2516,10 +2414,14 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
                 digests.add(digest);
             }
 
-            assertThat(digests)
+            // Counted rather than compared. doesNotHaveDuplicates prints every member it holds, so this
+            // one assertion would have put all ten stored digests into the build log.
+            assertThat(SensitiveValues.distinctCount(digests))
                     .as("ten distinct digests, because ten distinct salts")
-                    .doesNotHaveDuplicates()
-                    .hasSize(TestDataFactory.SEEDED_DIGEST_COUNT);
+                    .isEqualTo(TestDataFactory.SEEDED_DIGEST_COUNT);
+            assertThat(digests.size())
+                    .as("and one digest per delivered identity")
+                    .isEqualTo(TestDataFactory.SEEDED_DIGEST_COUNT);
         }
 
         @Test
@@ -2550,18 +2452,12 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // 11. WHAT NO ANSWER MAY CARRY
-    // ===============================================================================================
-
     @Nested
     @DisplayName("Leakage negatives: the published row is the map's five items and never the program's "
             + "internal staging shape")
     class LeakageNegatives {
 
-        /** Creates the nested specification. */
         LeakageNegatives() {
-            // Intentionally empty.
         }
 
         @Test
@@ -2684,10 +2580,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 
-    // ===============================================================================================
-    // THE GRAPH UNDER TEST
-    // ===============================================================================================
-
     /**
      * The user-administration surface: the shipped boundary, the shipped filter chain, the shipped
      * transaction and the credential master the identities live in.
@@ -2712,7 +2604,8 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     @Import({AdminUserController.class, UserContractAdapter.class, ScreenStateAdapter.class,
         AuthController.class, SignOnContractAdapter.class, ModuleErrorController.class,
         GlobalExceptionHandler.class, JsonRefusalBodyRenderer.class, UserManagementService.class,
-        AuthenticationService.class, SignOnStateService.class, CredentialDigestService.class,
+        AuthenticationService.class, SignOnAttemptGovernor.class, SignOnStateService.class,
+        CredentialDigestService.class,
         MessageCatalogService.class, NavigationService.class, UserListPageTokenService.class,
         SensitiveFieldEncryptionService.class, OnlineTransactionBoundary.class, RecordWriter.class,
         SecurityConfig.class, JwtTokenProvider.class, WebMvcConfig.class})
@@ -2721,7 +2614,6 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = UserSecurity.class)
     static class UserAdministrationContext {
 
-        /** Creates the configuration. */
         UserAdministrationContext() {
             // Intentionally empty: this slice contributes beans, not state.
         }
@@ -2737,4 +2629,3 @@ public class AdminUserControllerIT extends AbstractPostgresIT {
         }
     }
 }
-

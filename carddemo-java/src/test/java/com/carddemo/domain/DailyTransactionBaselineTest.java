@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
@@ -177,7 +178,7 @@ class DailyTransactionBaselineTest {
             assertThat(transaction.getDalytranMerchantName()).isEqualTo(FIRST_MERCHANT_NAME);
             assertThat(transaction.getDalytranMerchantCity()).isEqualTo(FIRST_MERCHANT_CITY);
             assertThat(transaction.getDalytranMerchantZip()).isEqualTo(FIRST_MERCHANT_ZIP);
-            assertThat(transaction.getDalytranCardNum()).isEqualTo(FIRST_CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(transaction.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(FIRST_CARD_NUMBER));
             assertThat(transaction.getDalytranOrigTs()).isEqualTo(FIRST_ORIGINATION_TIMESTAMP);
             assertThat(transaction.getDalytranProcTs()).isEqualTo(BLANK_PROCESSING_TIMESTAMP);
         }
@@ -216,7 +217,7 @@ class DailyTransactionBaselineTest {
             assertThat(raw.getDalytranSource()).isEqualTo("unknown");
             assertThat(raw.getDalytranDesc()).isEmpty();
             assertThat(raw.getDalytranAmt()).isEqualTo(new BigDecimal("1.5"));
-            assertThat(raw.getDalytranCardNum()).isEqualTo("not-a-card");
+            assertThat(SensitiveValues.fingerprint(raw.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("not-a-card"));
             assertThat(raw.getDalytranOrigTs()).isEmpty();
             assertThat(raw.getDalytranProcTs()).isEqualTo("  ");
         }
@@ -271,7 +272,7 @@ class DailyTransactionBaselineTest {
             assertThat(computed).isEqualTo(CARD_NUMBER_OFFSET);
             assertThat(computed + 1).isEqualTo(sortColumnOneBased);
             assertThat(sortFieldLength).isEqualTo(CARD_NUMBER_WIDTH);
-            assertThat(transaction.getDalytranCardNum()).hasSize(CARD_NUMBER_WIDTH);
+            assertThat(transaction.getDalytranCardNum().length()).isEqualTo(CARD_NUMBER_WIDTH);
         }
 
         @Test
@@ -509,7 +510,7 @@ class DailyTransactionBaselineTest {
             assertThat(target.getDalytranMerchantName()).isEqualTo("Returns Desk");
             assertThat(target.getDalytranMerchantCity()).isEqualTo("Durham");
             assertThat(target.getDalytranMerchantZip()).isEqualTo("27701     ");
-            assertThat(target.getDalytranCardNum()).isEqualTo("4859452612877066");
+            assertThat(SensitiveValues.fingerprint(target.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877066"));
             assertThat(target.getDalytranOrigTs()).isEqualTo("2022-06-11 08:00:00.000000");
             assertThat(target.getDalytranProcTs()).isEqualTo("2022-06-12 09:00:00.000000");
         }

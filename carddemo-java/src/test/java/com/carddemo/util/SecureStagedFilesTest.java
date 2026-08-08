@@ -389,4 +389,144 @@ class SecureStagedFilesTest {
                     .withCauseInstanceOf(AssertionError.class);
         }
     }
+
+    /**
+     * Deciding whether a path found later is the staged artefact that was written earlier.
+     *
+     * <p>Creating a file owner-only says nothing about a file <em>found</em> under the same root
+     * afterwards. A local actor able to write the staging root can put something else there under a name
+     * a resolver will accept, and the resolver then reads the planted content as though the job had
+     * produced it. Each specification below removes exactly one of the four properties and asserts that
+     * the answer changes, which is what makes all four load-bearing rather than decorative.
+     */
+    @Nested
+    @DisplayName("a candidate is trusted only when four independent properties all hold")
+    class TheTrustPredicate {
+
+        /** Creates the slice. */
+        TheTrustPredicate() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("a regular file this account owns, directly in a root nothing else may write, is "
+                + "trusted - which is the control case the four negatives are measured against")
+        void aGenuineStagedArtifactIsTrusted(@TempDir final Path root) throws IOException {
+            final Path staged = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000001V00");
+            Files.writeString(staged, "records", StandardCharsets.US_ASCII);
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, staged)).isTrue();
+        }
+
+        @Test
+        @DisplayName("A SYMBOLIC LINK IS NOT TRUSTED, even one pointing at a file this account owns: the "
+                + "inspection does not follow it, so the link itself is what is judged")
+        void aSymbolicLinkIsNotTrusted(@TempDir final Path root) throws IOException {
+            final Path target = root.resolve("attacker-content");
+            Files.writeString(target, "records the attacker chose", StandardCharsets.US_ASCII);
+            final Path link = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000009999V00");
+            try {
+                Files.createSymbolicLink(link, target);
+            } catch (final UnsupportedOperationException | IOException linksUnavailable) {
+                return;
+            }
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, link))
+                    .as("THE DEFECT THIS PINS. A default regular-file check follows the link and answers "
+                            + "about its target, so a link named as a staged generation was accepted as "
+                            + "one")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a directory is not trusted, because a directory is not an artifact anything here "
+                + "hands out")
+        void aDirectoryIsNotTrusted(@TempDir final Path root) throws IOException {
+            final Path directory = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000002V00");
+            Files.createDirectory(directory);
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, directory)).isFalse();
+        }
+
+        @Test
+        @DisplayName("a path that is not a DIRECT child of the root is not trusted, so a name that "
+                + "resolved out of the root cannot be believed on the strength of the file it reached")
+        void aPathOutsideTheRootIsNotTrusted(@TempDir final Path root) throws IOException {
+            final Path nested = Files.createDirectory(root.resolve("nested"));
+            final Path deeper = nested.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000003V00");
+            Files.writeString(deeper, "records", StandardCharsets.US_ASCII);
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, deeper))
+                    .as("a grandchild is not a child")
+                    .isFalse();
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root,
+                    root.resolve("nested/../nested/" + deeper.getFileName())))
+                    .as("and normalising the traversal does not make it one either")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a candidate anybody may write is not trusted, because it can be rewritten in place "
+                + "after the check that accepted it")
+        void aWritableCandidateIsNotTrusted(@TempDir final Path root) throws IOException {
+            final Path staged = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000004V00");
+            Files.writeString(staged, "records", StandardCharsets.US_ASCII);
+            try {
+                Files.setPosixFilePermissions(staged,
+                        PosixFilePermissions.fromString("rw-rw-rw-"));
+            } catch (final UnsupportedOperationException noPosixView) {
+                return;
+            }
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, staged)).isFalse();
+        }
+
+        @Test
+        @DisplayName("nothing inside a root anybody may write is trusted, because such a root is one "
+                + "anybody may plant in - so today's ownership says nothing about tomorrow's file")
+        void nothingInAWritableRootIsTrusted(@TempDir final Path root) throws IOException {
+            final Path staged = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000005V00");
+            Files.writeString(staged, "records", StandardCharsets.US_ASCII);
+            try {
+                Files.setPosixFilePermissions(root,
+                        PosixFilePermissions.fromString("rwxrwxrwx"));
+            } catch (final UnsupportedOperationException noPosixView) {
+                return;
+            }
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, staged)).isFalse();
+        }
+
+        @Test
+        @DisplayName("read and execute permission outside the owner is deliberately NOT refused, because "
+                + "a staging root an operator may read is a legitimate arrangement")
+        void readableButNotWritableIsStillTrusted(@TempDir final Path root) throws IOException {
+            final Path staged = root.resolve("AWS.M2.CARDDEMO.TRANSACT.DALY.G0000000006V00");
+            Files.writeString(staged, "records", StandardCharsets.US_ASCII);
+            try {
+                Files.setPosixFilePermissions(root,
+                        PosixFilePermissions.fromString("rwxr-xr-x"));
+                Files.setPosixFilePermissions(staged,
+                        PosixFilePermissions.fromString("rw-r--r--"));
+            } catch (final UnsupportedOperationException noPosixView) {
+                return;
+            }
+
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, staged))
+                    .as("refusing this would refuse the job's own output for a reason that has nothing "
+                            + "to do with whether the output is genuine")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("an absent path is not trusted, and neither argument may be absent")
+        void anAbsentPathIsNotTrustedAndNeitherArgumentMayBeNull(@TempDir final Path root) {
+            assertThat(SecureStagedFiles.isTrustedStagedArtifact(root, root.resolve("never-written")))
+                    .isFalse();
+            assertThatNullPointerException().isThrownBy(() ->
+                    SecureStagedFiles.isTrustedStagedArtifact(null, root.resolve("x")));
+            assertThatNullPointerException().isThrownBy(() ->
+                    SecureStagedFiles.isTrustedStagedArtifact(root, null));
+        }
+    }
 }

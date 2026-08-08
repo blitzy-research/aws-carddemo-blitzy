@@ -106,6 +106,7 @@ import com.carddemo.service.PostingRecordTransactionBoundary;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.service.TransactionReportService;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 /**
@@ -265,31 +266,24 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     // fails rather than cancelling out.
     // -----------------------------------------------------------------------------------------------
 
-    /** Declared record length of the report, fixed-length blocked. */
     private static final int REPORT_RECORD_WIDTH = 133;
 
-    /** Declared record length of both staged transaction generations, fixed-length blocked. */
     private static final int TRANSACTION_RECORD_WIDTH = 350;
 
-    /** The page bound the modulo test breaks a page on. */
     private static final int PAGE_BOUND = 20;
 
-    /** Significant width of the date-parameter group, in encoded bytes. */
     private static final int DATE_PARAMETER_SIGNIFICANT_WIDTH = 21;
 
-    /** Declared width of the record area the date-parameter group is carried inside. */
     private static final int DATE_PARAMETER_RECORD_AREA_WIDTH = 80;
 
     /** One-based position the sort specification gives the card-number key. */
     private static final int CARD_NUMBER_POSITION = 263;
 
-    /** Declared length of the card-number key. */
     private static final int CARD_NUMBER_WIDTH = 16;
 
     /** One-based position the sort specification gives the processing-date key. */
     private static final int PROCESSING_DATE_POSITION = 305;
 
-    /** Declared length of the processing-date key, and of every bound compared against it. */
     private static final int PROCESSING_DATE_WIDTH = 10;
 
     /** Records the four-record header block writes, and the counter advance it makes. */
@@ -319,13 +313,10 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** Inclusive upper bound the legacy sort symbols bake into the member. */
     private static final String LEGACY_WINDOW_END = "2022-07-06";
 
-    /** Legacy step name of the unload lifecycle, as the cataloged form names it. */
     private static final String LEGACY_UNLOAD_STEP = "STEP01R";
 
-    /** Legacy step name of the ordering lifecycle. */
     private static final String LEGACY_SORT_STEP = "STEP05R";
 
-    /** Legacy step name of the report lifecycle. */
     private static final String LEGACY_REPORT_STEP = "STEP10R";
 
     /** Legacy member name the abend diagnostic names as the culprit. */
@@ -340,16 +331,12 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** Suffix a resolved relative generation carries, which is what makes each execution's own visible. */
     private static final String GENERATION_VERSION_SUFFIX = "V00";
 
-    /** Timer the shared batch template records one program lifecycle on. */
     private static final String LIFECYCLE_TIMER = "carddemo.batch.cobol.step";
 
-    /** Tag that timer carries the legacy step name under. */
     private static final String TIMER_STEP_TAG = "step";
 
-    /** Tag that timer carries the lifecycle outcome under. */
     private static final String TIMER_OUTCOME_TAG = "outcome";
 
-    /** Outcome value a lifecycle that ran to its own end records. */
     private static final String TIMER_OUTCOME_COMPLETED = "COMPLETED";
 
     /** Description that timer carries, which is the shape a dashboard binds to. */
@@ -359,19 +346,14 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** The one raw two-byte status the three reference lookups report. */
     private static final String STATUS_RECORD_NOT_FOUND = "23";
 
-    /** Prefix the shared status diagnostic carries, emitted before any abend. */
     private static final String STATUS_DIAGNOSTIC_PREFIX = "FILE STATUS IS: NNNN";
 
-    /** Prefix the terminal abend diagnostic carries. */
     private static final String ABEND_DIAGNOSTIC_PREFIX = "ABENDING PROGRAM";
 
-    /** The source's own diagnostic for a card the cross-reference cannot resolve. */
     private static final String DIAGNOSTIC_INVALID_CARD = "INVALID CARD NUMBER";
 
-    /** The source's own diagnostic for a transaction type the reference table cannot resolve. */
     private static final String DIAGNOSTIC_INVALID_TYPE = "INVALID TRANSACTION TYPE";
 
-    /** The source's own diagnostic for a transaction category the reference table cannot resolve. */
     private static final String DIAGNOSTIC_INVALID_CATEGORY = "INVALID TRAN CATG KEY";
 
     // -----------------------------------------------------------------------------------------------
@@ -380,64 +362,45 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     // the formatter the job delegates to, which is precisely what keeps the oracle independent.
     // -----------------------------------------------------------------------------------------------
 
-    /** Width of the short-name field the name header opens with. */
     private static final int NAME_HEADER_SHORT_NAME_WIDTH = 38;
 
-    /** Width of the long-name field that follows it. */
     private static final int NAME_HEADER_LONG_NAME_WIDTH = 41;
 
-    /** Width of the date-range label. */
     private static final int NAME_HEADER_LABEL_WIDTH = 12;
 
-    /** Width of the literal separating the two bounds in the name header. */
     private static final int NAME_HEADER_TO_WIDTH = 4;
 
-    /** Width of the transaction identifier on a detail record. */
     private static final int DETAIL_IDENTIFIER_WIDTH = 16;
 
-    /** Width of the account identifier on a detail record. */
     private static final int DETAIL_ACCOUNT_WIDTH = 11;
 
-    /** Width of the type code on a detail record. */
     private static final int DETAIL_TYPE_CODE_WIDTH = 2;
 
-    /** Width of the type description on a detail record. */
     private static final int DETAIL_TYPE_DESCRIPTION_WIDTH = 15;
 
-    /** Width of the category code on a detail record. */
     private static final int DETAIL_CATEGORY_CODE_WIDTH = 4;
 
-    /** Width of the category description on a detail record. */
     private static final int DETAIL_CATEGORY_DESCRIPTION_WIDTH = 29;
 
-    /** Width of the source on a detail record. */
     private static final int DETAIL_SOURCE_WIDTH = 10;
 
-    /** Width of the blank run between the source and the amount on a detail record. */
     private static final int DETAIL_PRE_AMOUNT_BLANKS = 4;
 
-    /** Width of the blank run after the amount on a detail record. */
     private static final int DETAIL_POST_AMOUNT_BLANKS = 2;
 
     /** Width of every rendered amount, on a detail record and on all three totals alike. */
     private static final int AMOUNT_FIELD_WIDTH = 15;
 
-    /** Integer digits the amount mask carries. */
     private static final int AMOUNT_INTEGER_DIGITS = 9;
 
-    /** Fraction digits the amount mask carries. */
     private static final int AMOUNT_FRACTION_DIGITS = 2;
 
-    /** Position of the sign in the amount mask. */
     private static final int AMOUNT_SIGN_POSITION = 0;
 
-    /** Position of the first group separator in the amount mask. */
     private static final int AMOUNT_FIRST_SEPARATOR_POSITION = 4;
 
-    /** Position of the second group separator in the amount mask. */
     private static final int AMOUNT_SECOND_SEPARATOR_POSITION = 8;
 
-    /** Position of the decimal point in the amount mask. */
     private static final int AMOUNT_POINT_POSITION = 12;
 
     /** Highest integer-digit index still followed by the first group separator. */
@@ -455,43 +418,30 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** Zero at the scale every amount in this specification carries. */
     private static final BigDecimal ZERO_AMOUNT = new BigDecimal("0.00");
 
-    /** Width of the label a page total opens with. */
     private static final int PAGE_TOTAL_LABEL_WIDTH = 11;
 
-    /** Width of the dot fill a page total carries. */
     private static final int PAGE_TOTAL_DOT_WIDTH = 86;
 
-    /** Width of the label an account total opens with. */
     private static final int ACCOUNT_TOTAL_LABEL_WIDTH = 13;
 
-    /** Width of the dot fill an account total carries. */
     private static final int ACCOUNT_TOTAL_DOT_WIDTH = 84;
 
-    /** Width of the label a grand total opens with. */
     private static final int GRAND_TOTAL_LABEL_WIDTH = 11;
 
-    /** Width of the dot fill a grand total carries. */
     private static final int GRAND_TOTAL_DOT_WIDTH = 86;
 
-    /** Text the name header's short-name field carries. */
     private static final String NAME_HEADER_SHORT_NAME = "DALYREPT";
 
-    /** Text the name header's long-name field carries. */
     private static final String NAME_HEADER_LONG_NAME = "Daily Transaction Report";
 
-    /** Text of the date-range label. */
     private static final String NAME_HEADER_LABEL = "Date Range: ";
 
-    /** Literal separating the two bounds in the name header. */
     private static final String NAME_HEADER_TO = " to ";
 
-    /** Label a page total opens with. */
     private static final String PAGE_TOTAL_LABEL = "Page Total";
 
-    /** Label an account total opens with. */
     private static final String ACCOUNT_TOTAL_LABEL = "Account Total";
 
-    /** Label a grand total opens with. */
     private static final String GRAND_TOTAL_LABEL = "Grand Total";
 
     /** Column-header texts, in the order the header record places them. */
@@ -504,7 +454,6 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** The amount column heading, whose eight leading spaces right-align it with the amount field. */
     private static final String COLUMN_HEADER_AMOUNT = "        Amount";
 
-    /** Width of the amount column heading's field. */
     private static final int COLUMN_HEADER_AMOUNT_WIDTH = 16;
 
     /**
@@ -525,10 +474,8 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** A seeded card, and the lower of the two ordinary card numbers used here. */
     private static final String FIRST_CARD = "0500024453765740";
 
-    /** The account the reference seed cross-references that card to. */
     private static final String FIRST_ACCOUNT = "00000000050";
 
-    /** The customer the same cross-reference row names. */
     private static final String FIRST_CUSTOMER = "000000050";
 
     /** A second seeded card, whose number sorts above the first under either typing. */
@@ -546,19 +493,14 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** A card image whose cross-reference row is deliberately absent, so its lookup abends. */
     private static final String UNREFERENCED_CARD = "0500024453765742";
 
-    /** The account the reference seed cross-references the second card to. */
     private static final String SECOND_ACCOUNT = "00000000027";
 
-    /** A transaction type the reference seed discloses, with the description it carries. */
     private static final String TYPE_CODE = "01";
 
-    /** Description the seeded type carries. */
     private static final String TYPE_DESCRIPTION = "Purchase";
 
-    /** A category the seeded type discloses, with the description it carries. */
     private static final String CATEGORY_CODE = "0001";
 
-    /** Description the seeded category carries. */
     private static final String CATEGORY_DESCRIPTION = "Regular Sales Draft";
 
     /** The source every fixture record carries, at its declared ten-byte width. */
@@ -570,19 +512,16 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** Verification code carried by a fixture card row; not a credential of the migrated system. */
     private static final String FIXTURE_CARD_VERIFICATION_CODE = "000";
 
-    /** Embossed name carried by a fixture card row. */
     private static final String FIXTURE_EMBOSSED_NAME = "Report Fixture";
 
     /** Expiration date carried by a fixture card row, comfortably after the pinned instant. */
     private static final String FIXTURE_CARD_EXPIRATION = "2023-03-09";
 
-    /** Active-status flag carried by a fixture card row. */
     private static final String FIXTURE_ACTIVE_STATUS = "Y";
 
     /** A processing date comfortably inside the pinned window, on neither bound. */
     private static final LocalDate INSIDE_WINDOW = LocalDate.parse("2022-06-15");
 
-    /** Amount every record of the plain pagination fixture carries. */
     private static final BigDecimal PLAIN_AMOUNT = new BigDecimal("10.00");
 
     /** Records the plain pagination fixture presents, spanning one full page and one partial one. */
@@ -591,13 +530,10 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     /** Records the posting setup stages, which is the whole of the posted master it produces. */
     private static final int POSTED_SETUP_RECORDS = 3;
 
-    /** Amount every record on the first card of the two-card fixtures carries. */
     private static final BigDecimal FIRST_CARD_AMOUNT = new BigDecimal("11.00");
 
-    /** Amount every record on the second card of the two-card fixtures carries. */
     private static final BigDecimal SECOND_CARD_AMOUNT = new BigDecimal("7.00");
 
-    /** Records on the second card of both two-card fixtures. */
     private static final int SECOND_CARD_RECORDS = 3;
 
     /**
@@ -732,15 +668,11 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
      */
     private ListAppender<ILoggingEvent> abendRecorder;
 
-    /** The level the abend tier's logger carried before this class raised it, restored afterwards. */
     private Level originalAbendLevel;
 
-    /** The level the report stage's logger carried before this class raised it, restored afterwards. */
     private Level originalReportLevel;
 
-    /** Creates the test class. */
     TransactionReportJobConfigIT() {
-        // Intentionally empty: every fixture is installed per test method.
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -2242,21 +2174,25 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
             orderedCardNumbers.add(cardNumberOf(image));
         }
 
-        assertThat(orderedCardNumbers)
+        // Compared as fingerprints: containsExactly renders every element of both lists when it fails,
+        // and every element here is a card number. The ORDER is what this assertion is about, and an
+        // ordered comparison of one-to-one fingerprints proves order exactly as well.
+        assertThat(SensitiveValues.fingerprints(orderedCardNumbers))
                 .as("the final byte of a zoned field carries both a digit and a sign, so the negatively "
                         + "overpunched image is the smallest of the three as a NUMBER while being the "
                         + "largest of the three as CHARACTERS")
-                .containsExactly(negativelyOverpunched, FIRST_CARD, positivelyOverpunched);
+                .containsExactly(SensitiveValues.fingerprint(negativelyOverpunched), SensitiveValues.fingerprint(FIRST_CARD),
+                        SensitiveValues.fingerprint(positivelyOverpunched));
 
         final List<String> characterOrder = new ArrayList<>(orderedCardNumbers);
         characterOrder.sort(null);
-        assertThat(orderedCardNumbers)
+        assertThat(SensitiveValues.fingerprints(orderedCardNumbers))
                 .as("THE COMPARATOR MUST STAY PRIVATE TO THIS JOB. Byte position %d is typed zoned "
                         + "decimal by this job's specification and CHARACTER by the statement job's, so "
                         + "one shared comparator would apply one job's typing to the other job's data. "
                         + "Were the two orders the same the assertion above would be vacuous and a "
                         + "shared comparator would pass unnoticed.", Integer.valueOf(CARD_NUMBER_POSITION))
-                .isNotEqualTo(characterOrder);
+                .isNotEqualTo(SensitiveValues.fingerprints(characterOrder));
 
         final List<String> unloadOrder = new ArrayList<>();
         for (final Transaction record
@@ -2580,9 +2516,7 @@ final class TransactionReportJobConfigIT extends AbstractPostgresIT {
     @EntityScan(basePackageClasses = Transaction.class)
     static class JobContext {
 
-        /** Creates the configuration. */
         JobContext() {
-            // Intentionally empty: every bean this slice adds is declared below.
         }
 
         /**

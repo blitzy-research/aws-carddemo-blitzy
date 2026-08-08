@@ -68,7 +68,6 @@ import org.springdoc.core.configuration.SpringDocConfiguration;
 import org.springdoc.core.properties.SpringDocConfigProperties;
 import org.springdoc.webmvc.core.configuration.SpringDocWebMvcConfiguration;
 import org.springframework.batch.core.explore.JobExplorer;
-import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -211,9 +210,6 @@ class OpenApiRouteContractTest {
 
     @MockitoBean
     private JobRegistry jobRegistry;
-
-    @MockitoBean
-    private JobOperator jobOperator;
 
     @MockitoBean
     private JobExplorer jobExplorer;

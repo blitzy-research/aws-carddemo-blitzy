@@ -434,7 +434,9 @@ public record PageMetadata(
      *
      * <p>Both keys are opaque. Neither is parsed, compared, ordered, truncated, padded or re-cased, and
      * neither is derived from the other; each is bounded only at the widest key the three browses use,
-     * which is the twenty-seven characters {@link PageMetadata#CURSOR_KEY_MAX_LENGTH} records. A bound
+     * which is the <strong>sixteen</strong> characters {@link PageMetadata#CURSOR_KEY_MAX_LENGTH} records -
+     * the card number, not the twenty-seven-character work field the card-list program declares but never
+     * moves whole into a browse key. {@link PageMetadata#CURSOR_KEY_MAX_LENGTH} states why in full. A bound
      * measures and never alters, so a space-padded key survives byte for byte.</p>
      *
      * @param previousCursorKey the record key at which a backward browse resumes, echoed from the

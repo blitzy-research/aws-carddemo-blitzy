@@ -4,10 +4,17 @@ This page is the structural reference for the Java module that reproduces the AW
 estate. It describes the layers and their permitted dependency directions, the responsibility of every
 package, the eleven-entity data model, the batch pipeline and its ordering, the applied design patterns,
 and the observability and security posture. It is the vocabulary the other migration pages build on:
-[onboarding-guide.md](onboarding-guide.md) assumes it, [gate-evidence.md](gate-evidence.md) evidences the
-instrumentation it describes, [decision-log.md](decision-log.md) carries the reasoning behind every
-divergence it names, and [traceability-matrix.md](traceability-matrix.md) maps each legacy paragraph to
-the classes it inventories.
+[gate-evidence.md](gate-evidence.md) evidences the instrumentation it describes,
+[decision-log.md](decision-log.md) carries the reasoning behind every divergence it names, and
+[traceability-matrix.md](traceability-matrix.md) maps each legacy paragraph to the classes it inventories.
+An onboarding guide is a planned sibling page that **has not been delivered**; it is named here without a
+link, because a link to a page that does not exist reads as evidence and supplies none. Until it lands,
+the module's own `carddemo-java/README.md` carries the first-run walkthrough.
+
+Of the pages named above, this one and `traceability-matrix.md` are **not yet registered in the
+documentation site's navigation**; `mkdocs.yml` lists the decision log and the gate evidence. They are
+reachable in the repository and by direct path, and registering them is outstanding work rather than a
+property of this page.
 
 Where a claim here is a count or a width, it was measured against the analysed checkout rather than
 quoted. Where the mechanism in the code differs from what the plan anticipated, this page describes the
@@ -62,6 +69,12 @@ appear here freely; source lines do not appear at all.
 
 ### The estate being reproduced
 
+**The inventory this migration was scoped against is 169 substantive repository files**, of which **145
+are the legacy estate under `app/`** — the artifacts the module actually reproduces — and 24 are the
+diagrams, emulator samples, documentation pages and root metadata that sit beside it. Both figures are
+stated because both are load-bearing and they answer different questions: 169 is the scope the migration
+was assessed over, 145 is the subtotal that has a Java counterpart.
+
 | Legacy artifact | Count | Notes |
 | :-------------- | ----: | :---- |
 | COBOL programs | 28 | 19,254 source lines — 17 CICS online transactions, 10 batch programs, 1 shared date-validation subprogram |
@@ -74,13 +87,13 @@ appear here freely; source lines do not appear at all.
 | Utility control cards | 1 | the copy-utility control statements |
 | Catalog listing | 1 | dataset attributes, consulted for key offsets and record sizes |
 | Sample datasets | 21 | 9 ASCII fixtures + 12 EBCDIC sequential datasets |
-| **Legacy estate under `app/`** | **145** | the sum of every row above |
+| **Substantive `app/` subtotal** | **145** | the sum of every row above: the artifacts with a Java counterpart |
+| Other substantive repository files | 24 | 6 diagrams, 8 emulator samples, 3 documentation pages, 7 root metadata and licence files |
+| **Substantive files in the analysed checkout** | **169** | the scope inventory this migration was assessed over |
 | **Traceable paragraph units** | **544** | 528 program paragraphs + 16 procedural-copybook paragraphs — 14 in `CSUTLDPY`, 2 in `CSSTRPFY` |
 
-The estate sits inside a larger checkout. At the analysed commit the repository tracked 172 files, three
-of which are empty directory placeholders, giving **169 substantive files**: the 145 estate artifacts
-above plus 24 others — 6 diagrams, 8 emulator samples, 3 documentation pages and 7 root metadata and
-licence files. Both totals are measurable rather than asserted:
+At the analysed commit the repository tracked 172 files, three of which are empty directory placeholders,
+which is how 172 becomes the 169 above. Both totals are measurable rather than asserted:
 
 ```bash
 git ls-tree -r --name-only 7756d895ffeb65f7ea72aaa609e356d9899afcec | grep -vc gitkeep       # 169
@@ -219,11 +232,30 @@ are of the source files actually present in the module.
 | `domain.id` | 3 | The three composite primary keys | the three multi-field cluster keys |
 | `domain.enums` | 9 | Typed state: account and card status, user type, transaction source, key action, file status, reject reason, date format, report period | the 508 level-88 condition names |
 | `repository` | 18 | 11 entity-facing Spring Data interfaces, plus 4 batch scan projections and the insert and write seams | the 10 VSAM base clusters plus the daily-transaction sequential input |
-| `service` | 71 | 26 service classes carrying the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, plus their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
+| `service` | 71 | 36 concrete `*Service.java` classes — the 26 translation-bearing services that carry the 528 program paragraphs and 16 procedural-copybook paragraphs as named methods, one per program or program family, plus 10 focused support services — and 35 further files holding their command, outcome and turn-result types | the 28 programs and 2 procedural copybooks |
 | `batch` | 15 | 9 job configurations, the shared parameter contract, the launch coordinator, staging and completion notification | the 9 application job steps |
 | `batch.step` | 11 | The step template, the item processors, the reject writer, the reader factory and the publication locks | the batch programs' read-process-write skeletons |
 | `util` | 35 | 12 fixed-width record mappers, the zoned-decimal codec, the field reader, the COBOL string primitives, the key translator, the job-card builder, the statement and report formatters | the record layouts, the string verbs, the function-key copybook |
 | `exception` | 6 | Abend, file status, record-not-found, validation, optimistic-lock conflict, job submission | the abend paths and the file-status error branches |
+
+The `service` row is the one whose two figures are easiest to confuse, so both are stated and both are
+countable. The **26** translation-bearing services are the ones a paragraph maps to, and every row of
+[`traceability-matrix.md`](traceability-matrix.md) that names a service names one of them. The other
+**10** carry no COBOL paragraph and exist because a translated service needed a collaborator it should
+not itself be: `AccountConcurrencyTokenService` and `CardConcurrencyTokenService`,
+`FieldErrorTranslationService`,
+`SignOnStateService`, `UserListPageTokenService`, `CredentialDigestService`,
+`SensitiveFieldEncryptionService`, `BatchJobLaunchService`, `BatchStagingService` and
+`JobCompletionNotificationService`. The first two are described under
+[Optimistic locking](#optimistic-locking-in-two-mechanisms-because-the-legacy-check-spans-two-windows).
+26 + 10 = 36, which is every concrete `*Service.java` in the
+package; the balance of the 71 files are the service-owned records, enums and interfaces those classes
+exchange, and they are not services. Counted directly:
+
+```bash
+ls carddemo-java/src/main/java/com/carddemo/service/*Service.java | wc -l   # 36
+ls carddemo-java/src/main/java/com/carddemo/service/*.java         | wc -l   # 71
+```
 
 ### `config`
 
@@ -301,17 +333,22 @@ enum would erase the end-of-file-versus-error distinction that every batch read 
 reader that cannot tell "the file ended" from "the read failed" is not a faithful translation.
 
 The literal vocabulary actually compared in status-test context across the estate is narrow, which is why
-the raw enum is small and honest: `'00'` **73** times, `'10'` **7** times, and `'23'` **exactly once** —
-the disclosure-group default-group fallback. Codes that appear in prior documentation but are compared
-nowhere in the source may exist as documented values, but no code path depends on them; the discrepancy is
-recorded in [decision-log.md](decision-log.md).
+the raw enum is small and honest: `'00'` **73** times, `'10'` **7** times, and `'23'` on **three
+status-test lines** carrying **one branching decision**. The three lines are `CBTRN02C` line 481 and
+`CBACT04C` lines 422 and 436; two of them admit `'23'` alongside `'00'` as a not-an-error outcome, and only
+`CBACT04C` line 436 branches on `'23'` alone — the disclosure-group default-group fallback. The
+specification's "exactly once" counted that decision rather than the occurrences, and the corrected
+distribution is recorded as entry DL-255 in [decision-log.md](decision-log.md). Codes that appear in prior
+documentation but are compared nowhere in the source may exist as documented values, but no code path
+depends on them; that discrepancy is recorded in the same place.
 
 ## The batch tier
 
 ### Nine job classes, not one per step — the finding that shapes the tier
 
-Of the **78** program-execution steps across the 29 JCL members and 2 cataloged procedures, **only nine
-invoke an application COBOL program**. The remaining **69** invoke system utilities:
+Of the **79** program-execution steps across the 29 JCL members and 2 cataloged procedures — 76 in the job
+members and 3 in the procedures — **only nine invoke an application COBOL program**. The remaining **70**
+invoke system utilities:
 
 | Utility | Steps | What those steps do |
 | :------ | ----: | :------------------ |
@@ -326,16 +363,15 @@ invoke an application COBOL program**. The remaining **69** invoke system utilit
 the Flyway migrations, dataset staging by the container service definitions and the object store, spool
 inspection by the job repository and the metrics surface, and copy operations by ordinary read-and-write
 steps inside the job that needs them. That absorption is the entire reason the batch tier has **nine job
-configuration classes rather than seventy-eight step classes**.
+configuration classes rather than seventy-nine step classes**.
 
-A direct count at this checkout returns 79 program-execution steps rather than 78 — 76 in the JCL members
-and 3 in the procedures — of which 9 are application programs and 70 are utilities, and the utility
-breakdown tabled above is itself the 70. The specification's 78-and-69 framing is therefore internally
-inconsistent by a single step. This page uses the specification's framing for consistency with the module
-README, and the measured 79-9-70 figures and the one-step discrepancy are recorded as a documented
-specification defect in [decision-log.md](decision-log.md). The load-bearing claim — nine job
-configuration classes rather than one per step — is true under either count, because the count of
-application steps is 9 in both.
+The figures above are a direct count at this checkout, and the utility breakdown tabled above is itself the
+70: 52 + 8 + 5 + 3 + 1 + 1. **The prior specification framed the same census as 78 steps with a utility
+remainder of 69**, which disagrees with its own arithmetic by one step independently of any measurement.
+That framing is historical and is superseded here; it is recorded as a documented specification defect,
+entry DL-251, in [decision-log.md](decision-log.md), and the module's own README publishes the same
+79-9-70 figures this page does. The load-bearing claim — nine job configuration classes rather than one
+per step — holds under either count, because the count of application steps is 9 in both.
 
 ### There is no master orchestrator, and the pipeline order is an operational convention
 
@@ -390,21 +426,34 @@ diagram is documentation of intent, not a dependency the code enforces.**
 | `BackupTransactionJobConfig` | `backupTransactionJob` | `app/jcl/TRANBKP.jcl` — one condition-code gated step |
 | `CategoryBalanceReportJobConfig` | `categoryBalanceReportJob` | `app/jcl/PRTCATBL.jcl` — category-balance listing |
 | `FileProbeJobConfig` | `fileProbeJob` | `READACCT`, `READCARD`, `READCUST` and `READXREF` collapsed into one parameterized job |
-| `DailyTransactionReadJobConfig` | `dailyTransactionReadJob` | `app/cbl/CBTRN01C.cbl` — **defined but not wired**; see below |
+| `DailyTransactionReadJobConfig` | `dailyTransactionReadJob` | `app/cbl/CBTRN01C.cbl` — the one job with **no legacy driver**: registered and launchable like the rest, with no place in the conventional order; see below |
 
-`JobParameterValidators` is the tenth entry in that inventory — not a job, but the shared parameter
-contract across all nine, deriving its validation from the in-stream date-parameter conventions the
-reporting procedure and the statement job declare. Of the nine job configurations, **eight are wired into
-the pipeline and one is not**; the exception is the subject of the next section.
+`JobParameterValidators` is the tenth entry in that inventory and is **not a tenth job** — it is not a job
+at all. It is the shared parameter contract across all nine, deriving its validation from the in-stream
+date-parameter conventions the reporting procedure and the statement job declare. The total is **nine job
+configurations**, and it stays nine wherever this page counts them. Of those nine, **eight have a legacy job
+stream as their antecedent and one has none**; the exception is the subject of the next section.
 
-### The tenth job is deliberately unwired
+**All nine are registered and independently launchable, and none of them is a member of a coded
+sequence.** `BatchJobCatalog` names all nine job beans and `BatchJobController` launches any of them, so
+"wired" here can only mean one thing: **eight of the nine have a legacy job stream as their antecedent and
+one has none.** There is no pipeline object to be inside or outside of — see the section above — so no job
+carries sequence membership, and the ordering an operator follows is convention rather than code.
 
-`DailyTransactionReadJobConfig` is a fully defined Spring Batch job that is **excluded from the default
-pipeline and exercised only by tests**. Its program, `CBTRN01C`, is a complete **491-line, 18-paragraph**
-batch program that **no JCL member, no cataloged procedure and no CICS definition invokes**. It is
-migrated deliberately, not accidentally: leaving it out would make the estate coverage incomplete, and
-wiring it in would invent a pipeline stage the mainframe never ran. Defined-but-unwired means unwired, not
-untranslated — and its absence from the pipeline is a faithful reproduction of the legacy wiring.
+### The ninth job is the one with no legacy driver
+
+`DailyTransactionReadJobConfig` is a fully defined Spring Batch job whose program, `CBTRN01C`, is a
+complete **491-line, 18-paragraph** batch program that **no JCL member, no cataloged procedure and no CICS
+definition invokes**. It is migrated deliberately, not accidentally: leaving it out would make the estate
+coverage incomplete, and inventing a scheduled position for it would invent a pipeline stage the mainframe
+never ran.
+
+Two things follow, and they are easy to conflate. It is **registered and launchable exactly like the other
+eight** — it appears in the catalogue, it can be launched over the job surface, and the end-to-end suite
+does launch it, because nothing in the estate would have. What it does **not** have is a place in the
+conventional daily order, since there is no legacy stream to take that place from. "Exercised only by
+tests" would understate it: the delivered module makes it available to an operator, and only its
+*position* is absent.
 
 ### Condition-code gates
 
@@ -418,17 +467,26 @@ step-level condition code:
 | `app/jcl/CREASTMT.JCL` | `STEP040` | `COND=(0,NE)` | run only if every prior step returned zero |
 | `app/jcl/TRANBKP.jcl` | `STEP10` | `COND=(4,LT)` | run unless a prior step returned more than 4 |
 
-Both forms become step transitions that end the job on failure. The distinction between them is preserved
-rather than flattened: the statement job's three gates demand a clean zero from everything before them,
-while the backup job's single gate tolerates a warning-level return and bypasses only on a genuine error.
-Two further condition tokens appear in the estate — in the reporting job and its procedure — but those are
-sort record-selection conditions that filter which records enter the sort, not step gates, and they become
-a repository date-range predicate rather than a job transition.
+**All four become the same delivered gate, and that is a recorded divergence rather than a flattening.**
+The module carries exactly one condition-code decider, `BatchConfig.ConditionCodeGate.ALL_PRIOR_STEPS_ZERO`,
+which admits a guarded step only when the highest code any earlier step produced is exactly zero, and all
+four gates route through it. The fourth member's literal is the divergent one: `COND=(4,LT)` would tolerate
+a warning-level return, and the delivered gate does not. The migration plan freezes the strict form for all
+four, so **the literal is recorded rather than implemented** — entry DL-145 in
+[decision-log.md](decision-log.md) — and no second, looser ceiling exists in the code. Introducing one
+would run a guarded step the plan holds to zero, which is a behavioural change no test written afterwards
+could detect.
+
+The two jobs differ in what a refusal *does*, and that distinction is real: the statement job's three gates
+**propagate** the failure, so the job ends `FAILED`, while the backup job's single gate ends its flow. Two
+further condition tokens appear in the estate — in the reporting job and its procedure — but those are
+sort record-selection conditions that filter which records enter the sort, not step gates, and they become a
+repository date-range predicate rather than a job transition.
 
 ### Ordering is external, and the comparators are per-job
 
 The estate contains **zero** internal COBOL sort statements and **zero** merge statements. All ordering is
-external, in three distinct specifications, which is why the comparators are **per-job rather than
+external, in **four** distinct specifications, which is why the comparators are **per-job rather than
 shared**:
 
 - The combine job orders two concatenated inputs by transaction identifier, ascending, then writes them as
@@ -438,9 +496,69 @@ shared**:
   bytes, and applies an inclusive date-range record-selection condition.
 - The statement job sorts on the card number **typed as character**, then on the record's leading key, and
   reprojects the result.
+- The category-balance report job sorts on **three** keys — the account identifier at offset 1 for 11 bytes
+  as zoned decimal, the type code at offset 12 for 2 bytes as character, and the category code at offset 14
+  for 4 bytes as zoned decimal — all ascending, in record order. The listing declares a **fourth** sort
+  symbol it does not order on, the balance at offset 18 for 11 bytes as zoned decimal, and reprojects each
+  record through an edit mask that renders that balance with an inserted decimal point and pads the result
+  to a fixed **40-byte** line. It is a full sort-and-reprojection step in its own right and not an unload:
+  the job's earlier step is the unload, and this one is what turns the unloaded dataset into the report.
+  This is the fourth specification, and an earlier revision of this page omitted it and counted three. It is
+  verified, at both its ordering and its width, by `batch/CategoryBalanceReportJobConfigIT`.
 
 The same field is typed zoned decimal in one job and character in another. A single shared comparator would
-have to pick one typing and would silently reorder the other job's output, so each job owns its own.
+have to pick one typing and would silently reorder the other job's output, so each job owns its own. The
+category-balance listing makes that point a second time inside one specification: three of its four
+symbols are typed zoned decimal and the fourth is typed character.
+
+**Four specifications and five sort steps are both correct.** The utility table above counts **five**
+external sort steps, and this section counts **four** specifications, because two of the five steps are the
+**same** specification: the reporting job member restates, symbol for symbol and condition for condition,
+the sort the reporting cataloged procedure already declares — rather than invoking the procedure that
+carries it. That restatement is also what leaves the job member with a duplicated step name, which is
+recorded among the source anomalies in [decision-log.md](decision-log.md). Four distinct orderings across
+five steps, and the duplication is documented rather than reproduced as two comparators.
+
+### The fifth contractual output width, and why it needs golden bytes
+
+Four fixed output widths are the ones usually named — the 430-byte reject record, the 80-byte statement
+line, the 100-byte HTML statement line and the 133-byte report line. The category-balance listing
+contributes a **fifth: 40 bytes, fixed and blocked**.
+
+Its geometry had to be resolved rather than transcribed, because the reprojection and the record length
+disagree. Summed as declared — an 11-byte account identifier, a blank, a 2-byte type code, a blank, a
+4-byte category code, a blank, a 12-character edited balance and nine trailing blanks — the reprojection
+describes **41** bytes against a declared record length of **40**. The module emits **32 content bytes
+followed by eight trailing blanks**, never nine and never forty-one, and `CategoryBalanceReportJobConfig`
+declares all three figures as named constants so the resolution is readable at the point of use rather
+than buried in an offset.
+
+Two further properties of that line are decided rather than obvious, and both are settled in
+[decision-log.md](decision-log.md) rather than restated here: the edit mask uses the digit selector that
+**always prints**, so a balance of exactly zero renders as nine zeros, a point and two zeros rather than
+blanking the field; and every balance in the shipped sample data is exactly zero, which means aggregate
+figures, record counts, key ordering and record widths were all correct under the wrong reading and only a
+byte comparison could tell the difference. That is precisely why this width needs **golden bytes** and not
+a width assertion, and why its integration test asserts the twelve mask characters for a large balance, a
+zero balance and a sub-unit balance, and additionally that no line carries a blank anywhere inside the
+mask.
+
+### Five output widths are contractual
+
+Every externally observable record the module emits is fixed width, and the width is part of the contract
+rather than a formatting choice:
+
+| Width | Record | Emitted by |
+| ----: | :----- | :--------- |
+| **40** | category-balance report line | the category-balance listing job |
+| **80** | statement text record | the statement generator |
+| **100** | statement HTML record | the statement generator |
+| **133** | transaction report line, fixed-length blocked | the transaction report job |
+| **430** | daily-transaction reject record — the 350-byte source image, a 4-digit reason code, then a 76-character description | the posting job's reject writer |
+
+Four of the five are compared against committed golden files byte for byte; the 40-byte line is asserted at
+its emitting job. Which evidence stands behind each is recorded in [gate-evidence.md](gate-evidence.md) and
+in the module's README rather than here.
 
 ### The statement generator is a state machine, not a loop
 
@@ -469,9 +587,13 @@ update. The reasoning is recorded in [decision-log.md](decision-log.md).
 
 ## The data model
 
-Eleven entities reproduce eleven verified record layouts. Every width below was corroborated twice: once
-from the copybook that declares the layout, and once from the `RECORDSIZE` clause of the cluster definition
-that allocates it.
+Eleven entities reproduce eleven verified record layouts. Every width below was corroborated twice. Ten
+were corroborated from the copybook that declares the layout and from the `RECORDSIZE` clause of the cluster
+definition that allocates it. **`DailyTransaction` is the exception, and deliberately so: it is a sequential
+dataset and no cluster defines it** — there is no `DEFINE CLUSTER` for it anywhere in the estate. Its second
+corroboration is therefore the file description of the programs that read it together with the record length
+declared on the job's own data-definition statement, which is the right authority for a sequential input and
+the only one that exists.
 
 | Entity | Legacy copybook | Record width | Notes |
 | :----- | :-------------- | -----------: | :---- |
@@ -480,7 +602,7 @@ that allocates it.
 | `Customer` | `CVCUS01Y` | 500 | national identifier encrypted at rest |
 | `CardCrossReference` | `CVACT03Y` | 50 | 36 data bytes plus a 14-byte filler |
 | `Transaction` | `CVTRA05Y` | 350 | origin timestamp at offset 278, processing timestamp at offset 304 |
-| `DailyTransaction` | `CVTRA06Y` | 350 | byte-identical to `Transaction`, different field prefix |
+| `DailyTransaction` | `CVTRA06Y` | 350 | byte-identical to `Transaction`, different field prefix; sequential, so no cluster corroborates it |
 | `TransactionCategoryBalance` | `CVTRA01Y` | 50 | composite key |
 | `DisclosureGroup` | `CVTRA02Y` | 50 | composite key; carries the interest rate |
 | `TransactionType` | `CVTRA03Y` | 60 | reference data |
@@ -491,21 +613,45 @@ A twelfth type in the `domain` package is **not** an entity: it holds the shape 
 every stored amount must satisfy before reaching the database, so that the invariants live beside the
 entities they constrain rather than inside a service.
 
+**The diagram below draws exactly the six foreign keys `V2__create_indexes.sql` creates, and nothing else.**
+Solid lines are enforced constraints; dashed lines are lookups the code performs at run time under **no**
+constraint, and the migration records each of those refusals explicitly rather than leaving them
+unexplained. Drawing a run-time lookup as a constraint would misstate the schema in the direction that
+matters most — it would imply the database rejects a row the delivered schema accepts.
+
 ```mermaid
 erDiagram
-    CUSTOMER ||--o{ CARD_CROSS_REFERENCE : "identified by"
-    ACCOUNT ||--o{ CARD_CROSS_REFERENCE : "resolved through"
-    ACCOUNT ||--o{ CARD : "carries"
-    CARD ||--o{ TRANSACTION : "originates"
-    CARD ||--o{ DAILY_TRANSACTION : "originates"
-    ACCOUNT ||--o{ TRANSACTION_CATEGORY_BALANCE : "accrues"
-    DISCLOSURE_GROUP ||--o{ TRANSACTION_CATEGORY_BALANCE : "rates"
-    TRANSACTION_TYPE ||--o{ TRANSACTION : "classifies"
-    TRANSACTION_CATEGORY ||--o{ TRANSACTION : "categorises"
+    CUSTOMER ||--o{ CARD_CROSS_REFERENCE : "FK identified by"
+    ACCOUNT ||--o{ CARD_CROSS_REFERENCE : "FK resolved through"
+    CARD ||--o{ CARD_CROSS_REFERENCE : "FK describes"
+    ACCOUNT ||--o{ CARD : "FK carries"
+    CARD ||--o{ TRANSACTION : "FK originates"
+    ACCOUNT ||--o{ TRANSACTION_CATEGORY_BALANCE : "FK accrues"
+    CARD ||..o{ DAILY_TRANSACTION : "runtime only, no FK"
+    DISCLOSURE_GROUP ||..o{ TRANSACTION_CATEGORY_BALANCE : "runtime rate lookup, no FK"
+    TRANSACTION_TYPE ||..o{ TRANSACTION : "runtime description lookup, no FK"
+    TRANSACTION_CATEGORY ||..o{ TRANSACTION : "runtime description lookup, no FK"
     USER_SECURITY {
         string user_id PK
     }
 ```
+
+Why each dashed edge is dashed, taken from the migration's own recorded decisions:
+
+- **`daily_transaction` has zero foreign keys and must keep zero.** It is the raw, unvalidated landing
+  surface for the sequential daily input. The posting job's whole purpose is to decide which rows are
+  acceptable, and it deliberately accepts a row whose lookup fails and turns it into a reject record — so a
+  constraint here would refuse at load time the very rows the reject path exists to report.
+- **`account.acct_group_id` cannot reference `disclosure_group`.** That table's primary key is a
+  three-column composite, and the group identifier alone is not unique in it — it recurs once per
+  type-and-category combination, seventeen times per group. There is no single-column parent to point at.
+- **No reference-data constraint exists at all.** Nothing links `transaction`, `daily_transaction` or
+  `transaction_category_balance` to `transaction_type` or `transaction_category`. Those codes are validated,
+  where at all, by program logic, and the reference tables supply a description rather than gate an insert.
+
+The `transaction` table's card number is constrained because it is the **validated master**: a row reaches
+it only after the posting job has resolved that card through the cross-reference, so the constraint makes a
+guarantee that is already procedural structural instead.
 
 ### Composite keys, and why every key is a business key
 
@@ -545,11 +691,22 @@ distinct dataset with a distinct lifecycle: it is the input the posting job cons
 while the transaction master is the durable record the posting job appends to. Folding them together would
 merge two lifecycles into one table and destroy the reject path's meaning.
 
-### Optimistic locking
+### Optimistic locking, in two mechanisms because the legacy check spans two windows
 
-`@Version` on `Account` and `Card` replaces the legacy before-and-after image comparison, in which a
-program re-read a record and compared it field by field to detect a concurrent change. The estate's
-**single** rollback statement becomes a transactional rollback raising `OptimisticLockConflictException`.
+The legacy before-and-after image comparison covered a longer interval than a single transaction: a program
+captured a record's image when it *presented* the screen, and compared it again when the operator *confirmed*
+the change, so a concurrent update between those two turns was detected. Reproducing that needs both of the
+mechanisms below, and describing either one as the whole replacement would leave a window unguarded:
+
+| Mechanism | Window it protects |
+| :-------- | :----------------- |
+| `@Version` on `Account` and `Card` | the **in-transaction** interval: between this transaction's read and its write, which is where the database can serialise for us |
+| `AccountConcurrencyTokenService` and `CardConcurrencyTokenService` | the **screen-to-confirm** interval: between the turn that presented the record and the later turn that confirms the change, which no single transaction spans |
+
+The token services mint a value from the record's own state when a screen is presented and re-check it when
+the change is submitted, which is the direct analogue of the image comparison; `@Version` then guards the
+write itself. The estate's **single** rollback statement becomes a transactional rollback raising
+`OptimisticLockConflictException`, and either mechanism can raise it.
 
 ### What the data-model diagram deliberately omits
 
@@ -642,7 +799,7 @@ Each pattern below is named for the legacy construct it replaces, not for its ow
 | Pattern | Realized by | Legacy construct replaced |
 | :------ | :---------- | :------------------------ |
 | Repository | 11 Spring Data interfaces | 10 VSAM base clusters plus the daily-transaction sequential input; the browse triad becomes `Pageable` with direction preserved |
-| Service Layer | 26 service classes | 528 program paragraphs plus 16 procedural-copybook paragraphs, each a named method |
+| Service Layer | 26 translation-bearing services, of 36 `*Service.java` in all | 528 program paragraphs plus 16 procedural-copybook paragraphs, each a named method |
 | Template Method | `AbstractCobolStep` | the open, read-loop, status-check, close and abend skeleton shared by all ten batch programs |
 | Strategy | `switch` over `domain.enums` | 111 multi-way selections, with clause order preserved |
 | Adapter | `JobSubmissionService` | the single transient-data-queue write — the estate's only online-to-batch bridge |
@@ -694,10 +851,22 @@ than merely holding it in storage. A consumer that never receives it would see a
 ### Field-error decoration — the largest single de-duplication
 
 A parameterized macro copybook is expanded **39** times in the account-update program, once per validated
-field, generating roughly 234 lines. All 39 expansions collapse into a single method,
-`FieldErrorDecorator.mark(field, bmsFieldId, flagState)`, invoked 39 times — replacing those lines with 39
-call sites and one small helper. This is the largest single de-duplication in the refactor, and it is
-possible only because the macro's three substitution tokens are exactly the method's three parameters.
+field, generating roughly 234 lines. All 39 expansions collapse into **39 calls to one method**,
+`AccountUpdateService.markField(state, context, field)`, which is the largest single de-duplication in the
+refactor and is possible only because the macro's three substitution tokens are exactly what one call needs.
+
+The decoration itself is accumulated **in the service layer**, not in the transport layer, and the direction
+matters:
+
+| Type | Layer | Role |
+| :--- | :---- | :--- |
+| `service.FieldErrorMarks` | `service` | the immutable accumulation the 39 calls build up, rebuilt on each mark |
+| `api.dto.FieldErrorDecorator` | `api.dto` | the wire adapter that renders that accumulation into the response contract |
+
+`markField` is invoked 39 times and calls `.mark(...)` **once**, inside itself, against the accumulating
+marks. That inversion — the service owning the state and the transport type adapting it — is what keeps
+the dependency direction downward: the service does not import a transport type to hold its own state, and the
+transport type does not decide when a field is in error.
 
 ### Dependency injection — what disappears
 
@@ -780,18 +949,74 @@ stronger guarantee cannot alter any output the legacy system produced, is in
 
 ### Secrets
 
-No credential, password, token, signing secret or access key value appears in this document, in the source,
-or in any committed configuration file.
+**No production credential, password, token, signing secret or access key value appears in this document,
+in the source, or in any committed configuration file.** The claim is scoped to production deliberately,
+because the unscoped version would be false, and a document that overstates its own security posture is
+worse than one that does not make the claim at all: the next reader stops looking. The local and test
+profiles and `docker-compose.yml` **intentionally commit throwaway values** — a container database
+password, a fixed non-production signing secret, a monitoring token, a synthetic field-encryption fixture
+key and static LocalStack credentials — so that the local validation stack and the test tier start with no
+operator input. Every one of them is inventoried where it is declared, none of them opens anything outside
+a developer's own machine, and none is a default that production could inherit. The boundary is between the
+production profile and the committed local and test fixtures, and it is worth stating exactly, because "no
+secrets are committed" would be a convenient claim and it would not be true of this repository.
 
-The production profile resolves **every** secret — the signing secret, the database password and the cloud
-credentials — from an environment variable **with no fallback default**, so a missing secret **fails
-startup** rather than silently binding a placeholder. A defaulted secret is a hardcoded secret with extra
-steps, which is why the absence of defaults is as much a requirement as the absence of literals. A
-production configuration validator enforces that at startup.
+The production profile resolves **thirteen** values from the environment **with no fallback default**, so a
+missing one **fails startup** rather than silently binding a placeholder. Each is written `${VARIABLE}` and
+never `${VARIABLE:something}`. A defaulted secret is a hardcoded secret with extra steps, which is why the
+absence of defaults is as much a requirement as the absence of literals. The full set, because "every
+secret" is only checkable if it is enumerated:
+
+| Group | Variables |
+| :---- | :-------- |
+| Database | `CARDDEMO_DB_URL`, `CARDDEMO_DB_USERNAME`, `CARDDEMO_DB_PASSWORD` |
+| Session and field protection | `CARDDEMO_JWT_SECRET`, `CARDDEMO_FIELD_ENCRYPTION_KEY` |
+| Management access | `CARDDEMO_MANAGEMENT_TOKEN` |
+| Cloud resources and region | `CARDDEMO_SQS_QUEUE`, `AWS_REGION` |
+| Trace export | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` |
+| Transport security | `CARDDEMO_TLS_KEYSTORE`, `CARDDEMO_TLS_KEYSTORE_PASSWORD`, `CARDDEMO_TLS_KEYSTORE_TYPE`, `CARDDEMO_TLS_KEY_ALIAS` |
+
+`config/ProductionConfigurationValidator` enforces the absence of defaults as a `BeanFactoryPostProcessor`,
+which runs while bean definitions are still being processed — before the data source is created, before the
+migration runner opens a connection and before the server reads a key store — so a deployment missing a
+variable stops with one actionable message and never reaches infrastructure holding a placeholder. It also
+rejects a production start-up that has inherited a seeded profile. Cloud credentials themselves come from
+the standard provider chain rather than from configuration at all, which is why no access key appears in
+the table. Five further production variables *do* carry defaults and are not
+secrets — a token lifetime, a bucket name, a topic name, a message-group identifier and a trace sampling
+rate — each naming a resource or a policy rather than granting access.
+
+**The local and test profiles do commit fixture values, and they are real values in the file.**
+`application-local.yml` carries a default database password, LocalStack access and secret keys, a JWT
+signing secret and a management token. Each is overridable by the same environment variable production
+uses, each is self-labelling as unusable elsewhere — `local-development-only-…-do-not-reuse` and
+`…-placeholder-not-a-real-key` — and each addresses a service the compose stack publishes on loopback only.
+They are safe because the profile they belong to is not production, not because they are absent.
+
+Two limits of the enforcement are recorded rather than implied. The validator judges **usability** — the
+resolved text must exist, must not be blank and must not still contain placeholder syntax — and
+deliberately not **shape**; whether a signing secret is long enough or an encryption key decodes to
+thirty-two bytes is checked by the component that consumes it. And a variable exported as an *empty*
+string resolves to an empty string on every path, so an operator can defeat the check by setting a
+variable to nothing.
+
+**Where those non-production values actually live**, so the inventory above is checkable rather than
+asserted:
+
+| Where | What it carries |
+| :--- | :--- |
+| `carddemo-java/docker-compose.yml` | the container database name, user and password, and an inert placeholder access-key pair for the cloud emulator — all written as override-able defaults |
+| `carddemo-java/src/main/resources/application-local.yml` | the same datasource defaults so a host-run process reaches the container without an environment file, a **development-only** signing-secret default, and a fixed **non-production** field-encryption key |
+| `carddemo-java/src/main/resources/application-test.yml` and `carddemo-java/src/test/resources/application-test.yml` | the test-only signing-secret default, the same non-production field-encryption key, and the inert emulator access-key pair; the datasource is injected by the container support base classes |
+| the read-only legacy estate and the test tree | the **sample sign-on password** — as an in-stream card image in the user-provisioning job under `app/jcl/`, and as a test constant wherever a suite has to authenticate. The seed migration stores only its BCrypt hash |
+
+The module's own `carddemo-java/README.md` carries the same inventory under *Where local and test values
+actually live*, and the two are meant to be read as one statement rather than as two overlapping ones.
 
 The ten seeded sign-on identities exist only in the local and test profiles, and their credentials are
-stored as BCrypt hashes rather than as the legacy plaintext. The legacy demonstration credentials that
-appear in the root `README.md` describe the **mainframe** system and are not restated here.
+stored as BCrypt hashes rather than as the legacy plaintext. Neither this page nor the module README prints
+the sample password itself. The legacy demonstration credentials that appear in the root `README.md`
+describe the **mainframe** system and are not restated here.
 
 ## What this architecture deliberately does not contain
 
@@ -827,9 +1052,16 @@ All three are faithful, and all three are recorded in [decision-log.md](decision
   comment stating the logic is to be implemented, followed by an exit — and it is **genuinely invoked** from
   the interest-calculation driver. The Java method exists, is called, and does nothing. **No fee logic may be
   invented to fill it**, because doing so would be feature expansion and would change interest-run output.
-- **Two account-update fields are decorated for error display but never validated.** The legacy source states
-  in comments that no edits are coded for the middle-name and second-address-line fields. Their contracts
-  therefore carry **no validation constraints**; adding any would reject input the legacy system accepts.
+- **Two account-update fields are decorated for error display and carry no validation constraint — one of
+  them a faithful translation, the other a deliberate divergence.** The second address line is genuinely
+  unedited: its label assignment is commented out in the source and no edit is performed for it anywhere, so
+  carrying no constraint is simply what the legacy does. The middle name is **not** in that position. Its
+  edit call is live — the optional alphabetic edit is performed for it — so the legacy really would reject
+  a middle name carrying a digit, while the screen-attribute block above the field states the opposite in a
+  comment. The migration directive is explicit and repeated that no constraint of any kind may attach to
+  either field, so the directive governs and the middle name carries none. **That is a divergence from the
+  source's behaviour, recorded as one**, and the contradicting comment is itself catalogued as a source
+  defect. Both facts are in [decision-log.md](decision-log.md); neither is smoothed away here.
 - **One copybook is consciously excluded as dead code.** It has zero inclusion references anywhere in the
   estate, so translating it would create dead Java. It is the single artifact deliberately not migrated, and
   it is recorded as a decision rather than left as a gap.
@@ -851,8 +1083,9 @@ running mainframe.
 
 All images are pinned by digest, and every published port binds to the loopback interface by default.
 `carddemo-java/localstack/init/01-create-aws-resources.sh` bootstraps the staging bucket, the FIFO queue and
-the topic on startup. Bring-up and gate-execution instructions are in
-[onboarding-guide.md](onboarding-guide.md) and in the module's own README.
+the topic on startup. Bring-up and gate-execution instructions live in the module's own
+`carddemo-java/README.md`; the onboarding guide that will restate them as a first-run walkthrough is not
+delivered yet, so it is named without a link here.
 
 ## Reference diagrams
 
@@ -885,7 +1118,7 @@ page describes:
 | :------- | :------------ |
 | Layered separation of concerns | the strict downward dependency direction, verified by import census, and the confinement of fixed-width record knowledge to `util` |
 | Constructor injection and immutability without code generation | constructor injection throughout, records and final classes for transport types, and no code-generating annotation processor in the build |
-| Secrets never in source and never defaulted | the production profile's no-fallback secret resolution, hashed seeded credentials, and no secret value anywhere on this page |
+| No **production** secret in source, and none defaulted | the production profile's **thirteen** no-fallback values, the startup validator that enforces them, hashed seeded credentials, and no production secret value printed on this page. The intentional non-production values are inventoried under [Secrets](#secrets) rather than glossed over, because the unqualified version of this standard would be false |
 | Versioned, forward-only schema evolution | four Flyway migrations with a per-profile version ceiling and a startup callback that refuses a seeded production database |
 | Observability as a first-class concern | Actuator, Micrometer timers on every endpoint and step, Prometheus and Grafana provisioning, OTLP tracing, and structured JSON logging |
 
@@ -899,6 +1132,12 @@ originates in the rules document, and neither should be sought there.
 
 Where faithful translation and idiomatic Java conflict, **faithful wins**, and the divergence is recorded in
 [decision-log.md](decision-log.md) rather than resolved by taste. That single rule is what decides every
-difficult case on this page: truncating rather than rounding, preserving a paragraph that does nothing,
-keeping two byte-identical layouts as separate entities, reproducing a condition-code form rather than
-normalising it, and declining to validate two fields the legacy system decorates but never checks.
+difficult case on this page: truncating rather than rounding, preserving a paragraph that does nothing, and
+keeping two byte-identical layouts as separate entities.
+
+Two cases on this page were **not** decided by it, and saying so is part of applying it honestly. The
+divergent condition-code literal and the middle name's missing constraint were both decided by the frozen
+migration plan against the source's own behaviour, so each is recorded as a divergence — DL-145 for the gate
+and the field-validation entry for the middle name — rather than presented as a faithful translation. The
+tie-break resolves conflicts between fidelity and idiom; it does not resolve a conflict between fidelity and
+a directive, and it is not invoked to make one look like the other.

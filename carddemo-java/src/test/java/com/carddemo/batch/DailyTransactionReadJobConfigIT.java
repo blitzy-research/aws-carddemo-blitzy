@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -36,8 +37,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.ClassOrderer;
@@ -57,6 +60,7 @@ import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
 import org.springframework.batch.core.job.SimpleJob;
 import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.NoSuchJobException;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.tasklet.TaskletStep;
 import org.springframework.batch.item.ExecutionContext;
@@ -100,6 +104,7 @@ import com.carddemo.service.DailyTransactionReadService;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionReadResult;
 import com.carddemo.service.DailyTransactionReadService.DailyTransactionVerification;
 import com.carddemo.support.AbstractPostgresIT;
+import com.carddemo.support.RunScopedStagingRoot;
 import com.carddemo.support.TestDataFactory;
 import com.carddemo.util.SensitiveFieldCodec;
 
@@ -611,7 +616,7 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
     @Autowired
     private JobOperator jobOperator;
 
-    /** Used to observe that no execution of this job existed before this specification launched one. */
+    /** Used to read the metadata baseline and to resolve a launched execution from its identifier. */
     @Autowired
     private JobExplorer jobExplorer;
 
@@ -728,14 +733,75 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
     }
 
     // =============================================================================================
+    // SHARED-METADATA BASELINE. The framework's metadata store is one database shared by every
+    // integration specification in the run, and it is not emptied between runs. "This job has never
+    // run" is therefore not a property of the store and never was; what IS a property, and what this
+    // specification exists to state, is that NOTHING BUT THIS SPECIFICATION EVER LAUNCHES IT - no
+    // pipeline reaches it and no context refresh starts it, because the legacy estate holds no job
+    // stream for the program at all.
+    //
+    // That is stated by measurement rather than by assumption: the instance count is read once before
+    // this specification launches anything, every launch this specification performs is counted, and
+    // the store must hold exactly the sum. An instance produced by a refresh, by a neighbouring
+    // specification's pipeline or by a job stream would break the sum and is what the assertion
+    // catches; instances a PREVIOUS run left behind sit in the baseline and are not mistaken for one.
+    // =============================================================================================
+
+    /**
+     * Instances of the orphan's job the shared metadata store already held when this specification
+     * reached its first test, before any launch it performs. Read once and never reset, because the
+     * quantity it names does not change once the specification is under way.
+     */
+    private static Long instancesBeforeThisSpecificationLaunched;
+
+    /** Launches of the orphan's job this specification has performed, counted at the one launch site. */
+    private static final AtomicInteger LAUNCHES_BY_THIS_SPECIFICATION = new AtomicInteger();
+
+    /**
+     * Reads the shared metadata baseline exactly once, on the first test this specification reaches.
+     *
+     * <p>A {@code @BeforeEach} rather than a {@code @BeforeAll} because the reading needs the injected
+     * explorer, and the first invocation of it necessarily precedes the first test body and therefore
+     * every launch. Which test runs first does not matter: the baseline is taken before it, and the
+     * launch ledger accounts for whatever it then launches.
+     */
+    @BeforeEach
+    void readTheSharedMetadataBaselineOnce() {
+        if (instancesBeforeThisSpecificationLaunched == null) {
+            instancesBeforeThisSpecificationLaunched = instancesOfTheOrphan();
+        }
+    }
+
+    /**
+     * Removes the run-scoped staging root, and only it.
+     *
+     * <p>Nothing is deleted that this run did not create, because the root was created for this run.
+     * The metadata this specification's launches produced is deliberately left in place: it is the
+     * baseline a later run reads, and the assertion above is written to tolerate it.
+     */
+    @AfterAll
+    static void removeTheRunScopedStagingRoot() {
+        RunScopedStagingRoot.deleteRecursively(STAGING_ROOT);
+    }
+
+    // =============================================================================================
     // HELPERS
     // =============================================================================================
 
     /**
      * The local staging root a simple dataset name is resolved against, which is the rung this job
      * gained so that a dataset name is not interpreted as a class-path resource (DL-216).
+     *
+     * <p>The directory is created for this run and belongs to it alone. The host's shared temporary
+     * root was the obvious thing to hand the configuration and the wrong one: a simple dataset name
+     * resolves against whatever the root happens to contain, so a file another clone or another run
+     * left in the shared root would change what this specification resolves. A directory created here
+     * cannot be reached by anything but this run, so what the root contains is exactly what this
+     * specification put there - which is nothing, and that emptiness is itself part of the contract
+     * every one of the six locations below is asserted against.
      */
-    private static final String STAGING_ROOT = System.getProperty("java.io.tmpdir");
+    private static final Path STAGING_ROOT =
+            RunScopedStagingRoot.createFor(DailyTransactionReadJobConfigIT.class);
 
     /**
      * Builds a second configuration over the same collaborators the context wired, with the six
@@ -759,7 +825,8 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
             final String tranfile) {
         return new DailyTransactionReadJobConfig(this.jobRepository, this.transactionManager,
                 this.readerFactory, this.readService, this.meterRegistry, this.context,
-                this.stagingArea, STAGING_ROOT, dalytran, custfile, xreffile, cardfile, acctfile,
+                this.stagingArea, STAGING_ROOT.toString(), dalytran, custfile, xreffile,
+                cardfile, acctfile,
                 tranfile);
     }
 
@@ -989,8 +1056,26 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
      * @throws Exception if the launch is refused, which fails the test
      */
     private JobExecution launchByName() throws Exception {
-        return this.jobExplorer.getJobExecution(
+        final JobExecution execution = this.jobExplorer.getJobExecution(
                 this.jobOperator.startNextInstance(DailyTransactionReadJobConfig.JOB_NAME));
+        LAUNCHES_BY_THIS_SPECIFICATION.incrementAndGet();
+        return execution;
+    }
+
+    /**
+     * Counts every instance of the orphan's job the shared metadata store holds.
+     *
+     * <p>The count is read from the store rather than paged out of it, so no page size can cap it and
+     * hide an instance. A job the store has never seen has no count at all, which is nought.
+     *
+     * @return how many instances exist, across every run that has ever launched this job
+     */
+    private long instancesOfTheOrphan() {
+        try {
+            return this.jobExplorer.getJobInstanceCount(DailyTransactionReadJobConfig.JOB_NAME);
+        } catch (final NoSuchJobException neverLaunchedByAnyone) {
+            return 0L;
+        }
     }
 
     /**
@@ -1129,12 +1214,20 @@ final class DailyTransactionReadJobConfigIT extends AbstractPostgresIT {
                             LAUNCH_JOB_NAME_PROPERTY)
                     .isNull();
 
-            assertThat(jobExplorer.getJobInstances(DailyTransactionReadJobConfig.JOB_NAME, 0,
-                    DALYTRAN_RECORDS))
-                    .as("no execution of the orphan may exist before this specification launches one")
-                    .isEmpty();
+            final long launchedSoFar = LAUNCHES_BY_THIS_SPECIFICATION.get();
+            assertThat(instancesOfTheOrphan())
+                    .as("every instance the shared store holds is one a previous run left behind (%d of "
+                            + "them) or one this specification launched (%d so far); an instance beyond "
+                            + "that sum would be one a refresh, a pipeline or a job stream produced, and "
+                            + "the estate holds no job stream for this program at all",
+                            instancesBeforeThisSpecificationLaunched, launchedSoFar)
+                    .isEqualTo(instancesBeforeThisSpecificationLaunched + launchedSoFar);
 
             final JobExecution execution = launchByName();
+
+            assertThat(instancesOfTheOrphan())
+                    .as("the launch this specification just performed is the one instance that appeared")
+                    .isEqualTo(instancesBeforeThisSpecificationLaunched + launchedSoFar + 1);
 
             assertThat(execution.getStatus())
                     .as("defined but unwired means unwired, not unreachable")

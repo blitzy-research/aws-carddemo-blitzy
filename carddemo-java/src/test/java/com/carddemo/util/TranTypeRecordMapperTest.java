@@ -93,7 +93,6 @@ class TranTypeRecordMapperTest {
     //   2 + 50 = 52 mapped bytes;  52 + 8 = 60 record bytes.
     // -----------------------------------------------------------------------------------------------
 
-    /** Full record width in encoded bytes, from the copybook's stated record length. */
     private static final int RECORD_LENGTH = 60;
 
     /**
@@ -105,7 +104,6 @@ class TranTypeRecordMapperTest {
     /** Zero-based offset of the two-byte type code, which is also the cluster key. */
     private static final int CODE_OFFSET = 0;
 
-    /** Encoded width of the type code. */
     private static final int CODE_LENGTH = 2;
 
     /**
@@ -241,12 +239,10 @@ class TranTypeRecordMapperTest {
         return value + " ".repeat(width - encodedByteLength(value));
     }
 
-    /** The description of the given fixture row as the record image carries it, padded to full width. */
     private static String paddedDescription(final int rowIndex) {
         return padToWidth(SEED_DESCRIPTIONS.get(rowIndex), DESCRIPTION_LENGTH);
     }
 
-    /** The mapped data prefix of the given fixture row: the code followed by the padded description. */
     private static String mappedPrefix(final int rowIndex) {
         return SEED_CODES.get(rowIndex) + paddedDescription(rowIndex);
     }

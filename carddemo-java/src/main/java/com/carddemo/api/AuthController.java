@@ -27,6 +27,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.Objects;
 import java.util.function.Supplier;
@@ -219,7 +220,14 @@ public final class AuthController {
      * the decision's own enumerated name, or the fixed failure constant when the turn reached no
      * decision at all, so it cannot become a high-cardinality label.
      *
+     * <p>One value that is <em>not</em> part of the screen is read here and handed on: the caller
+     * address. It is the second subject the service's abuse-resistance governor counts against, and this
+     * is the only layer that has one. It is not a field of the published contract, does not appear in the
+     * schema, and is never echoed, validated, stored or logged.
+     *
      * @param request the operator's entry and the attention key they pressed
+     * @param httpRequest the servlet request, read only for the caller address, possibly {@code null}
+     *                    when this handler is driven without a servlet container
      * @return the screen the turn produces, carrying a bearer session when the credential verified
      */
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -238,12 +246,21 @@ public final class AuthController {
         @ApiResponse(responseCode = "400",
                 description = "The request exceeded the widths the sign-on map declares.")})
     public ResponseEntity<SignOnResponse> signOn(
-            @Valid @RequestBody(required = false) final SignOnRequest request) {
+            @Valid @RequestBody(required = false) final SignOnRequest request,
+            final HttpServletRequest httpRequest) {
         if (request == null) {
             return initialEntry();
         }
+        // The caller address is attributed here because this is the only layer that has one, and it is
+        // handed on as the governor's second subject rather than as a screen field: it is never echoed,
+        // never validated, never stored and never logged. Read from the connection rather than from any
+        // forwarding header, because a header is caller-supplied and an abuse counter keyed on a value
+        // the abuser chooses is no counter at all. A deployment behind a proxy that needs the original
+        // address supplies it through the framework's own forwarded-header handling, which rewrites the
+        // request's remote address before this point.
+        final String sourceKey = httpRequest == null ? null : httpRequest.getRemoteAddr();
         return serveTurn(() -> this.authenticationService.handle(
-                request.keyAction(), request.userId(), request.password()));
+                request.keyAction(), request.userId(), request.password(), sourceKey));
     }
 
     /**

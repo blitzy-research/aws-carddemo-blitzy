@@ -17,6 +17,7 @@
 package com.carddemo.repository;
 
 import com.carddemo.domain.Transaction;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -44,10 +45,28 @@ public interface TransactionInsertRepository {
     long IDENTIFIER_ALLOCATION_LOCK_KEY = 350_016L;
 
     /**
-     * Serializes the maximum-read and insert sequence for an assigned transaction identifier.
+     * Serialises the maximum-read and insert sequence for an assigned transaction identifier.
      *
-     * @param lockKey the stable application lock key
+     * <p>One application-wide lock, keyed by {@link #IDENTIFIER_ALLOCATION_LOCK_KEY}, taken before the
+     * maximum is read and released when the calling transaction ends - by commit and by rollback alike. It
+     * is the relational form of the position the legacy region held on the keyed file across its own
+     * backward read, increment and write, and it is re-entrant within a session, so one acquisition covers
+     * every attempt a caller makes inside the same unit of work.
+     *
+     * <p><strong>A transaction is mandatory, and that is a correctness requirement rather than a
+     * convention.</strong> The lock is transaction-scoped: taken with no transaction in progress, the
+     * statement is its own transaction and the lock is released the instant it completes, so two allocators
+     * would both be granted it, both read the same maximum and collide - the exact outcome the lock exists
+     * to prevent, reached with no error and no diagnostic. Requiring an existing transaction makes that
+     * mistake a loud failure at the call site instead of an intermittent duplicate key in production. The
+     * implementation asserts the same condition itself, so a caller that reaches the fragment without going
+     * through the repository proxy is refused too.
+     *
+     * @param  lockKey the stable application lock key
+     * @throws org.springframework.transaction.IllegalTransactionStateException if no transaction is in
+     *         progress
      */
+    @Transactional(propagation = Propagation.MANDATORY)
     void lockIdentifierAllocation(long lockKey);
 
     /**

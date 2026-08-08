@@ -55,6 +55,7 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.support.TestDataFactory;
+import com.carddemo.support.TraceabilityMatrixCensus;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -71,12 +72,17 @@ import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link AccountViewService}, transaction {@code CAVW}, the migrated form of
- * {@code app/cbl/COACTVWC.cbl} - 941 lines, whose procedure division declares 35 Area A paragraph
- * labels of which one name is declared twice, plus a copybook directive that textually inserts the two
- * paragraphs of {@code app/cpy/CSSTRPFY.cpy}. Counting the inserted pair against the in-member slots
- * gives the 38 the class under test records; counting only the labels physically present gives the 35
- * the action plan records. Both figures describe the same member and the production class publishes
- * both, which is why neither is asserted here as though it were the only one.
+ * {@code app/cbl/COACTVWC.cbl} - 941 lines, whose procedure division declares <strong>35</strong> Area A
+ * paragraph labels of which one name is declared twice. Thirty-five is the member's contribution: it is what
+ * the action plan records and what the traceability matrix carries rows for, and it is read from the matrix
+ * rather than restated, in {@code TheMatrixContribution} below.
+ *
+ * <p>The member also carries a copybook directive that textually inserts the two paragraphs of
+ * {@code app/cpy/CSSTRPFY.cpy}. Those two are exercised from here and are units of the <em>copybook</em>,
+ * which the matrix gives a section and two rows of its own; the copybook is included by five members, so
+ * counting its pair against each of them would report ten units for two. An earlier revision of this suite
+ * and of the class under test published 38 by adding the directive's slot and the inserted pair to the
+ * member's own count.
  *
  * <p>The screen resolves an account identifier through the card cross-reference and joins the customer
  * onto it. It reads {@code app/cpy/CVACT01Y.cpy} as the account layout, {@code app/cpy/CVCUS01Y.cpy} as
@@ -1855,6 +1861,30 @@ final class AccountViewServiceTest {
                     .doesNotContain(CUSTOMER_ID)
                     .doesNotContain(FIRST_CARD_NUMBER);
             assertThat(rendered).contains("presentation=MAP");
+        }
+    }
+
+    @Nested
+    @DisplayName("the matrix contribution: the 35 units this member carries, read from the matrix")
+    class TheMatrixContribution {
+
+        /** Creates the nested specification. */
+        TheMatrixContribution() {
+            // Intentionally empty.
+        }
+
+        @Test
+        @DisplayName("the unit count is the 35 the published matrix carries, and the attention-key "
+                + "copybook's two paragraphs are counted in its own section rather than again here")
+        void theUnitCountIsTheOneTheMatrixCarries() {
+            // Read from the matrix - its census subtotal, its section declaration and its rows, which the
+            // reader requires to agree - rather than written down here. Both declarations of the
+            // duplicated label are recorded against the one method, which is why 35 rows resolve to 34
+            // distinct names without any row being dropped.
+            assertThat(TraceabilityMatrixCensus.unitsOf("COACTVWC.cbl")).isEqualTo(35);
+            assertThat(TraceabilityMatrixCensus.unitsOf("CSSTRPFY.cpy"))
+                    .as("the copybook is included by five members and contributes two units in total")
+                    .isEqualTo(2);
         }
     }
 }

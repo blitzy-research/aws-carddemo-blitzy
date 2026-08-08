@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import com.carddemo.domain.Transaction;
 import com.carddemo.support.SeededRecordFixture;
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
@@ -67,7 +68,7 @@ final class StatementWorkRecordMapperTest {
         final Transaction decoded = StatementWorkRecordMapper.fromRecord(work);
 
         assertThat(decoded.getTranId()).isEqualTo(transaction.getTranId());
-        assertThat(decoded.getTranCardNum()).isEqualTo(transaction.getTranCardNum());
+        assertThat(SensitiveValues.fingerprint(decoded.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(transaction.getTranCardNum()));
         assertThat(decoded.getTranOrigTs()).isEqualTo(transaction.getTranOrigTs());
         assertThat(decoded.getTranProcTs())
                 .isEqualTo(transaction.getTranProcTs().substring(0, 24) + "  ")

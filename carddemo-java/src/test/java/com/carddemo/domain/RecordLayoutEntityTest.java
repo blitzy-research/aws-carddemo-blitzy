@@ -24,6 +24,7 @@ import java.util.Map;
 
 import com.carddemo.domain.id.DisclosureGroupId;
 import com.carddemo.domain.id.TransactionCategoryId;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.util.SensitiveFieldCodec;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -605,7 +606,7 @@ final class RecordLayoutEntityTest {
             assertThat(transaction.getDalytranMerchantName()).isEqualTo("MERCHANT NAME");
             assertThat(transaction.getDalytranMerchantCity()).isEqualTo("MERCHANT CITY");
             assertThat(transaction.getDalytranMerchantZip()).isEqualTo("62704-0001");
-            assertThat(transaction.getDalytranCardNum()).isEqualTo(CARD_NUMBER);
+            assertThat(SensitiveValues.fingerprint(transaction.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint(CARD_NUMBER));
             assertThat(transaction.getDalytranOrigTs()).isEqualTo("2022-07-06-14.23.41.870000");
             assertThat(transaction.getDalytranProcTs()).isEqualTo("2022-07-06-14.23.41.870000");
         }
@@ -727,7 +728,7 @@ final class RecordLayoutEntityTest {
             assertThat(transaction.getDalytranMerchantName()).isEqualTo("OTHER NAME");
             assertThat(transaction.getDalytranMerchantCity()).isEqualTo("OTHER CITY");
             assertThat(transaction.getDalytranMerchantZip()).isEqualTo("10001-0002");
-            assertThat(transaction.getDalytranCardNum()).isEqualTo("4222222222222222");
+            assertThat(SensitiveValues.fingerprint(transaction.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4222222222222222"));
             assertThat(transaction.getDalytranOrigTs()).isEqualTo("2022-07-07-01.02.03.040000");
             assertThat(transaction.getDalytranProcTs()).isEqualTo("2022-07-08-05.06.07.080000");
         }
@@ -746,7 +747,7 @@ final class RecordLayoutEntityTest {
             assertThat(user.getSecUsrId()).isEqualTo(ADMIN_USER_ID);
             assertThat(user.getSecUsrFname()).isEqualTo("MARGARET");
             assertThat(user.getSecUsrLname()).isEqualTo("GOLD");
-            assertThat(user.credentialDigest()).isEqualTo(ORACLE_CREDENTIAL_DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(ORACLE_CREDENTIAL_DIGEST));
             assertThat(user.getSecUsrType()).isEqualTo("A");
         }
 
@@ -835,7 +836,7 @@ final class RecordLayoutEntityTest {
             assertThat(user.getSecUsrId()).isEqualTo("USER0005");
             assertThat(user.getSecUsrFname()).isEqualTo("LEE");
             assertThat(user.getSecUsrLname()).isEqualTo("TING");
-            assertThat(user.credentialDigest()).isEqualTo(ORACLE_OTHER_CREDENTIAL_DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(ORACLE_OTHER_CREDENTIAL_DIGEST));
             assertThat(user.getSecUsrType()).isEqualTo("U");
         }
 

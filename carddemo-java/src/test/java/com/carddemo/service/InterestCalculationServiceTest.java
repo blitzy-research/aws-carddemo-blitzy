@@ -63,6 +63,7 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.support.SensitiveValues;
 import com.carddemo.support.TestDataFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1841,7 +1842,8 @@ final class InterestCalculationServiceTest {
             final Transaction synthesized = singleSynthesizedRecord();
 
             assertAll(
-                    () -> assertThat(synthesized.getTranCardNum()).isEqualTo(XREF_CARD_NUM),
+                    () -> assertThat(SensitiveValues.fingerprint(synthesized.getTranCardNum()))
+                            .isEqualTo(SensitiveValues.fingerprint(XREF_CARD_NUM)),
                     () -> assertThat(encodedBytes(synthesized.getTranCardNum())).isEqualTo(16),
                     () -> assertThat(synthesized.getTranCardNum())
                             .as("it is the cross-reference's card number, not the account identifier")

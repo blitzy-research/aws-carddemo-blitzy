@@ -25,12 +25,16 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.EntityTransaction;
 import java.math.BigDecimal;
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
 import org.springframework.aop.framework.ProxyFactory;
@@ -254,11 +258,104 @@ final class RecordWriterTest {
         }
 
         @Test
-        @DisplayName("recognises both translated integrity failures")
-        void recognisesBothTranslatedIntegrityFailures() {
-            assertThat(RecordWriter.isDuplicateKey(new DuplicateKeyException("refused"))).isTrue();
-            assertThat(RecordWriter.isDuplicateKey(new DataIntegrityViolationException("refused")))
+        @DisplayName("recognises the framework's duplicate-specific type, and only that one")
+        void recognisesTheFrameworksDuplicateSpecificType() {
+            assertThat(RecordWriter.isDuplicateKey(new DuplicateKeyException("refused")))
+                    .as("DuplicateKeyException means this key is already present and nothing else")
                     .isTrue();
+            assertThat(RecordWriter.isDuplicateKey(new DataIntegrityViolationException("refused")))
+                    .as("its supertype is raised for a foreign-key, not-null or check refusal exactly "
+                            + "as readily, so on its own it is NOT evidence of a duplicate")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the complete unique-violation state is the refused key")
+        void theCompleteUniqueViolationStateIsTheRefusedKey() {
+            assertThat(RecordWriter.isDuplicateKey(new SQLException("refused", "23505"))).isTrue();
+        }
+
+        @ParameterizedTest(name = "SQL state {0} is not a refused key")
+        @ValueSource(strings = {"23000", "23001", "23502", "23503", "23514", "22001", "22P02",
+            "40001", "40P01"})
+        @DisplayName("no other SQL state is a refused key, including the rest of the integrity family")
+        void noOtherSqlStateIsARefusedKey(final String state) {
+            assertThat(RecordWriter.isDuplicateKey(new SQLException("refused", state)))
+                    .as("state %s reports a different condition, whose arm is the write paragraph's "
+                            + "catch-all rather than the duplicate arm", state)
+                    .isFalse();
+        }
+
+        @ParameterizedTest(name = "SQL state {0} beneath the translated type is not a duplicate")
+        @ValueSource(strings = {"23000", "23001", "23502", "23503", "23514", "22001"})
+        @DisplayName("the store's own report outranks the translated type, so a non-unique integrity "
+                + "refusal is never reported as a duplicate")
+        void theStoresReportOutranksTheTranslatedType(final String state) {
+            final Throwable translated = new DataIntegrityViolationException("refused",
+                    new SQLIntegrityConstraintViolationException("refused", state));
+
+            assertThat(RecordWriter.isDuplicateKey(translated))
+                    .as("the JDBC integrity-constraint TYPE is present and the state is %s, so the "
+                            + "state decides", state)
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("the unique violation is still found beneath the translated integrity type")
+        void theUniqueViolationIsStillFoundBeneathTheTranslatedType() {
+            final Throwable translated = new DataIntegrityViolationException("refused",
+                    new SQLIntegrityConstraintViolationException("refused", "23505"));
+
+            assertThat(RecordWriter.isDuplicateKey(translated)).isTrue();
+        }
+
+        @Test
+        @DisplayName("the driver's OWN next-exception chain is searched, which is where PostgreSQL "
+                + "hangs the refusal a batched flush met")
+        void theDriversNextExceptionChainIsSearched() {
+            final SQLException carrier = new SQLException("batch failed", (String) null);
+            carrier.setNextException(new SQLException("refused", "23505"));
+
+            assertThat(RecordWriter.isDuplicateKey(new DataIntegrityViolationException("wrapped",
+                    carrier)))
+                    .as("following only the cause chain stops at a carrier whose own state is null "
+                            + "and misses the unique violation hanging off it")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("a next-exception chain reporting a different condition is not a refused key")
+        void aNextExceptionChainReportingAnotherConditionIsNotARefusedKey() {
+            final SQLException carrier = new SQLException("batch failed", (String) null);
+            carrier.setNextException(new SQLException("refused", "23503"));
+
+            assertThat(RecordWriter.isDuplicateKey(new DataIntegrityViolationException("wrapped",
+                    carrier))).isFalse();
+        }
+
+        @Test
+        @DisplayName("a stateless driver failure demotes nothing, so a duplicate-specific type still "
+                + "decides")
+        void aStatelessDriverFailureDemotesNothing() {
+            final Throwable translated = new DuplicateKeyException("refused",
+                    new SQLException("refused", (String) null));
+
+            assertThat(RecordWriter.isDuplicateKey(translated)).isTrue();
+        }
+
+        @Test
+        @DisplayName("a self-referencing next-exception chain terminates instead of looping forever")
+        void aSelfReferencingNextExceptionChainTerminates() {
+            final SQLException selfReferencing = new SQLException("loops", "23503") {
+                private static final long serialVersionUID = 1L;
+
+                @Override
+                public SQLException getNextException() {
+                    return this;
+                }
+            };
+
+            assertThat(RecordWriter.isDuplicateKey(selfReferencing)).isFalse();
         }
 
         @Test

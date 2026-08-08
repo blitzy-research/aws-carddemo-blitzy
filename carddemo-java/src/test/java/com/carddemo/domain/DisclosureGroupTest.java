@@ -110,19 +110,14 @@ class DisclosureGroupTest {
     // immutable primitives and interned string literals only - this suite holds no cache and no
     // mutable static state.
 
-    /** Account group identifier: key part 1, 10 bytes at offset 0. */
     private static final int GROUP_ID_WIDTH = 10;
 
-    /** Transaction type code: key part 2, 2 bytes at offset 10. */
     private static final int TRAN_TYPE_WIDTH = 2;
 
-    /** Transaction category code: key part 3, 4 bytes at offset 12. */
     private static final int TRAN_CAT_WIDTH = 4;
 
-    /** Integer digits declared by the signed rate field. */
     private static final int RATE_INTEGER_DIGITS = 4;
 
-    /** Decimal digits declared by the signed rate field, and therefore the stored scale. */
     private static final int RATE_DECIMAL_DIGITS = 2;
 
     /** Declared key length: the cluster definition states 16 beginning at offset 0. */
@@ -146,19 +141,15 @@ class DisclosureGroupTest {
      */
     private static final int WIDER_AMOUNT_WIDTH_TEN_DIGITS = 12;
 
-    /** Key width of the transaction-category-balance record - a different, longer key. */
     private static final int SIBLING_BALANCE_KEY_WIDTH = 17;
 
-    /** Key width of the transaction-category record - a different, shorter key. */
     private static final int SIBLING_CATEGORY_KEY_WIDTH = 6;
 
     /** Records in the seeded reference file: 2,601 bytes divided by 50 bytes plus a terminator. */
     private static final int SEEDED_RECORD_COUNT = 51;
 
-    /** Distinct account group identifiers in the seeded reference file. */
     private static final int SEEDED_GROUP_COUNT = 3;
 
-    /** Rows carried by each of the three seeded groups. */
     private static final int SEEDED_ROWS_PER_GROUP = 17;
 
     // Seeded fixture lexemes, transcribed verbatim from the reference file. The two
@@ -166,34 +157,27 @@ class DisclosureGroupTest {
     // full ten characters. They are written out in full rather than assembled, so that
     // the padding is visible in the source and cannot drift.
 
-    /** First seeded group identifier: ten characters with no padding required. */
     private static final String GROUP_ID_A = "A000000000";
 
-    /** Second seeded group identifier at its true ten-character width. */
     private static final String GROUP_ID_DEFAULT_PADDED = "DEFAULT   ";
 
     /** The seven-character literal a legacy alphanumeric move starts from. Never a valid key. */
     private static final String GROUP_ID_DEFAULT_UNPADDED = "DEFAULT";
 
-    /** Third seeded group identifier at its true ten-character width. */
     private static final String GROUP_ID_ZEROAPR_PADDED = "ZEROAPR   ";
 
     /** The seven-character shortened form of the third identifier. Never a valid key. */
     private static final String GROUP_ID_ZEROAPR_UNPADDED = "ZEROAPR";
 
-    /** Transaction type code carried by the first row of every seeded group. */
     private static final String TRAN_TYPE = "01";
 
-    /** Transaction category code carried by the first row of every seeded group. */
     private static final String TRAN_CAT = "0001";
 
-    /** Second seeded transaction category code, used where a differing component is needed. */
     private static final String TRAN_CAT_OTHER = "0002";
 
     /** The category code stripped of its leading zeros. Never a valid key component. */
     private static final String TRAN_CAT_WITHOUT_LEADING_ZEROS = "1";
 
-    /** Second transaction type code, used where a differing component is needed. */
     private static final String TRAN_TYPE_OTHER = "02";
 
     // Hand-derived rate values. The seeded rate images are cited as evidence only; this
@@ -208,7 +192,6 @@ class DisclosureGroupTest {
     /** Rate of the first seeded row, hand-derived from the image {@code 00150{}. */
     private static final String RATE_FIFTEEN = "15.00";
 
-    /** The same magnitude written without a scale, used to prove scale identity matters. */
     private static final String RATE_FIFTEEN_UNSCALED = "15";
 
     /** Rate of every row in the third seeded group, hand-derived from the image {@code 00000{}. */
@@ -220,16 +203,12 @@ class DisclosureGroupTest {
     /** Second seeded rate, hand-derived from the image {@code 00250{}, used as a differing value. */
     private static final String RATE_TWENTY_FIVE = "25.00";
 
-    /** A one-decimal value, used to prove the entity does not widen a scale. */
     private static final String RATE_SCALE_ONE = "1.5";
 
-    /** A three-decimal value, used to prove the entity neither truncates nor rounds. */
     private static final String RATE_SCALE_THREE = "2.999";
 
-    /** What a truncating store to scale two would have produced from {@link #RATE_SCALE_THREE}. */
     private static final String RATE_SCALE_THREE_IF_TRUNCATED = "2.99";
 
-    /** What a rounding store to scale two would have produced from {@link #RATE_SCALE_THREE}. */
     private static final String RATE_SCALE_THREE_IF_ROUNDED = "3.00";
 
     /**
@@ -270,10 +249,8 @@ class DisclosureGroupTest {
      */
     private static final class ProtectedKeyConstructorProbe extends DisclosureGroupId {
 
-        /** Serialization identity of the probe itself. Never persisted or transmitted. */
         private static final long serialVersionUID = 1L;
 
-        /** Invokes the superclass's {@code protected} no-argument constructor. */
         ProtectedKeyConstructorProbe() {
             super();
         }

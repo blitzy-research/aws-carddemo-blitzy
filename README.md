@@ -2,6 +2,10 @@
 
 - [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
 - [Description](#description)
+- [The Java 25 migration of this application](#the-java-25-migration-of-this-application)
+  - [Build and run the Java module](#build-and-run-the-java-module)
+  - [The local validation stack](#the-local-validation-stack)
+  - [Migration documentation](#migration-documentation)
 - [Technologies used](#technologies-used)
 - [Installation on the mainframe](#installation-on-the-mainframe)
 - [Application Details](#application-details)
@@ -29,12 +33,94 @@ Note that the intent of this application is to provide mainframe coding scenario
 
 <br/>
 
+## The Java 25 migration of this application
+
+**This repository now carries two implementations of CardDemo side by side.** Everything else in this
+README describes the original z/OS application: COBOL under `app/cbl`, copybooks under `app/cpy`, BMS
+mapsets under `app/bms`, job streams under `app/jcl`, and the CICS resource definitions under `app/csd`.
+That tree is **unchanged and read-only** — it is simultaneously the parity baseline every golden fixture
+derives from and the anchor every traceability row cites, so it must stay byte-identical.
+
+Beside it, [`carddemo-java/`](carddemo-java) is a **self-contained Maven module** that reproduces the same
+application on **Java 25 LTS and Spring Boot 3.5.16** over **PostgreSQL 16**, with **Spring Batch** in
+place of the job streams and **S3, SQS and SNS** in place of sequential-dataset staging and the transient
+data queue. No COBOL, JCL, BMS or copybook text is copied into it; the correspondence is carried entirely
+by citation.
+
+| | |
+| --- | --- |
+| **Scope migrated** | all 28 COBOL programs (19,254 lines), 28 copybooks, 17 mapsets, 29 job members and 2 cataloged procedures |
+| **Traceability** | **544** procedure units — 528 program paragraphs plus 14 and 2 from the two procedural copybooks — each mapped to its Java class, method and covering test |
+| **Delivered surface** | 20 HTTP operations over 19 paths, and 9 independently launchable batch jobs |
+| **Data** | 11 tables from the 11 verified record layouts, evolved by 4 Flyway migrations |
+| **Preserved to the byte** | five fixed output widths — 40, 80, 100, 133 and 430 bytes — compared as byte arrays, never semantically |
+| **No feature expansion** | nothing was added that the COBOL did not already do, including an empty-but-invoked fee paragraph that survives as a documented no-op |
+
+There is **no browser interface, by design**. The legacy presentation layer is a 3270 terminal contract,
+and the faithful translation of a terminal contract is a machine contract: the 17 mapsets became REST
+request and response types, exercised by tests rather than by a page.
+
+### Build and run the Java module
+
+The module ships the Maven Wrapper, so a clean checkout needs only a **Temurin 25** JDK and **Docker**:
+
+```bash
+cd carddemo-java
+./mvnw -B clean verify        # zero-warning build, both test tiers, coverage floor, CVE scan
+```
+
+```bash
+SPRING_PROFILES_ACTIVE=local java -jar target/carddemo-java-1.0.0.jar
+curl -i -X POST http://localhost:8080/api/auth/signon \
+  -H 'Content-Type: application/json' \
+  -d '{"userId":"ADMIN001","password":"PASSWORD","keyAction":"ENTER"}'
+```
+
+The `local` profile needs no secret — every value is defaulted. The `prod` profile is the opposite: it
+resolves every secret from an environment variable with **no fallback**, so a missing secret fails startup
+rather than silently binding a placeholder.
+
+### The local validation stack
+
+```bash
+cd carddemo-java && docker compose up -d
+```
+
+That provisions PostgreSQL 16, LocalStack Community for S3/SQS/SNS, Prometheus, Grafana and Jaeger, so
+**all eight validation gates run locally**. None of them requires a production environment, a staging
+environment, an AWS account or a running mainframe.
+
+### Migration documentation
+
+| Document | What it answers |
+| --- | --- |
+| [`docs/onboarding-guide.md`](docs/onboarding-guide.md) | first-run walkthrough: prerequisites, build commands, stack bring-up, gate execution |
+| [`docs/architecture.md`](docs/architecture.md) | the layer map, package responsibilities, entity model and batch pipeline ordering |
+| [`docs/traceability-matrix.md`](docs/traceability-matrix.md) | which Java method corresponds to a given COBOL paragraph, for all 544 units |
+| [`docs/decision-log.md`](docs/decision-log.md) | every divergence between faithful COBOL semantics and idiomatic Java, plus the register of 14 source anomalies |
+| [`docs/gate-evidence.md`](docs/gate-evidence.md) | per gate: the command, the artefact and the standing result, including the measured performance baseline |
+| [`docs/presentation/index.html`](docs/presentation/index.html) | the migration summary deck |
+| [`carddemo-java/README.md`](carddemo-java/README.md) | the module's own build, configuration, package map and per-gate detail |
+
+<br/>
+
 ## Technologies used
+
+**The original mainframe application:**
+
 1. COBOL
 2. CICS
 3. VSAM
 4. JCL
 5. RACF
+
+**The migrated Java module** (see [`carddemo-java/`](carddemo-java)):
+
+1. Java 25 LTS (Eclipse Temurin) and Maven 3.9 via the committed wrapper
+2. Spring Boot 3.5.16 — Web, Data JPA, Batch, Security, Validation, Actuator
+3. PostgreSQL 16, with schema evolution by Flyway
+4. AWS S3, SQS and SNS, emulated locally by LocalStack Community
+5. JUnit 5, Mockito, AssertJ and Testcontainers
 
 <br/>
 

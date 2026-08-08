@@ -111,10 +111,8 @@ class KeyActionTest {
      */
     private static final int ACTION_FIELD_BYTE_WIDTH = 5;
 
-    /** Condition names declared over the action field: two keys, two attention keys, twelve function keys. */
     private static final int CONDITION_NAME_COUNT = 16;
 
-    /** Clauses in the single dispatch construct of {@code app/cpy/CSSTRPFY.cpy}. */
     private static final int DISPATCH_CLAUSE_COUNT = 28;
 
     /** Catch-all clauses in that construct. There are none, which is why no sentinel constant exists. */
@@ -123,22 +121,17 @@ class KeyActionTest {
     /** Paragraphs in {@code app/cpy/CSSTRPFY.cpy}: the storing paragraph and its exit paragraph. */
     private static final int DISPATCH_PARAGRAPH_COUNT = 2;
 
-    /** Dispatch clauses for the enter, clear and two program-attention identifiers. */
     private static final int NON_FUNCTION_KEY_CLAUSES = 4;
 
-    /** Dispatch clauses for function keys one through twelve. */
     private static final int LOWER_FUNCTION_KEY_CLAUSES = 12;
 
     /** Dispatch clauses for function keys thirteen through twenty-four, which fold onto the lower twelve. */
     private static final int FOLDED_FUNCTION_KEY_CLAUSES = 12;
 
-    /** Spaces each program-attention identifier carries after its three characters. */
     private static final int PROGRAM_ATTENTION_TRAILING_SPACES = 2;
 
-    /** The padded identifier of program-attention key one, its two trailing spaces visible here. */
     private static final String PROGRAM_ATTENTION_1_IDENTIFIER = "PA1  ";
 
-    /** The padded identifier of program-attention key two, its two trailing spaces visible here. */
     private static final String PROGRAM_ATTENTION_2_IDENTIFIER = "PA2  ";
 
     /** The three-character form of program-attention key one, which the five-character field never holds. */
@@ -153,13 +146,11 @@ class KeyActionTest {
      */
     private static final Map<String, String> TRANSCRIBED_IDENTIFIERS = transcribedIdentifiers();
 
-    /** The sixteen condition-name suffixes in copybook declaration order. */
     private static final List<String> TRANSCRIBED_NAMES = List.of(
             "ENTER", "CLEAR", "PA1", "PA2",
             "PFK01", "PFK02", "PFK03", "PFK04", "PFK05", "PFK06",
             "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12");
 
-    /** The twelve identifiers the copybook declares for function keys one through twelve. */
     private static final List<String> FUNCTION_KEY_IDENTIFIERS = List.of(
             "PFK01", "PFK02", "PFK03", "PFK04", "PFK05", "PFK06",
             "PFK07", "PFK08", "PFK09", "PFK10", "PFK11", "PFK12");
@@ -233,10 +224,6 @@ class KeyActionTest {
         }
         return count;
     }
-
-    // ------------------------------------------------------------------------------------------
-    // THE CONSTANT VOCABULARY
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Verifies the sixteen constants against the condition names declared over {@code CCARD-AID}.
@@ -324,10 +311,6 @@ class KeyActionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // THE FIVE-CHARACTER ACTION FIELD
-    // ------------------------------------------------------------------------------------------
-
     /**
      * Verifies that every identifier fills the fixed-width field the copybook declares.
      */
@@ -368,10 +351,6 @@ class KeyActionTest {
             }
         }
     }
-
-    // ------------------------------------------------------------------------------------------
-    // THE TWO PROGRAM-ATTENTION IDENTIFIERS
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Verifies the padding the copybook writes into the two program-attention condition values.
@@ -451,10 +430,6 @@ class KeyActionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // THE TWELVE FUNCTION-KEY IDENTIFIERS
-    // ------------------------------------------------------------------------------------------
-
     /**
      * Verifies the zero-filled two-digit suffix the copybook uses for the twelve function keys.
      */
@@ -505,10 +480,6 @@ class KeyActionTest {
             }
         }
     }
-
-    // ------------------------------------------------------------------------------------------
-    // THE FUNCTION-KEY PREDICATE
-    // ------------------------------------------------------------------------------------------
 
     /**
      * Verifies the partition between the four non-function identifiers and the twelve function keys.
@@ -565,13 +536,6 @@ class KeyActionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // LOOKUP FROM A RECORDED IDENTIFIER
-    // ------------------------------------------------------------------------------------------
-
-    /**
-     * Verifies resolution of a five-character identifier read out of the work-area field.
-     */
     @Nested
     @DisplayName("lookup from a recorded identifier")
     class Lookup {
@@ -665,13 +629,6 @@ class KeyActionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // THE FOLD OF FUNCTION KEYS THIRTEEN THROUGH TWENTY-FOUR
-    // ------------------------------------------------------------------------------------------
-
-    /**
-     * Verifies that the upper twelve function keys have no constants of their own.
-     */
     @Nested
     @DisplayName("the fold of function keys thirteen through twenty-four")
     class FoldedUpperFunctionKeys {
@@ -710,13 +667,6 @@ class KeyActionTest {
         }
     }
 
-    // ------------------------------------------------------------------------------------------
-    // LEGACY CENSUS AND DOCUMENTED ABSENCES
-    // ------------------------------------------------------------------------------------------
-
-    /**
-     * Records the counted legacy facts and the deliberate absences they justify.
-     */
     @Nested
     @DisplayName("the legacy census and the absences it justifies")
     class LegacyCensusAndDocumentedAbsences {

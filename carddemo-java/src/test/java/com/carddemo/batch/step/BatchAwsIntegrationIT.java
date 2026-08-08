@@ -192,9 +192,15 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
             final JobCompletionNotificationPublisher publisher =
                     new JobCompletionNotificationPublisher(event ->
                             service.onApplicationEvent((JobCompletionEvent) event));
+            // This test's own per-test directory, not the shared platform temporary directory it used to
+            // pass. The listener never reads it on this path - a COMPLETED execution that registered no
+            // artifact returns before the root is touched - but the argument names the root the listener
+            // would DELETE within had the execution ended any other way, and a call site is not made safe
+            // by another component's internals. The field above is already isolated per test and removed
+            // by the framework, so the isolation this needs is the isolation the class already has.
             final JobExecutionListener listener = new BatchConfig().batchJobBoundaryListener(
                     providerOf(null), providerOf(publisher),
-                    System.getProperty("java.io.tmpdir"));
+                    this.stagingDirectory.toString());
             final JobExecution execution = completedJob(22);
             final StepExecution step = execution.createStepExecution("completedStep");
             step.setStatus(BatchStatus.COMPLETED);

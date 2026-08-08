@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.util.Map;
 
 import org.junit.jupiter.api.DisplayName;
@@ -104,7 +105,7 @@ class UserSecuritySecurityTest {
         @Test
         @DisplayName("a digest from the default encoder is accepted")
         void aDigestFromTheDefaultEncoderIsAccepted() {
-            assertThat(populated().credentialDigest()).isEqualTo(REAL_DIGEST);
+            assertThat(SensitiveValues.fingerprint(populated().credentialDigest())).isEqualTo(SensitiveValues.fingerprint(REAL_DIGEST));
         }
 
         @ParameterizedTest(name = "a digest at cost {0} is accepted")
@@ -113,7 +114,7 @@ class UserSecuritySecurityTest {
         void aDigestAtAnyPermittedCostIsAccepted(int cost) {
             String digest = new BCryptPasswordEncoder(cost).encode(LEGACY_PASSWORD);
 
-            assertThat(withCredential(digest).credentialDigest()).isEqualTo(digest);
+            assertThat(SensitiveValues.fingerprint(withCredential(digest).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(digest));
         }
 
         @Test
@@ -134,8 +135,8 @@ class UserSecuritySecurityTest {
             String second = ENCODER.encode(LEGACY_PASSWORD);
 
             assertThat(first).isNotEqualTo(second);
-            assertThat(withCredential(first).credentialDigest()).isEqualTo(first);
-            assertThat(withCredential(second).credentialDigest()).isEqualTo(second);
+            assertThat(SensitiveValues.fingerprint(withCredential(first).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(first));
+            assertThat(SensitiveValues.fingerprint(withCredential(second).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(second));
         }
     }
 
@@ -229,7 +230,7 @@ class UserSecuritySecurityTest {
         void allThreeRecognisedMarkersAreAccepted(String marker) {
             String remarked = marker + REAL_DIGEST.substring(4);
 
-            assertThat(withCredential(remarked).credentialDigest()).isEqualTo(remarked);
+            assertThat(SensitiveValues.fingerprint(withCredential(remarked).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(remarked));
         }
 
         @Test
@@ -268,7 +269,7 @@ class UserSecuritySecurityTest {
         void aCostOfExactlyTheFloorIsAccepted() {
             String atTheFloor = REAL_DIGEST.substring(0, 4) + "10" + REAL_DIGEST.substring(6);
 
-            assertThat(withCredential(atTheFloor).credentialDigest()).isEqualTo(atTheFloor);
+            assertThat(SensitiveValues.fingerprint(withCredential(atTheFloor).credentialDigest())).isEqualTo(SensitiveValues.fingerprint(atTheFloor));
         }
 
         @ParameterizedTest(name = "the character {0} in the tail is refused")
@@ -305,7 +306,7 @@ class UserSecuritySecurityTest {
 
             user.replaceCredentialDigest(replacement);
 
-            assertThat(user.credentialDigest()).isEqualTo(replacement);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(replacement));
         }
 
         @Test
@@ -326,7 +327,7 @@ class UserSecuritySecurityTest {
             assertThatExceptionOfType(IllegalArgumentException.class)
                     .isThrownBy(() -> user.replaceCredentialDigest("NEWPASSW"));
 
-            assertThat(user.credentialDigest()).isEqualTo(REAL_DIGEST);
+            assertThat(SensitiveValues.fingerprint(user.credentialDigest())).isEqualTo(SensitiveValues.fingerprint(REAL_DIGEST));
         }
 
         @Test

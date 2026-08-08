@@ -28,6 +28,7 @@ import com.carddemo.service.AuthenticationService;
 import com.carddemo.service.CredentialDigestService;
 import com.carddemo.service.MessageCatalogService;
 import com.carddemo.service.NavigationService;
+import com.carddemo.service.SignOnAttemptGovernor;
 import com.carddemo.util.SessionTokenIssuer;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -35,6 +36,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import java.lang.reflect.Method;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
@@ -138,6 +140,20 @@ class AuthControllerTest {
 
     private Level previousControllerLogLevel;
 
+    /**
+     * The abuse-resistance governor at the figures the shipped defaults declare.
+     *
+     * <p>Written out here rather than relaxed, so the graph under test is the one a deployment runs. The
+     * allowance is far above what any specification in this file spends, and a fresh instance is built per
+     * test so no test can inherit another's accumulated count.
+     *
+     * @return the governor
+     */
+    private static SignOnAttemptGovernor shippedGovernor() {
+        return new SignOnAttemptGovernor(true, 10, Duration.ofMinutes(5), Duration.ofMinutes(1),
+                10_000, FIXED_CLOCK, new SimpleMeterRegistry());
+    }
+
     /** Assembles the controller over a real service and a stubbed issuer. */
     @BeforeEach
     void setUp() {
@@ -148,7 +164,7 @@ class AuthControllerTest {
 
         final AuthenticationService authenticationService = new AuthenticationService(repository,
                 credentialDigestService, new NavigationService(), new MessageCatalogService(),
-                FIXED_CLOCK);
+                FIXED_CLOCK, shippedGovernor());
         controller = new AuthController(authenticationService,
                 new SignOnContractAdapter(new MessageCatalogService()), sessionTokenIssuer,
                 meterRegistry);
@@ -315,7 +331,7 @@ class AuthControllerTest {
         void everyCollaboratorIsRequired() {
             final AuthenticationService service = new AuthenticationService(repository,
                     credentialDigestService, new NavigationService(), new MessageCatalogService(),
-                    FIXED_CLOCK);
+                    FIXED_CLOCK, shippedGovernor());
             final SignOnContractAdapter adapter =
                     new SignOnContractAdapter(new MessageCatalogService());
 

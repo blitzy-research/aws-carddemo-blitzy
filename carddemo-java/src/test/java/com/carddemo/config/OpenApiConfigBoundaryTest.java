@@ -418,17 +418,16 @@ class OpenApiConfigBoundaryTest {
      * while carrying no path at all, and the first repair was to label the inventory as later bound - to
      * say, in the contract text, that no request-mapped operation had been delivered. That label was true
      * when it was written and false as soon as the first controller was mapped, which is exactly the
-     * failure the label was meant to prevent, only in the opposite direction. Nineteen operations are
-     * delivered now.</p>
+     * failure the label was meant to prevent, only in the opposite direction. <strong>Twenty</strong>
+     * operations are delivered now, over nineteen paths, because sign-on's two turns share one path.</p>
      *
-     * <p>So the second repair removes the count from the text altogether rather than correcting it: the
-     * description states where the inventory comes from and says nothing about how large it is, because any
-     * figure written into published contract text goes stale on the next endpoint. What replaces the label
-     * is two assertions here. {@link #carriesNoClaimAboutHowManyPathsExist()} requires that no emptiness
-     * claim has returned, in any of the wordings it could return in - so the text cannot rot back into the
-     * claim it replaced. {@link #theDeliveredOperationCountIsWhatTheCodeMaps()} reads the controllers and
-     * pins the delivered figure, so the inventory itself is measured rather than described, and a new
-     * endpoint is noticed here even though the contract text needs no edit for it.</p>
+     * <p>So the repairs that followed hold the text to the code rather than trusting it.
+     * {@link #carriesNoClaimAboutHowManyPathsExist()} requires that no emptiness claim has returned, in any
+     * of the wordings it could return in - so the text cannot rot back into the claim it replaced.
+     * {@link #theDeliveredOperationCountIsWhatTheCodeMaps()} reads the controllers and pins the delivered
+     * figure, so the inventory itself is measured rather than described. The figure the description states
+     * is compared to that same inventory by {@code api.DeliveredApiSurfaceOracleTest}, which is what caught
+     * the text claiming nineteen while twenty were mapped.</p>
      */
     @Nested
     @DisplayName("agreement between the description and the endpoint inventory the code maps")

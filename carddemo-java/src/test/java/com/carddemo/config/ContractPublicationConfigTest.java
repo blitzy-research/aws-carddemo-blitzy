@@ -257,7 +257,12 @@ final class ContractPublicationConfigTest {
             final OpenAPI document = documentFor(null);
 
             assertThat(document.getInfo().getDescription())
-                    .contains("19 operations")
+                    .as("the published figure is the whole delivered inventory: eighteen screen-derived "
+                            + "operations, because sign-on's two turns share one path, plus the two "
+                            + "batch-control operations")
+                    .contains("20 operations")
+                    .contains("19 paths")
+                    .doesNotContain("19 operations")
                     .doesNotContain("no request-mapped operation has been delivered yet");
             assertThat(document.getComponents().getHeaders())
                     .containsKey(OpenApiConfig.AUTHORIZATION_HEADER_COMPONENT);

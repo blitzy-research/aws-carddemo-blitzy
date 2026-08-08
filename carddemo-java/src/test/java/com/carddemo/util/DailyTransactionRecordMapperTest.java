@@ -18,6 +18,7 @@ package com.carddemo.util;
 
 import com.carddemo.domain.DailyTransaction;
 
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -315,7 +316,7 @@ class DailyTransactionRecordMapperTest {
             assertThat(mapped.getDalytranMerchantCity())
                     .isEqualTo(alphanumeric(FIRST_MERCHANT_CITY, 50));
             assertThat(mapped.getDalytranMerchantZip()).isEqualTo("72112     ");
-            assertThat(mapped.getDalytranCardNum()).isEqualTo("4859452612877065");
+            assertThat(SensitiveValues.fingerprint(mapped.getDalytranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877065"));
             assertThat(mapped.getDalytranOrigTs()).isEqualTo("2022-06-10 19:27:53.000000");
             assertThat(mapped.getDalytranProcTs()).isEqualTo(BLANK_PROCESSING_TIMESTAMP);
         }

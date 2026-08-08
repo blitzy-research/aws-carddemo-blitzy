@@ -16,6 +16,7 @@
  */
 package com.carddemo.domain;
 
+import com.carddemo.support.SensitiveValues;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -273,7 +274,7 @@ class TransactionTest {
             assertThat(record.getMerchantName()).isEqualTo(ROW_MERCHANT_NAME);
             assertThat(record.getMerchantCity()).isEqualTo(ROW_MERCHANT_CITY);
             assertThat(record.getMerchantZip()).isEqualTo(ROW_MERCHANT_ZIP);
-            assertThat(record.getTranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
             assertThat(record.getTranOrigTs()).isEqualTo(ROW_ORIG_TS);
             assertThat(record.getTranProcTs()).isEqualTo(ROW_PROC_TS);
         }
@@ -289,7 +290,7 @@ class TransactionTest {
 
             assertThat(record.getTranId()).isNotEqualTo(record.getTranCardNum());
             assertThat(record.getTranId()).isEqualTo(ROW_ID);
-            assertThat(record.getTranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
 
             assertThat(record.getMerchantName()).isNotEqualTo(record.getMerchantCity());
             assertThat(record.getMerchantName()).isEqualTo(ROW_MERCHANT_NAME);
@@ -333,7 +334,7 @@ class TransactionTest {
             assertThat(record.getMerchantName()).isEqualTo("Hegmann and Sons" + " ".repeat(34));
             assertThat(record.getMerchantCity()).isEqualTo("West Lucileview" + " ".repeat(35));
             assertThat(record.getMerchantZip()).isEqualTo("60601" + " ".repeat(5));
-            assertThat(record.getTranCardNum()).isEqualTo("4859452612877066");
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint("4859452612877066"));
             assertThat(record.getTranOrigTs()).isEqualTo("2022-06-12 08:00:01.000000");
             assertThat(record.getTranProcTs()).isEqualTo(BLANK_PROC_TS);
         }
@@ -808,7 +809,7 @@ class TransactionTest {
         void everyAccessorStillReturnsTheUntouchedValue() {
             Transaction record = postedTransaction();
 
-            assertThat(record.getTranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
             assertThat(record.getTranAmt()).isEqualTo(new BigDecimal(ROW_AMT));
             assertThat(record.getMerchantName()).isEqualTo(ROW_MERCHANT_NAME);
         }
@@ -864,12 +865,12 @@ class TransactionTest {
             // held as text: a numeric type would adopt one job's reading and discard the other's.
             Transaction record = postedTransaction();
 
-            assertThat(record.getTranCardNum()).isEqualTo(ROW_CARD_NUM);
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint(ROW_CARD_NUM));
             assertThat(encodedBytes(record.getTranCardNum())).isEqualTo(WIDTH_CARD_NUM);
 
             record.setTranCardNum("0000000000000001");
 
-            assertThat(record.getTranCardNum()).isEqualTo("0000000000000001");
+            assertThat(SensitiveValues.fingerprint(record.getTranCardNum())).isEqualTo(SensitiveValues.fingerprint("0000000000000001"));
             assertThat(encodedBytes(record.getTranCardNum())).isEqualTo(WIDTH_CARD_NUM);
         }
 

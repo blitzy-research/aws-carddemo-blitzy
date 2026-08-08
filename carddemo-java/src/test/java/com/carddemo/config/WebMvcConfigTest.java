@@ -320,7 +320,6 @@ class WebMvcConfigTest {
         }
     }
 
-    /** Small JSON shape whose payload size is controlled entirely by the test. */
     private record BodyProbe(String value) {
     }
 
@@ -338,8 +337,6 @@ class WebMvcConfigTest {
             final AssertableWebApplicationContext context) {
         return context.getBean(RequestMappingHandlerAdapter.class).getMessageConverters();
     }
-
-    // HALF ONE - THE NEGATIVE-CONTRIBUTION PROOF: CALLBACKS THAT RECEIVE A COLLECTION
 
     /**
      * Every callback handed a collection leaves that collection exactly as it found it.
@@ -448,8 +445,6 @@ class WebMvcConfigTest {
                     .isEmpty();
         }
     }
-
-    // HALF ONE - THE NEGATIVE-CONTRIBUTION PROOF: CALLBACKS THAT RECEIVE A REGISTRY
 
     /**
      * Every callback handed a registry leaves that registry entirely uncalled.
@@ -622,8 +617,6 @@ class WebMvcConfigTest {
         }
     }
 
-    // HALF ONE - THE NEGATIVE-CONTRIBUTION PROOF: CALLBACKS THAT ANSWER WITH A COMPONENT
-
     /**
      * The two callbacks that answer with a component answer with none.
      *
@@ -664,8 +657,6 @@ class WebMvcConfigTest {
                     .isNull();
         }
     }
-
-    // HALF TWO - THE AUTO-CONFIGURATION-SURVIVAL SLICE: THE PRIMARY PROOF
 
     /**
      * The auto-configured web tier survives the presence of {@code WebMvcConfig}.
@@ -791,8 +782,6 @@ class WebMvcConfigTest {
         }
     }
 
-    // HALF TWO - THE CONTROL GROUP THAT MAKES THE SURVIVAL PROOF FALSIFIABLE
-
     /**
      * Demonstrates that the survival assertions above can actually fail.
      *
@@ -843,8 +832,6 @@ class WebMvcConfigTest {
             });
         }
     }
-
-    // SECONDARY GUARD - SUBORDINATE TO THE SURVIVAL PROOF, NEVER A SUBSTITUTE FOR IT
 
     /**
      * A cheap structural guard placed beside the survival proof, never in place of it.

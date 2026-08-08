@@ -34,7 +34,9 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -44,12 +46,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.ClassOrderer;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestClassOrder;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.configuration.JobRegistry;
 import org.springframework.batch.core.explore.JobExplorer;
@@ -95,12 +95,19 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  *
  * <h2>What is asserted, and why each item is contract rather than detail</h2>
  * <ul>
- *   <li><strong>Nine launchable names and no tenth.</strong> Of the seventy-eight program-execution
- *       steps across the twenty-nine job members and two cataloged procedures of the estate, only nine
- *       invoke an application program; the remaining sixty-nine are data-set utilities absorbed by the
- *       migrations, by comparators inside the job that needs them, and by the local service
- *       composition. Nine job configurations is therefore the measured answer, and the closure is a
- *       security property rather than tidiness: without it the launch path would be "start whatever the
+ *   <li><strong>Nine launchable names and no tenth.</strong> Of the <strong>seventy-nine</strong>
+ *       program-execution steps across the twenty-nine job members and two cataloged procedures of the
+ *       estate - seventy-six declared in the job members and three in the procedures - only nine invoke
+ *       an application program; the remaining <strong>seventy</strong> are data-set utilities absorbed by
+ *       the migrations, by comparators inside the job that needs them, and by the local service
+ *       composition. The action plan records seventy-eight steps of which sixty-nine are utility steps,
+ *       and its own per-utility breakdown - fifty-two data-set, eight display, five sort, three
+ *       null-execution, one reproduction and one resource-definition step - sums to seventy, so
+ *       seventy-eight is an arithmetic slip for seventy-nine rather than a miscount of any category. The
+ *       measured figures are the ones used here and the correction is recorded in the decision log;
+ *       {@code e2e.GateVerificationTest} censuses the estate and asserts them. What no correction touches
+ *       is the load-bearing figure: nine job configurations is the measured answer, and the closure is a
+ *       security property rather than tidiness - without it the launch path would be "start whatever the
  *       caller names".</li>
  *   <li><strong>A name outside the nine reaches no framework call and discloses nothing.</strong> The
  *       refusal carries one neutral summary; it never names the value that arrived, a bean, a type, a
@@ -277,9 +284,10 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
     /**
      * How many jobs the delivered application registers, stated once as its own figure.
      *
-     * <p>Nine, because nine of the seventy-eight program-execution steps invoke an application program.
-     * Sixty-nine invoked a data-set utility and became a migration, a comparator or a local service, so
-     * they are not steps of a job at all.
+     * <p>Nine, because nine of the seventy-nine program-execution steps invoke an application program.
+     * Seventy invoked a data-set utility and became a migration, a comparator or a local service, so
+     * they are not steps of a job at all. Seventy-nine is the measured total; the action plan's
+     * seventy-eight is contradicted by its own utility breakdown, which sums to seventy.
      */
     private static final int LAUNCHABLE_JOB_COUNT = 9;
 
@@ -411,11 +419,11 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
             List.of("CLOSEFIL", "OPENFIL", "CBADMCDJ");
 
     /**
-     * Utility program names the sixty-nine absorbed steps invoked, probed to prove none is launchable.
+     * Utility program names the seventy absorbed steps invoked, probed to prove none is launchable.
      *
      * <p>They defined, deleted, copied and toggled data sets. The migrations, the comparators inside the
      * job that needs them and the local service composition absorbed all of them, which is why the
-     * launchable inventory is nine and not seventy-eight.
+     * launchable inventory is nine and not seventy-nine.
      */
     private static final List<String> ABSORBED_UTILITY_PROGRAMS =
             List.of("IDCAMS", "SDSF", "SORT", "IEFBR14", "IEBGENER", "DFHCSDUP");
@@ -515,9 +523,9 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
      * Counts the recorded executions of one job out of the framework's own metadata.
      *
      * <p>A complete literal statement with the job name bound as a parameter, so no value is ever
-     * assembled into it. It is read-only: nothing in this file writes, alters or empties a
-     * job-repository table, because those belong to the framework and not to the eleven migrated record
-     * layouts.
+     * assembled into it. This statement is read-only; the only write this file performs against a
+     * job-repository table is the release of the executions this specification itself created, which is
+     * keyed by identifier so that no row belonging to another specification can be reached.
      */
     private static final String EXECUTION_COUNT_SQL = """
             SELECT COUNT(*) FROM batch_job_execution execution
@@ -538,6 +546,47 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
             SELECT COUNT(*) FROM information_schema.tables
              WHERE table_schema = 'public'
                AND table_name = 'batch_job_instance'
+            """;
+
+    /**
+     * Resolves the instance one execution belongs to, so an emptied instance can be considered for
+     * removal without naming a job.
+     */
+    private static final String INSTANCE_OF_EXECUTION_SQL = """
+            SELECT job_instance_id FROM batch_job_execution WHERE job_execution_id = ?
+            """;
+
+    /**
+     * The child-first deletes that release one owned execution, in the order the framework's own foreign
+     * keys require. Each takes the execution identifier as its single bound parameter.
+     */
+    private static final List<String> CHILD_FIRST_EXECUTION_DELETES = List.of("""
+            DELETE FROM batch_step_execution_context WHERE step_execution_id IN (
+                SELECT step_execution_id FROM batch_step_execution WHERE job_execution_id = ?)
+            """, """
+            DELETE FROM batch_step_execution WHERE job_execution_id = ?
+            """, """
+            DELETE FROM batch_job_execution_context WHERE job_execution_id = ?
+            """, """
+            DELETE FROM batch_job_execution_params WHERE job_execution_id = ?
+            """, """
+            DELETE FROM batch_job_execution WHERE job_execution_id = ?
+            """);
+
+    /** Reports whether one execution is still held, so the release can be required to have worked. */
+    private static final String EXECUTION_STILL_HELD_SQL = """
+            SELECT COUNT(*) FROM batch_job_execution WHERE job_execution_id = ?
+            """;
+
+    /**
+     * Removes one instance only if no execution of any kind remains against it, so a neighbour's
+     * instance is never taken.
+     */
+    private static final String ORPHANED_INSTANCE_DELETE_SQL = """
+            DELETE FROM batch_job_instance
+             WHERE job_instance_id = ?
+               AND NOT EXISTS (SELECT 1 FROM batch_job_execution execution
+                                WHERE execution.job_instance_id = batch_job_instance.job_instance_id)
             """;
 
     /** Reads and writes request and response documents without binding to a published contract type. */
@@ -576,6 +625,28 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
      * measurement rather than an assurance.
      */
     private static long executionsBeforeContextStarted;
+
+    /**
+     * The number of executions of the nine jobs recorded once the context had started, before any test
+     * body ran.
+     *
+     * <p>Read once by the first {@code @BeforeEach} invocation, which necessarily precedes the first test
+     * body and therefore every launch this specification performs. Comparing it against the pre-context
+     * figure above is the whole of the claim that a refresh starts nothing, and holding it separately is
+     * what makes that claim independent of which test happens to run first.
+     */
+    private static Long executionsWhenTheContextWasReady;
+
+    /**
+     * Every execution this specification created, in the order the boundary answered with them.
+     *
+     * <p>Recorded at the one place a launch is submitted, so an admitted launch is counted exactly once
+     * and a refused one is not counted at all. Two things are built on it: the arithmetic that accounts
+     * for the shared metadata store's growth without assuming this specification is alone in it, and the
+     * release below, which removes these executions and nothing else.
+     */
+    private static final Set<Long> OWNED_EXECUTIONS =
+            Collections.synchronizedSet(new LinkedHashSet<>());
 
     // =================================================================================================
     // INJECTED COLLABORATORS
@@ -647,7 +718,27 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
      */
     @AfterAll
     static void restoreDeliveredState() throws SQLException {
-        restoreSeededState();
+        try {
+            releaseOwnedJobMetadata();
+        } finally {
+            restoreSeededState();
+        }
+    }
+
+    /**
+     * Reads the context-ready execution census exactly once, on the first method this class reaches.
+     *
+     * <p>Not a {@code @BeforeAll}: that one runs before the context exists, which is where the other
+     * figure comes from. This one has to be taken after the refresh and before anything is launched, and
+     * the first {@code @BeforeEach} invocation is exactly that moment whichever method it belongs to.
+     *
+     * @throws SQLException if the framework's own metadata cannot be read
+     */
+    @BeforeEach
+    void recordTheContextReadyCensusOnce() throws SQLException {
+        if (executionsWhenTheContextWasReady == null) {
+            executionsWhenTheContextWasReady = Long.valueOf(recordedExecutionsOfTheNineJobs());
+        }
     }
 
     /**
@@ -813,7 +904,31 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         if (session != null) {
             request = request.header(HttpHeaders.AUTHORIZATION, session);
         }
-        return this.mockMvc.perform(request).andReturn();
+        final MvcResult result = this.mockMvc.perform(request).andReturn();
+        rememberAnyExecutionThisLaunchCreated(result);
+        return result;
+    }
+
+    /**
+     * Records the execution a launch created, if it created one.
+     *
+     * <p>Every launch this specification submits passes through the method above, admitted or refused, so
+     * recording here is what makes the ledger complete. A refusal carries no identifier and is therefore
+     * not recorded, which is the distinction the arithmetic depends on: an execution exists exactly when
+     * the boundary answered with its identifier.
+     *
+     * @param  result the completed exchange
+     * @throws Exception if the answered document cannot be read
+     */
+    private static void rememberAnyExecutionThisLaunchCreated(final MvcResult result) throws Exception {
+        final String body = bodyOf(result);
+        if (body.isEmpty()) {
+            return;
+        }
+        final JsonNode identifier = JSON.readTree(body).get("executionId");
+        if (identifier != null && identifier.canConvertToLong()) {
+            OWNED_EXECUTIONS.add(Long.valueOf(identifier.asLong()));
+        }
     }
 
     /**
@@ -1123,6 +1238,80 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
     }
 
     /**
+     * Removes the job-repository rows of every execution this specification created, and nothing else.
+     *
+     * <p>Keyed by execution identifier rather than by job name, because the nine jobs are launched by
+     * several specifications in one run and a name-keyed delete would take a neighbour's rows with it.
+     * The order is child-first, which is what the framework's own foreign keys require: the step
+     * execution contexts, the step executions, the execution contexts, the execution parameters, and
+     * then the executions themselves.
+     *
+     * <p>An instance is removed only once it holds no execution at all. A launch through this surface
+     * carries a run identity, so an instance reached from an owned execution is one this specification
+     * caused; the emptiness guard is applied all the same, so an instance a neighbour still holds an
+     * execution against survives even if this specification happened to reach it too.
+     *
+     * <p>Every statement is a complete literal with the identifier bound as a parameter, so no value is
+     * ever assembled into one.
+     *
+     * @throws SQLException if the metadata cannot be released
+     */
+    private static void releaseOwnedJobMetadata() throws SQLException {
+        if (OWNED_EXECUTIONS.isEmpty() || !batchMetadataPresent()) {
+            return;
+        }
+        final List<Long> owned;
+        synchronized (OWNED_EXECUTIONS) {
+            owned = List.copyOf(OWNED_EXECUTIONS);
+        }
+        try (Connection connection = connect()) {
+            final Set<Long> touchedInstances = new LinkedHashSet<>();
+            for (final Long executionId : owned) {
+                try (PreparedStatement resolve =
+                        connection.prepareStatement(INSTANCE_OF_EXECUTION_SQL)) {
+                    resolve.setLong(1, executionId.longValue());
+                    try (ResultSet rows = resolve.executeQuery()) {
+                        if (rows.next()) {
+                            touchedInstances.add(Long.valueOf(rows.getLong(1)));
+                        }
+                    }
+                }
+                for (final String statement : CHILD_FIRST_EXECUTION_DELETES) {
+                    try (PreparedStatement delete = connection.prepareStatement(statement)) {
+                        delete.setLong(1, executionId.longValue());
+                        delete.executeUpdate();
+                    }
+                }
+            }
+            for (final Long instanceId : touchedInstances) {
+                try (PreparedStatement delete =
+                        connection.prepareStatement(ORPHANED_INSTANCE_DELETE_SQL)) {
+                    delete.setLong(1, instanceId.longValue());
+                    delete.executeUpdate();
+                }
+            }
+
+            // The release is required to have worked rather than assumed to have. Cleanup that silently
+            // does nothing is indistinguishable from cleanup that was never written, and the whole point
+            // of keying by identifier is that these rows do not outlive the specification that made them.
+            try (PreparedStatement held = connection.prepareStatement(EXECUTION_STILL_HELD_SQL)) {
+                for (final Long executionId : owned) {
+                    held.setLong(1, executionId.longValue());
+                    final boolean stillHeld;
+                    try (ResultSet rows = held.executeQuery()) {
+                        stillHeld = rows.next() && rows.getLong(1) > 0L;
+                    }
+                    assertThat(stillHeld)
+                            .as("execution %s was created by this specification and must not outlive it",
+                                    executionId)
+                            .isFalse();
+                }
+            }
+        }
+        OWNED_EXECUTIONS.clear();
+    }
+
+    /**
      * Reports whether the framework's own metadata tables exist on the shared server yet.
      *
      * @return {@code true} once the framework has provisioned them
@@ -1211,7 +1400,6 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
      */
     @Nested
     @Order(1)
-    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     @DisplayName("No auto-run at start-up: the shipped configuration disables it, so nothing runs until "
             + "this surface is called")
     class NoAutoRunAtStartUp {
@@ -1222,21 +1410,29 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @Order(1)
         @DisplayName("starting the application recorded no execution of any of the nine jobs")
         void startingTheApplicationRecordedNoExecution() throws SQLException {
             // The estate had no resident process to start: online work was reached through the eighteen
             // registered transactions and batch work by submitting a job member. Nothing therefore ran
             // because something came up, and the migration keeps that exactly.
-            assertThat(recordedExecutionsOfTheNineJobs())
+            //
+            // Two figures, because the metadata store is shared by every specification in the run and is
+            // not emptied between runs. The refresh is judged by the pair either side of it, both read
+            // before any test body; the growth since is judged against this specification's own ledger,
+            // so no method has to be the first one to run for the claim to hold.
+            assertThat(executionsWhenTheContextWasReady)
                     .as("the count taken before this context existed and the count taken after it started "
                             + "must be the same figure; a difference means a job ran as a side effect of a "
                             + "refresh")
-                    .isEqualTo(executionsBeforeContextStarted);
+                    .isEqualTo(Long.valueOf(executionsBeforeContextStarted));
+            assertThat(recordedExecutionsOfTheNineJobs())
+                    .as("every execution recorded since the refresh is one this specification launched "
+                            + "through the surface under test (%d so far), never one that appeared on its "
+                            + "own", Integer.valueOf(OWNED_EXECUTIONS.size()))
+                    .isEqualTo(executionsWhenTheContextWasReady.longValue() + OWNED_EXECUTIONS.size());
         }
 
         @Test
-        @Order(2)
         @DisplayName("the shipped configuration document resolves auto-run to false and names no job for "
                 + "a start-up runner to resolve")
         void theShippedConfigurationDisablesAutoRun() {
@@ -1254,7 +1450,6 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @Order(3)
         @DisplayName("the context holds no start-up runner at all, which is the mechanism rather than the "
                 + "symptom")
         void theContextHoldsNoStartUpRunner() {
@@ -1270,7 +1465,6 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @Order(4)
         @DisplayName("no execution of any of the nine jobs is left in flight, so nothing was started and "
                 + "abandoned")
         void noExecutionOfTheNineIsInFlight() {
@@ -1283,7 +1477,6 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
         }
 
         @Test
-        @Order(5)
         @DisplayName("one launch call creates exactly one execution - never none and never two")
         void oneLaunchCallCreatesExactlyOneExecution() throws Exception {
             // The probe job is the one that reads through the repositories and touches nothing else, so
@@ -1342,7 +1535,7 @@ public class BatchJobControllerIT extends AbstractPostgresIT {
             // the whole application: the registry holds what the application registered rather than what
             // a test named.
             assertThat(jobRegistry.getJobNames())
-                    .as("nine of the seventy-eight program-execution steps invoked an application "
+                    .as("nine of the seventy-nine program-execution steps invoked an application "
                             + "program, so nine job configurations is the measured answer and a tenth "
                             + "would be an invented one")
                     .containsExactlyInAnyOrderElementsOf(NINE_LAUNCHABLE_JOB_NAMES)

@@ -71,6 +71,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 /**
@@ -462,6 +463,19 @@ public class BillPaymentControllerIT extends AbstractPostgresIT {
     /** The account master, for writing and removing owned accounts and reading the settled balance. */
     @Autowired
     private AccountRepository accounts;
+
+    /**
+     * The same shipped account master, spied so that one specification can force the rewrite of line 235 to
+     * fail.
+     *
+     * <p>A spy, not a mock: every call reaches the real repository and the real server unless a test has
+     * explicitly arranged otherwise, so the graph this class boots is still the shipped one. The bean
+     * override applies to the whole context, which is why {@link #accounts} and this field are the same
+     * object - the second reference exists only so that a reader can see at the arrangement site that the
+     * store is being made to fail deliberately.
+     */
+    @MockitoSpyBean
+    private AccountRepository spiedAccounts;
 
     /**
      * The card master, for the owned card rows the cross-reference and the posted transaction both name.
@@ -1602,6 +1616,82 @@ public class BillPaymentControllerIT extends AbstractPostgresIT {
     // ===============================================================================================
     // 9 - LEAKAGE AND NEGATIVES
     // ===============================================================================================
+
+    // ===============================================================================================
+    // THE PERSISTENCE BOUNDARY OF LINES 233 TO 235, OBSERVED OVER THE REST SURFACE
+    // ===============================================================================================
+
+    /**
+     * Establishes over the shipped boundary that the transaction insert of line 233 is durable independently
+     * of the account rewrite of line 235.
+     *
+     * <p>{@code app/csd/CARDDEMO.CSD} defines both files {@code RECOVERY(NONE)} with {@code JOURNAL(NO)}, so
+     * a record write that completed cannot be undone, and the source performs lines 234 and 235 whether or
+     * not the write at 233 succeeded, testing no flag between them. A {@code REWRITE} that fails after a
+     * successful {@code WRITE} therefore leaves the transaction stored, the account unsettled, and the
+     * operator told the account could not be updated - and the response body has to carry both facts.
+     *
+     * <p>The failure has no data-driven trigger, because the schema is what makes the rewrite succeed. A spy
+     * on the shipped repository is therefore the seam: every other call in the turn reaches the real
+     * repository and the real server, and the only altered thing is the one store whose failure is the
+     * subject.
+     *
+     * <p>The <em>concurrency</em> half of this boundary - that two operators post one transaction and one
+     * debit, that the loser waits on the row and then reaches the legacy nothing-to-pay message, and that the
+     * allocation lock serialises - is established in {@code service/BillPaymentConcurrencyIT}, which runs the
+     * shipped service from two threads. It is not duplicated here, because a mock servlet adds nothing to a
+     * property of two simultaneous units of work.
+     */
+    @Nested
+    @DisplayName("A refused account rewrite leaves the posted transaction stored")
+    class RefusedRewriteLeavesThePostedTransaction {
+
+        /** Creates the group. */
+        RefusedRewriteLeavesThePostedTransaction() {
+        }
+
+        @Test
+        @DisplayName("the response carries the STORED identifier and the update-failure text together, and "
+                + "the row is still in the master while the balance is untouched")
+        void theResponseCarriesTheStoredIdentifierAndTheUpdateFailureTogether() throws Exception {
+            org.mockito.Mockito.doThrow(new IllegalStateException("the rewrite failed"))
+                    .when(BillPaymentControllerIT.this.spiedAccounts)
+                    .saveAndFlush(org.mockito.ArgumentMatchers.any(Account.class));
+
+            final JsonNode response = reEntry(OWNED_ACCOUNT_WITH_BALANCE, "Y");
+
+            assertThat(textOf(response, "errorMessage"))
+                    .as("the rewrite's catch-all arm is the last text written, so it is what the operator "
+                            + "sees")
+                    .isEqualTo(atOutboundWidth(UNABLE_TO_UPDATE_ACCOUNT));
+            assertThat(response.get("generalError").asBoolean()).isTrue();
+            assertThat(response.get("paymentAccepted").asBoolean())
+                    .as("the account was not settled, so the turn did not complete a payment")
+                    .isFalse();
+            assertThat(textOf(response, "newTransactionId"))
+                    .as("the insert's OWN arm ran first and published the identifier it stored; the "
+                            + "operator is told which record exists as well as that the account does not "
+                            + "reflect it")
+                    .isNotNull();
+
+            final String storedIdentifier = textOf(response, "newTransactionId");
+            assertThat(BillPaymentControllerIT.this.transactions.findById(storedIdentifier))
+                    .as("THE ROW IS STILL THERE. The insert committed in a unit of its own, and a legacy "
+                            + "REWRITE failure over an unrecoverable file cannot undo a WRITE that already "
+                            + "happened. A shared unit of work would have discarded it.")
+                    .isPresent();
+            assertThat(BillPaymentControllerIT.this.transactions.count()).isOne();
+
+            assertThat(BillPaymentControllerIT.this.accounts.findById(OWNED_ACCOUNT_WITH_BALANCE))
+                    .as("the balance is exactly as it was, which is why the operator is told the account "
+                            + "could not be updated")
+                    .isPresent()
+                    .get(org.assertj.core.api.InstanceOfAssertFactories.type(Account.class))
+                    .extracting(Account::getAcctCurrBal, org.assertj.core.api.Assertions.as(
+                            org.assertj.core.api.InstanceOfAssertFactories.BIG_DECIMAL))
+                    .isEqualByComparingTo(OWNED_OPENING_BALANCE);
+        }
+    }
 
     @Nested
     @DisplayName("Leakage and negatives")

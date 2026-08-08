@@ -2246,8 +2246,31 @@ class FileMaintenanceServiceTest {
         @DisplayName("a count of zero is a legitimate summary, because an empty cluster is a normal "
                 + "outcome rather than a failure")
         void aCountOfZeroIsALegitimateSummary() {
-            assertThatNoException().isThrownBy(() -> new FileMaintenanceService.FileReadSummary(
-                    UNLOAD_STEP, DD_TCATBALF, 0L, RAW_END_OF_FILE));
+            // Zero is the one count that the guard above could plausibly have refused along with the
+            // negative one, so what matters is not merely that construction is admitted but that the
+            // summary it produces still reports a NORMAL ENDING. An empty cluster reaches end of file
+            // without reading a record, and a caller distinguishes that from a failure by the predicate
+            // rather than by the count.
+            final FileMaintenanceService.FileReadSummary emptyCluster =
+                    new FileMaintenanceService.FileReadSummary(
+                            UNLOAD_STEP, DD_TCATBALF, 0L, RAW_END_OF_FILE);
+
+            assertAll(
+                    () -> assertThat(emptyCluster.programName()).isEqualTo(UNLOAD_STEP),
+                    () -> assertThat(emptyCluster.resourceName()).isEqualTo(DD_TCATBALF),
+                    () -> assertThat(emptyCluster.recordsRead())
+                            .as("zero is carried through as zero, neither rejected nor normalised")
+                            .isZero(),
+                    () -> assertThat(emptyCluster.terminalFileStatus()).isEqualTo(RAW_END_OF_FILE),
+                    () -> assertThat(emptyCluster.endedAtEndOfFile())
+                            .as("an empty cluster ended normally: the read loop reached end of file "
+                                    + "without a record, which is not the error route out of it")
+                            .isTrue(),
+                    () -> assertThat(emptyCluster)
+                            .as("and a zero-count summary is a distinct value from an otherwise "
+                                    + "identical one that read a record")
+                            .isNotEqualTo(new FileMaintenanceService.FileReadSummary(
+                                    UNLOAD_STEP, DD_TCATBALF, 1L, RAW_END_OF_FILE)));
         }
     }
 
