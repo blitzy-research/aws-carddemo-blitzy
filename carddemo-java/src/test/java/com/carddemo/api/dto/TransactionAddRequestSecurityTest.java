@@ -505,7 +505,11 @@ class TransactionAddRequestSecurityTest {
                 assertThat(size.max()).as("component %s width", name)
                         .isEqualTo(BOUNDED_WIDTHS.get(index));
                 assertThat(size.min()).as("component %s must declare no minimum", name).isZero();
-                assertThat(field.getAnnotations()).as("component %s carries one annotation", name)
+                assertThat(Arrays.stream(field.getAnnotations())
+                        .filter(annotation -> annotation.annotationType().getPackageName()
+                                .startsWith("jakarta.validation"))
+                        .toList())
+                        .as("component %s carries one constraint and no other", name)
                         .hasSize(1);
             }
         }
@@ -518,8 +522,12 @@ class TransactionAddRequestSecurityTest {
             Field field = TransactionAddRequest.class.getDeclaredField("amount");
 
             assertThat(Arrays.stream(field.getAnnotations())
+                    .filter(annotation -> annotation.annotationType().getPackageName()
+                            .startsWith("jakarta.validation"))
                     .map(annotation -> annotation.annotationType().getSimpleName())
                     .toList())
+                    .as("the width is the only rule; a numeric bound here would refuse a value the add"
+                            + " screen must report on in its own words")
                     .containsExactly("Size")
                     .doesNotContain("Digits", "DecimalMin", "DecimalMax", "Min", "Max", "Positive",
                             "PositiveOrZero", "NotNull", "Pattern");

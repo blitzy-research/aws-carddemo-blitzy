@@ -25,6 +25,9 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.util.FailureDiagnostics;
 import com.carddemo.util.RefusalBodyRenderer;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import jakarta.persistence.OptimisticLockException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
@@ -913,19 +916,70 @@ public final class GlobalExceptionHandler {
     /**
      * Handles a request body the message converter could not read.
      *
-     * <p>A body that did not parse has no fields to attribute an error to, so the response carries
-     * the neutral summary alone. The parse diagnostic is used neither in the body nor in the log: it
-     * quotes the offending fragment of the payload, and a sign-on body's payload holds a password.
+     * <p>A body that did not parse at all has no fields to attribute an error to, so the response
+     * carries the neutral summary alone. The parse diagnostic is used neither in the body nor in the
+     * log: it quotes the offending fragment of the payload, and a sign-on body's payload holds a
+     * password.
+     *
+     * <p><strong>One family of failures does know which field was at fault, and now says so.</strong>
+     * A body that parsed as JSON but held the wrong <em>shape</em> for one declared property - a
+     * number where the contract declares text, a fractional value where it declares a whole count -
+     * is reported by the mapper against a resolved property path. Answering that with the neutral
+     * summary and an empty field list left a caller with a {@code 400} and no way to find the cause:
+     * a forty-three property screen body was refused over one member and the response named none of
+     * them. The leaf property is emitted with state INVALID, the same not-OK state a failed edit
+     * carries elsewhere on this class, so the remedy is to correct that one value.
+     *
+     * <p>Two exclusions keep this from disclosing anything it should not. The refused value itself is
+     * never read, so no caller data is echoed and none is logged - only the property name, which is
+     * part of the module's own published contract. And an unknown-property refusal is deliberately
+     * left on the neutral path even though it too carries a path: the name in it is one the
+     * <em>caller</em> invented rather than one this module declares, and the closed batch-launch
+     * surface is answered without repeating it back.
      *
      * @param exception the unreadable-body failure, never {@code null} when invoked by the
      *                  framework
-     * @return a {@code 400} response whose body holds the neutral summary and no field detail
+     * @return a {@code 400} response naming the offending declared property where one is identified,
+     *     and holding the neutral summary alone otherwise
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleUnreadableBody(
             HttpMessageNotReadableException exception) {
-        LOG.debug("Request body could not be read by the configured message converter");
-        return badRequest(MALFORMED_REQUEST_BODY_MESSAGE, List.of());
+        String property = mismatchedPropertyName(exception.getCause());
+        if (property == null) {
+            LOG.debug("Request body could not be read by the configured message converter");
+            return badRequest(MALFORMED_REQUEST_BODY_MESSAGE, List.of());
+        }
+        LOG.debug("Request body held an unusable value for a declared property: property={}",
+                property);
+        return badRequest(MALFORMED_REQUEST_BODY_MESSAGE, List.of(new ErrorResponse.FieldError(
+                property, EMPTY, ErrorResponse.FieldState.INVALID, MALFORMED_REQUEST_BODY_MESSAGE)));
+    }
+
+    /**
+     * Names the declared property a readable body held an unusable value for, when the mapper
+     * identified one.
+     *
+     * <p>The leaf of the reported path is used rather than the whole of it, matching the field naming
+     * every other arm on this class produces: a field error names the field, and a nested contract's
+     * member is still that member. The refused value is never read.
+     *
+     * @param  failure the cause the message converter wrapped; may be {@code null}
+     * @return the leaf property name, or {@code null} when no declared property is identified
+     */
+    private static String mismatchedPropertyName(Throwable failure) {
+        if (!(failure instanceof MismatchedInputException mismatch)
+                || failure instanceof UnrecognizedPropertyException) {
+            return null;
+        }
+        String leaf = null;
+        for (JsonMappingException.Reference reference : mismatch.getPath()) {
+            String named = reference.getFieldName();
+            if (named != null && !named.isEmpty()) {
+                leaf = named;
+            }
+        }
+        return leaf;
     }
 
     /**

@@ -386,7 +386,11 @@ public class AccountController {
             final String accountId,
             @RequestParam(name = ATTENTION_KEY_PARAM, required = false)
             @Parameter(description = "Terminal attention identifier as transmitted, for example "
-                    + "DFHPF03 to leave the screen. Optional; absent reads as the enter key.")
+                    + "DFHPF3 to leave the screen. The vocabulary is the one the attention-key "
+                    + "copybook app/cpy/CSSTRPFY.cpy defines - DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and "
+                    + "DFHPF1 through DFHPF24, with the function-key number never zero-padded, so "
+                    + "DFHPF3 and not DFHPF03. An identifier outside it is answered with the invalid-key "
+                    + "message rather than being ignored. Optional; absent reads as the enter key.")
             final String attentionKey,
             @Valid @RequestBody(required = false) final NavigationContext navigationContext,
             final Authentication authentication) {
@@ -473,7 +477,12 @@ public class AccountController {
             @Valid @RequestBody final AccountUpdateRequest request,
             @RequestParam(name = ATTENTION_KEY_PARAM, required = false)
             @Parameter(description = "Terminal attention identifier as transmitted, for example "
-                    + "DFHPF05 to save. Optional; absent uses the typed action the body carries.")
+                    + "DFHPF5 to save. The vocabulary is the one the attention-key copybook "
+                    + "app/cpy/CSSTRPFY.cpy defines - DFHENTER, DFHCLEAR, DFHPA1, DFHPA2 and DFHPF1 "
+                    + "through DFHPF24, with the function-key number never zero-padded, so DFHPF5 and "
+                    + "not DFHPF05. An identifier outside it is answered with the invalid-key message "
+                    + "rather than being ignored. Optional; absent uses the typed action the body "
+                    + "carries.")
             final String attentionKey,
             final Authentication authentication) {
 

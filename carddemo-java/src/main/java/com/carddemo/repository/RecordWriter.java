@@ -19,6 +19,8 @@ package com.carddemo.repository;
 import jakarta.persistence.EntityExistsException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.Collection;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -107,6 +109,20 @@ public class RecordWriter {
 
     /** Diagnostics for the one arm that reports rather than raises. */
     private static final Logger LOG = LoggerFactory.getLogger(RecordWriter.class);
+
+    /**
+     * The ANSI/ISO SQL state class that means a constraint refused the write.
+     *
+     * <p>The two-character class is the first half of the five-character state every JDBC driver publishes;
+     * class {@code 23} is <em>integrity constraint violation</em>, which for an insert is the key already
+     * being present. It is deliberately the class rather than a complete state, because the four subclasses
+     * a store may report - unique, primary key, foreign key, check - are all the same answer to the only
+     * question asked here, and pinning a full state would tie this to one store's choice among them.
+     */
+    private static final String SQLSTATE_CLASS_INTEGRITY_CONSTRAINT = "23";
+
+    /** The number of leading characters of an SQL state that carry its class. */
+    private static final int SQLSTATE_CLASS_LENGTH = 2;
 
     /**
      * The transaction-bound entity manager.
@@ -251,14 +267,44 @@ public class RecordWriter {
      * exactly this classification of exactly this writer's failures. One definition means the three arms
      * cannot drift apart.
      *
-     * <p>The walk matches on the persistence provider's own duplicate-entity type and on the framework's
-     * two translated integrity types, never on a message and never on a vendor error number, so it holds
-     * whatever database is configured and whatever locale a message is rendered in.
+     * <p>The classification reads the store's own report of the failure where one was made, and otherwise
+     * matches on the persistence provider's duplicate-entity type and the framework's two translated
+     * integrity types. It never reads a message and never reads a vendor error number, so it holds whatever
+     * database is configured and whatever locale a message is rendered in.
+     *
+     * <h2>Why the framework's translated type cannot decide this on its own</h2>
+     *
+     * <p>{@code DataIntegrityViolationException} is broader than the condition the duplicate arms handle.
+     * The framework's state-based translation groups several SQL state classes onto that one type, and
+     * only one of them is a refused key: class {@code 23} is <em>integrity constraint violation</em>,
+     * while class {@code 22} is <em>data exception</em> - a value the column cannot hold at all. Read as a
+     * duplicate, a class {@code 22} failure told an operator that the identifier they had chosen was
+     * already taken when in fact it was free and their name field held a character the store refuses, and
+     * no amount of retrying under a different identifier could clear it. The user-add member's own
+     * catch-all write-failure arm is the arm the source specifies for that failure, and it was being
+     * bypassed.
+     *
+     * <p>So when the store has reported for itself, its report decides and the translated type is not
+     * consulted: a JDBC integrity-constraint type, or an SQL state in class {@code 23}, is the refused
+     * key; any other state class is not. This keeps the method's own rule intact - an SQL state is the
+     * ANSI/ISO standard code every driver publishes in the same five characters, not a vendor error
+     * number and not a message, so nothing here depends on which database is configured or on the
+     * locale a message renders in. The provider's exception hierarchy is deliberately not consulted
+     * either, which keeps this class free of any dependency on which JPA provider is in use.
+     *
+     * <p>When no state is available the typed test stands as before, because a failure that carries no
+     * report from the store carries no evidence to demote it: a provider that raises the duplicate-entity
+     * type from its own persistence context, and a translated integrity failure built without an
+     * underlying driver exception, both still classify as the refused key.
      *
      * @param  failure the failure an insert raised; may be {@code null}, which is not a duplicate
      * @return {@code true} when the key was already present
      */
     public static boolean isDuplicateKey(final Throwable failure) {
+        final SQLException reported = decisiveStoreReport(failure);
+        if (reported != null) {
+            return reportsRefusedKey(reported);
+        }
         for (Throwable candidate = failure; candidate != null; candidate = candidate.getCause()) {
             if (candidate instanceof EntityExistsException
                     || candidate instanceof DuplicateKeyException
@@ -270,5 +316,55 @@ public class RecordWriter {
             }
         }
         return false;
+    }
+
+    /**
+     * Finds the store's own report of the failure, when it made one this method can act on.
+     *
+     * <p>A report is only decisive if it identifies the condition: either it is the JDBC type reserved for
+     * an integrity-constraint violation, or it carries an SQL state long enough to read a class from. A
+     * driver exception with no state says no more than the translated type above it already said, so it is
+     * passed over and the typed test is left to decide.
+     *
+     * @param  failure the failure an insert raised; may be {@code null}
+     * @return the first driver exception in the chain that identifies the condition, or {@code null}
+     */
+    private static SQLException decisiveStoreReport(final Throwable failure) {
+        for (Throwable candidate = failure; candidate != null; candidate = candidate.getCause()) {
+            if (candidate instanceof SQLException reported
+                    && (reported instanceof SQLIntegrityConstraintViolationException
+                            || hasReadableState(reported))) {
+                return reported;
+            }
+            if (candidate.getCause() == candidate) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reports whether a driver exception carries an SQL state a class can be read from.
+     *
+     * @param  reported the driver exception; must not be {@code null}
+     * @return {@code true} when a state class is readable
+     */
+    private static boolean hasReadableState(final SQLException reported) {
+        final String state = reported.getSQLState();
+        return state != null && state.length() >= SQLSTATE_CLASS_LENGTH;
+    }
+
+    /**
+     * Reports whether the store's own report is the refused-key condition.
+     *
+     * @param  reported the driver exception; must not be {@code null}
+     * @return {@code true} when the store refused the write because the key was already present
+     */
+    private static boolean reportsRefusedKey(final SQLException reported) {
+        if (reported instanceof SQLIntegrityConstraintViolationException) {
+            return true;
+        }
+        final String state = reported.getSQLState();
+        return state != null && state.startsWith(SQLSTATE_CLASS_INTEGRITY_CONSTRAINT);
     }
 }

@@ -17,8 +17,14 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
+import java.io.IOException;
 
 /**
  * Immutable transaction-add request contract for legacy CICS transaction {@code CT02}, derived from
@@ -368,6 +374,7 @@ public record TransactionAddRequest(
          * four-position shape check COTRN02C:339-347. Carried as the typed lexeme so that a blank
          * value, an absent decimal point and a bad sign character each stay reportable, and so that
          * exponent notation cannot arrive at all. Parsed to an exact decimal by the service. */
+        @JsonDeserialize(using = TransmittedAmountDeserializer.class)
         @Size(max = 12) String amount,
 
         /* 8. TORIGDT, width 10 - empty check COTRN02C:284, shape check COTRN02C:360,
@@ -478,5 +485,65 @@ public record TransactionAddRequest(
                 + ", keyAction=" + keyAction
                 + ", navigationContext=" + navigationContext
                 + "]";
+    }
+
+    /**
+     * Binds the amount from either shape a client can transmit it in, without altering the value by a
+     * single byte.
+     *
+     * <h2>The round trip this restores</h2>
+     *
+     * <p>{@code TransactionAddResponse} publishes the committed amount as an exact decimal, so it reaches
+     * a client as a JSON number. This request declares the amount as the typed lexeme, deliberately: the
+     * member checks the transmitted characters against a four-position shape before any parse, and a blank
+     * value, an absent decimal point and a bad sign character each have their own reportable message. Both
+     * declarations are right, and they collided at the echo - the module's strict scalar coercion, which
+     * refuses a number where text is declared, rejected a client that simply sent back the amount it had
+     * just been given, and did so with no field named. Quoting the value made the identical body succeed.
+     *
+     * <p>Accepting both shapes closes that seam without moving a single check. A number is bound as the
+     * characters the parser scanned, so {@code 12.34} arrives as {@code "12.34"} - not rescaled, not
+     * reformatted, not normalised - and the shape check that answers {@code Amount should be in format
+     * -99999999.99} still runs on exactly those characters, in the service, in the source's order. Nothing
+     * here parses, rounds, scales or validates, and the component remains the typed lexeme.
+     *
+     * <p>The coercion rule this sits inside is not weakened. It exists so that an identifier's contractual
+     * leading zeros cannot be silently destroyed by a bare number, and it still governs the account key,
+     * the card key, the type and category codes, the merchant identifier and both dates. The override is
+     * attached to this one named component, because for an amount alone the two shapes denote the same
+     * value. Text passes through untouched, an explicit null stays null, and a boolean, object or array is
+     * still refused through the context's own unexpected-token path.
+     *
+     * <p>It is nested here rather than shared with the sibling account-update contract because the
+     * transaction contracts hold their widths and their provenance separately by design - this component is
+     * twelve characters against that one's fifteen - and a shared type across them would be the first step
+     * toward unifying widths that must stay distinct.
+     */
+    static final class TransmittedAmountDeserializer extends JsonDeserializer<String> {
+
+        /**
+         * Reads the amount.
+         *
+         * @param  parser  the parser positioned on the value; must not be {@code null}
+         * @param  context the deserialisation context; must not be {@code null}
+         * @return the value as transmitted, or {@code null} for an explicit JSON null
+         * @throws IOException if the value is neither text, a number, nor null
+         */
+        @Override
+        public String deserialize(final JsonParser parser, final DeserializationContext context)
+                throws IOException {
+            final JsonToken token = parser.currentToken();
+            if (token == JsonToken.VALUE_STRING
+                    || token == JsonToken.VALUE_NUMBER_INT
+                    || token == JsonToken.VALUE_NUMBER_FLOAT) {
+                // getText on a number token yields the characters the parser scanned, so the shape check
+                // in the service sees the lexeme the client transmitted rather than a re-rendered value.
+                return parser.getText();
+            }
+            if (token == JsonToken.VALUE_NULL) {
+                return null;
+            }
+            return (String) context.handleUnexpectedToken(String.class, parser);
+        }
     }
 }

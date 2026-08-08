@@ -2391,11 +2391,12 @@ class BillPaymentServiceTest {
                     () -> assertThat(result.message()).endsWith("..."),
                     () -> assertThat(result.message()).doesNotEndWith("...."),
                     () -> assertThat(result.focusField()).isEqualTo(FIELD_ACCOUNT_ID),
-                    // The transaction file is unrecoverable in the legacy, so the record written first
-                    // stands whatever happens to the rewrite - and the arm reports rather than abends.
-                    () -> assertThat(result.transaction()).isNotNull(),
-                    () -> assertThat(result.transaction().tranId())
-                            .isEqualTo(FIRST_IDENTIFIER_ON_EMPTY_TABLE));
+                    // The rewrite shared the unit that inserted the transaction, so a failure here rolls
+                    // both writes back: the arm reports the update failure rather than abending, and it
+                    // reports NO stored record, because naming one would name a row the rollback removed.
+                    () -> assertThat(result.transaction()).isNull(),
+                    () -> assertThat(result.message())
+                            .doesNotContain(FIRST_IDENTIFIER_ON_EMPTY_TABLE));
         }
 
         @Test
@@ -2488,15 +2489,75 @@ class BillPaymentServiceTest {
         }
 
         @Test
-        @DisplayName("each durable write runs inside its OWN unit of work, because the legacy files are "
-                + "unrecoverable and their outcomes are therefore independent")
-        void eachDurableWriteRunsInsideItsOwnUnitOfWork() {
+        @DisplayName("both durable writes share ONE unit of work, which is what lets a refused rewrite "
+                + "discard the transaction the same turn inserted")
+        void bothDurableWritesShareOneUnitOfWork() {
             arrangeConfirmablePayment(payableAccount(), null);
 
             service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
 
-            verify(transactionBoundary, times(2)).execute(any());
+            // The legacy held the account record from its read at line 343 until its rewrite at line 235
+            // released it, so a second operator confirming the same account could not interleave. This
+            // schema holds no record lock, so the exclusion comes from the unit of work instead: one unit
+            // over both writes is what makes the version check reach the insert.
+            verify(transactionBoundary).execute(any());
             verifyNoMoreInteractions(transactionBoundary);
+        }
+
+        @Test
+        @DisplayName("a HANDLED insert refusal still performs the computation and the rewrite, in a unit of "
+                + "their own, because the source tests no flag between lines 233 and 235")
+        void aHandledInsertRefusalStillRewritesInAUnitOfItsOwn() {
+            // No cross-reference row, so the assembled record carries no card number and the insert is
+            // never attempted: the catch-all arm at lines 540 to 546 reports it and nothing was stored.
+            stubAccountRead(payableAccount());
+            stubAccountRewriteEchoesRow();
+            stubHighestIdentifier(null);
+            stubBoundaryRunsUnit();
+            when(cardCrossReferenceRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
+
+            final BillPaymentService.BillPaymentResult result =
+                    service.processBillPayment(submitted(ACCOUNT_ID, "Y"));
+
+            assertAll(() -> assertThat(result.message())
+                            .as("the insert's catch-all arm is what the operator is told")
+                            .isEqualTo(MSG_UNABLE_TO_ADD_TRANSACTION),
+                    () -> assertThat(result.transaction())
+                            .as("nothing was inserted")
+                            .isNull());
+            // The refusal stored nothing, so the shared unit had nothing to protect and the unconditional
+            // rewrite of line 235 runs after it in a second unit - which is the only way it can commit.
+            verify(transactionBoundary, times(2)).execute(any());
+            verify(transactionRepository, never()).insertAndFlush(any(Transaction.class));
+            verify(accountRepository).saveAndFlush(any(Account.class));
+        }
+
+        @Test
+        @DisplayName("a concurrent modification abandons the ONE unit both writes shared, so the account is "
+                + "never rewritten and the transaction the same turn inserted does not survive")
+        void aConcurrentModificationAbandonsTheSharedUnit() {
+            // The keyed read observes the seeded version; the re-read inside the unit observes a version
+            // another writer left behind, which is the conflict.
+            final Account moved = mock(Account.class);
+            when(moved.getVersion()).thenReturn(1L);
+            when(accountRepository.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(payableAccount()))
+                    .thenReturn(Optional.of(moved));
+            stubCrossReferenceRow(CARD_NUMBER);
+            stubHighestIdentifier(null);
+            stubInsertEchoesRecord();
+            stubBoundaryRunsUnit();
+
+            assertThatExceptionOfType(OptimisticLockConflictException.class)
+                    .isThrownBy(() -> service.processBillPayment(submitted(ACCOUNT_ID, "Y")));
+
+            // The whole point of the shared unit: the insert was issued inside the unit the conflict
+            // abandons, so the rollback is what removes it. Exactly one unit was opened, the insert was
+            // attempted inside it, and the account was never rewritten.
+            verify(transactionBoundary).execute(any());
+            verify(transactionRepository).insertAndFlush(any(Transaction.class));
+            verify(accountRepository, never()).saveAndFlush(any(Account.class));
         }
 
         @Test

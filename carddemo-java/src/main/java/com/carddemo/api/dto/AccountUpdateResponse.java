@@ -457,6 +457,7 @@ import jakarta.validation.constraints.Size;
  *
  * @since 1.0.0
  */
+@Schema(description = "PADDING RULE FOR EVERY FIXED-WIDTH TEXT FIELD ON THIS CONTRACT. Each value derived from a legacy record or map field is carried exactly as it was stored or composed: this contract never trims a value and never pads one. Trailing spaces are therefore part of the value wherever the underlying record holds them, and a client comparing values must not assume they have been stripped. Two consequences are visible and both are intentional. A field the legacy layout space-filled to its declared width arrives at that full width, so a comparison should trim before testing equality or compare on the declared width. A field whose stored value is shorter than the declared width arrives at its stored length rather than being padded out to the maximum the schema publishes, so maxLength states the width of the map field and not the length of the value. Where a value is bounded to a screen width, the bound truncates an over-long value and never pads a short one.")
 public record AccountUpdateResponse(
 
         /* SCREEN METADATA - map families 1 to 6, protected on the mapset, absent from the request.

@@ -17,8 +17,14 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
+import java.io.IOException;
 
 /**
  * Immutable account-update request contract for legacy CICS transaction {@code CAUP}, derived from
@@ -219,6 +225,7 @@ public record AccountUpdateRequest(
 
         @Size(max = 2) String openDay,
 
+        @JsonDeserialize(using = ScreenAmountLexemeDeserializer.class)
         @Size(max = 15) String creditLimit,
 
         @Size(max = 4) String expiryYear,
@@ -227,6 +234,7 @@ public record AccountUpdateRequest(
 
         @Size(max = 2) String expiryDay,
 
+        @JsonDeserialize(using = ScreenAmountLexemeDeserializer.class)
         @Size(max = 15) String cashCreditLimit,
 
         @Size(max = 4) String reissueYear,
@@ -235,12 +243,15 @@ public record AccountUpdateRequest(
 
         @Size(max = 2) String reissueDay,
 
+        @JsonDeserialize(using = ScreenAmountLexemeDeserializer.class)
         @Size(max = 15) String currentBalance,
 
+        @JsonDeserialize(using = ScreenAmountLexemeDeserializer.class)
         @Size(max = 15) String currentCycleCredit,
 
         @Size(max = 10) String accountGroupId,
 
+        @JsonDeserialize(using = ScreenAmountLexemeDeserializer.class)
         @Size(max = 15) String currentCycleDebit,
 
         @Size(max = 9) String customerId,
@@ -421,5 +432,75 @@ public record AccountUpdateRequest(
     @Override
     public String toString() {
         return "AccountUpdateRequest[" + REDACTION_PLACEHOLDER + "]";
+    }
+
+    /**
+     * Binds a monetary screen field from either shape a client can transmit it in, without altering the
+     * value by a single byte.
+     *
+     * <h2>The round trip this restores</h2>
+     *
+     * <p>A screen client's next request is its last response with the operator's edits applied - that is
+     * what a re-transmitted map <em>is</em>. The five monetary components are declared here as the typed
+     * lexeme so that a value the operator typed but which does not parse can still be answered with the
+     * screen message the source specifies rather than being refused at the transport, and
+     * {@code AccountUpdateResponse} declares the same five as decimals because a response is a computed
+     * value and not a keystroke. Those two correct decisions meet at the echo: the response emits a JSON
+     * number, the request declares text, and the module's strict scalar coercion - which refuses a number
+     * where text is declared, and rightly so - then rejected the client's own payload with no field named.
+     * Converting the five values to quoted text made the identical body succeed, which is the whole of the
+     * defect: the contract was asking a client to rewrite what it had just been sent.
+     *
+     * <p>The legacy screen had no such seam, and the reason is instructive. The account-update member moves
+     * each stored amount through an edited picture into the map field before sending it, so what the 3270
+     * displayed and the operator re-transmitted was <em>text</em> all along, and the member re-parsed that
+     * text on the way back in with the numeric-value-with-currency intrinsic. Accepting both shapes here is
+     * therefore not a leniency bolted onto the contract - it is the seam the original did not have, closed.
+     *
+     * <h2>Why this does not weaken the coercion rule it sits inside</h2>
+     *
+     * <p>The module-wide rule exists because an identifier's leading zeros are contractual: a body carrying
+     * {@code 1} where {@code "00000000001"} was required must be refused rather than silently stringified
+     * into a wrong value. That reasoning is about identifiers, codes and dates, and it is untouched - the
+     * rule still governs every one of them, and this override is attached to five named components rather
+     * than to a type or a logical category. For a monetary amount the reasoning simply does not apply:
+     * {@code 492.00} and {@code "492.00"} denote the same value, and the source's own intrinsic accepted
+     * both.
+     *
+     * <p>A number is bound as the text the parser scanned, so the transmitted lexeme survives exactly -
+     * {@code 492.00} binds as {@code "492.00"} and {@code 6169.0} as {@code "6169.0"}, neither normalised
+     * nor rescaled nor reformatted. Nothing here parses, rounds, scales or validates: the component
+     * remains the typed lexeme, the service remains the only judge of whether it is a number, and the
+     * two-state missing-versus-invalid answer is unchanged. Text is returned untouched, an explicit null
+     * stays null, and every other shape - a boolean, an object, an array - is still refused through the
+     * context's own unexpected-token path, so this widens the accepted input by exactly the one shape the
+     * response emits and by nothing else.
+     */
+    static final class ScreenAmountLexemeDeserializer extends JsonDeserializer<String> {
+
+        /**
+         * Reads one monetary screen field.
+         *
+         * @param  parser  the parser positioned on the value; must not be {@code null}
+         * @param  context the deserialisation context; must not be {@code null}
+         * @return the value as transmitted, or {@code null} for an explicit JSON null
+         * @throws IOException if the value is neither text, a number, nor null
+         */
+        @Override
+        public String deserialize(final JsonParser parser, final DeserializationContext context)
+                throws IOException {
+            final JsonToken token = parser.currentToken();
+            if (token == JsonToken.VALUE_STRING
+                    || token == JsonToken.VALUE_NUMBER_INT
+                    || token == JsonToken.VALUE_NUMBER_FLOAT) {
+                // getText on a number token yields the characters the parser scanned, so the lexeme the
+                // client transmitted is carried through rather than a re-rendered value.
+                return parser.getText();
+            }
+            if (token == JsonToken.VALUE_NULL) {
+                return null;
+            }
+            return (String) context.handleUnexpectedToken(String.class, parser);
+        }
     }
 }

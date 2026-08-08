@@ -17,6 +17,7 @@
 package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.UserType;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Size;
 import java.util.Optional;
 
@@ -41,6 +42,15 @@ import java.util.Optional;
  * card number, because this state reaches diagnostics and none of those values may appear in a log.
  * The account status and the routing fields are not identifiers and are rendered as they are.
  */
+@Schema(description = "Navigation state the client echoes from one turn to the next, replacing the "
+        + "CICS communication area. It is not a server session: nothing is retained between calls, so "
+        + "whatever a turn needs to know about the turn before it must arrive in this object. That "
+        + "makes it a genuine precondition on several screens rather than an optional courtesy - the "
+        + "legacy programs receive no map on a fresh entry and therefore read none of the screen's own "
+        + "input fields on one, so a screen that distinguishes a first entry from a re-entry answers a "
+        + "turn without this state as a first entry and carries any input it was given back without "
+        + "applying it. Echo the object exactly as the previous response returned it. Each screen's "
+        + "own request contract states which of its fields depend on this.")
 public record NavigationContext(
         @Size(max = NavigationContext.TRANSACTION_ID_LENGTH) String fromTransactionId,
         @Size(max = NavigationContext.PROGRAM_NAME_LENGTH) String fromProgram,

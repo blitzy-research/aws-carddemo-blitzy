@@ -18,6 +18,7 @@ package com.carddemo.api.dto;
 
 import com.carddemo.domain.enums.KeyAction;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import java.util.Arrays;
@@ -273,8 +274,36 @@ import java.util.List;
  *        declares are actually evaluated. {@code null} on a first entry. It redacts its own
  *        identifying values when stringified.
  */
+@Schema(description = "Card-list request for legacy transaction CCLI. THE TWO FILTERS ARE READ ONLY ON "
+        + "A RETURNING TURN. The legacy screen receives no map on a fresh entry and therefore reads none "
+        + "of its own input fields on one, and this contract reproduces that exactly: accountIdFilter and "
+        + "cardNumberFilter are applied only when navigationContext identifies this screen as the one the "
+        + "turn is returning from. On a fresh entry both are carried back in the response but are neither "
+        + "applied nor validated - not even for digit format - and no error is raised, because the legacy "
+        + "program raises none; the first unfiltered page of seven rows is answered. To have a filter "
+        + "applied, echo the navigationContext object exactly as the previous card-list response returned "
+        + "it. Once a turn is returning, a filter that is not the required number of digits is refused "
+        + "with 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER' or 'CARD ID FILTER,IF SUPPLIED "
+        + "MUST BE A 16 DIGIT NUMBER'. The per-property descriptions and the NavigationContext schema "
+        + "state the same precondition.")
 public record CardListRequest(
+        @Schema(description = "Optional account filter, map field ACCTSID of app/cpy-bms/COCRDLI.CPY, "
+                + "eleven digits. READ ONLY ON A RETURNING TURN: the legacy screen receives no map on "
+                + "a fresh entry, so a filter is read only when navigationContext identifies this "
+                + "screen as the one the turn is returning from. On any other turn the value is "
+                + "carried back in the response but is neither applied nor validated, and no error is "
+                + "raised - a full unfiltered page is answered, which is what the legacy program does. "
+                + "To have a filter applied, echo the navigationContext from the previous card-list "
+                + "response. When it is applied, a value that is not eleven digits is refused with "
+                + "'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'. Optional, with no default: "
+                + "an absent filter is not the same as a blank one.")
         @Size(max = CardListRequest.ACCOUNT_ID_FILTER_LENGTH) String accountIdFilter,
+        @Schema(description = "Optional card filter, map field CARDSID of app/cpy-bms/COCRDLI.CPY, "
+                + "sixteen digits. READ ONLY ON A RETURNING TURN, on exactly the condition described "
+                + "for the account filter: on any other turn it is carried back unapplied and "
+                + "unvalidated with no error raised. When it is applied, a value that is not sixteen "
+                + "digits is refused with 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'. "
+                + "Optional, with no default.")
         @Size(max = CardListRequest.CARD_NUMBER_FILTER_LENGTH) String cardNumberFilter,
         @JsonProperty(access = JsonProperty.Access.READ_ONLY)
         @Size(max = CardListRequest.DISPLAYED_PAGE_NUMBER_LENGTH) String displayedPageNumber,
@@ -288,6 +317,12 @@ public record CardListRequest(
         @Valid PageMetadata.PageCursorRequest pageMetadata,
         boolean lastPageAlreadyShown,
         KeyAction keyAction,
+        @Schema(description = "Navigation state echoed back from the previous response. It is what "
+                + "makes a turn a returning turn, and so it is the precondition for the two filters "
+                + "above being read at all: echo the navigationContext from the previous card-list "
+                + "response to have a filter applied. Absent or naming another screen, this turn is a "
+                + "fresh entry, any filter supplied is carried back without being applied or "
+                + "validated, and the first page is answered unfiltered.")
         @Valid NavigationContext navigationContext) {
 
     /**

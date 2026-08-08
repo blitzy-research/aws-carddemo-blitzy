@@ -424,4 +424,25 @@
   <logger name="org.hibernate.SQL" level="INFO"/>
   <logger name="org.hibernate.orm.jdbc.bind" level="INFO"/>
 
+  <!-- The servlet container's cookie parser, and this one is CONFIDENTIALITY rather than legibility.
+       When a request arrives with a Cookie header the parser cannot read, it reports the refusal by
+       printing the header it received IN FULL, at INFO for the first occurrence and at DEBUG for every
+       occurrence after that. A client that presents its bearer credential in a Cookie header instead of
+       an Authorization header, which this application correctly declines to authenticate, therefore had
+       its entire still valid token written into the log in clear text, where a token read back out of it
+       authenticated. The container's categories reach this logging system because the framework bridges
+       the container's own logging to it, so a category declared here governs them.
+
+       Declared at WARN rather than switched off, and that is the point of the level: the record exists
+       only at INFO and at DEBUG, so WARN closes BOTH forms of it while leaving a genuinely more serious
+       report from the same class audible. It is declared here in the shared block rather than per
+       profile, so raising a profile's root level cannot reach it: the production profile's root already
+       sat above INFO and so never emitted the record, while every other profile did.
+
+       Narrow on purpose. Silencing the container's parsing categories wholesale would also hide the
+       protocol diagnostics that explain a malformed request, which is exactly the evidence a local gate
+       run depends on. One emitter was found printing a credential, so one emitter is named. Recorded as
+       decision DL-266 and asserted by ObservabilityConfigTest. -->
+  <logger name="org.apache.tomcat.util.http.parser.Cookie" level="WARN"/>
+
 </configuration>

@@ -480,6 +480,25 @@ class ReportRequestServiceTest {
     /** A token naming a deliberate second submission of the same period. */
     private static final String OTHER_TOKEN = "report-request-new-002";
 
+    /**
+     * One of the two operators the scoping assertions use, at the eight-character width of a user-record
+     * key. It is an identifier and carries no credential of any kind.
+     */
+    private static final String FIRST_OPERATOR = "USER0001";
+
+    /** The other operator, so that one token in two hands can be shown to be two submissions. */
+    private static final String SECOND_OPERATOR = "ADMIN001";
+
+    /**
+     * The longest submission identity the bridge accepts once a card ordinal is appended to it.
+     *
+     * <p>The bridge bounds a deduplication identifier at 128 characters and composes it from the identity
+     * plus a separator plus a one- or two-digit ordinal, so an identity comfortably inside this figure
+     * cannot compose an over-long identifier. It is a protocol bound of the queue service, not a capacity
+     * or latency figure.
+     */
+    private static final int MAX_SUBMISSION_IDENTITY_LENGTH = 120;
+
     /** The character a 3270 field the terminal did not transmit arrives as. */
     private static final char LOW_VALUE = '\0';
 
@@ -2281,6 +2300,80 @@ class ReportRequestServiceTest {
                     () -> assertThat(publishedCardsCaptor.getAllValues())
                             .allSatisfy(cards -> assertThat(cards)
                                     .hasSize(SUBMISSION_CARD_COUNT)));
+        }
+
+        @Test
+        @DisplayName("the SAME token presented by two DIFFERENT operators makes two distinct submissions, "
+                + "so one operator's key cannot silently suppress another's cards")
+        void theSameTokenFromTwoOperatorsMakesTwoSubmissions() {
+            bridgeAcceptsEveryCard();
+
+            // A token is a value the caller chooses, so two operators naturally arrive at the same one - a
+            // period name, a run label. Before the identity named the operator, the queue collapsed the
+            // second operator's cards as a duplicate of the first's and answered the second operator as
+            // though its request had been submitted.
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, SECOND_OPERATOR);
+
+            verify(jobSubmissionService, times(2)).submitCanonicalJobImage(
+                    submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
+            final List<String> identities = submissionIdentityCaptor.getAllValues();
+            assertAll(() -> assertThat(identities.get(1))
+                            .as("the same token in two operators' hands is two submissions")
+                            .isNotEqualTo(identities.get(0)),
+                    () -> assertThat(identities)
+                            .as("and neither identity leaks the operator it names, which travels only "
+                                    + "through the digest")
+                            .allSatisfy(identity -> assertThat(identity)
+                                    .doesNotContain(FIRST_OPERATOR)
+                                    .doesNotContain(SECOND_OPERATOR)),
+                    () -> assertThat(publishedCardsCaptor.getAllValues())
+                            .as("both submissions publish their whole stream")
+                            .allSatisfy(cards -> assertThat(cards).hasSize(SUBMISSION_CARD_COUNT)));
+        }
+
+        @Test
+        @DisplayName("the same token presented twice by the SAME operator reproduces one identity, so a "
+                + "retry still completes a half-published stream rather than doubling it")
+        void theSameTokenFromOneOperatorReproducesOneIdentity() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), OTHER_TOKEN, FIRST_OPERATOR);
+
+            verify(jobSubmissionService, times(3)).submitCanonicalJobImage(
+                    submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
+            final List<String> identities = submissionIdentityCaptor.getAllValues();
+            assertAll(() -> assertThat(identities.get(1))
+                            .as("one operator retrying its own request repeats its own identifiers")
+                            .isEqualTo(identities.get(0)),
+                    () -> assertThat(identities.get(2))
+                            .as("and a deliberate new request of the same window is still distinct")
+                            .isNotEqualTo(identities.get(0)));
+        }
+
+        @Test
+        @DisplayName("a turn that names no operator is its own namespace rather than sharing one with a "
+                + "named operator, and stays whitespace-free and inside the bridge's bound")
+        void aTurnThatNamesNoOperatorIsItsOwnNamespace() {
+            bridgeAcceptsEveryCard();
+
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, null);
+            subject.processReportRequest(monthlyTurn(CONFIRM_YES), RETRY_TOKEN, FIRST_OPERATOR);
+
+            verify(jobSubmissionService, times(2)).submitCanonicalJobImage(
+                    submissionIdentityCaptor.capture(), publishedCardsCaptor.capture());
+            final List<String> identities = submissionIdentityCaptor.getAllValues();
+            assertAll(() -> assertThat(identities.get(0)).isNotEqualTo(identities.get(1)),
+                    () -> assertThat(identities).allSatisfy(identity -> assertThat(identity)
+                            .doesNotContainAnyWhitespaces()
+                            .hasSizeLessThanOrEqualTo(MAX_SUBMISSION_IDENTITY_LENGTH)),
+                    () -> assertThat(identities.get(0))
+                            .as("the two date slots stay readable in the identity; only the operator and "
+                                    + "the token are digested")
+                            .contains(PINNED_MONTHLY_START)
+                            .contains(PINNED_MONTHLY_END));
         }
 
         @Test

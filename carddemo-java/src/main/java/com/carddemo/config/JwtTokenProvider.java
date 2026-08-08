@@ -32,6 +32,10 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -144,13 +148,18 @@ import org.springframework.stereotype.Component;
  * handed the distinction would be tempted to relay it to whoever presented the token. What a client
  * learns is that it is not authenticated; which of the five reasons applies stays on this side.
  *
- * <p><strong>Two traps are avoided deliberately, and both were established against the library rather
+ * <p><strong>Three traps are avoided deliberately, and each was established against the library rather
  * than assumed.</strong> The first is that the issuer claim of a verified token must be read with
  * {@link Jwt#getClaimAsString(String)} and never through the locator-typed issuer accessor: this
  * module's issuer names a module rather than an address, and the decoded claim reads back as plain text.
  * The second is that expiry is judged against the {@link Clock} this class is given rather than against
  * the platform clock, so the instant a token is minted at and the instant it is judged against come
- * from one source - which is also what lets a test assert expiry without waiting.
+ * from one source - which is also what lets a test assert expiry without waiting. The third is that the
+ * library's window validator judges expiry only when the presented token carries it, so a token carrying
+ * no expiry claim at all passes it and would be usable for as long as the signing key stands; the
+ * presence of the claim is therefore required in its own right, ahead of the window check, and the
+ * validator that requires it is the reason the sentence above about expiry is true of every token this
+ * class admits rather than only of the tokens it mints.
  *
  * <p><strong>Nothing secret is ever logged, and nothing secret ever reaches a message.</strong> No
  * token, no fragment of one and no signing material appears in any log statement here; the only thing
@@ -272,7 +281,10 @@ public class JwtTokenProvider implements SessionTokenIssuer {
     /** Mints signed tokens. Holds the signing key; never exposed. */
     private final JwtEncoder encoder;
 
-    /** Verifies signature, expiry and issuer. Holds the signing key; never exposed. */
+    /**
+     * Verifies signature, the presence and openness of the expiry, and issuer. Holds the signing key;
+     * never exposed.
+     */
     private final JwtDecoder decoder;
 
     /** Time source for the issue instant, and the same source the expiry check uses. */
@@ -359,8 +371,17 @@ public class JwtTokenProvider implements SessionTokenIssuer {
                     NimbusJwtDecoder.withSecretKey(signingKey.toSecretKey(MAC_KEY_ALGORITHM))
                             .macAlgorithm(SIGNATURE_ALGORITHM)
                             .build();
+            // Three requirements, all mandatory, and the first of them exists because the second does not
+            // cover it. The framework's window validator judges the expiry and the not-before claim only
+            // when the presented token carries them, so a token carrying NEITHER passes it - it has no
+            // window to be outside of, and it would then be usable for as long as the signing key stands.
+            // This class states that every token it verifies has an expiry, so the requirement is enforced
+            // rather than assumed: the presence check runs first and the window check judges what it
+            // admits. The not-before claim is deliberately not required, because this class never mints one
+            // and requiring a claim nothing issues would refuse every token it produced.
             tokenDecoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
-                    windowValidator, new JwtIssuerValidator(properties.issuer())));
+                    new RequiredExpiryValidator(), windowValidator,
+                    new JwtIssuerValidator(properties.issuer())));
             this.decoder = tokenDecoder;
         } finally {
             Arrays.fill(keyMaterial, (byte) 0);
@@ -451,10 +472,12 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      * Verifies a presented token and answers its claims, or nothing at all.
      *
      * <p>Signature, expiry and issuer are all required, and the algorithm is the one fixed by this class
-     * rather than the one the presented token names. An empty result means the token may not be trusted
-     * and carries no indication of which requirement it failed, deliberately: the caller's next action is
-     * identical in every case, and a caller handed the distinction could relay it to whoever presented
-     * the token.</p>
+     * rather than the one the presented token names. <strong>Expiry is required in two senses:</strong> the
+     * claim has to be present, which the library's window validator does not by itself insist on, and the
+     * instant it names has to be open against this class's clock. An empty result means the token may not
+     * be trusted and carries no indication of which requirement it failed, deliberately: the caller's next
+     * action is identical in every case, and a caller handed the distinction could relay it to whoever
+     * presented the token.</p>
      *
      * @param token the presented compact token; {@code null} and blank both yield an empty result rather
      *              than a failure, because an absent credential is an ordinary condition and not an error
@@ -591,5 +614,59 @@ public class JwtTokenProvider implements SessionTokenIssuer {
      */
     public Duration tokenLifetime() {
         return this.expiration;
+    }
+
+    /**
+     * Requires a presented token to carry an expiry at all, which the framework's window validator does
+     * not.
+     *
+     * <p><strong>Why this exists.</strong> The window validator judges the expiry and the not-before claim
+     * against a clock, but it judges each of them only <em>if the token carries it</em>: a token with
+     * neither claim has no window, so nothing about time can refuse it and it verifies for as long as the
+     * signing key stands. Every token this class mints carries an expiry, and this class states that it
+     * verifies expiry - so the absence of the claim has to be a refusal rather than a gap. It is checked
+     * before the window validator runs, so that the window validator only ever judges a claim that is
+     * present.</p>
+     *
+     * <p><strong>What it deliberately does not require.</strong> The not-before claim. Nothing in this
+     * module mints one, so requiring it would refuse every token the module issues; the window validator
+     * still honours one if a presented token carries it.</p>
+     *
+     * <p><strong>What it deliberately does not disclose.</strong> The failure carries the standard
+     * invalid-token code and a description naming the missing claim, and nothing else. The caller's own
+     * handling collapses every verification failure into one answer anyway, and the description never
+     * reaches whoever presented the token - {@link #verify(String)} records the failure type and discards
+     * the message.</p>
+     *
+     * <p>A nested type rather than a class of its own, because this package's type inventory is fixed and
+     * this validator has exactly one collaborator and one caller.</p>
+     */
+    private static final class RequiredExpiryValidator implements OAuth2TokenValidator<Jwt> {
+
+        /** Description of the refusal, naming the claim rather than anything about the token. */
+        private static final String MISSING_EXPIRY_DESCRIPTION =
+                "The token carries no expiry claim, so it declares no window and is not trusted";
+
+        /** Creates the validator. Stateless and therefore safe to share across every verification. */
+        private RequiredExpiryValidator() {
+        }
+
+        /**
+         * Admits a token that carries an expiry and refuses one that does not.
+         *
+         * @param token the decoded token whose claims are being judged; never {@code null} here, because
+         *              the decoder only runs validators over a token it has already parsed and verified
+         *              the signature of
+         * @return success when the expiry claim is present, otherwise a failure carrying the standard
+         *         invalid-token code
+         */
+        @Override
+        public OAuth2TokenValidatorResult validate(final Jwt token) {
+            if (token.getExpiresAt() == null) {
+                return OAuth2TokenValidatorResult.failure(new OAuth2Error(
+                        OAuth2ErrorCodes.INVALID_TOKEN, MISSING_EXPIRY_DESCRIPTION, null));
+            }
+            return OAuth2TokenValidatorResult.success();
+        }
     }
 }

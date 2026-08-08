@@ -439,6 +439,26 @@ public final class ReportRequestService {
     private static final String SUBMISSION_IDENTITY_SEPARATOR = "_";
 
     /**
+     * Separator between the operator and the logical-request token inside the submission digest.
+     *
+     * <p>A unit separator, chosen because it cannot occur in either value: an operator identifier is the
+     * eight-character key of a user record and a token is header text the request contract bounds to
+     * printable characters. A separator that could occur in either would let one pair of values be
+     * rearranged into a different pair with the same digest, which is exactly the collision the operator
+     * component exists to prevent. It never reaches the queue, because only the digest does.
+     */
+    private static final char SUBMISSION_DIGEST_FIELD_SEPARATOR = '\u001f';
+
+    /**
+     * Stands in for the operator when no identity was established, so the digest stays a total function.
+     *
+     * <p>Not reachable over the delivered boundary, which authenticates the report route; it exists for a
+     * turn driven without a security chain, and it is a fixed marker rather than a blank so that "no
+     * operator" is one namespace of its own rather than a value an operator could be mistaken for.
+     */
+    private static final String SUBMISSION_PRINCIPAL_ABSENT = "unauthenticated";
+
+    /**
      * The low-value character. A 3270 field the terminal did not transmit arrives as low values
      * rather than as spaces, and the source tests for both in the same breath at lines 213, 239,
      * 256, 259, 464 and 503.
@@ -761,12 +781,19 @@ public final class ReportRequestService {
     }
 
     /**
-     * Runs one turn under an optional logical-request token.
+     * Runs one turn under an optional logical-request token, with no operator named.
      *
      * <p>A caller repeats the same token when retrying an interrupted submission. Supplying no token means
      * this is a deliberate new logical request, so a fresh opaque token is minted and returned in the
      * result. The token is not itself sent to the queue; the date range and a deterministic digest of the
-     * token form the bounded submission identity from which each card's deduplication id is derived.
+     * token and the operator form the bounded submission identity from which each card's deduplication id
+     * is derived.
+     *
+     * <p><strong>This overload names no operator, and the delivered route does not use it.</strong> The
+     * submission identity is scoped to the authenticated operator so that one caller's token cannot reach
+     * another caller's submission, which means a turn that names none is identified as unauthenticated -
+     * one namespace of its own. It is kept for a driver that has no security context to offer; the shipped
+     * controller always names the authenticated operator.
      *
      * @param input the transmitted screen, decoded attention key and echoed navigation state
      * @param retryToken token of an earlier attempt, or {@code null}/blank for a new submission
@@ -774,10 +801,37 @@ public final class ReportRequestService {
      */
     public ReportRequestResult processReportRequest(final ReportScreenInput input,
             final String retryToken) {
+        return processReportRequest(input, retryToken, null);
+    }
+
+    /**
+     * Runs one turn under an optional logical-request token, on behalf of a named operator.
+     *
+     * <p>The operator scopes the submission identity: a retry by the same operator with the same token and
+     * the same window reissues exactly the deduplication identifiers of its first attempt, so the queue
+     * completes a half-published stream rather than doubling it, while the same token presented by a
+     * <em>different</em> operator is a different submission and publishes its own cards. Without that
+     * scoping, two operators who happened to choose the same token collapsed into one submission and the
+     * second was told its request had been submitted having published nothing.
+     *
+     * <p>The operator must be the authenticated principal. Nothing echoed by the client is admissible here:
+     * the navigation state a caller sends back is a value it can write anything into, and using it would let
+     * a caller choose whose namespace to publish in - which is the defect this parameter closes, reopened
+     * from the other side.
+     *
+     * @param input the transmitted screen, decoded attention key and echoed navigation state
+     * @param retryToken token of an earlier attempt, or {@code null}/blank for a new submission
+     * @param submissionPrincipal the authenticated operator this turn runs as, or {@code null} when no
+     *                   identity was established; never a client-supplied value
+     * @return the outcome of the turn, carrying the effective token
+     */
+    public ReportRequestResult processReportRequest(final ReportScreenInput input,
+            final String retryToken, final String submissionPrincipal) {
         Objects.requireNonNull(input, "input must not be null");
 
         final TurnState state = new TurnState();
         state.submissionToken = resolveSubmissionToken(retryToken);
+        state.submissionPrincipal = submissionPrincipal;
         mainPara(state, input);
 
         // EXEC CICS RETURN TRANSID(WS-TRANID) at lines 199 to 202. The main paragraph's transfer
@@ -1348,7 +1402,8 @@ public final class ReportRequestService {
         final List<String> cardImages =
                 JclCardImageBuilder.build(state.parmStartDate, state.parmEndDate);
         final String submissionIdentity = newSubmissionIdentity(
-                state.parmStartDate, state.parmEndDate, state.submissionToken);
+                state.parmStartDate, state.parmEndDate, state.submissionPrincipal,
+                state.submissionToken);
 
         // Lines 498 to 509, the emitting loop - published as ONE SUBMISSION rather than card by card.
         //
@@ -1938,14 +1993,31 @@ public final class ReportRequestService {
 
 
     /**
-     * Derives the identity of one submission from its date slots and logical-request token.
+     * Derives the identity of one submission from its date slots, its logical-request token and the
+     * operator the turn was authenticated as.
      *
      * <p>The bridge composes each card's deduplication identifier from this identity plus the card's
      * one-based slot, and the bridge's own contract forbids a random value in the identity's place
      * because a fresh identity on a retry defeats idempotency. The identity is therefore a pure function
-     * of the date range and the stable token: a caller that resubmits an interrupted request with the same
-     * token reissues exactly the identifiers the first pass used, so the queue collapses the cards that
-     * already landed and the stream is completed rather than doubled behind itself.
+     * of the date range, the stable token and the operator: a caller that resubmits an interrupted request
+     * with the same token reissues exactly the identifiers the first pass used, so the queue collapses the
+     * cards that already landed and the stream is completed rather than doubled behind itself.
+     *
+     * <p><strong>The operator is part of the identity, and leaving it out was a defect.</strong> The token
+     * is a value a caller chooses, and a caller naturally chooses something meaningful to itself - a period
+     * name, a run label - so two operators can arrive at the same token without either knowing about the
+     * other. An identity composed from the dates and the token alone made those two submissions the same
+     * submission: the queue collapsed the second operator's cards as a duplicate of the first's and the
+     * second operator was told the request had been submitted, having published nothing. Naming the
+     * authenticated operator inside the identity keeps one caller's token from reaching another caller's
+     * submission, while a retry by the <em>same</em> operator still repeats its own identifiers exactly.
+     *
+     * <p><strong>The operator is the authenticated principal, never an echoed field.</strong> It arrives
+     * from the security context by way of the controller, not from the navigation state the client sends
+     * back, because the navigation state is a value a caller can write anything into. A turn driven with no
+     * security chain established carries none, and a fixed marker stands in for the absence so that the
+     * identity remains a total function; the delivered route requires an authenticated identity, so that
+     * marker is not reachable over the shipped boundary.
      *
      * <p>The legacy queue had no notion of identity at all: a second request for the same period was
      * appended and the job ran again. That remains reachable: a genuinely new submission of the same
@@ -1955,20 +2027,24 @@ public final class ReportRequestService {
      * <p>Whitespace is removed because the slots are fixed-width values that may be space-padded while
      * the bridge requires an identity free of whitespace. Only the identity is condensed; no card is,
      * because a card's padding is contractual. The two date slots have already been shaped and
-     * validated by the time they reach here, so the date part is printable single-byte text. The token is
-     * represented by a fixed hexadecimal digest, keeping arbitrary caller text out of diagnostics and
-     * keeping the composed identifier comfortably inside the queue service's bound.
+     * validated by the time they reach here, so the date part is printable single-byte text. The operator
+     * and the token are folded into <em>one</em> fixed hexadecimal digest rather than added as a further
+     * component, which keeps arbitrary caller text and the operator's identifier out of diagnostics, keeps
+     * the identity the same length it has always been, and keeps the composed identifier comfortably inside
+     * the queue service's bound.
      *
      * @param startDate the start-date slot the submission carries
      * @param endDate   the end-date slot the submission carries
+     * @param submissionPrincipal the operator the turn was authenticated as, or {@code null} when no
+     *                  identity was established
      * @param submissionToken the stable token of this logical submission
-     * @return a whitespace-free identity, identical only for the same dates and token
+     * @return a whitespace-free identity, identical only for the same dates, operator and token
      */
     private static String newSubmissionIdentity(final String startDate, final String endDate,
-            final String submissionToken) {
+            final String submissionPrincipal, final String submissionToken) {
         return withoutWhitespace(startDate) + SUBMISSION_IDENTITY_SEPARATOR
                 + withoutWhitespace(endDate) + SUBMISSION_IDENTITY_SEPARATOR
-                + digestSubmissionToken(submissionToken);
+                + digestSubmissionToken(submissionPrincipal, submissionToken);
     }
 
     /**
@@ -1984,17 +2060,29 @@ public final class ReportRequestService {
     }
 
     /**
-     * Produces the bounded printable token component used inside the queue deduplication identity.
+     * Produces the bounded printable component used inside the queue deduplication identity, over the
+     * operator and the logical-request token together.
      *
-     * @param submissionToken the effective logical-request token
+     * <p>The two values are separated by a byte that cannot occur in either of them, so no pair of an
+     * operator and a token can be rearranged into another pair with the same digest: an operator
+     * identifier is the eight-character key of a user record and a token is text a caller supplied over an
+     * HTTP header, and neither can carry a control byte. Digesting the pair rather than concatenating it
+     * into the identity keeps the operator's identifier out of the queue, out of the bridge's diagnostics
+     * and out of the identity's length.
+     *
+     * @param submissionPrincipal the authenticated operator, or {@code null} when none was established
+     * @param submissionToken     the effective logical-request token
      * @return a lower-case hexadecimal SHA-256 digest
      */
-    private static String digestSubmissionToken(final String submissionToken) {
+    private static String digestSubmissionToken(final String submissionPrincipal,
+            final String submissionToken) {
+        final String pair = (submissionPrincipal == null
+                ? SUBMISSION_PRINCIPAL_ABSENT : submissionPrincipal)
+                + SUBMISSION_DIGEST_FIELD_SEPARATOR + submissionToken;
         try {
             final MessageDigest digest =
                     MessageDigest.getInstance(SUBMISSION_TOKEN_DIGEST_ALGORITHM);
-            return HexFormat.of().formatHex(
-                    digest.digest(submissionToken.getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest(pair.getBytes(StandardCharsets.UTF_8)));
         } catch (final NoSuchAlgorithmException unavailable) {
             throw new IllegalStateException(
                     SUBMISSION_TOKEN_DIGEST_ALGORITHM + " must be available in every Java runtime",
@@ -2158,6 +2246,17 @@ public final class ReportRequestService {
 
         /** Stable token that identifies this logical request across retries. */
         private String submissionToken;
+
+        /**
+         * The operator this turn was authenticated as, which scopes the submission identity.
+         *
+         * <p>Not a legacy field and not a screen field: the legacy region knew who was signed on and its
+         * queue had no notion of identity at all, so nothing in the source corresponds to this. It exists
+         * because the target's queue deduplicates, and a deduplication namespace shared between callers is
+         * one caller able to suppress another's submission. Absent when no security context was
+         * established, which the delivered route does not permit.
+         */
+        private String submissionPrincipal;
 
         /** The transaction identifier re-armed by a return, empty when control was transferred. */
         private String reArmedTransactionId = NO_MESSAGE;

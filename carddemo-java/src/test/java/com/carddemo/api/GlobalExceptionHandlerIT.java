@@ -1304,7 +1304,7 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
         @DisplayName("a failed publish does not turn an accepted request into an HTTP failure")
         void aFailedPublishDoesNotBecomeAnHttpFailure() throws Exception {
             willThrow(submissionFailure())
-                    .given(reportRequestService).processReportRequest(any(), any());
+                    .given(reportRequestService).processReportRequest(any(), any(), any());
 
             final MvcResult result = postJson(REPORT_REQUEST_ROUTE, "{}");
 
@@ -1317,7 +1317,7 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
         @DisplayName("the carrier is resolved inside the dispatch and does not propagate out of the request")
         void theCarrierDoesNotPropagateOutOfTheRequest() throws Exception {
             willThrow(submissionFailure())
-                    .given(reportRequestService).processReportRequest(any(), any());
+                    .given(reportRequestService).processReportRequest(any(), any(), any());
 
             final MvcResult result = postJson(REPORT_REQUEST_ROUTE, "{}");
 
@@ -1335,7 +1335,7 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
         @DisplayName("the body carries the frozen failure literal byte for byte and untrimmed")
         void theBodyCarriesTheFrozenLiteralByteForByte() throws Exception {
             willThrow(submissionFailure())
-                    .given(reportRequestService).processReportRequest(any(), any());
+                    .given(reportRequestService).processReportRequest(any(), any(), any());
 
             final String served = summaryOf(postJson(REPORT_REQUEST_ROUTE, "{}"));
 
@@ -1354,7 +1354,7 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
         @DisplayName("the response and reason codes the legacy displayed are absent from the body")
         void theDiagnosticCodesAreAbsentFromTheBody() throws Exception {
             final JobSubmissionException carrier = submissionFailure();
-            willThrow(carrier).given(reportRequestService).processReportRequest(any(), any());
+            willThrow(carrier).given(reportRequestService).processReportRequest(any(), any(), any());
 
             final String body = bodyOf(postJson(REPORT_REQUEST_ROUTE, "{}"));
 
@@ -1464,7 +1464,7 @@ final class GlobalExceptionHandlerIT extends AbstractPostgresIT {
 
             willThrow(new JobSubmissionException(JobSubmissionException.DEFAULT_QUEUE_NAME, "0016",
                     "0002", 12, null))
-                    .given(reportRequestService).processReportRequest(any(), any());
+                    .given(reportRequestService).processReportRequest(any(), any(), any());
             served.add(postJson(REPORT_REQUEST_ROUTE, "{}"));
             return served;
         }

@@ -462,7 +462,13 @@ class CardListRequestSecurityTest {
             assertThat(size).isNotNull();
             assertThat(size.max()).isEqualTo(CardListRequest.ACCOUNT_ID_FILTER_LENGTH).isEqualTo(11);
             assertThat(size.min()).isZero();
-            assertThat(field.getAnnotations()).hasSize(1);
+            assertThat(Arrays.stream(field.getAnnotations())
+                    .filter(annotation -> annotation.annotationType().getPackageName()
+                            .startsWith("jakarta.validation"))
+                    .toList())
+                    .as("the width is the only rule; a documentation annotation states what the filter "
+                            + "means and imposes nothing")
+                    .hasSize(1);
         }
 
         @Test
@@ -474,7 +480,13 @@ class CardListRequestSecurityTest {
 
             assertThat(size).isNotNull();
             assertThat(size.max()).isEqualTo(CardListRequest.CARD_NUMBER_FILTER_LENGTH).isEqualTo(16);
-            assertThat(field.getAnnotations()).hasSize(1);
+            assertThat(Arrays.stream(field.getAnnotations())
+                    .filter(annotation -> annotation.annotationType().getPackageName()
+                            .startsWith("jakarta.validation"))
+                    .toList())
+                    .as("the width is the only rule; a documentation annotation states what the filter "
+                            + "means and imposes nothing")
+                    .hasSize(1);
         }
 
         @Test

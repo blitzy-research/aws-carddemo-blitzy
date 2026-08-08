@@ -282,8 +282,13 @@ class TransactionAddRequestCoverageTest {
                     .isEqualTo(String.class);
             assertThat(Arrays.stream(TransactionAddRequest.class
                                     .getDeclaredField(AMOUNT_COMPONENT).getDeclaredAnnotations())
+                            .filter(annotation -> annotation.annotationType().getPackageName()
+                                    .startsWith("jakarta.validation"))
                             .map(annotation -> annotation.annotationType().getSimpleName()))
-                    .as("one rule and one only: the width of the screen field it was typed into")
+                    .as("one rule and one only: the width of the screen field it was typed into. Only"
+                            + " validation annotations are counted, because only a validation"
+                            + " annotation can pre-empt the service's message; a binding annotation"
+                            + " states which JSON shapes reach the component and imposes no rule")
                     .containsExactly("Size");
             assertThat(TransactionAddRequest.class.getDeclaredField(AMOUNT_COMPONENT)
                             .getAnnotation(Size.class).max())

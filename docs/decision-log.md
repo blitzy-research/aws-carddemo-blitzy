@@ -6821,57 +6821,84 @@ its decision to leave the two supporting indexes un-widened.
 
 ---
 
-### DL-166 - The bill-payment turn is two independent units of work, not one, because both files it writes are unrecoverable
+### DL-166 - The bill-payment insert and the account rewrite share one unit of work, because the legacy held the record from its read to its rewrite
 
 **Context.** `app/cbl/COBIL00C.cbl` writes the transaction master at L233 and rewrites the account master
 at L235, with the balance computation at L234 between them and **no flag tested between the write and the
 rewrite**. Both files are defined to the region with `READINTEG(UNCOMMITTED)`, `RECOVERY(NONE)` and
-`JOURNAL(NO)` (`app/csd/CARDDEMO.CSD`), so the region logs neither and backs neither out.
+`JOURNAL(NO)` (`app/csd/CARDDEMO.CSD`), so the region logs neither and backs neither out. The account read
+at L343 does take `UPDATE`, and the file is defined `UPDATEMODEL(LOCKING)`.
 
-**What that means, and what it does not.** The inserted transaction is durable the instant it is written.
-No later failure removes it, and the source proves it depends on exactly that by performing L234 and L235
-whether or not the write succeeded. The account read at L343 does take `UPDATE`, so the record is *held*
-from the read to the rewrite - but a hold is a lock, not a log: it excludes a concurrent writer and it does
-not undo anything.
+**The defect this entry records, and it is the second one on this path.** An earlier revision carried one
+`@Transactional` over the whole turn, which coupled the two writes in ways the legacy has no analogue for;
+the repair split them into two independent units. That repair was right about the unrecoverable files and
+wrong about concurrency. Two units meant the insert **committed before the rewrite was attempted**, so a
+version mismatch on the rewrite could no longer remove it: four concurrent confirmations of one account
+answered `200, 409, 409, 409` and left **four** transaction rows totalling four times the balance while the
+balance itself was debited **once**. Reproduced at runtime on three accounts with two, three and four
+submissions in flight, each leaving one row per submission. The sequential double submit was correct
+throughout, which is what identifies the fault as concurrency-specific rather than a broken arm.
 
-**The defect this entry records.** The service previously carried one `@Transactional` over the whole
-turn. That coupled the two writes in two ways the legacy has no analogue for. A conflict on the account
-rewrite rolled back a transaction the operator had already been shown a success message for; and a write
-failure the insert paragraph *handled* - translating it into the source's duplicate or catch-all text -
-left the unit marked for rollback, so the unconditional rewrite that follows could not commit and the turn
-would have failed at commit with an outcome no response arm had chosen.
+**What the legacy actually did here, and why it never showed this.** `READ ... UPDATE` under
+`UPDATEMODEL(LOCKING)` holds the account record exclusively from L343 until the rewrite at L235 releases it.
+A second task confirming the same account therefore waited at its own read, and when it proceeded it read
+the *settled* balance and took the nothing-to-pay arm at L197-L206. The legacy posted exactly **one**
+transaction however many times the payment was submitted. The hold is a lock rather than a log - it excludes
+a concurrent writer and undoes nothing - and it is that exclusion, not recoverability, that kept the
+transaction master free of duplicates.
 
-**The decision.** The service declares no transaction of its own, exactly as
-`OnlineTransactionBoundary` documents that a screen service must not. The allocate-and-insert span of
-L212-L233 is one unit; the account rewrite of L235 is another; every read outside them is
-non-transactional. Each unit's failure is translated into its own paragraph's response arm *after* that
-unit has completed its rollback, which is what makes the translated arm the turn's actual outcome. The
-class became `final` as a direct consequence, matching its four sibling screen services, since it no
-longer needs a subclass proxy.
+**The decision.** L212-L235 run inside **one** `OnlineTransactionBoundary` unit: the allocation lock, the
+backward read of the maximum, the increment, the insert, the balance computation and the version-checked
+account rewrite. A version that no longer matches the one the read observed rolls the whole unit back, so a
+payment answered `409` leaves **no** transaction behind - which is what AAP §0.3.3 prescribes for the
+estate's single online rollback, and what the legacy's record hold achieved by other means. The service
+still declares no transaction of its own and stays `final`, exactly as `OnlineTransactionBoundary`
+documents that a screen service must; every response arm is still applied *outside* the unit, after it has
+completed, so a translated arm is the turn's actual outcome rather than a message competing with a rollback.
+
+**One arm keeps the two-unit shape, and it is the arm where nothing was stored.** The source performs L234
+and L235 whether or not the write at L233 succeeded, and both files are unrecoverable, so a write the insert
+paragraph *handles* - the duplicate arm at L533-L534 or the catch-all at L540-L546 - is still followed by a
+rewrite that commits and the account is still settled. A handled refusal stores nothing, so the shared unit
+has nothing to protect; that arm applies the refusal's message and then performs the computation and the
+rewrite in a unit of their own, which is the only way an insert that has already rolled back can be followed
+by a rewrite that commits. The rewrite therefore exists in two forms - one that opens its own unit for that
+arm, one that runs inside the shared unit otherwise - over a single shared store, so the re-read, the
+version comparison and the flushed versioned update are written once.
+
+**A rewrite failure that is not a conflict now discards the insert, and that is stated rather than implied.**
+Inside the shared unit a non-conflict rewrite failure records the source's catch-all arm at L396-L402 and
+leaves the unit through a private marker, so both writes roll back and the turn reports *Unable to Update
+Account...* rather than a success naming an identifier no row carries. The legacy, with unrecoverable files,
+would have kept that transaction row. This is a deliberate divergence in the direction of integrity: the
+operator is told the account could not be updated, and nothing partial is left behind. It is reachable only
+through a genuine store failure during the rewrite, not through any input.
 
 **The identifier rule is unaffected, and the lock is why.** `TransactionRepository.lockIdentifierAllocation`
-is taken as the first statement *inside* the insert's unit, before the maximum is read, and is
-transaction-scoped - so that unit holds it across the increment, the insert and its flush and releases it
-when the unit ends. Highest-key-plus-one, the `0000000000000001` seed on an empty table, and the bounded
-re-allocation are all unchanged; no sequence, no generated value. The account rewrite is deliberately
-outside the lock, so a payment does not serialise every other allocator behind an account write.
+is still taken as the shared unit's first statement, before the maximum is read, and is transaction-scoped.
+Highest-key-plus-one, the `0000000000000001` seed on an empty table, and the bounded re-allocation are all
+unchanged; no sequence, no generated value. What changed is the length of the hold: the lock is now released
+after the account rewrite rather than before it, so the serialised section is one keyed read and one update
+longer. That cost is accepted and named - AAP §0.2.2 excludes performance tuning from scope - and it buys a
+second property worth having: because the lock admits one allocator at a time, the loser of a concurrent
+payment reaches its version check *after* the winner has committed, so the conflict is detected
+deterministically instead of raced for.
 
-**Two consequences worth naming.** First, only the insert's own failure is translated: a failure of the
+**Two consequences worth naming.** First, only a write's own failure is translated: a failure of the
 advisory lock or of the existence probe is not a response to a write, has no arm in the source, and still
 propagates, distinguished by a flag raised immediately before the store is called. Second, a failure raised
-when the insert's unit *commits* now reaches the write's own response arm - which is only observable
-because the unit completes outside the service, and is the property the two new commit-failure tests
-assert.
+when the unit *commits* still reaches a response arm, which remains observable because the unit completes
+outside the service rather than at the end of the turn.
 
-**A related correctness repair inside the rewrite.** With the turn no longer transactional, the account
-instance the rewrite receives is detached, and handing a detached versioned instance to a save makes the
+**A related correctness repair inside the rewrite, retained.** The account is read at L343 outside any unit,
+so the instance the turn carries is detached, and handing a detached versioned instance to a save makes the
 provider *merge* it - which, for a row deleted in the meantime, inserts it again instead of reporting the
-invalid-key condition. The rewrite therefore re-reads the row inside its own unit: an absent row is the
-source's own not-found arm at L390-L395, a version that no longer matches the one the read observed is the
-conflict, and the versioned update the flush issues closes the window between the two. The select costs
-nothing, because the merge would have issued the same one.
+invalid-key condition. The rewrite therefore re-reads the row inside whichever unit it runs in: an absent row
+is the source's own not-found arm at L390-L395, a version that no longer matches is the conflict, and the
+versioned update the flush issues closes the window between the two. The select costs nothing, because the
+merge would have issued the same one.
 
-*Cited by:* `service/BillPaymentService.java`. Proven by the `IndependentUnitsOfWork` nest of
+*Cited by:* `service/BillPaymentService.java`. Proven by the `WriteOrderingAndUnitsOfWork` nest of
 `service/BillPaymentServiceTest.java`.
 
 ---
@@ -6980,7 +7007,7 @@ the read. The value it compares against for the bill-payment service was the inv
 allocate-and-write span.
 
 **Why the fix of DL-166 invalidated the proxy rather than the property.** Moving the lock inside the span,
-so that it is taken inside the insert's own unit of work, swapped the textual order of the span's
+so that it is taken inside the unit of work the insert runs in, swapped the textual order of the span's
 invocation and the span's body: the invocation now appears earlier in the file than the lock, while still
 executing after it. The audit failed on a file whose serialisation had strictly improved.
 
@@ -9362,6 +9389,123 @@ which the `:?` form could never have detected.
 *Embodied in:* `docker-compose.yml` (the two defaults and the note explaining them), `README.md` (the
 bring-up section now separates what needs no exports from what does).
 *Asserted by:* `config/ContainerHardeningContractTest`.
+
+---
+
+### DL-264 - The report submission identity names the authenticated operator, because a deduplication namespace shared between callers is one caller able to suppress another's submission
+
+**Context.** The report-request turn publishes a seventeen-card job image to a first-in-first-out queue,
+and that queue deduplicates: the bridge composes each card's deduplication identifier from a submission
+identity plus the card's one-based ordinal (DL-148, DL-232). A caller may supply the logical-request token
+that identity is derived from, over the `Idempotency-Key` header, so that an interrupted submission can be
+completed rather than doubled. The identity was the two date slots plus a digest of that token, and nothing
+in it named the caller.
+
+**The defect this entry records.** A token is a value a caller chooses, and the whole point of the header is
+that a caller chooses something stable and meaningful to itself - a period name, a run label - so two
+operators can arrive at the same token without either knowing about the other. Composed without the caller,
+the identity made those two submissions *the same submission*: the queue collapsed the second operator's
+seventeen cards as duplicates of the first's, and the second operator was answered with the submission
+acknowledgement having published nothing at all. Reproduced against a live first-in-first-out queue by
+observing its depth: purge to zero, an administrator submits with a key and the depth reaches seventeen, a
+standard user submits the *same period* with the *same* key and is told the report was submitted while the
+depth stays at seventeen. The suppression was symmetric - either caller could take the other's key first -
+and a submission with no key, whose token is minted server-side, never collided.
+
+**The decision.** The identity is scoped to the authenticated operator. The operator and the token are folded
+into a single SHA-256 digest, separated by a unit separator that cannot occur in either value, so no pair can
+be rearranged into another pair with the same digest. The identity therefore keeps the shape it always had -
+the two readable date slots plus one sixty-four character digest - and keeps its length, which matters because
+the bridge bounds a composed deduplication identifier at 128 characters. A retry by the same operator with the
+same token and the same window still reissues exactly the identifiers of its first attempt, which is the
+property the header exists for; the same token in a different operator's hands is a different submission and
+publishes its own cards.
+
+**Where the operator comes from, and where it must not come from.** It is the principal the security chain
+established, handed to the service by the controller alongside the token. It is emphatically **not** the
+navigation state the client echoes back: that is a value a caller can write anything into, and taking the
+operator from it would let a caller choose whose namespace to publish in - the same defect reopened from the
+other side. A turn driven with no security context carries no operator and is identified as unauthenticated,
+one namespace of its own; the delivered route authenticates, so that case is not reachable over the shipped
+boundary.
+
+**What deliberately did not change.** The eighty-character card images, the seventeen-card stream with its
+transmitted end-of-stream sentinel, the single message group that preserves the append order the legacy
+queue's disposition guaranteed, and the ignore-on-error posture that reports a refused write and abandons the
+remainder. The operator's identifier never reaches the queue, the bridge's diagnostics or the response: only
+the digest travels, and the `Idempotency-Key` echoed back to a caller is still only the value that caller
+supplied.
+
+*Embodied in:* `service/ReportRequestService.java` (the identity and its digest), `api/ReportController.java`
+(the principal handed across). *Asserted by:* the cross-operator, same-operator-retry and no-operator cases in
+`service/ReportRequestServiceTest.java`.
+
+---
+
+### DL-265 - A presented token must carry an expiry claim at all, because the library's window check judges expiry only when one is present
+
+**Context.** Every token this module mints carries an issue instant and an expiry, and the class that mints
+them documents that verification requires signature, expiry and issuer. Verification chained the framework's
+timestamp validator, fed with the module's own clock, behind the fixed signature algorithm and the issuer
+requirement.
+
+**The defect this entry records.** That validator judges the expiry and the not-before claim *if the token
+carries them*. A token carrying neither has no window, so nothing about time can refuse it: it verifies for
+as long as the signing key stands. Demonstrated at runtime by re-signing a legitimate token's claim set with
+the expiry removed - every other claim, and the signature, unchanged - which authenticated on all eleven
+authenticated operations and was correctly refused, at its own scope, on all seven administrative ones. The
+class's own documentation asserted the opposite, so this was a gap between a stated contract and an enforced
+one rather than a deliberate posture.
+
+**The decision.** A validator that requires the claim to be *present* runs first in the chain, ahead of the
+window check, so the window check only ever judges a claim that exists. A token with no expiry is refused
+with the standard invalid-token code, and the refusal is indistinguishable from every other verification
+failure at the boundary, because the caller's next action is the same in all of them.
+
+**Two limits, stated so neither reads as an omission.** The not-before claim is deliberately *not* required:
+nothing in this module mints one, so requiring it would refuse every token the module issues, while a
+presented token that does carry one is still judged against it. And the fix does not narrow the tolerance the
+timestamp validator keeps for clocks that disagree - that boundary is unchanged and is asserted where it was
+already asserted, because moving it would be a different decision from this one.
+
+**Why this is hardening rather than parity.** The legacy had no bearer credential at all: the terminal manager
+handed a communication area from one program to the next and its trustworthiness was a property of the region.
+There is no legacy behaviour to be faithful to here, so the tie-break rule does not apply; the requirement
+comes from outside the estate, which is the class of exception this log records rather than resolves.
+
+*Embodied in:* `config/JwtTokenProvider.java` (the presence validator, chained ahead of the window check).
+*Asserted by:* the missing-expiry, present-expiry control and neither-bound cases in
+`config/JwtTokenProviderTest.java`.
+
+---
+
+### DL-266 - One framework category is pinned above its emitting level, because it prints a rejected cookie header in full and a bearer token can be inside it
+
+**Context.** The logging configuration names each category whose output the migrated estate depends on, and
+keeps the two persistence categories above the level at which they would print statements or bound values.
+The embedded servlet container's own categories were left to the root level, which the developer-facing
+profiles set at informational.
+
+**The defect this entry records.** The container's cookie parser reports a header it could not parse by
+printing the header, in full, at informational level and then at debug level for subsequent occurrences. A
+client that puts its bearer credential in a `Cookie` header instead of an `Authorization` header - which this
+module correctly refuses to authenticate - therefore had its complete, still-valid token written to the
+application log in clear text. Confirmed by replaying the token read back out of the log, which authenticated.
+The production profile's root level is above informational, so the record was not emitted there; every other
+profile emitted it.
+
+**The decision.** That one category is pinned above the level it emits at, in the shared category block rather
+than per profile, so raising the root level in any profile cannot reach it. It is pinned rather than switched
+off: the pin closes both the informational and the debug forms of the record, while leaving a genuinely more
+serious report from the same class audible. No application code is involved, and nothing else about the
+container's diagnostics is changed - the category named is the one that prints the header, and only it.
+
+**Why the narrowest possible pin.** A broader silence over the container's parsing categories would also hide
+protocol diagnostics that explain a malformed request, which is exactly the kind of evidence a local gate run
+depends on. The finding named one emitter; one emitter is pinned.
+
+*Embodied in:* `logback-spring.xml`. *Asserted by:* `config/ObservabilityConfigTest`, which owns this
+document's category assertions.
 
 ---
 

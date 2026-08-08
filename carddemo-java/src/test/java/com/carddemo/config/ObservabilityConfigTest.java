@@ -337,6 +337,31 @@ final class ObservabilityConfigTest {
     /** The level the migration category must carry: informational, so each migration announces itself. */
     private static final String INFORMATIONAL_LEVEL = "INFO";
 
+    /**
+     * The container category that prints a rejected cookie header in full, and therefore a credential.
+     *
+     * <p>When a request arrives carrying a {@code Cookie} header the container's parser cannot read, the
+     * parser reports the refusal by printing the header it received in its entirety: at informational level
+     * for the first occurrence and at debug level for every occurrence after that. A client that presents
+     * its bearer credential in a {@code Cookie} header rather than an {@code Authorization} header, which
+     * this application declines to authenticate, therefore had its whole still-valid token written into the
+     * log in clear text, where a token read back out of it authenticated.</p>
+     */
+    private static final String COOKIE_PARSER_CATEGORY = "org.apache.tomcat.util.http.parser.Cookie";
+
+    /**
+     * The level that category must carry: above both levels the offending record is emitted at.
+     *
+     * <p>Chosen rather than switched off, because the record exists only at informational and debug level,
+     * so this closes both forms of it while leaving a genuinely more serious report from the same class
+     * audible.</p>
+     */
+    private static final String WARNING_LEVEL = "WARN";
+
+    /** Every level at which the rejected header, and so a credential, would reach the log. */
+    private static final List<String> CREDENTIAL_EMITTING_LEVELS =
+            List.of("INFO", "DEBUG", "TRACE", "ALL", "INHERITED");
+
     /** Every level that would hide a migration announcement, and therefore every level refused. */
     private static final List<String> SILENCING_LEVELS = List.of("OFF", "WARN", "ERROR", "TRACE_OFF");
 
@@ -1367,6 +1392,59 @@ final class ObservabilityConfigTest {
                                 category, LOGGING_DOCUMENT, INFORMATIONAL_LEVEL)
                         .isEqualTo(INFORMATIONAL_LEVEL);
             }
+        }
+
+        @Test
+        @DisplayName("keeps the container's cookie parser above the level it prints a rejected header at, "
+                + "because a bearer credential presented as a cookie is inside that header")
+        void keepsTheCookieParserAboveTheLevelItPrintsARejectedHeaderAt() {
+            // Not chatter and not a preference: this category prints the Cookie header it could not read in
+            // full, and a client that puts its bearer token in a Cookie header instead of an Authorization
+            // header - which this application refuses to authenticate - had its entire still-valid token
+            // written into the log in clear text. A token read back out of the log authenticated. The
+            // container's own logging is bridged into this system, so a category declared here governs it.
+            final Map<String, String> pinned = pinnedCategories();
+
+            assertThat(pinned.get(COOKIE_PARSER_CATEGORY))
+                    .as("%s must be named in %s. Left unnamed it inherits the tree, and the two developer "
+                                    + "profiles put the tree at %s, which is one of the two levels the "
+                                    + "rejected header is printed at", COOKIE_PARSER_CATEGORY,
+                            LOGGING_DOCUMENT, INFORMATIONAL_LEVEL)
+                    .isNotNull();
+            assertThat(pinned.get(COOKIE_PARSER_CATEGORY))
+                    .as("%s must be fixed at %s: the record is emitted at %s for the first occurrence and "
+                                    + "at DEBUG for every one after it, so only a level above both closes "
+                                    + "the channel. It is deliberately not switched off, so a genuinely "
+                                    + "more serious report from the same class stays audible",
+                            COOKIE_PARSER_CATEGORY, WARNING_LEVEL, INFORMATIONAL_LEVEL)
+                    .isEqualTo(WARNING_LEVEL);
+            assertThat(CREDENTIAL_EMITTING_LEVELS)
+                    .as("stated the other way round so the intent survives an edit: none of these levels "
+                            + "may ever be the one %s carries. INHERITED is among them because an inherited "
+                            + "level rises with the tree, so raising the root for a diagnostic session "
+                            + "would reopen the channel", COOKIE_PARSER_CATEGORY)
+                    .doesNotContain(pinned.get(COOKIE_PARSER_CATEGORY));
+        }
+
+        @Test
+        @DisplayName("declares the credential-bearing container category once and in the shared block, so "
+                + "no profile can be raised past it")
+        void declaresTheCredentialBearingContainerCategoryOnceInTheSharedBlock() {
+            final String document = loggingDocument();
+
+            assertThat(document.split(Pattern.quote(COOKIE_PARSER_CATEGORY), -1).length - 1)
+                    .as("%s is expected exactly once in %s, in the single shared declaration. A second "
+                            + "declaration, or one inside a profile block, would make the effective level "
+                            + "depend on which profile is active, and the profile that most needs the "
+                            + "channel closed is the one a developer raises the tree in",
+                            COOKIE_PARSER_CATEGORY, LOGGING_DOCUMENT)
+                    .isEqualTo(1);
+            assertThat(document.lastIndexOf("</springProfile>"))
+                    .as("the declaration must sit outside every profile block in %s, so it holds whichever "
+                            + "profile is active. Reading it positionally is enough here because it is the "
+                            + "last profile block that has to close before the shared category block begins",
+                            LOGGING_DOCUMENT)
+                    .isLessThan(document.indexOf(COOKIE_PARSER_CATEGORY));
         }
 
         @Test

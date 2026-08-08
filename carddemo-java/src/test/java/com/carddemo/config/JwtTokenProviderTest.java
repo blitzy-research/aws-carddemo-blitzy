@@ -22,6 +22,9 @@ import com.carddemo.support.InMemoryCredentialMaster;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.OctetSequenceKey;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -34,6 +37,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -44,7 +48,13 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwsHeader;
+import org.springframework.security.oauth2.jwt.JwtClaimsSet;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -267,6 +277,36 @@ class JwtTokenProviderTest {
      */
     private static JwtProperties propertiesWith(final String material) {
         return new JwtProperties(material, ISSUER, FIXTURE_LIFETIME);
+    }
+
+    /**
+     * Mints a genuinely signed token over an arbitrary claim set, independently of the class under test.
+     *
+     * <p><strong>Why this is needed, and why it is not the tampering helper.</strong> The tampering nest
+     * rewrites a segment of a minted token, which necessarily breaks the signature - and a broken signature
+     * is refused before any claim is judged, so it cannot be used to ask what happens when a claim is
+     * <em>legitimately absent</em>. This helper signs whatever claim set it is given with the same material
+     * the provider is configured with, so the resulting token is one the provider would accept but for the
+     * claim under test. It is the only way to present a validly signed token that omits a registered claim,
+     * because the provider's own minting path always writes one.</p>
+     *
+     * <p>Composed from the same encoder and key types the provider uses, so no dependency is introduced and
+     * no signing algorithm is restated: the header names the algorithm the provider pins.</p>
+     *
+     * @param material signing material to sign with, which must be the material the provider was built on
+     *                 for the token to reach the claim checks at all
+     * @param claims   populates the claim set, omitting exactly what the test needs omitted
+     * @return the compact serialized form
+     */
+    private static String tokenSignedWith(final String material,
+            final Consumer<JwtClaimsSet.Builder> claims) {
+        final OctetSequenceKey key = new OctetSequenceKey.Builder(
+                material.getBytes(StandardCharsets.UTF_8)).build();
+        final JwtEncoder encoder = new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(key)));
+        final JwtClaimsSet.Builder builder = JwtClaimsSet.builder();
+        claims.accept(builder);
+        return encoder.encode(JwtEncoderParameters.from(
+                JwsHeader.with(MacAlgorithm.HS256).build(), builder.build())).getTokenValue();
     }
 
     /**
@@ -1002,6 +1042,71 @@ class JwtTokenProviderTest {
 
             assertThat(wellBeyond.verify(token))
                     .as("an elapsed token must not verify, whatever it is presented to")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("is CLOSED for a token that declares no expiry at all, because a credential with no "
+                + "window would otherwise be usable for as long as the signing key stands")
+        void isClosedForATokenThatDeclaresNoExpiry() {
+            final String material = freshSigningMaterial();
+            final JwtProperties properties = propertiesWith(material);
+            // Signed with the configured key and carrying the same claims a legitimate token carries, so
+            // the signature, the issuer, the subject and the entitlement all verify: the ONLY difference is
+            // the absent expiry. The framework's window validator judges expiry only when the claim is
+            // present, so without the presence requirement this token authenticates forever.
+            final String noExpiry = tokenSignedWith(material, claims -> claims
+                    .issuer(ISSUER)
+                    .subject(STANDARD_USER_ID)
+                    .issuedAt(ISSUED_AT)
+                    .claim(JwtTokenProvider.ROLE_CLAIM, UserType.USER.getCode())
+                    .claim(JwtTokenProvider.AUTHORITY_CLAIM, UserType.USER.getCode()));
+
+            assertThat(providerFor(properties, ISSUED_AT).verify(noExpiry))
+                    .as("a credential that declares no window must be refused, at the instant it was "
+                            + "minted at and at every other instant")
+                    .isEmpty();
+            assertThat(providerFor(properties, ISSUED_AT.plus(FIXTURE_LIFETIME.multipliedBy(1000)))
+                    .verify(noExpiry))
+                    .as("and no amount of elapsed time can turn the absence into an expiry")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("is open for the same claim set once it carries an expiry, so the refusal above is the "
+                + "absent claim and not the hand-signed shape of the token")
+        void isOpenForTheSameClaimSetOnceItCarriesAnExpiry() {
+            final String material = freshSigningMaterial();
+            final JwtProperties properties = propertiesWith(material);
+            final String withExpiry = tokenSignedWith(material, claims -> claims
+                    .issuer(ISSUER)
+                    .subject(STANDARD_USER_ID)
+                    .issuedAt(ISSUED_AT)
+                    .expiresAt(ISSUED_AT.plus(FIXTURE_LIFETIME))
+                    .claim(JwtTokenProvider.ROLE_CLAIM, UserType.USER.getCode())
+                    .claim(JwtTokenProvider.AUTHORITY_CLAIM, UserType.USER.getCode()));
+
+            assertThat(providerFor(properties, ISSUED_AT).verify(withExpiry))
+                    .as("the control: one claim added and the same token verifies")
+                    .isPresent();
+            assertThat(providerFor(properties, ISSUED_AT).verify(withExpiry).orElseThrow().getSubject())
+                    .isEqualTo(STANDARD_USER_ID);
+        }
+
+        @Test
+        @DisplayName("is closed for a token that declares neither expiry nor not-before, which is the "
+                + "shape that has no window of any kind")
+        void isClosedForATokenThatDeclaresNeitherBound() {
+            final String material = freshSigningMaterial();
+            final String unbounded = tokenSignedWith(material, claims -> claims
+                    .issuer(ISSUER)
+                    .subject(ADMINISTRATOR_ID)
+                    .claim(JwtTokenProvider.ROLE_CLAIM, UserType.ADMIN.getCode())
+                    .claim(JwtTokenProvider.AUTHORITY_CLAIM, UserType.ADMIN.getCode()));
+
+            assertThat(providerFor(propertiesWith(material), ISSUED_AT).verify(unbounded))
+                    .as("neither bound present means nothing about time can refuse it, so the presence "
+                            + "requirement is what does")
                     .isEmpty();
         }
 

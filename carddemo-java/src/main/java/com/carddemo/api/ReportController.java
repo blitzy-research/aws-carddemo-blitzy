@@ -233,8 +233,14 @@ public class ReportController {
                     ? null
                     : ScreenStateAdapter.authenticatedUserId(authentication);
 
+            // The authenticated operator is handed to the turn as well as to the response, because the
+            // submission the turn may publish is deduplicated by the queue and a deduplication namespace
+            // shared between callers is one caller able to suppress another's submission. It is the identity
+            // the chain established, never the navigation state the client echoed - see the service's own
+            // account of why that distinction is the whole of the protection.
             final ReportRequestService.ReportRequestResult result = this.reportRequestService
-                    .processReportRequest(this.reportContractAdapter.toScreenInput(request), retryToken);
+                    .processReportRequest(this.reportContractAdapter.toScreenInput(request), retryToken,
+                            authenticatedUserId);
 
             final ReportResponse body = this.reportContractAdapter.toResponse(result, echoedContext,
                     authenticatedUserId, authenticatedUserType);
