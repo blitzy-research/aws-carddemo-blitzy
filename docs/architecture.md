@@ -1084,8 +1084,8 @@ running mainframe.
 All images are pinned by digest, and every published port binds to the loopback interface by default.
 `carddemo-java/localstack/init/01-create-aws-resources.sh` bootstraps the staging bucket, the FIFO queue and
 the topic on startup. Bring-up and gate-execution instructions live in the module's own
-`carddemo-java/README.md`; the onboarding guide that will restate them as a first-run walkthrough is not
-delivered yet, so it is named without a link here.
+`carddemo-java/README.md`, and [onboarding-guide.md](onboarding-guide.md) restates them as a first-run
+walkthrough.
 
 ## Reference diagrams
 
