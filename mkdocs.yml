@@ -1,10 +1,10 @@
 site_name: 'blitzy-card-demo'
 nav:
   - Home: index.md
-  - Onboarding Guide: onboarding-guide.md
   - Architecture: architecture.md
+  - Onboarding Guide: onboarding-guide.md
   - Traceability Matrix: traceability-matrix.md
-  - Migration Decision Log: decision-log.md
+  - Decision Log: decision-log.md
   - Gate Evidence: gate-evidence.md
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
