@@ -42,6 +42,10 @@ import com.carddemo.util.TransactionRecordMapper;
 import com.carddemo.support.OrderedTransactionScan;
 import io.awspring.cloud.s3.Location;
 import io.awspring.cloud.s3.S3Operations;
+
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
 import io.awspring.cloud.s3.S3Resource;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -161,6 +165,17 @@ final class BackupTransactionJobConfigTest {
 
     private S3Operations objectStore;
 
+    /**
+     * The version-aware client the generation store performs its rollback and retention deletes through.
+     *
+     * <p>This suite drives one publication at a time and asserts nothing about retention, so the versioned
+     * listing is stubbed to report an empty bucket: a scratch pass finds nothing to remove and the store's
+     * own suite is where the deletion semantics are proved. It is stubbed rather than left to Mockito's
+     * default because the default return of {@code null} would surface as a dereference inside the store
+     * rather than as a statement about this suite.
+     */
+    private S3Client versionedObjectStore;
+
     private MeterRegistry meterRegistry;
 
     private BackupTransactionJobConfig config;
@@ -198,6 +213,11 @@ final class BackupTransactionJobConfigTest {
         this.transactionScanRepository = new OrderedTransactionScan(
                 () -> this.transactionRepository.findAll(Sort.by(Sort.Direction.ASC, "tranId")));
         this.objectStore = mock(S3Operations.class);
+        this.versionedObjectStore = mock(S3Client.class);
+        when(this.versionedObjectStore.listObjectVersions(any(ListObjectVersionsRequest.class)))
+                .thenReturn(ListObjectVersionsResponse.builder()
+                        .isTruncated(Boolean.FALSE)
+                        .build());
         this.uploadedBodies = new ArrayList<>();
         this.uploadedKeys = new ArrayList<>();
         doAnswer(invocation -> {
@@ -246,7 +266,7 @@ final class BackupTransactionJobConfigTest {
 
         return new BackupTransactionJobConfig(jobRepository, transactionManager,
                 boundaryListener, incrementer, this.transactionRepository,
-                this.transactionScanRepository, this.objectStore,
+                this.transactionScanRepository, this.objectStore, this.versionedObjectStore,
                 // Runs each publication directly. This test drives one publication at a time from one
                 // thread, so there is nothing to serialize; the lock's acquisition ordering and its
                 // failure-to-acquire behaviour are asserted in its own test.

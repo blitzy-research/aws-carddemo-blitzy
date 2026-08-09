@@ -776,13 +776,28 @@ public final class BatchConfig {
 
         /**
          * Publishes every file a clean execution registered, upgrading the execution to failed if its
-         * required durable boundary cannot be completed.
+         * required durable boundary cannot be completed &mdash; and discarding the local generations that
+         * verdict orphans, whichever way the boundary failed.
          *
          * <p><strong>A failure here means nothing was published.</strong> The store treats its uploads and
          * its fixed-name alias replacements as one compensated unit, so a failure anywhere in that unit
          * deletes every object it uploaded and puts every alias it advanced back. The verdict this method
          * writes is therefore honest in both directions: a FAILED job left no durable object and no local
          * view naming a generation that was rolled back, and a COMPLETED job published all of them.</p>
+         *
+         * <h2>Three ways to end FAILED, and all three discard</h2>
+         *
+         * <p>The local discard used to be reached from one of them only: the arm taken when the execution
+         * arrived here already non-COMPLETED. The other two arms &mdash; a completed job whose registered
+         * artifacts cannot be published because no store is available, and a publication that threw &mdash;
+         * both set the status to FAILED <em>after</em> that branch had been passed, and returned. A job that
+         * ends FAILED by either of those routes is in exactly the state the discard exists for: its
+         * completed local generations name nothing durable, because nothing was published, and they are
+         * still readable on disk and still resolvable by name to any component that asks the store for the
+         * current local generation of their base. One dead artifact per failed run, indistinguishable from
+         * real output. All three arms therefore discard, and the two failure arms do it through
+         * {@link #failPublicationAndDiscardLocalArtifacts(JobExecution, RuntimeException)}. See
+         * {@code docs/decision-log.md} entry DL-290.</p>
          *
          * <p>The converse is equally deliberate. Enforcing generation retention happens after the store's
          * commit point and cannot raise, because deleting a rolled-off object is irreversible and so cannot
@@ -812,7 +827,7 @@ public final class BatchConfig {
                 return;
             }
             if (this.generationStore == null) {
-                markArtifactPublicationFailed(jobExecution, new IllegalStateException(
+                failPublicationAndDiscardLocalArtifacts(jobExecution, new IllegalStateException(
                         "a completed job registered durable artifacts but no generation store is"
                                 + " available"));
                 return;
@@ -820,7 +835,55 @@ public final class BatchConfig {
             try {
                 this.generationStore.publishRegistered(jobExecution);
             } catch (final RuntimeException failure) {
-                markArtifactPublicationFailed(jobExecution, failure);
+                failPublicationAndDiscardLocalArtifacts(jobExecution, failure);
+            }
+        }
+
+        /**
+         * Writes the failed verdict, then discards the local generations that verdict has just orphaned.
+         *
+         * <p><strong>The order is the contract, in both directions.</strong> The verdict is written first
+         * because the discard's own diagnostics describe an execution that did not complete, and because
+         * the failure log names the artifact count, which the discard leaves in place but which a reader
+         * expects to see against the failure rather than after it. The discard runs second, and it runs
+         * before this method returns &mdash; which is what puts it before the terminal event, since
+         * {@link #afterJob(JobExecution)} emits that only once artifact publication has been attempted. An
+         * operator or a downstream subscriber therefore never observes a FAILED terminal event for a job
+         * whose local generations are still sitting in the staging root.
+         *
+         * <p><strong>The publication failure is the one that survives.</strong> The discard is
+         * best-effort by construction: {@code discardLocalArtifactsOf} re-checks each registered path,
+         * reports rather than raises on a file it cannot remove, and returns a count. The
+         * {@code catch} here covers the remaining possibility &mdash; that reading the registry itself
+         * fails &mdash; because a cleanup problem must not replace the reason the publication failed, which
+         * is the only diagnostic an operator can act on. A cleanup that could not run is reported at
+         * warning level and the verdict already written stands.
+         *
+         * <p>The registry is deliberately <em>not</em> cleared. The store clears it only when a publication
+         * commits, so a failed job keeps its registrations, and the artifact count remains readable to
+         * anything that inspects the failed execution afterwards.
+         *
+         * @param jobExecution the completed execution whose durable boundary could not be completed
+         * @param cause        the publication failure, preserved as the job's own failure exception
+         */
+        private void failPublicationAndDiscardLocalArtifacts(final JobExecution jobExecution,
+                final RuntimeException cause) {
+
+            markArtifactPublicationFailed(jobExecution, cause);
+            try {
+                final int discarded = StagedGenerationStore.discardLocalArtifactsOf(
+                        jobExecution, this.stagingDirectory);
+                if (discarded > 0) {
+                    LOGGER.info("Discarded {} local file(s) of jobExecutionId={} after its durable"
+                                    + " artifact publication failed; nothing was published, so nothing"
+                                    + " local named a durable generation",
+                            Integer.valueOf(discarded), jobExecution.getId());
+                }
+            } catch (final RuntimeException cleanupFailure) {
+                LOGGER.warn("The local artifacts of jobExecutionId={} could not be discarded after its"
+                                + " durable artifact publication failed; they remain in the staging root"
+                                + " and name nothing durable. cleanupFailureType={}",
+                        jobExecution.getId(), cleanupFailure.getClass().getSimpleName());
             }
         }
 

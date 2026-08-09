@@ -37,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -62,11 +63,8 @@ import com.carddemo.support.AbstractLocalStackIT;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.DeleteBucketRequest;
-import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
-import software.amazon.awssdk.services.s3.model.GetObjectRequest;
-import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.sns.model.CreateTopicRequest;
 import software.amazon.awssdk.services.sns.model.DeleteTopicRequest;
@@ -84,6 +82,20 @@ import software.amazon.awssdk.services.sqs.model.ReceiveMessageRequest;
  * recording double participates in the successful path. The notification test delivers the listener's
  * structured event through SNS into an SQS subscription and asserts the body received from that queue.
  * Mocks are used only for Spring's optional-provider wrappers, never for either external service.
+ *
+ * <h2>The bucket carries object versioning, because production's does</h2>
+ *
+ * <p>This test used to create a plain bucket of its own with a direct {@code createBucket} call, which
+ * leaves versioning off, and then asserted retention by listing current object keys. Both halves of that
+ * arrangement hid the behaviour that matters. On an unversioned bucket a delete removes the object, so an
+ * unqualified delete looks correct; on the versioned bucket the module actually publishes into, the same
+ * call adds a delete marker and every version of every rolled-off generation stays fetchable by version
+ * identifier. A base "retaining five" would have been holding the bytes of all seven.
+ *
+ * <p>The bucket is therefore created through {@link AbstractLocalStackIT#createBucketIfAbsent(String)},
+ * which is the one path in the test estate that applies versioning, and the posture is asserted before
+ * anything is published. Retention is then asserted twice over: the current keys, and the versions and
+ * delete markers the bucket holds beneath the base. See {@code docs/decision-log.md} entry DL-287.
  */
 @DisplayName("batch AWS integration: durable generations and terminal notifications")
 class BatchAwsIntegrationIT extends AbstractLocalStackIT {
@@ -96,11 +108,22 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
     private Path stagingDirectory;
 
     @Test
-    @DisplayName("completed generations are stored byte-for-byte and the service retains the newest five")
+    @DisplayName("completed generations are stored byte-for-byte and roll-off leaves behind no version"
+            + " and no delete marker")
     void completedGenerationsReachS3WithMeasuredRetention() throws Exception {
         final String bucket = "carddemo-generation-it-" + UUID.randomUUID();
-        s3Client().createBucket(CreateBucketRequest.builder().bucket(bucket).build());
+        createBucketIfAbsent(bucket);
         try (S3Presigner presigner = presigner()) {
+            assertThat(bucketVersioningStatus(bucket))
+                    .as("the bucket this publishes into has to carry object versioning, because the"
+                            + " bucket production publishes into does. Asserted before a single"
+                            + " generation is written so that a change reverting to a bare"
+                            + " createBucket fails here, loudly, rather than quietly weakening every"
+                            + " retention assertion below into a statement about an unversioned"
+                            + " bucket - where an unqualified delete really does remove the object"
+                            + " and so proves nothing about the one that does not.")
+                    .isEqualTo(BucketVersioningStatus.ENABLED);
+
             final S3Operations operations = new S3Template(
                     s3Client(),
                     new InMemoryBufferingS3OutputStreamProvider(
@@ -113,7 +136,7 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
             // lock's own behaviour is asserted where it can be - in the store's unit test, which proves
             // the store hands it the right bases and publishes inside it.
             final StagedGenerationStore store =
-                    new StagedGenerationStore(operations, bucket,
+                    new StagedGenerationStore(operations, s3Client(), bucket,
                             (bases, publication) -> publication.run());
 
             for (long executionId = 1; executionId <= 7; executionId++) {
@@ -129,27 +152,39 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
                 store.publishRegistered(execution);
             }
 
-            final List<String> keys = s3Client().listObjectsV2(ListObjectsV2Request.builder()
-                            .bucket(bucket)
-                            .prefix(GENERATION_BASE + "/")
-                            .build())
-                    .contents()
-                    .stream()
-                    .map(object -> object.key())
-                    .toList();
-            assertThat(keys).containsExactlyInAnyOrder(
-                    GENERATION_BASE + "/G0000000003V00",
-                    GENERATION_BASE + "/G0000000004V00",
-                    GENERATION_BASE + "/G0000000005V00",
-                    GENERATION_BASE + "/G0000000006V00",
-                    GENERATION_BASE + "/G0000000007V00");
+            final String[] retained = {
+                generationKey(3), generationKey(4), generationKey(5),
+                generationKey(6), generationKey(7),
+            };
 
-            final byte[] newest = s3Client().getObjectAsBytes(GetObjectRequest.builder()
-                            .bucket(bucket)
-                            .key(GENERATION_BASE + "/G0000000007V00")
-                            .build())
-                    .asByteArray();
-            assertThat(newest).isEqualTo("generation-7".getBytes(StandardCharsets.US_ASCII));
+            assertThat(objectKeysUnder(bucket, GENERATION_BASE + "/"))
+                    .as("an ordinary listing reports the newest five, which is the outcome an operator"
+                            + " sees. It is necessary and it is not sufficient: on a versioned bucket"
+                            + " this same listing reports exactly this set whether the two rolled-off"
+                            + " generations were deleted or merely hidden behind a delete marker.")
+                    .containsExactlyInAnyOrder(retained);
+
+            assertThat(objectBytes(bucket, generationKey(7)))
+                    .as("the newest generation is readable back as the exact bytes that were staged")
+                    .isEqualTo("generation-7".getBytes(StandardCharsets.US_ASCII));
+
+            final List<ObjectVersionRef> held = objectVersionsUnder(bucket, GENERATION_BASE + "/");
+            assertThat(held.stream().map(ObjectVersionRef::key).toList())
+                    .as("this is the assertion the ordinary listing cannot make. Seven generations"
+                            + " were published and the retention limit is five, so two rolled off. A"
+                            + " version listing sees what the bucket is really holding, and it must"
+                            + " hold exactly the five retained keys: the bytes of generations one and"
+                            + " two have to be gone, not concealed. An unqualified delete would leave"
+                            + " both of their stored versions here alongside a delete marker each,"
+                            + " and every one of those versions stays fetchable by identifier.")
+                    .containsExactlyInAnyOrder(retained);
+            assertThat(held.stream().filter(ObjectVersionRef::deleteMarker).toList())
+                    .as("and it must hold no delete marker at all. A marker is the fingerprint of an"
+                            + " unqualified delete: the service accepts the request, reports success,"
+                            + " hides the key from an ordinary listing, and removes nothing. Finding"
+                            + " one here would mean roll-off had concealed a generation rather than"
+                            + " purged it.")
+                    .isEmpty();
         } finally {
             deleteBucketAndContents(bucket);
         }
@@ -267,15 +302,27 @@ class BatchAwsIntegrationIT extends AbstractLocalStackIT {
         throw new AssertionError("the subscribed queue received no terminal job notification");
     }
 
+    private static String generationKey(final long generation) {
+        // String.format with an explicit Locale.ROOT rather than the String.formatted shorthand: the
+        // shorthand has no locale overload, so it reads the ambient default, and this module's
+        // locale-determinism audit forbids it for exactly that reason.
+        return GENERATION_BASE + String.format(Locale.ROOT, "/G%010dV00", Long.valueOf(generation));
+    }
+
+    /**
+     * Empties the bucket of every version and every delete marker, then removes it.
+     *
+     * <p>This used to list current objects and delete each one without a version identifier. Against the
+     * versioned bucket the test now provisions that would have removed nothing: each call would have added
+     * a delete marker, the subsequent {@code deleteBucket} would have been refused because the bucket was
+     * not empty, and the test would have failed in teardown for a reason that had nothing to do with what
+     * it was specifying. {@link AbstractLocalStackIT#deleteEveryVersionUnder(String, String)} removes by
+     * identifier and reads the prefix back to prove it is genuinely empty.
+     *
+     * @param bucket the bucket to empty and remove; must not be {@code null}
+     */
     private static void deleteBucketAndContents(final String bucket) {
-        final var objects = s3Client().listObjectsV2(
-                ListObjectsV2Request.builder().bucket(bucket).build()).contents();
-        for (final var object : objects) {
-            s3Client().deleteObject(DeleteObjectRequest.builder()
-                    .bucket(bucket)
-                    .key(object.key())
-                    .build());
-        }
+        deleteEveryVersionUnder(bucket, "");
         s3Client().deleteBucket(DeleteBucketRequest.builder().bucket(bucket).build());
     }
 }

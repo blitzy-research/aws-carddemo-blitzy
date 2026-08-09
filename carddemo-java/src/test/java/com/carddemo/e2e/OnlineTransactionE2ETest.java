@@ -160,9 +160,10 @@ import software.amazon.awssdk.services.sqs.model.SqsException;
  * <p><strong>Contract three - the fixed-width record formats.</strong> Eighty, one hundred, one
  * hundred and thirty-three and four hundred and thirty bytes are the four this specification stages,
  * because they are the four expected outputs Gate 1 names. The estate emits a <strong>fifth</strong>
- * fixed width - the forty-byte category-balance report line - which has no golden and is verified at its
- * own width and ordering by {@code batch/CategoryBalanceReportJobConfigIT}; it is asserted here as a fifth
- * width so that a reader counting widths from this class cannot arrive at four. Their staging interface is the object
+ * fixed width - the forty-byte category-balance report line - whose own golden is compared against a real
+ * run, at its own width and ordering, by {@code batch/CategoryBalanceReportJobConfigIT} rather than staged
+ * here; it is asserted here as a fifth width so that a reader counting widths from this class cannot
+ * arrive at four. Their staging interface is the object
  * store that replaced sequential-dataset staging, so each delivered golden is put through that real
  * store and read back, and the bytes that came back are compared to the bytes on the class path with no
  * decoding, no trimming and no normalisation of any kind. The deep byte-equivalence of a
@@ -584,12 +585,13 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
      * followed by an eighty-byte trailer of a four-digit reason code and a seventy-six-character
      * description.
      *
-     * <p><strong>These four are the goldens, not the whole width contract.</strong> The estate emits a
-     * fifth fixed width - {@link #CATEGORY_BALANCE_REPORT_WIDTH} bytes, the category-balance report the
-     * {@code PRTCATBL} job stream produces - which has no golden here because Gate 1 names four expected
-     * outputs and this specification stages exactly those. It is verified at its own width and its own
-     * ordering by {@code batch/CategoryBalanceReportJobConfigIT}, and it is asserted below so that a reader
-     * of this list cannot mistake four goldens for the estate's whole set of fixed widths.
+     * <p><strong>These four are the ones this specification stages, not the whole width contract.</strong>
+     * The estate emits a fifth fixed width - {@link #CATEGORY_BALANCE_REPORT_WIDTH} bytes, the
+     * category-balance report the {@code PRTCATBL} job stream produces - which is not staged here because
+     * Gate 1 names four expected outputs and this specification stages exactly those. Its own committed
+     * golden is compared against a real run, at its own width and its own ordering, by
+     * {@code batch/CategoryBalanceReportJobConfigIT}, and the width is asserted below so that a reader of
+     * this list cannot mistake these four for the estate's whole set of fixed widths.
      */
     private static final List<RecordFormat> RECORD_FORMATS = List.of(
             new RecordFormat("statement text record", "statement.txt", 80),
@@ -2102,16 +2104,17 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
 
         @Test
         @DisplayName("the estate emits FIVE fixed widths, not four: the four staged above plus the forty-"
-                + "byte category-balance report line, which has no golden and is verified at its own "
-                + "width by batch/CategoryBalanceReportJobConfigIT")
+                + "byte category-balance report line, whose own golden is compared against a real run by "
+                + "batch/CategoryBalanceReportJobConfigIT")
         void theFifthFixedWidthIsPartOfTheContract() {
             // WHY THIS TEST EXISTS. The four widths above are the four Gate 1 expected outputs, and it is
             // easy to read that list as the estate's whole fixed-width contract - the plan's own width
             // inventory did exactly that, and so omitted the category-balance report. The report is a
             // genuine external file format: the PRTCATBL job stream declares SORTOUT DCB=(LRECL=40) and
             // sorts by account, type and category, all ascending, which is the fourth of the estate's four
-            // external sort specifications. It carries no golden because Gate 1 names four expected
-            // outputs; it is verified at its width and its ordering by its own job integration test.
+            // external sort specifications. It is not staged here because Gate 1 names four expected
+            // outputs; its own committed golden is compared against a real run, at its width and its
+            // ordering, by its own job integration test.
             final List<Integer> stagedWidths = RECORD_FORMATS.stream().map(RecordFormat::width).toList();
 
             assertThat(CATEGORY_BALANCE_REPORT_WIDTH)
@@ -2160,7 +2163,11 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
                                     + "round trip", format.width())
                             .isZero();
                 } finally {
-                    deleteStagedObject(CANONICAL_BUCKET, key);
+                    // Version-aware, because the canonical staging bucket carries object versioning: an
+                    // ordinary delete would add a delete marker, hide the key from the listing this nest
+                    // asserts on, and leave every staged copy of the golden fetchable by version
+                    // identifier in a bucket every later specification shares. See DL-287.
+                    deleteEveryStagedVersionUnder(CANONICAL_BUCKET, key);
                 }
             }
         }
@@ -2204,7 +2211,7 @@ class OnlineTransactionE2ETest extends AbstractPostgresAndLocalStackIT {
                                 + "from an execution identifier")
                         .contains(key);
             } finally {
-                deleteStagedObject(CANONICAL_BUCKET, key);
+                deleteEveryStagedVersionUnder(CANONICAL_BUCKET, key);
             }
         }
     }

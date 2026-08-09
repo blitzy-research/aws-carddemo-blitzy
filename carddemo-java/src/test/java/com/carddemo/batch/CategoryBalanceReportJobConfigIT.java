@@ -145,10 +145,14 @@ import com.carddemo.support.TestDataFactory;
  * sharing would be wrong is that byte offset 263 is typed character in the statement job and zoned decimal
  * in the transaction-report job - the same offset, two typings, two jobs.
  *
- * <h2>The fifth contractual output width, and a one-byte conflict inside the specification</h2>
+ * <h2>The fifth contractual output width, its committed golden, and a one-byte conflict</h2>
  * The planning material names four fixed output widths - 80, 100, 133 and 430. This job introduces a
  * <strong>fifth: 40 bytes</strong>. That is a gap in the plan rather than a misreading of the member, and
- * it is recorded here as one. The reprojection at lines 53 to 56 assembles an eleven-byte account
+ * it is recorded here as one. The fifth width now carries a golden of its own,
+ * {@value #REPORT_GOLDEN_RESOURCE}, and <strong>that file is this class's verdict oracle</strong>: the
+ * job is run once against a state this class fixes completely, and the bytes it wrote to the local
+ * dataset are compared with the bytes of the committed file. The reprojection at lines 53 to 56 assembles
+ * an eleven-byte account
  * identifier, a blank, a two-byte type code, a blank, a four-byte category code, a blank and a
  * twelve-character edited balance - nine digits, a decimal point and two decimals - which is thirty-two
  * content bytes, and then declares a nine-byte blank run. Thirty-two plus nine is forty-one, against the
@@ -180,6 +184,24 @@ import com.carddemo.support.TestDataFactory;
  * overpunched sign byte and the key ordering are all built in this class from plain string arithmetic and
  * a locally declared overpunch table, so an error copied into the production encoder cannot be copied into
  * the expectation that is supposed to catch it.
+ *
+ * <h2>Which side is the verdict, stated explicitly</h2>
+ * Independence of the code under test is necessary and is not sufficient: an expectation assembled in
+ * this class from this class's own reading of the layout can still reproduce the very misunderstanding it
+ * is meant to catch, because one author wrote both readings. So the <strong>verdict</strong> for the
+ * forty-byte contract is the committed golden {@value #REPORT_GOLDEN_RESOURCE} - separately authored
+ * bytes, held in the fixture tree beside the other four oracles, never regenerated from a run and never
+ * produced by calling the code under test - compared as a byte array against what the job wrote to a real
+ * local dataset after reading a real PostgreSQL server. The golden run is driven from a state this class
+ * fixes completely beforehand, which is what makes a committed expectation possible at all: the fifty
+ * delivered rows plus the four rows this class adds, and nothing else.
+ *
+ * <p>The builder that assembles a forty-byte line in this class survives that change, and its role is now
+ * <strong>diagnostic decomposition only</strong>. It is what says <em>which field</em> of <em>which
+ * record</em> differs when the golden comparison fails, and it is what lets the report the job produces
+ * over the posted state - a state whose balances are a function of a three-hundred-record posting run
+ * rather than of anything committed - still be checked field by field. It is not the verdict for the
+ * width, the mask, the separators or the ordering; the committed file is.
  */
 @SpringBootTest(classes = CategoryBalanceReportJobConfigIT.JobsUnderTest.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -248,6 +270,20 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
 
     /** Classpath location of the delivered daily-transaction fixture the prerequisite run consumes. */
     private static final String DAILY_TRANSACTION_FIXTURE = "fixtures/input/dailytran.txt";
+
+    /**
+     * Classpath location of the committed forty-byte golden, which is this class's verdict oracle.
+     *
+     * <p>The fifth oracle of the expected-output tree, beside the eighty-byte statement, its
+     * hundred-byte hypertext counterpart, the hundred-and-thirty-three-byte report line and the
+     * four-hundred-and-thirty-byte reject record. It carries fifty-three separator-free forty-byte
+     * records: one per delivered category-balance row, plus the three rows this class adds beyond the
+     * fifty and one it rewrites in place.
+     */
+    private static final String REPORT_GOLDEN_RESOURCE = "fixtures/expected/category-balance-report.txt";
+
+    /** Records the committed golden holds, which is the population the golden run reports over. */
+    private static final int GOLDEN_RECORD_COUNT = 53;
 
     // -----------------------------------------------------------------------------------------------
     // The layout, declared independently of the production mapper so that this class is an oracle and
@@ -665,6 +701,11 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
         final CapturedRuns runs = driveTheTwoRuns();
         return Stream.of(
                 dynamicTest(
+                        "GATE 1 VERDICT - the report the job wrote over a completely fixed state is "
+                                + "byte-identical to the committed forty-byte golden, which is a "
+                                + "separately authored file rather than anything this class built",
+                        () -> theGoldenRunIsByteIdenticalToTheCommittedOracle(runs)),
+                dynamicTest(
                         "the unload is the fifty-byte CATEGORY-BALANCE layout - eleven-digit "
                                 + "account, two-character type, four-digit category, eleven-byte "
                                 + "signed balance, twenty-two-byte filler - and provably not the "
@@ -698,7 +739,8 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     }
 
     /**
-     * Drives the prerequisite posting run and the two subject runs, once, and captures what they made.
+     * Drives the golden run, the prerequisite posting run and the two subject runs, once, and captures
+     * what they made.
      *
      * <p>Every assertion here is a fact about the driving itself and has to be made while it happens: the
      * seeded census has to be measured before the posting run moves it, and the clear-down contract needs
@@ -706,7 +748,24 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
      * returned as a value rather than stored on the instance, so no later assertion can find it by
      * accident.
      *
-     * @return the captured artefacts of the two runs
+     * <h2>Why the golden run comes first, and why the added rows move with it</h2>
+     *
+     * <p>A committed expectation can only be compared against a state that is fixed in advance, and the
+     * posting run's output is not: its balances are a function of three hundred input records passing
+     * through the accept-or-reject cascade. So the forty-byte verdict is taken <strong>before</strong>
+     * posting, over a state this method fixes completely - the fifty delivered rows plus the four rows
+     * this class adds - and the committed golden holds exactly the fifty-three lines that state projects
+     * to. Adding those four rows before the golden run rather than after it is what puts a non-zero
+     * magnitude, a negative balance and a nine-digit balance inside the committed expectation instead of
+     * leaving all three to an expectation this class assembles.
+     *
+     * <p>The four rows are then re-applied after the posting run. Posting owns one of their keys - the
+     * seeded type and category on the discriminating account - and would otherwise leave it carrying a
+     * posted balance rather than the negative value the later assertions name. Re-applying is a write of
+     * the same four composite keys with the same four values, so it restores exactly the state those
+     * assertions were written against and changes nothing else.
+     *
+     * @return the captured artefacts of the golden run and the two subject runs
      * @throws Exception if a launch is refused, or a staged artefact cannot be read
      */
     private CapturedRuns driveTheTwoRuns() throws Exception {
@@ -720,12 +779,27 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .as("measured over the whole delivered fixture: fifty rows, one distinct balance, and it "
                         + "decodes to zero. A report produced against this state alone would render the "
                         + "same zero on every line, so neither the edit mask nor the sign handling would "
-                        + "be observable - which is why the posting job runs first")
+                        + "be observable - which is why the four discriminating rows are added before the "
+                        + "golden run and why the posting job runs before the two subject runs")
                 .hasSize(SEEDED_DISTINCT_BALANCES)
                 .containsExactly(ZERO_BALANCE);
         assertThat(this.categoryBalanceRepository.count()).isEqualTo(SEEDED_ROWS);
 
+        // THE GOLDEN RUN. Fixed state, one launch, and the verdict is the committed file.
+        addDiscriminatingRows();
+        final long rowsUnderTheGolden = this.categoryBalanceRepository.count();
+        assertThat(rowsUnderTheGolden)
+                .as("the state the committed golden was authored against: the fifty delivered rows, one "
+                        + "of which the added rows rewrite in place, plus three new ones")
+                .isEqualTo(GOLDEN_RECORD_COUNT);
+        removeStaleArtefactsOfThisJob();
+        final JobExecution goldenRun = launch(CategoryBalanceReportJobConfig.JOB_NAME);
+        assertCompletedWithThreeSteps(goldenRun);
+        assertNoDateOrCardParameter(goldenRun);
+        final byte[] goldenRunReport = Files.readAllBytes(reportDataset());
+
         stageDailyTransactionInput();
+        final long rowsBeforePosting = this.categoryBalanceRepository.count();
         final JobExecution posting = launch(PostTransactionJobConfig.JOB_NAME);
         assertThat(posting.getStatus())
                 .as("the prerequisite run has to complete, or the balances the subject job reports are "
@@ -740,9 +814,12 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .hasSizeGreaterThan(SEEDED_DISTINCT_BALANCES);
         assertThat(this.categoryBalanceRepository.count())
                 .as("the posting arm creates a category-balance row for a key it does not find, so the "
-                        + "population grows past the seeded fifty")
-                .isGreaterThan(SEEDED_ROWS);
+                        + "population grows past the %d row(s) the golden run reported over",
+                        rowsBeforePosting)
+                .isGreaterThan(rowsBeforePosting);
 
+        // Re-applied, not added again: the same four composite keys carrying the same four values, which
+        // puts back the one key the posting run owns and leaves the other three exactly as they were.
         addDiscriminatingRows();
 
         removeStaleArtefactsOfThisJob();
@@ -800,28 +877,113 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
                 .isNotEmpty()
                 .hasSameSizeAs(firstGeneration);
 
-        return new CapturedRuns(firstGeneration, capturedReport, unloadBytes, reportBytes);
+        return new CapturedRuns(goldenRunReport, firstGeneration, capturedReport, unloadBytes,
+                reportBytes);
     }
 
     /**
-     * What the two subject runs produced, as one immutable value.
+     * What the golden run and the two subject runs produced, as one immutable value.
      *
      * <p>This is what replaced four mutable instance fields shared between eight ordered tests. It is
      * handed to each consumer as a parameter, so the dependency is in the signature and an assertion
      * cannot be written that silently requires another test to have run first.
      *
+     * @param goldenRunReport     the exact bytes the golden run wrote to the local report dataset, over a
+     *                            state fixed before the run, which the committed oracle is compared with
      * @param unloadedRecords     the fifty-byte unload records of the first run, in written order
      * @param reportLines         the forty-byte report lines of the second run, in written order
      * @param unloadArtefactBytes encoded size of the unloaded artefact
      * @param reportArtefactBytes encoded size of the report artefact
      */
-    private record CapturedRuns(List<String> unloadedRecords, List<String> reportLines,
-            long unloadArtefactBytes, long reportArtefactBytes) {
+    private record CapturedRuns(byte[] goldenRunReport, List<String> unloadedRecords,
+            List<String> reportLines, long unloadArtefactBytes, long reportArtefactBytes) {
 
-        /** Copies both lists defensively, so a consumer cannot alter what another consumer reads. */
+        /** Copies the array and both lists defensively, so no consumer can alter what another reads. */
         CapturedRuns {
+            goldenRunReport = goldenRunReport.clone();
             unloadedRecords = List.copyOf(unloadedRecords);
             reportLines = List.copyOf(reportLines);
+        }
+
+        /**
+         * The golden run's report bytes, copied again so the caller cannot reach the held array.
+         *
+         * @return the exact bytes the golden run wrote
+         */
+        @Override
+        public byte[] goldenRunReport() {
+            return this.goldenRunReport.clone();
+        }
+    }
+
+    /**
+     * THE GATE 1 VERDICT for the fifth contractual width: the report the job wrote is byte-identical to
+     * the committed forty-byte oracle.
+     *
+     * <p>Both sides are named explicitly, because which side is which is the whole point of this
+     * assertion. The <strong>expected</strong> side is {@value #REPORT_GOLDEN_RESOURCE}, a file authored
+     * separately from this class and from the job, committed to the fixture tree, never regenerated from a
+     * run and never produced by calling the code under test. The <strong>actual</strong> side is the exact
+     * bytes read back from the local dataset the job wrote, after the job read a real PostgreSQL server
+     * through the delivered repository - no recording double, no in-memory substitute, and no
+     * re-derivation of the bytes by this class.
+     *
+     * <p>The comparison is on raw byte arrays and nothing is trimmed, decoded, normalised or split first,
+     * so a difference of one trailing blank, one suppressed leading zero, one transposed record or one
+     * stray separator fails here. The three measurements that follow it are decomposition of the same
+     * fact, kept because they name <em>what</em> differs when the arrays do: the record count, the stride
+     * and the absence of a separator.
+     *
+     * @param runs the captured artefacts of the runs, handed in rather than found, so this assertion
+     *             cannot run without them
+     * @throws IOException if the committed oracle cannot be read
+     */
+    private void theGoldenRunIsByteIdenticalToTheCommittedOracle(final CapturedRuns runs)
+            throws IOException {
+
+        final byte[] expected = committedGoldenBytes();
+        final byte[] actual = runs.goldenRunReport();
+
+        assertThat(expected.length)
+                .as("the committed oracle holds %d separator-free records of %d bytes",
+                        GOLDEN_RECORD_COUNT, REPORT_RECORD_WIDTH)
+                .isEqualTo(GOLDEN_RECORD_COUNT * REPORT_RECORD_WIDTH);
+        assertThat(new String(expected, StandardCharsets.US_ASCII))
+                .as("and it carries no separator byte of any kind, because the record length is the whole "
+                        + "stride of a fixed-length dataset (DL-213)")
+                .doesNotContain(FORBIDDEN_RECORD_SEPARATOR)
+                .doesNotContain("\r");
+
+        assertThat(actual)
+                .as("the report the job wrote over the fixed state must equal the committed oracle byte "
+                        + "for byte. Expected is %s; actual is the local dataset the job wrote after "
+                        + "reading the real server", REPORT_GOLDEN_RESOURCE)
+                .isEqualTo(expected);
+
+        assertThat(actual.length % REPORT_RECORD_WIDTH)
+                .as("decomposition of the same fact: the produced artefact divides exactly by the "
+                        + "declared record length")
+                .isZero();
+        assertThat(actual.length / REPORT_RECORD_WIDTH)
+                .as("and holds one line per row the golden run reported over")
+                .isEqualTo(GOLDEN_RECORD_COUNT);
+    }
+
+    /**
+     * Reads the committed forty-byte oracle whole, from the class path and from nowhere else.
+     *
+     * @return the oracle's exact bytes
+     * @throws IOException if the resource is absent or cannot be read
+     */
+    private static byte[] committedGoldenBytes() throws IOException {
+        final ClassPathResource oracle = new ClassPathResource(REPORT_GOLDEN_RESOURCE);
+        assertThat(oracle.exists())
+                .as("%s must be on the test class path: it is the verdict oracle for the estate's fifth "
+                        + "fixed output width, and without it the width has no committed expectation at "
+                        + "all", REPORT_GOLDEN_RESOURCE)
+                .isTrue();
+        try (InputStream bytes = oracle.getInputStream()) {
+            return bytes.readAllBytes();
         }
     }
 
@@ -1451,10 +1613,19 @@ class CategoryBalanceReportJobConfigIT extends AbstractPostgresIT {
     }
 
     // -----------------------------------------------------------------------------------------------
-    // THE INDEPENDENT ORACLE. Nothing below delegates to the job configuration, to the shared
-    // zoned-decimal codec or to any record mapper: every expected image, mask and ordering is built here
-    // from the layout and from a locally declared sign table, so an error copied into the production
-    // encoder cannot be copied into the expectation meant to catch it.
+    // THE DECOMPOSITION. Nothing below delegates to the job configuration, to the shared zoned-decimal
+    // codec or to any record mapper: every image, mask and ordering is built here from the layout and
+    // from a locally declared sign table, so an error copied into the production encoder cannot be
+    // copied into an expectation assembled here.
+    //
+    // WHAT THIS IS NOT. It is not the verdict for the forty-byte contract. Independence from the code
+    // under test is necessary and insufficient: a reading of the layout written here by the same author
+    // who read it for the production side can reproduce the same misunderstanding, and then both sides
+    // agree and nothing catches it. The verdict is the committed golden - see
+    // theGoldenRunIsByteIdenticalToTheCommittedOracle - and the builders below serve two other purposes:
+    // they name WHICH field of WHICH record differs when that byte comparison fails, and they let the
+    // report produced over the POSTED state be checked field by field, which no committed file can do
+    // because those balances are a function of a three-hundred-record posting run.
     // -----------------------------------------------------------------------------------------------
 
     /**

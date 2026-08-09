@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
@@ -98,6 +99,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -253,6 +255,9 @@ public final class BatchConfigTest {
 
     /** A second step name, so a highest-of-several assertion has more than one contributor. */
     private static final String OTHER_STEP_NAME = "writeRejectRecordsStep";
+
+    /** The generation base the reject writer of the posting job registers under. */
+    private static final String REJECT_GENERATION_BASE = "AWS.M2.CARDDEMO.DALYREJS";
 
     /** The parameter key whose value must never reach a log line. */
     private static final String PARAMETER_KEY = "reportStartDate";
@@ -1132,10 +1137,32 @@ public final class BatchConfigTest {
                             .contains("Published terminal completion event"));
         }
 
+        /**
+         * Stages one <em>real</em> completed generation and its working sibling in this nest's own root.
+         *
+         * <p>Real files, because the property under test is a deletion. A registration naming a path that
+         * was never created can be published, refused and cleaned up without any of it touching a
+         * filesystem, so the assertions such a test can make stop at status and event ordering - which is
+         * exactly how a missing cleanup path survived. The working sibling is created alongside the
+         * completed file because the discard removes both, and its removal is asserted separately.
+         *
+         * @param  generation the generation number to name the pair after
+         * @return the completed path, which is the one a step registers
+         * @throws IOException if either file cannot be written
+         */
+        private Path stageRealGenerationPair(final long generation) throws IOException {
+            final Path completed = StagedGenerationStore.generationPath(
+                    this.stagingRoot, REJECT_GENERATION_BASE, generation);
+            Files.writeString(completed, "sealed reject records", StandardCharsets.US_ASCII);
+            Files.writeString(StagedGenerationStore.workingPath(completed), "partial",
+                    StandardCharsets.US_ASCII);
+            return completed;
+        }
+
         @Test
-        @DisplayName("durable artifacts publish before notification, and a publication failure becomes "
-                + "the persisted job verdict")
-        void durablePublicationPrecedesNotificationAndCanFailTheJob() {
+        @DisplayName("durable artifacts publish before notification, and a committed publication keeps "
+                + "the local generations it published")
+        void durablePublicationPrecedesNotification() throws IOException {
             final StagedGenerationStore store = mock();
             final JobCompletionEventPublisher publisher = mock();
             listener = listenerWith(store, publisher);
@@ -1144,8 +1171,8 @@ public final class BatchConfigTest {
                     stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
             execution.setStatus(BatchStatus.COMPLETED);
             execution.setExitStatus(ExitStatus.COMPLETED);
-            StagedGenerationStore.register(step, "AWS.M2.CARDDEMO.DALYREJS",
-                    Path.of("target", "registered-reject-generation"),
+            final Path published = stageRealGenerationPair(1);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, published,
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
             when(store.publishRegistered(execution)).thenReturn(List.of());
 
@@ -1156,34 +1183,114 @@ public final class BatchConfigTest {
             order.verify(publisher).publishCompletion(argThat(event ->
                     event.jobExecutionId().equals(execution.getId())
                             && event.status() == BatchStatus.COMPLETED));
+            assertThat(published)
+                    .as("a publication that committed KEEPS its local generation. The local file is the "
+                            + "fixed-name view of output that is now durable, and the discard added for "
+                            + "the failure arms must not reach this one - deleting it would remove real "
+                            + "output from a job that succeeded")
+                    .exists();
+        }
 
-            final StagedGenerationStore failedStore = mock();
-            final JobCompletionEventPublisher failedPublisher = mock();
-            listener = listenerWith(failedStore, failedPublisher);
-            final JobExecution failedExecution = jobExecution();
-            final StepExecution failedStep = stepEndedWith(failedExecution, STEP_NAME,
-                    BatchStatus.COMPLETED, ExitStatus.COMPLETED);
-            failedExecution.setStatus(BatchStatus.COMPLETED);
-            failedExecution.setExitStatus(ExitStatus.COMPLETED);
-            StagedGenerationStore.register(failedStep, "AWS.M2.CARDDEMO.DALYREJS",
-                    Path.of("target", "unpublishable-reject-generation"),
+        @Test
+        @DisplayName("a publication that throws fails the job AND discards the local generations it "
+                + "orphaned, before the failed terminal event leaves the process")
+        void aFailedPublicationDiscardsTheLocalGenerationsItOrphaned() throws IOException {
+            // The gap this closes: the discard used to be reached only from the arm taken when the
+            // execution ARRIVED here already non-COMPLETED. A completed job whose publication threw was
+            // downgraded to FAILED further down, past that branch, and returned - leaving a completed
+            // local generation on disk, readable, and resolvable by name to anything that asked the store
+            // for the current local generation of its base. See docs/decision-log.md entry DL-290.
+            final StagedGenerationStore store = mock();
+            final JobCompletionEventPublisher publisher = mock();
+            listener = listenerWith(store, publisher);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            final Path orphaned = stageRealGenerationPair(2);
+            final Path workingSibling = StagedGenerationStore.workingPath(orphaned);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, orphaned,
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
-            when(failedStore.publishRegistered(failedExecution))
+            when(store.publishRegistered(execution))
                     .thenThrow(new IllegalStateException("object store refused publication"));
+            // Captured from inside the notification, so the ordering claim is observed rather than
+            // inferred: a subscriber must never be told a job FAILED while its local generations are
+            // still on disk.
+            final boolean[] stillPresentWhenTheEventFired = {true};
+            doAnswer(invocation -> {
+                stillPresentWhenTheEventFired[0] = Files.exists(orphaned);
+                return null;
+            }).when(publisher).publishCompletion(argThat(event -> true));
 
-            listener.afterJob(failedExecution);
+            listener.afterJob(execution);
 
-            assertThat(failedExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
-            assertThat(failedExecution.getExitStatus().getExitCode())
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getExitStatus().getExitCode())
                     .isEqualTo(ExitStatus.FAILED.getExitCode());
-            assertThat(failedExecution.getAllFailureExceptions())
+            assertThat(execution.getAllFailureExceptions())
+                    .as("the publication failure is preserved as the job's own, and the cleanup adds "
+                            + "nothing to it")
                     .singleElement()
                     .isInstanceOf(IllegalStateException.class)
-                    .satisfies(failure -> assertThat(failure.getMessage())
-                            .contains("durable batch artifact publication failed"));
-            verify(failedPublisher).publishCompletion(argThat(event ->
-                    event.jobExecutionId().equals(failedExecution.getId())
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage())
+                                .contains("durable batch artifact publication failed");
+                        assertThat(failure.getCause())
+                                .as("the store's own reason survives as the cause")
+                                .hasMessage("object store refused publication");
+                    });
+            assertThat(orphaned)
+                    .as("the completed generation named nothing durable, because nothing was published")
+                    .doesNotExist();
+            assertThat(workingSibling)
+                    .as("and the working sibling the store names for it goes with it")
+                    .doesNotExist();
+            assertThat(StagedGenerationStore.currentLocalGeneration(
+                    this.stagingRoot, REJECT_GENERATION_BASE))
+                    .as("nothing resolves as the current local generation of the base any more, which is "
+                            + "the question a later component actually asks - a file that merely looks "
+                            + "deleted to a directory listing would still answer it")
+                    .isEmpty();
+            verify(publisher).publishCompletion(argThat(event ->
+                    event.jobExecutionId().equals(execution.getId())
                             && event.status() == BatchStatus.FAILED));
+            assertThat(stillPresentWhenTheEventFired[0])
+                    .as("the discard ran BEFORE the terminal event, not after it")
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a completed job that registered artifacts with no store available fails AND "
+                + "discards them too, because that arm also returns without publishing")
+        void anAbsentStoreDiscardsTheLocalGenerationsItCannotPublish() throws IOException {
+            // The third arm, and the one easiest to overlook: no store, so publishRegistered is never
+            // reached and there is no exception to catch, yet the job still ends FAILED with its local
+            // generations orphaned exactly as in the throwing case.
+            final JobCompletionEventPublisher publisher = mock();
+            listener = listenerWith(null, publisher);
+            final JobExecution execution = jobExecution();
+            final StepExecution step =
+                    stepEndedWith(execution, STEP_NAME, BatchStatus.COMPLETED, ExitStatus.COMPLETED);
+            execution.setStatus(BatchStatus.COMPLETED);
+            execution.setExitStatus(ExitStatus.COMPLETED);
+            final Path orphaned = stageRealGenerationPair(3);
+            StagedGenerationStore.register(step, REJECT_GENERATION_BASE, orphaned,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            listener.afterJob(execution);
+
+            assertThat(execution.getStatus()).isEqualTo(BatchStatus.FAILED);
+            assertThat(execution.getAllFailureExceptions())
+                    .singleElement()
+                    .satisfies(failure -> assertThat(failure.getCause())
+                            .hasMessageContaining("no generation store is"));
+            assertThat(orphaned).doesNotExist();
+            assertThat(StagedGenerationStore.workingPath(orphaned)).doesNotExist();
+            assertThat(StagedGenerationStore.currentLocalGeneration(
+                    this.stagingRoot, REJECT_GENERATION_BASE)).isEmpty();
+            verify(publisher).publishCompletion(argThat(event ->
+                    event.status() == BatchStatus.FAILED));
         }
 
         @Test

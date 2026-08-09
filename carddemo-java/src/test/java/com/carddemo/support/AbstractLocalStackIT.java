@@ -45,12 +45,16 @@ import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
@@ -117,6 +121,16 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * {@link #createBucketIfAbsent(String)} therefore applies versioning on the single creation path rather
  * than at each call site, and {@link #bucketVersioningStatus(String)} exists so a test can assert the
  * state rather than assume it.
+ *
+ * <p><strong>There is deliberately no ordinary-delete helper here.</strong> This class used to offer one,
+ * and offering it was the mistake: against a versioned bucket an unqualified delete adds a delete marker,
+ * hides the key from an ordinary listing, and removes nothing, so a teardown built on it reported success
+ * and left its bytes in a bucket every later specification shares - where the next retention or rollback
+ * assertion would measure them as its own. The only removal paths this class publishes are
+ * {@link #deleteObjectVersions(String, Iterable)}, which deletes exactly the versions named, and
+ * {@link #deleteEveryVersionUnder(String, String)}, which empties a prefix and reads it back to prove it
+ * is empty. A specification that genuinely needs to observe an ordinary delete - as a statement about
+ * production behaviour rather than as cleanup - issues it against its own client and says so.
  *
  * <h2>The queue contract this emulator makes testable</h2>
  * The estate's entire online-to-batch bridge is one transient-data-queue write, in {@code CORPT00C},
@@ -1039,13 +1053,123 @@ public abstract class AbstractLocalStackIT {
     }
 
     /**
-     * Removes one object. The service treats an absent key as success, so this is idempotent.
+     * Lists every version and every delete marker beneath one key prefix, following the listing to
+     * exhaustion.
      *
-     * @param bucket the bucket to remove from; must not be {@code null}
-     * @param key    the object key to remove; must not be {@code null}
+     * <p>This is the listing that sees what a versioned bucket actually holds. An ordinary object listing
+     * reports only current versions and reports nothing at all for a key whose newest version is a delete
+     * marker, so a specification that asserted retention or rollback with an ordinary listing would pass
+     * against a bucket still holding every byte it had ever been given.
+     *
+     * <p>Pagination is followed rather than assumed away: a key rewritten many times can hold more versions
+     * than one page returns, and the shared staging bucket accumulates across a whole run.
+     *
+     * @param  bucket the bucket to inspect; must not be {@code null}
+     * @param  prefix the key prefix to list beneath; must not be {@code null}, and may be empty to list the
+     *                whole bucket
+     * @return one reference per version and per delete marker, in the order the service returned them
      */
-    protected static void deleteObject(final String bucket, final String key) {
-        S3_CLIENT.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+    protected static List<ObjectVersionRef> objectVersionsUnder(final String bucket,
+            final String prefix) {
+
+        final List<ObjectVersionRef> found = new ArrayList<>();
+        String keyMarker = null;
+        String versionIdMarker = null;
+        do {
+            final ListObjectVersionsRequest.Builder request = ListObjectVersionsRequest.builder()
+                    .bucket(bucket)
+                    .prefix(prefix);
+            if (keyMarker != null) {
+                request.keyMarker(keyMarker);
+            }
+            if (versionIdMarker != null) {
+                request.versionIdMarker(versionIdMarker);
+            }
+            final ListObjectVersionsResponse listed = S3_CLIENT.listObjectVersions(request.build());
+
+            for (final ObjectVersion version : listed.versions()) {
+                found.add(new ObjectVersionRef(version.key(), version.versionId(), false));
+            }
+            for (final DeleteMarkerEntry marker : listed.deleteMarkers()) {
+                found.add(new ObjectVersionRef(marker.key(), marker.versionId(), true));
+            }
+
+            keyMarker = Boolean.TRUE.equals(listed.isTruncated()) ? listed.nextKeyMarker() : null;
+            versionIdMarker = keyMarker == null ? null : listed.nextVersionIdMarker();
+        } while (keyMarker != null);
+        return List.copyOf(found);
+    }
+
+    /**
+     * Removes exactly the versions and delete markers named, by identifier.
+     *
+     * <p>The version identifier is what makes each call a deletion rather than a concealment. A request that
+     * omitted it would be accepted, would report success, and would add a marker.
+     *
+     * @param  bucket the bucket to remove from; must not be {@code null}
+     * @param  doomed the versions and markers to remove; must not be {@code null}
+     * @return how many were removed
+     */
+    protected static int deleteObjectVersions(final String bucket,
+            final Iterable<ObjectVersionRef> doomed) {
+
+        int removed = 0;
+        for (final ObjectVersionRef target : doomed) {
+            S3_CLIENT.deleteObject(DeleteObjectRequest.builder()
+                    .bucket(bucket)
+                    .key(target.key())
+                    .versionId(target.versionId())
+                    .build());
+            removed++;
+        }
+        return removed;
+    }
+
+    /**
+     * Empties one key prefix of every version and every delete marker, and proves it is empty afterwards.
+     *
+     * <p>This is the cleanup a specification against a versioned bucket has to perform, and the read-back is
+     * not ceremony: it is the only thing that distinguishes "deleted" from "delete-markered". A prefix that
+     * still lists a version after this ran means either that something is still writing to it or that a
+     * delete did not take effect, and both are conditions a later specification would inherit and could not
+     * explain.
+     *
+     * @param  bucket the bucket to empty within; must not be {@code null}
+     * @param  prefix the key prefix to empty; must not be {@code null}
+     * @return how many versions and delete markers were removed
+     * @throws IllegalStateException if the prefix still lists anything afterwards
+     */
+    protected static int deleteEveryVersionUnder(final String bucket, final String prefix) {
+        final int removed = deleteObjectVersions(bucket, objectVersionsUnder(bucket, prefix));
+        final List<ObjectVersionRef> remaining = objectVersionsUnder(bucket, prefix);
+        if (!remaining.isEmpty()) {
+            throw new IllegalStateException("the prefix " + prefix + " of bucket " + bucket
+                    + " still lists " + remaining.size() + " version(s) or delete marker(s) after "
+                    + removed + " were removed. Either something is still writing to it or a"
+                    + " version-qualified delete did not take effect; a shared bucket cannot be left in"
+                    + " that state, because the next specification would measure this one's residue.");
+        }
+        return removed;
+    }
+
+    /**
+     * One version of one key, named so a delete can address it exactly.
+     *
+     * <p>A delete marker is itself a version and is carried here as one, distinguished only so that a
+     * diagnostic can say which of the two it found. Both are removed the same way, and removing the markers
+     * is what leaves a prefix genuinely unlisted rather than merely hidden.
+     *
+     * <p>Public rather than protected, because the specifications that difference a bucket's contents reach
+     * these helpers by delegation from {@code AbstractPostgresAndLocalStackIT} rather than by extending
+     * this class, and a value type they cannot name is a value type they cannot use. It carries no
+     * behaviour and no state beyond the three fields below, so there is nothing here for a wider audience
+     * to misuse.
+     *
+     * @param key          the object key
+     * @param versionId    the version or delete-marker identifier
+     * @param deleteMarker whether this reference is a delete marker rather than a stored object version
+     */
+    public record ObjectVersionRef(String key, String versionId, boolean deleteMarker) {
     }
 
     /**

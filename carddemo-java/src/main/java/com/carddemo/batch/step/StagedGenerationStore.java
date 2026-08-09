@@ -21,6 +21,13 @@ import com.carddemo.util.SecureStagedFiles;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -28,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -91,13 +99,29 @@ import org.springframework.stereotype.Component;
  * catalogued - and without it a failed run leaves a local file that nothing will ever publish, read or
  * prune. See {@code docs/decision-log.md} entry DL-211.
  *
- * <h2>Partial files are never publishable</h2>
+ * <h2>Partial files are never publishable, and are not left behind either</h2>
  *
  * <p>Writers target a sibling ending in {@value #WORKING_SUFFIX}. A successful close moves that file
- * onto the completed generation with one same-filesystem atomic rename and only then registers it. A
- * failed writer leaves at most a working file, whose suffix is outside both the publication registry and
- * the retention scan. Another execution therefore cannot upload, prune or consume a file that is still
- * being written.
+ * onto the completed generation with one same-filesystem atomic rename and only then registers it. The
+ * suffix is outside both the publication registry and the retention scan, so another execution cannot
+ * upload, prune or consume a file that is still being written.
+ *
+ * <p>A failure on the way to that rename - either the delegate's own close or the atomic completion -
+ * used to leave the working file in place. Because registration happens <em>at</em> completion, such a
+ * file belongs to no execution's registry, and the boundary listener's cleanup deletes only registered
+ * paths, so nothing could identify it: it remained in the staging root as a partial copy of the step's
+ * output until an operator noticed. Both failure paths now discard it, by its own exact path and after
+ * re-establishing that the path is still a trusted staged artifact, without raising and therefore without
+ * replacing the failure an operator has to read. See {@code docs/decision-log.md} entry DL-289.
+ *
+ * <h2>A registered path is re-established before its bytes are read</h2>
+ *
+ * <p>A registration records a <em>name</em>. Validating that name and later opening it are two separate
+ * resolutions, and a local actor able to write the staging root can replace the entry between them. The
+ * validation pass therefore applies the four-part trusted-child predicate rather than a link-following
+ * regular-file test, and the upload re-applies it, opens with {@link LinkOption#NOFOLLOW_LINKS}, and
+ * compares the filesystem identity of the path across the open - so the bytes that reach the object store
+ * are the bytes of the file that was verified. See {@code docs/decision-log.md} entry DL-288.
  *
  * <h2>Retention is applied to the durable store, one base at a time</h2>
  *
@@ -105,6 +129,15 @@ import org.springframework.stereotype.Component;
  * the one measured exception at {@value #REPORT_RETENTION_LIMIT}. After all artifacts of a completed job
  * have uploaded, matching generations are sorted by their numeric execution identifier and every object
  * beyond the declared depth is scratched. Non-generation objects beneath the same prefix are ignored.
+ *
+ * <p><strong>Scratched means the bytes stop existing.</strong> The bucket carries object versioning,
+ * because versioning is what carries the retained-generation semantics of the legacy definitions, and
+ * against a versioned bucket an unqualified delete adds a delete marker and leaves every version
+ * fetchable by version identifier. A base at depth five would then still be holding the bytes of every
+ * generation it had ever held, and a rolled-back publication would still be holding the bytes of a job
+ * that failed. Both of this class's deletion paths - retention roll-off and publication rollback -
+ * therefore remove each version and each delete marker of the key by identifier. See
+ * {@code docs/decision-log.md} entry DL-287.
  * Local completed files are deliberately not pruned here: another concurrently running job may still be
  * reading one of its own intermediate files, while the durable object store is the retention authority.
  *
@@ -197,6 +230,18 @@ public final class StagedGenerationStore {
     /** Object-store operations supplied by Spring Cloud AWS. */
     private final S3Operations objectStore;
 
+    /**
+     * The version-aware client, used for the two operations whose whole purpose is that bytes stop
+     * existing.
+     *
+     * <p>The operations abstraction above expresses an unqualified delete and nothing else. Against a
+     * versioned bucket - which is what this module's staging bucket is, because object versioning is the
+     * replacement for the legacy retained-generation depth - an unqualified delete does not delete: it adds
+     * a delete marker and leaves every previous version retrievable by version identifier. That is wrong
+     * for both of the places this store deletes. See {@code docs/decision-log.md} entry DL-287.
+     */
+    private final S3Client versionedObjectStore;
+
     /** Validated destination bucket, captured once so every operation addresses the same resource. */
     private final String bucket;
 
@@ -205,14 +250,20 @@ public final class StagedGenerationStore {
 
     /**
      * @param objectStore object-store operations; must not be {@code null}
+     * @param versionedObjectStore version-aware object-store client, used for the rollback and retention
+     *                             deletes that must remove object versions rather than mask them; must not
+     *                             be {@code null}
      * @param configuredBucket configured batch-staging bucket; must not be blank
      * @param publicationLock per-base publication lock; must not be {@code null}
      */
     public StagedGenerationStore(final S3Operations objectStore,
+            final S3Client versionedObjectStore,
             @Value("${" + BATCH_STAGING_BUCKET_PROPERTY + "}")
             final String configuredBucket,
             final GenerationPublicationLock publicationLock) {
         this.objectStore = Objects.requireNonNull(objectStore, "objectStore");
+        this.versionedObjectStore =
+                Objects.requireNonNull(versionedObjectStore, "versionedObjectStore");
         final String requiredBucket =
                 Objects.requireNonNull(configuredBucket, BATCH_STAGING_BUCKET_PROPERTY);
         if (requiredBucket.isBlank()) {
@@ -849,16 +900,27 @@ public final class StagedGenerationStore {
         context.remove(REGISTRY_COUNT);
     }
 
-    /** Uploads one validated local artifact under a newly allocated durable generation. */
+    /**
+     * Uploads one validated local artifact under a newly allocated durable generation.
+     *
+     * <p>The stream handed to the object store comes from {@link #openVerifiedSource(ArtifactRegistration)}
+     * rather than from a bare open of the registered path, so the bytes uploaded are the bytes of the file
+     * that was verified and not of whatever the name resolves to by the time the upload runs.
+     *
+     * @param  bucket          the destination bucket
+     * @param  registration    the artifact to publish
+     * @param  allocatedByBase the pass's own generation ledger, so two artifacts of one base get two keys
+     * @return what was published
+     */
     private PublishedGeneration upload(final String bucket,
             final ArtifactRegistration registration, final Map<String, Long> allocatedByBase) {
         final String key = registration.logicalBase() + OBJECT_KEY_SEPARATOR
                 + allocateGeneration(bucket, registration.logicalBase(), allocatedByBase);
         final long size;
         try {
-            size = Files.size(registration.completedPath());
-            try (InputStream body = Files.newInputStream(registration.completedPath())) {
-                this.objectStore.upload(bucket, key, body);
+            try (VerifiedSource source = openVerifiedSource(registration)) {
+                size = source.byteCount();
+                this.objectStore.upload(bucket, key, source.body());
             }
         } catch (final IOException failure) {
             throw new UncheckedIOException("completed batch artifact could not be published for "
@@ -867,18 +929,206 @@ public final class StagedGenerationStore {
         return new PublishedGeneration(bucket, key, size);
     }
 
-    /** Deletes uploads made earlier in the same failed publication pass. */
+    /**
+     * Opens one registered source for streaming, and establishes that the handle opened is the file that
+     * was verified.
+     *
+     * <p><strong>The window this closes.</strong> Validating a path and then opening it later are two
+     * resolutions of the same name, and between them a local actor able to write the staging root can
+     * replace the entry. Nothing about the first resolution constrains the second, so a check that passed
+     * says nothing about the bytes that are then read. Three things are therefore done here, in this order,
+     * and all three are necessary:
+     *
+     * <ol>
+     *   <li><strong>Re-establish trust immediately before the open</strong>, with the same four-part
+     *       predicate the validation pass used - regular file inspected without following links, direct
+     *       child of its own root, same owner as that root, and neither writable outside that owner.</li>
+     *   <li><strong>Open with {@link LinkOption#NOFOLLOW_LINKS}</strong>, so the open itself refuses a
+     *       symbolic link rather than quietly resolving one. Without it the open is a third resolution of
+     *       the name and the first two are decoration.</li>
+     *   <li><strong>Compare the filesystem identity across the open.</strong> The attributes are read
+     *       no-follow before and after, and the two file keys must be the same object. An equal key on both
+     *       sides means no replacement happened in the window and the open therefore resolved the verified
+     *       inode; an unequal key means one did, and the stream is closed and the publication refused
+     *       rather than uploading bytes from a file nobody verified.</li>
+     * </ol>
+     *
+     * <p>The size is taken from the attributes read after the open rather than by a separate
+     * {@code Files.size} call on the name, so the length reported for the published object describes the
+     * same file whose bytes are streamed.
+     *
+     * <p>Where the filesystem exposes no file key the identity comparison cannot be made, and it is not
+     * silently treated as satisfied: the two structural properties and the no-follow open still apply, and
+     * the absence is reported once at debug level. See {@code docs/decision-log.md} entry DL-288.
+     *
+     * @param  registration the artifact whose bytes are to be streamed
+     * @return the open stream together with the verified byte count
+     * @throws IOException if the file cannot be inspected or opened
+     */
+    private static VerifiedSource openVerifiedSource(final ArtifactRegistration registration)
+            throws IOException {
+
+        final Path source = registration.completedPath();
+        final Path root = source.getParent();
+        if (root == null || !SecureStagedFiles.isTrustedStagedArtifact(root, source)) {
+            throw new IOException("the completed batch artifact for " + registration.logicalBase()
+                    + " is no longer a trusted staged artifact of its staging root, so its bytes are not"
+                    + " the bytes this publication validated");
+        }
+        final BasicFileAttributes before =
+                Files.readAttributes(source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+
+        InputStream body = Files.newInputStream(source, LinkOption.NOFOLLOW_LINKS);
+        try {
+            final BasicFileAttributes after =
+                    Files.readAttributes(source, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (before.fileKey() == null || after.fileKey() == null) {
+                LOGGER.debug("The staging filesystem publishes no file key, so the identity of the"
+                        + " opened handle for {} is established by the no-follow open and the trusted"
+                        + " child check alone", registration.logicalBase());
+            } else if (!before.fileKey().equals(after.fileKey())) {
+                throw new IOException("the completed batch artifact for " + registration.logicalBase()
+                        + " was replaced between being verified and being opened, so the handle does not"
+                        + " name the file that was verified and its bytes are not published");
+            }
+            if (!after.isRegularFile()) {
+                throw new IOException("the completed batch artifact for " + registration.logicalBase()
+                        + " is not a regular file at the moment its bytes would be read");
+            }
+            final VerifiedSource verified = new VerifiedSource(body, after.size());
+            body = null;
+            return verified;
+        } finally {
+            if (body != null) {
+                body.close();
+            }
+        }
+    }
+
+    /**
+     * One open, identity-verified source: the stream whose bytes are uploaded and the size of the very file
+     * that stream reads.
+     *
+     * @param body      the open stream, which the caller closes
+     * @param byteCount the size read from the attributes of the opened file
+     */
+    private record VerifiedSource(InputStream body, long byteCount) implements AutoCloseable {
+
+        @Override
+        public void close() throws IOException {
+            this.body.close();
+        }
+    }
+
+    /**
+     * Deletes uploads made earlier in the same failed publication pass, <em>version by version</em>.
+     *
+     * <p>The bucket carries object versioning, because versioning is what carries the retained-generation
+     * semantics of the legacy output data sets. Against such a bucket an unqualified delete is not a
+     * delete: it writes a delete marker, hides the key from an ordinary listing, and leaves every version
+     * of the object fetchable by version identifier. Rolling back that way would satisfy the class's own
+     * statement that a failed job leaves nothing externally visible only for a reader who never asks for a
+     * version - which is exactly the reader that matters least. The published bytes of a job that failed
+     * have to stop existing, so each key this pass created is emptied of every version and every delete
+     * marker it holds.
+     *
+     * <p>Every version under the key is removed rather than only the one this pass wrote, and that is
+     * deliberate: a generation number is allocated as one more than the highest the base currently holds,
+     * so a key this pass allocated held nothing beforehand, and anything found under it now either came
+     * from this pass or is residue that no correct publication could have left. Best-effort by necessity -
+     * the publication is already failing and this must not replace the reason it failed - but each failure
+     * is reported rather than absorbed.
+     *
+     * @param bucket    the bucket the pass uploaded into
+     * @param published the generations the pass had already uploaded, in upload order
+     */
     private void rollbackUploads(final String bucket,
             final List<PublishedGeneration> published) {
         for (final PublishedGeneration generation : published) {
             try {
-                this.objectStore.deleteObject(bucket, generation.objectKey());
+                final int removed = purgeEveryVersionOf(bucket, generation.objectKey());
+                LOGGER.info("Rolled back object {} after batch artifact publication failed, removing"
+                        + " {} version(s) and delete marker(s)", generation.objectKey(), removed);
             } catch (final RuntimeException rollbackFailure) {
                 LOGGER.warn("Could not roll back object {} after batch artifact publication failed;"
+                        + " the object may remain retrievable by version identifier."
                         + " rollbackFailure={}", generation.objectKey(),
                         rollbackFailure.getClass().getSimpleName());
             }
         }
+    }
+
+    /**
+     * Removes every version and every delete marker the store holds under one exact key.
+     *
+     * <p>Listing is by prefix because that is the only listing the service offers over versions, and the
+     * result is then filtered to <strong>exact key equality</strong>: a prefix listing of
+     * {@code base/G0000000001V00} would otherwise also match a longer key beginning with those characters,
+     * and this method must never touch a key its caller did not name. The listing is followed to
+     * exhaustion, because a key that has been rewritten many times can hold more versions than one page
+     * returns.
+     *
+     * <p>Delete markers are versions and are removed the same way. Removing them is what leaves the key
+     * genuinely unlisted rather than merely hidden, and it is also what stops an accumulation of markers
+     * from confusing the generation-number allocation that lists the base.
+     *
+     * @param  bucket the bucket to remove from
+     * @param  key    the exact object key to empty
+     * @return how many versions and delete markers were removed
+     */
+    private int purgeEveryVersionOf(final String bucket, final String key) {
+        int removed = 0;
+        String keyMarker = null;
+        String versionIdMarker = null;
+        do {
+            final ListObjectVersionsRequest.Builder request = ListObjectVersionsRequest.builder()
+                    .bucket(bucket)
+                    .prefix(key);
+            if (keyMarker != null) {
+                request.keyMarker(keyMarker);
+            }
+            if (versionIdMarker != null) {
+                request.versionIdMarker(versionIdMarker);
+            }
+            final ListObjectVersionsResponse listed =
+                    this.versionedObjectStore.listObjectVersions(request.build());
+
+            for (final ObjectVersion version : listed.versions()) {
+                if (key.equals(version.key())) {
+                    deleteExactVersion(bucket, key, version.versionId());
+                    removed++;
+                }
+            }
+            for (final DeleteMarkerEntry marker : listed.deleteMarkers()) {
+                if (key.equals(marker.key())) {
+                    deleteExactVersion(bucket, key, marker.versionId());
+                    removed++;
+                }
+            }
+
+            keyMarker = Boolean.TRUE.equals(listed.isTruncated()) ? listed.nextKeyMarker() : null;
+            versionIdMarker = keyMarker == null ? null : listed.nextVersionIdMarker();
+        } while (keyMarker != null);
+        return removed;
+    }
+
+    /**
+     * Deletes one exact version of one exact key.
+     *
+     * <p>The version identifier is what makes this a deletion rather than a concealment. A request that
+     * omitted it would be accepted, would report success, and would add a marker instead of removing
+     * anything.
+     *
+     * @param bucket    the bucket to remove from
+     * @param key       the object key
+     * @param versionId the version or delete-marker identifier to remove
+     */
+    private void deleteExactVersion(final String bucket, final String key, final String versionId) {
+        this.versionedObjectStore.deleteObject(DeleteObjectRequest.builder()
+                .bucket(bucket)
+                .key(key)
+                .versionId(versionId)
+                .build());
     }
 
     /**
@@ -1038,9 +1288,16 @@ public final class StagedGenerationStore {
 
         for (int index = policy.retentionLimit(); index < generations.size(); index++) {
             final RemoteGeneration expired = generations.get(index);
-            this.objectStore.deleteObject(bucket, expired.objectKey());
-            LOGGER.info("Scratched rolled-off object {} from bucket {} at retention depth {}",
-                    expired.objectKey(), bucket, policy.retentionLimit());
+            // Scratched, not hidden. The legacy generation group was defined to SCRATCH a generation that
+            // rolled off its declared depth, which deletes the data set rather than cataloguing it
+            // elsewhere. An unqualified delete against a versioned bucket writes a delete marker and
+            // leaves every version of the rolled-off generation fetchable by version identifier, so a
+            // base at depth five would still be holding the bytes of every generation it ever held. See
+            // docs/decision-log.md entry DL-287.
+            final int removed = purgeEveryVersionOf(bucket, expired.objectKey());
+            LOGGER.info("Scratched rolled-off object {} from bucket {} at retention depth {}, removing"
+                    + " {} version(s) and delete marker(s)",
+                    expired.objectKey(), bucket, policy.retentionLimit(), removed);
         }
     }
 
@@ -1082,11 +1339,42 @@ public final class StagedGenerationStore {
         return canonical.equals(token) ? Long.valueOf(parsed) : null;
     }
 
-    /** Confirms every registered source exists and has been atomically completed. */
+    /**
+     * Confirms one registered source is still a trusted staged artifact of its own staging root.
+     *
+     * <p><strong>Why {@code Files.isRegularFile} alone was not enough.</strong> At its default that call
+     * follows a symbolic link and answers about the <em>target</em>, so a registered name replaced since
+     * registration by a link pointing anywhere at all passed this check, and the publication then read the
+     * link's target and uploaded it to the object store under the job's own generation key. A registered
+     * path is a name, and a name is not the file it named a moment ago.
+     *
+     * <p>The predicate applied instead is {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)},
+     * which asks four things together: that the candidate is a real regular file inspected <em>without</em>
+     * following links, that its normalised parent is the root it is being trusted as a child of, that it and
+     * the root share an owner, and that neither grants write permission outside that owner. The root is the
+     * registered path's own normalised parent, which is the staging directory the store itself composed the
+     * generation name inside; requiring the file to be a direct child of a directory that is itself
+     * owner-trustworthy is what closes the case where the root is somebody else's to write in.
+     *
+     * <p>This is the check <em>before</em> the uploads begin, and it is deliberately not the last one: the
+     * path is re-established immediately before its bytes are streamed, because anything verified here and
+     * used later is verified across a window. See {@link #openVerifiedSource(ArtifactRegistration)} and
+     * {@code docs/decision-log.md} entry DL-288.
+     *
+     * @param registration the registration whose source is being validated
+     */
     private static void requireCompletedSource(final ArtifactRegistration registration) {
-        if (!Files.isRegularFile(registration.completedPath())) {
+        final Path source = registration.completedPath();
+        final Path root = source.getParent();
+        if (root == null || !SecureStagedFiles.isTrustedStagedArtifact(root, source)) {
             throw new IllegalStateException("completed batch artifact for "
-                    + registration.logicalBase() + " is not a regular file");
+                    + registration.logicalBase() + " is not a trusted staged artifact of its staging"
+                    + " root: it must be a regular file - inspected without following links - that is a"
+                    + " direct child of a directory this process owns, with neither the file nor the"
+                    + " directory writable outside its owner. A registered name that has since become a"
+                    + " link, a directory, or another account's file is refused rather than followed,"
+                    + " because publishing it would upload whatever it now points at under this job's"
+                    + " own generation key");
         }
     }
 
@@ -1254,7 +1542,19 @@ public final class StagedGenerationStore {
 
         @Override
         public void close() {
-            this.delegate.close();
+            try {
+                this.delegate.close();
+            } catch (final RuntimeException closeFailure) {
+                // A DELEGATE THAT FAILED TO CLOSE LEAVES A PARTIAL FILE THAT NOTHING OWNS. Registration
+                // happens at completion, so a working file abandoned here appears in no execution's
+                // registry, and the job-boundary listener's cleanup - which deletes only registered
+                // paths - cannot identify it. It is a partial copy of whatever the step was writing,
+                // sitting in the staging root at whatever length the failure left it, until an operator
+                // notices. Discarded here, where its path is known and trusted, rather than left for a
+                // sweep that would have to guess at names. See docs/decision-log.md entry DL-289.
+                discardWorkingFile("the writer's delegate failed to close");
+                throw closeFailure;
+            }
             if (!Files.exists(this.workingPath)) {
                 LOGGER.warn("No working file was composed for logical base {} by jobExecutionId={},"
                                 + " so nothing is sealed and nothing is registered; the step's own"
@@ -1262,8 +1562,53 @@ public final class StagedGenerationStore {
                         this.logicalBase, this.stepExecution.getJobExecutionId());
                 return;
             }
-            completeWorkingFile(this.workingPath, this.completedPath);
+            try {
+                completeWorkingFile(this.workingPath, this.completedPath);
+            } catch (final RuntimeException sealFailure) {
+                // Same reasoning as above, for the other failure that leaves a working file behind: the
+                // atomic completion itself. The move is what would have made the file a registered
+                // generation, so a move that did not happen leaves the same unowned partial file.
+                discardWorkingFile("the working file could not be atomically sealed");
+                throw sealFailure;
+            }
             register(this.stepExecution, this.logicalBase, this.completedPath, this.retentionLimit);
+        }
+
+        /**
+         * Removes this writer's own working file after a failure, and never raises.
+         *
+         * <p>The path is not guessed and is not matched by name: it is the exact working path this writer
+         * was constructed with, which the store composed from the completed generation name. It is checked
+         * against {@link SecureStagedFiles#isTrustedStagedArtifact(Path, Path)} immediately before the
+         * delete, so a name that has since become a link, a directory or another account's file is left
+         * alone rather than followed - the same rule the registered-path cleanup applies, and for the same
+         * reason.
+         *
+         * <p>Nothing is raised from here under any circumstance. The caller is already propagating the
+         * failure an operator has to read, and a cleanup problem must not replace it. It is reported at
+         * warning level instead, naming the file so the residue can be found by hand if the delete could
+         * not happen.
+         *
+         * @param reason what failed, for the diagnostic
+         */
+        private void discardWorkingFile(final String reason) {
+            final Path root = this.workingPath.getParent();
+            try {
+                if (root != null
+                        && SecureStagedFiles.isTrustedStagedArtifact(root, this.workingPath)
+                        && Files.deleteIfExists(this.workingPath)) {
+                    LOGGER.warn("Discarded the partial working file {} for logical base {} because {};"
+                                    + " it was never registered, so no later cleanup could have"
+                                    + " identified it",
+                            this.workingPath.getFileName(), this.logicalBase, reason);
+                }
+            } catch (final IOException | RuntimeException cleanupFailure) {
+                LOGGER.warn("The partial working file {} for logical base {} could not be removed after"
+                                + " {}; it remains in the staging root and is registered nowhere."
+                                + " cleanupFailure={}",
+                        this.workingPath.getFileName(), this.logicalBase, reason,
+                        cleanupFailure.getClass().getSimpleName());
+            }
         }
     }
 }

@@ -51,6 +51,7 @@ import com.carddemo.service.StatementDataAccessService;
 import com.carddemo.service.StatementGenerationService;
 import com.carddemo.service.TransactionPostingService;
 import com.carddemo.service.TransactionReportService;
+import com.carddemo.support.AbstractLocalStackIT.ObjectVersionRef;
 import com.carddemo.support.AbstractPostgresAndLocalStackIT;
 import com.carddemo.support.IsolatedStagingRoot;
 import com.carddemo.support.LegacyRejectReasons;
@@ -391,6 +392,7 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     private static final List<String> PRODUCED_BASES =
             List.of(REJECT_BASE, REPORT_BASE, STATEMENT_BASE, STATEMENT_HTML_BASE);
 
+
     /**
      * The four fixed-width contracts the pipeline emits, each naming its generation base, its committed
      * golden and the geometry both sides must satisfy.
@@ -480,6 +482,59 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @Autowired
     private MeterRegistry meterRegistry;
 
+    /**
+     * Every framework execution identifier this class has caused to exist, recorded as it is issued.
+     *
+     * <p><strong>Why this is a field and not read off the snapshot.</strong> The snapshot is published to
+     * {@link #run} only once {@link #executeDeliveredPipeline()} has returned, which is after the seventh
+     * and last launch. A setup that fails at any point before that - a job that does not complete, a
+     * golden that cannot be read, a capture that finds no artefact - leaves the snapshot null, and the
+     * teardown that removes this class's metadata rows used to take the snapshot as its argument and
+     * return immediately when it was null. Every row the launches before the failure had already created
+     * was then left in the shared metadata store, where the specification that counts instances of a job
+     * would attribute them to itself.
+     *
+     * <p>The identifier is added the instant the coordinator issues it, inside {@link #launch(String,
+     * java.util.Map)} and before that method asserts anything, because the rows exist from that moment
+     * whatever the execution's outcome. Teardown then works from this ledger unconditionally, and a
+     * partially completed setup is cleaned up exactly as far as it got.
+     *
+     * <p>The residual case is a launch the coordinator refuses outright: it throws instead of returning
+     * an identifier, so there is nothing to record - and nothing to clean, because a refused launch is
+     * refused before an execution is created.
+     */
+    private final List<Long> ownedExecutionIds = new ArrayList<>();
+
+    /**
+     * Every object version and delete marker the shared staging bucket held before this run began.
+     *
+     * <p>The baseline of a delta, not a cleanup list. This class publishes into a bucket every other
+     * specification shares, so it may only remove what it added; and it cannot learn what it added by
+     * listing the bucket afterwards, because those bases carry generations from earlier runs. Each entry is
+     * a {@code (key, versionId)} pair - an identity the service issues once and never reuses - so
+     * subtracting this set from the set present afterwards names precisely this run's own additions.
+     *
+     * <p><strong>The whole bucket, deliberately, not an enumerated list of bases.</strong> An earlier form
+     * of this listed the four bases whose bytes a golden covers plus the archive base, and that list was
+     * wrong: the pipeline publishes eight generations across five of its executions, because the datasets
+     * the jobs hand to one another are published as generations too - the accrual job's transaction
+     * dataset and the report job's filtered dataset among them. A base omitted from such a list is a base
+     * whose residue the next specification measures as its own, and the omission is silent. Differencing
+     * the whole bucket cannot omit one. It is safe to do so because the bucket is emulator-local to this
+     * JVM and the specifications in it run one at a time, so nothing else is adding to it between the two
+     * listings.
+     */
+    private final Set<ObjectVersionRef> durableBaseline = new LinkedHashSet<>();
+
+    /**
+     * Whether the durable baseline above was taken, so teardown knows whether a delta is computable.
+     *
+     * <p>Taken as the very first act of setup, before any job runs. If taking it fails, no job has run,
+     * nothing has been published, and there is therefore nothing for teardown to remove - which is why a
+     * missing baseline is a reason to skip the durable cleanup rather than to guess at one.
+     */
+    private boolean durableBaselineTaken;
+
     /** Creates the specification. */
     BatchPipelineE2ETest() {
         super();
@@ -502,6 +557,11 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
     @BeforeAll
     void driveTheDeliveredPipelineOnce() throws Exception {
         this.run = null;
+        this.ownedExecutionIds.clear();
+        // First, before anything can publish: what the shared versioned bucket already held beneath this
+        // class's bases. Everything that appears beneath them from here on is this run's, and is this
+        // class's to remove.
+        recordDurableBaseline();
         clearStagingRoot();
         restoreSeededState();
         this.run = executeDeliveredPipeline();
@@ -515,26 +575,87 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      * case in which the report is worth having. It is written from the SNAPSHOT rather than from rows the
      * tests accumulated, so the report is complete even when a single method was selected.
      *
-     * @throws IOException  if the staging root cannot be emptied or the evidence cannot be written
-     * @throws SQLException if the seeded state cannot be restored
+     * <h2>Four restores, all attempted, and every failure reported</h2>
+     *
+     * <p>This class writes to four things it does not own: the shared metadata store, the shared versioned
+     * staging bucket, the shared seeded database, and the host filesystem. Each restore below therefore
+     * runs even when an earlier one failed - abandoning three because the first raised would turn one leak
+     * into four, and the specification that inherits them cannot explain any of them. Each is attempted,
+     * each failure is recorded against the thing that was not restored, and the collected list is asserted
+     * empty at the end so an unrestored share fails the class that caused it rather than the next one.
+     *
+     * <p>Each restore works from a ledger this class populated as it went, never from the snapshot: a
+     * setup that failed part way through left a partial footprint, and a partial footprint is exactly the
+     * one that has to be removed.
+     *
+     * @throws IOException if the evidence cannot be written
      */
     @AfterAll
-    void publishEvidenceAndRestoreSharedState() throws IOException, SQLException {
+    void publishEvidenceAndRestoreSharedState() throws IOException {
         try {
             publishComparisonReport(this.run);
             if (!this.performance.baselines().isEmpty()) {
                 this.performance.publish(BASELINE_REPORT_FILE);
             }
         } finally {
-            removeOwnJobInstances(this.run);
-            restoreSeededState();
+            final List<String> unrestored = new ArrayList<>();
+            attemptRestore(unrestored, "the framework metadata rows of this run's own launches",
+                    this::removeOwnJobInstances);
+            attemptRestore(unrestored, "the durable generations this run published into the shared"
+                    + " staging bucket", this::removeOwnDurableGenerations);
+            attemptRestore(unrestored, "the seeded database state",
+                    BatchPipelineE2ETest::restoreSeededState);
             // Discarded outright rather than emptied and re-created: at the end of the run there is
             // nothing left to stage, and an empty root left behind once per process accumulates on
             // the host for no purpose. The set-up callback still empties-and-prepares, because it
             // needs a root that exists and is empty.
-            IsolatedStagingRoot.discard(stagingRoot());
+            attemptRestore(unrestored, "this run's local staging root",
+                    () -> IsolatedStagingRoot.discard(stagingRoot()));
             this.run = null;
+
+            assertThat(unrestored)
+                    .as("this specification writes to state it shares with every other specification in "
+                            + "the run, and the list below names each share it could not put back. A "
+                            + "share left as this class left it is measured by whichever specification "
+                            + "runs next, whose failure would then have nothing to do with its own "
+                            + "subject")
+                    .isEmpty();
         }
+    }
+
+    /**
+     * Attempts one restore, recording rather than raising when it fails.
+     *
+     * <p>{@code Exception} is caught rather than a narrower type on purpose. The restores raise between
+     * them a checked database exception, a checked filesystem exception and unchecked object-store
+     * failures, and this method's entire reason for existing is that the next restore must be attempted
+     * whichever of those arrived. Nothing is swallowed: the failure is rendered into the list the caller
+     * asserts on, so it surfaces as a named unrestored share.
+     *
+     * @param unrestored the collector of shares that could not be put back
+     * @param share      what this restore is responsible for, for the diagnostic
+     * @param restore    the restore to attempt
+     */
+    private static void attemptRestore(final List<String> unrestored, final String share,
+            final SharedStateRestore restore) {
+
+        try {
+            restore.run();
+        } catch (final Exception failure) {
+            unrestored.add(share + " - " + failure);
+        }
+    }
+
+    /** One restore of one piece of shared state, permitted to raise anything. */
+    @FunctionalInterface
+    private interface SharedStateRestore {
+
+        /**
+         * Puts one shared thing back the way this class found it.
+         *
+         * @throws Exception if it cannot be put back
+         */
+        void run() throws Exception;
     }
 
     /**
@@ -649,31 +770,35 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
      *
      * <p>The metadata store is shared by every integration test in the run and no restore covers it, so
      * a specification that asserts how many instances of a job exist is asserting a figure this class
-     * can move. Deletion is by the instance identifiers this class recorded - never by job name - so an
+     * can move. Deletion is by the execution identifiers this class recorded - never by job name - so an
      * instance another specification created is untouched whichever order the two ran in.
      *
-     * <p>It covers {@link PipelineRun#ownExecutions()} and not just the pipeline, because the orphan
-     * probe is a launch this class performed and therefore a row this class owes. Deleting the six and
-     * leaving the seventh is what makes the orphan's own specification fail on ordering.
+     * <p><strong>The ledger, not the snapshot.</strong> This used to take the completed
+     * {@link PipelineRun} and return immediately when it was null, which it is whenever setup did not
+     * finish. Ownership is recorded in {@link #ownedExecutionIds} as each identifier is issued instead, so
+     * a setup that failed after three launches still has its three rows removed. It covers the orphan
+     * probe for the same reason it always did: that is a launch this class performed, and deleting the six
+     * while leaving the seventh is what makes the orphan's own specification fail on ordering.
+     *
+     * <p>The instance identifier is read back from the metadata by execution identifier rather than taken
+     * from a {@code JobExecution} object, because the ledger holds only what the coordinator issued - and
+     * that is deliberately all it holds, since it must be writable at the instant of issue.
      *
      * <p>The order of the six statements is the order the foreign keys require and is not
-     * interchangeable.
+     * interchangeable, and the instance identifier is resolved before the execution row it is read from is
+     * deleted.
      *
      * @throws SQLException if the metadata cannot be amended
      */
-    private static void removeOwnJobInstances(final PipelineRun completed) throws SQLException {
-        if (completed == null || completed.ownExecutions().isEmpty()) {
+    private void removeOwnJobInstances() throws SQLException {
+        if (this.ownedExecutionIds.isEmpty()) {
             return;
         }
         try (Connection connection =
                 DriverManager.getConnection(jdbcUrl(), databaseUser(), databasePassword())) {
             connection.setAutoCommit(false);
-            for (final JobExecution execution : completed.ownExecutions()) {
-                final Long instanceId = execution.getJobInstance().getId();
-                final Long executionId = execution.getId();
-                if (instanceId == null || executionId == null) {
-                    continue;
-                }
+            for (final Long executionId : List.copyOf(this.ownedExecutionIds)) {
+                final Long instanceId = instanceIdOf(connection, executionId);
                 deleteBy(connection,
                         "DELETE FROM batch_step_execution_context WHERE step_execution_id IN "
                                 + "(SELECT step_execution_id FROM batch_step_execution "
@@ -688,11 +813,114 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                         executionId);
                 deleteBy(connection,
                         "DELETE FROM batch_job_execution WHERE job_execution_id = ?", executionId);
-                deleteBy(connection,
-                        "DELETE FROM batch_job_instance WHERE job_instance_id = ?", instanceId);
+                if (instanceId != null) {
+                    deleteBy(connection,
+                            "DELETE FROM batch_job_instance WHERE job_instance_id = ?", instanceId);
+                }
             }
             connection.commit();
         }
+        this.ownedExecutionIds.clear();
+    }
+
+    /**
+     * Reads the instance one recorded execution belongs to, before its execution row is deleted.
+     *
+     * @param  connection  the open metadata connection
+     * @param  executionId the execution identifier this class recorded
+     * @return the instance identifier, or {@code null} when the store holds no such execution
+     * @throws SQLException if the metadata cannot be read
+     */
+    private static Long instanceIdOf(final Connection connection, final Long executionId)
+            throws SQLException {
+
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT job_instance_id FROM batch_job_execution WHERE job_execution_id = ?")) {
+            statement.setLong(1, executionId.longValue());
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Long.valueOf(rows.getLong(1)) : null;
+            }
+        }
+    }
+
+    // ===============================================================================================
+    // RESTORING THE SHARED DURABLE STORE
+    // ===============================================================================================
+
+    /**
+     * Records what the shared staging bucket held before this run published anything into it.
+     *
+     * <p>Called as the first act of setup. Every version and every delete marker is listed, because on a
+     * versioned bucket those are two forms of the same thing and both are state a later specification can
+     * observe.
+     */
+    private void recordDurableBaseline() {
+        this.durableBaseline.clear();
+        this.durableBaseline.addAll(stagedObjectVersionsUnder(stagingBucket(), ""));
+        this.durableBaselineTaken = true;
+    }
+
+    /**
+     * Removes exactly the object versions and delete markers this run added, and proves it removed them.
+     *
+     * <p><strong>The problem this closes.</strong> The pipeline's jobs publish their completed generations
+     * into {@code carddemo-batch-staging}, which is shared by every specification in the run and carries
+     * object versioning. This class asserted its output from the local staging root, discarded that root
+     * in teardown, restored the database - and left the durable side untouched. Five bases therefore
+     * accumulated one generation per execution of this class, and because the bucket is versioned, even a
+     * later ordinary delete would not have removed them.
+     *
+     * <p><strong>Why a delta and not a prefix sweep.</strong> Emptying the bases outright would delete
+     * generations this class did not create, and the retention behaviour of the store means a base can
+     * legitimately hold generations from earlier runs. The set difference against the baseline recorded in
+     * setup names precisely this run's additions: each entry is a {@code (key, versionId)} pair, and a
+     * version identifier is issued once and never reused, so a pair absent from the baseline and present
+     * now can only have been added since.
+     *
+     * <p><strong>Why it is deleted by identifier.</strong> An ordinary delete against a versioned bucket
+     * adds a delete marker and removes nothing, so the residue would survive the cleanup and a marker
+     * would be added to it. Every removal here names its version - and the markers this run's own
+     * publications produced are themselves in the delta and are removed with it. See
+     * {@code docs/decision-log.md} entry DL-287.
+     *
+     * <p>The read-back is not ceremony. It is the only thing that distinguishes "removed" from
+     * "delete-markered", and a delta that is still non-empty after the removal is a condition the next
+     * specification would inherit and could not explain - so it fails here, in the class that caused it.
+     */
+    private void removeOwnDurableGenerations() {
+        if (!this.durableBaselineTaken) {
+            // No baseline means setup failed before the first launch, so nothing was published and there
+            // is no delta to compute. Guessing at one would mean deleting generations this class did not
+            // create.
+            return;
+        }
+        final String bucket = stagingBucket();
+        final List<ObjectVersionRef> added = durableDelta(bucket);
+        deleteStagedObjectVersions(bucket, added);
+
+        final List<ObjectVersionRef> remaining = durableDelta(bucket);
+        this.durableBaseline.clear();
+        this.durableBaselineTaken = false;
+        if (!remaining.isEmpty()) {
+            throw new IllegalStateException("this run added " + added.size() + " object version(s) or"
+                    + " delete marker(s) to the shared staging bucket " + bucket + " and " + remaining
+                    + " of them are still there after a version-qualified delete of every one. The"
+                    + " bucket cannot be left holding this specification's output: the next"
+                    + " specification to measure generations beneath these bases would attribute it to"
+                    + " itself.");
+        }
+    }
+
+    /**
+     * What the shared bucket holds now that it did not hold when the baseline was taken.
+     *
+     * @param  bucket the shared staging bucket
+     * @return the versions and delete markers added since setup began, in listing order
+     */
+    private List<ObjectVersionRef> durableDelta(final String bucket) {
+        return stagedObjectVersionsUnder(bucket, "").stream()
+                .filter(version -> !this.durableBaseline.contains(version))
+                .toList();
     }
 
     /**
@@ -1695,10 +1923,25 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         }
     }
 
+    /**
+     * The accrual run resolves every rate through the padded default group, and the zero-rate gate closes
+     * on some of those rows.
+     *
+     * <p><strong>What this cannot show, said here rather than left to be inferred.</strong> Because every
+     * seeded account's group identifier is ten spaces, every rate in this run is resolved by the fallback.
+     * The zero-rate gate therefore closes on a rate the fallback supplied, and a rate of zero reached
+     * through a <em>direct</em> group hit - the account's own group identifier resolving a row that
+     * discloses zero - is not exercised anywhere in this run and is not claimed to be. Reaching it needs an
+     * account constructed with the padded zero-rate group plus a matching category balance, which is
+     * outside what a seed-driven pipeline run can do; {@code batch/InterestCalculationJobConfigIT} installs
+     * exactly that and proves it. The distinction matters because the two paths differ in the resolver and
+     * not only in the gate.
+     */
     @Test
     @Order(47)
-    @DisplayName("trap - the accrual run takes the padded default disclosure group for every row, and "
-            + "the zero-rate gate skips rows the non-zero rate would have accrued")
+    @DisplayName("trap - the accrual run takes the padded default disclosure group for every row, so the "
+            + "zero-rate gate closes on a FALLBACK rate here and the direct-hit half of that branch is "
+            + "proven by batch/InterestCalculationJobConfigIT instead")
     void theAccrualRunTakesTheDefaultGroupForEveryRow() {
         final double rows = counterTotal("carddemo.batch.interest.rows");
         final double synthesised = counterTotal("carddemo.batch.interest.transactions");
@@ -1713,8 +1956,13 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
                 .as("every row read either accrued or was gated, and nothing else can happen to one")
                 .isEqualTo(synthesised + skipped);
         assertThat(skipped)
-                .as("the group's zero-rate rows are reachable from seeded data alone, so the branch "
-                        + "that skips both the computation and the fee invocation is genuinely covered")
+                .as("the padded default group's zero-rate rows are reachable from seeded data, so the "
+                        + "gate that skips both the computation and the fee invocation closes during this "
+                        + "run. What this run CANNOT show is the other half of that branch: every rate "
+                        + "here is resolved by the fallback, so a rate of zero reached through a DIRECT "
+                        + "group hit is not exercised by any seeded row and is not claimed to be. That "
+                        + "half needs an account constructed with the padded zero-rate group and is "
+                        + "proven by batch/InterestCalculationJobConfigIT")
                 .isGreaterThan(0.0d);
         assertThat(fallbacks)
                 .as("the account group identifier is ten spaces on every seeded account, so every "
@@ -1864,6 +2112,12 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
         // launches the same job the same way, and whichever ran second would silently reuse the first
         // one's completed instance. The instances are removed again in the teardown above.
         final long executionId = this.launcher.start(job, parameters);
+        // Recorded HERE, before anything below can throw. The metadata rows exist from the moment the
+        // coordinator issues this identifier, so this is the first instant at which the row is owed - and
+        // the assertion two statements down, the explorer lookup above it, and every later step of setup
+        // can all fail. Teardown works from this ledger, so a setup that gets three launches in has three
+        // launches cleaned up.
+        this.ownedExecutionIds.add(Long.valueOf(executionId));
         final JobExecution execution = Objects.requireNonNull(
                 this.jobExplorer.getJobExecution(Long.valueOf(executionId)),
                 () -> "the coordinator reported execution " + executionId + " but the store has none");
@@ -2783,19 +3037,6 @@ class BatchPipelineE2ETest extends AbstractPostgresAndLocalStackIT {
          */
         long masterCountAfterOrphan() {
             return this.masterCountAfterOrphan;
-        }
-
-        /**
-         * Every execution this class launched, pipeline and probe alike, for cleanup by recorded id.
-         *
-         * @return the executions this class is answerable for
-         */
-        List<JobExecution> ownExecutions() {
-            final List<JobExecution> own = new ArrayList<>(this.executions);
-            if (this.orphanExecution != null) {
-                own.add(this.orphanExecution);
-            }
-            return List.copyOf(own);
         }
 
         /**

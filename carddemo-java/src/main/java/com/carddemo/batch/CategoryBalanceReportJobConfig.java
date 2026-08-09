@@ -211,8 +211,13 @@ import com.carddemo.util.ZonedDecimalCodec;
  * statement, the hundred-byte HTML statement, the hundred-and-thirty-three-byte transaction report
  * and the four-hundred-and-thirty-byte reject record. The planning material names only those four.
  * The fifth width is raised here for {@code docs/gate-evidence.md} and {@code docs/decision-log.md},
- * and it needs a golden fixture of its own in the expected-output fixtures - an artefact of the test
- * estate rather than of this configuration.
+ * and it carries a golden fixture of its own in the expected-output fixtures -
+ * {@code fixtures/expected/category-balance-report.txt}, an artefact of the test estate rather than of
+ * this configuration. That file, and not any expectation assembled from this class's own reading of the
+ * reprojection, is what the output of a real run is compared against byte for byte;
+ * {@code batch/CategoryBalanceReportJobConfigIT} performs the comparison over a database state it fixes
+ * completely beforehand, which is what makes a committed expectation possible for a report whose content
+ * would otherwise be a function of whatever the posting run last did.
  *
  * <p><strong>Anomaly - a one-byte projection conflict.</strong> The reprojection's own segments total
  * 11 + 1 + 2 + 1 + 4 + 1 + 12 plus trailing filler, and the filler the reprojection declares is nine

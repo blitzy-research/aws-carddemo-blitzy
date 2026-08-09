@@ -1048,6 +1048,26 @@ final class FixtureContractTest {
         }
     }
 
+    /**
+     * The optional half of fixture provenance: the two comparisons that need the legacy tree.
+     *
+     * <p><strong>Two layers, and only one of them is unconditional.</strong>
+     * {@code ThePinnedDigests.eachFixtureMatchesItsPinnedDigest} reads only the committed fixture, so it
+     * executes in every checkout and is the layer that carries this contract everywhere. The two
+     * comparisons below read {@value #AUTHORITY_DIRECTORY}, which sits outside the module and is not
+     * required to exist: the module must build and validate with no reference to the legacy tree. They are
+     * therefore gated by an assumption and are reported as <em>skipped</em> rather than as passed when the
+     * tree is absent.
+     *
+     * <p><strong>A skip here is not a gate skip</strong>, and the distinction is recorded on
+     * {@code docs/gate-evidence.md} under Gate 4 so that a reader of the evidence page can tell which of
+     * the two layers produced the result in front of them. Gates 1, 4 and 5 are carried by the golden byte
+     * comparisons, the named seeds and the contract tests, none of which consults the legacy tree.
+     *
+     * <p>The gate is all-or-nothing, asserted unconditionally by the first test below, so a partially
+     * present tree cannot let the direct comparison quietly cover some files while still reporting as a
+     * clean skip.
+     */
     @Nested
     @DisplayName("agreement with the legacy datasets, when they are present")
     final class AgreementWithTheLegacyDatasets {
@@ -1076,7 +1096,8 @@ final class FixtureContractTest {
             // names every drifted file at once.
             Assumptions.assumeTrue(authorityFilesPresent() == EXPECTED_FIXTURE_COUNT,
                     "the legacy dataset directory is not present in this checkout, so the pinned "
-                            + "digests are the operative authority comparison");
+                            + "digests are the operative authority comparison; this is a skipped "
+                            + "optional provenance comparison and not a Gate 1, 4 or 5 skip");
 
             final Path directory = authorityDirectory();
             final Map<String, String> differences = new TreeMap<>();
@@ -1103,7 +1124,9 @@ final class FixtureContractTest {
             // confirms those same literals describe the authority, so the citation layer and the
             // comparison layer cannot disagree about what the contract is.
             Assumptions.assumeTrue(authorityFilesPresent() == EXPECTED_FIXTURE_COUNT,
-                    "the legacy dataset directory is not present in this checkout");
+                    "the legacy dataset directory is not present in this checkout, so the pinned "
+                            + "digests are the operative authority comparison; this is a skipped "
+                            + "optional provenance comparison and not a Gate 1, 4 or 5 skip");
 
             final Path directory = authorityDirectory();
             final Map<String, String> authorityDigests = new TreeMap<>();

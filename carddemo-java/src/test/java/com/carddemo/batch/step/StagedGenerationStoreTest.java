@@ -33,6 +33,12 @@ import io.awspring.cloud.s3.Location;
 import io.awspring.cloud.s3.S3Operations;
 import io.awspring.cloud.s3.S3Resource;
 
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -78,8 +84,25 @@ class StagedGenerationStoreTest {
     private Path stagingDirectory;
 
     private S3Operations objectStore;
+
+    /**
+     * The version-aware client the store performs its two deletions through.
+     *
+     * <p>Stubbed as a small in-memory <strong>versioned</strong> store rather than merely recorded, because
+     * the property under test is not "a delete was called" but "the bytes stopped existing". An unqualified
+     * delete against a versioned bucket is accepted, reports success, and leaves every version retrievable
+     * by identifier - so a test that verified the call would have passed against exactly the defect this
+     * suite now has to catch. Every key here therefore holds a list of version identifiers, a delete removes
+     * one of them, and the assertions read what is left.
+     */
+    private S3Client versionedObjectStore;
+
     private StagedGenerationStore store;
     private Map<String, byte[]> uploaded;
+
+    /** Version identifiers held per object key, newest last, as a versioned bucket would hold them. */
+    private Map<String, List<String>> versionsByKey;
+
     private RecordingPublicationLock publicationLock;
 
     /**
@@ -111,7 +134,9 @@ class StagedGenerationStoreTest {
     @BeforeEach
     void setUp() {
         this.objectStore = mock(S3Operations.class);
+        this.versionedObjectStore = mock(S3Client.class);
         this.uploaded = new LinkedHashMap<>();
+        this.versionsByKey = new LinkedHashMap<>();
         this.publicationLock = new RecordingPublicationLock();
         when(this.objectStore.listObjects(any(String.class), any(String.class)))
                 .thenReturn(List.of());
@@ -120,9 +145,100 @@ class StagedGenerationStoreTest {
             try (InputStream body = invocation.getArgument(2, InputStream.class)) {
                 this.uploaded.put(key, body.readAllBytes());
             }
+            // An upload against a versioned bucket adds a version rather than replacing one.
+            addVersion(key);
             return null;
         }).when(this.objectStore).upload(eq(BUCKET), any(String.class), any(InputStream.class));
-        this.store = new StagedGenerationStore(this.objectStore, BUCKET, this.publicationLock);
+
+        // The versioned listing, followed by prefix exactly as the service offers it.
+        when(this.versionedObjectStore.listObjectVersions(any(ListObjectVersionsRequest.class)))
+                .thenAnswer(invocation -> {
+                    final ListObjectVersionsRequest request =
+                            invocation.getArgument(0, ListObjectVersionsRequest.class);
+                    final String prefix = request.prefix() == null ? "" : request.prefix();
+                    final List<ObjectVersion> versions = new ArrayList<>();
+                    for (final Map.Entry<String, List<String>> held : this.versionsByKey.entrySet()) {
+                        if (!held.getKey().startsWith(prefix)) {
+                            continue;
+                        }
+                        for (final String versionId : held.getValue()) {
+                            versions.add(ObjectVersion.builder()
+                                    .key(held.getKey())
+                                    .versionId(versionId)
+                                    .build());
+                        }
+                    }
+                    return ListObjectVersionsResponse.builder()
+                            .versions(versions)
+                            .isTruncated(Boolean.FALSE)
+                            .build();
+                });
+
+        // A version-qualified delete removes that one version. A request without a version identifier is
+        // refused outright here, because on a versioned bucket it would silently add a delete marker and
+        // this suite exists to prove that never happens.
+        doAnswer(invocation -> {
+            final DeleteObjectRequest request =
+                    invocation.getArgument(0, DeleteObjectRequest.class);
+            if (request.versionId() == null || request.versionId().isBlank()) {
+                throw new AssertionError("the store deleted " + request.key() + " without naming a"
+                        + " version identifier. Against the versioned staging bucket that adds a delete"
+                        + " marker and leaves every version of the object retrievable, which is the"
+                        + " defect this stub exists to make impossible to pass");
+            }
+            removeVersion(request.key(), request.versionId());
+            return null;
+        }).when(this.versionedObjectStore).deleteObject(any(DeleteObjectRequest.class));
+
+        this.store = new StagedGenerationStore(this.objectStore, this.versionedObjectStore, BUCKET,
+                this.publicationLock);
+    }
+
+    /**
+     * Records one further version of one key, as an upload against a versioned bucket would.
+     *
+     * @param  key the object key
+     * @return the identifier of the version added
+     */
+    private String addVersion(final String key) {
+        final List<String> held = this.versionsByKey.computeIfAbsent(key, absent -> new ArrayList<>());
+        final String versionId = "v" + (held.size() + 1);
+        held.add(versionId);
+        return versionId;
+    }
+
+    /**
+     * Removes one exact version of one key, and forgets the key entirely once it holds none.
+     *
+     * @param key       the object key
+     * @param versionId the version identifier to remove
+     */
+    private void removeVersion(final String key, final String versionId) {
+        final List<String> held = this.versionsByKey.get(key);
+        if (held == null) {
+            return;
+        }
+        held.remove(versionId);
+        if (held.isEmpty()) {
+            this.versionsByKey.remove(key);
+            this.uploaded.remove(key);
+        }
+    }
+
+    /**
+     * Declares one generation as already present in the durable store, with a version behind it.
+     *
+     * <p>Two facts have to be arranged together for a retention assertion to mean anything: the ordinary
+     * listing the store measures depth with must report the key, and the versioned listing its scratch pass
+     * reads must report a version to remove. Arranging only the first is what let an unqualified delete
+     * appear to work.
+     *
+     * @param  key the object key of the pre-existing generation
+     * @return the resource the ordinary listing reports for it
+     */
+    private S3Resource presentGeneration(final String key) {
+        addVersion(key);
+        return resource(key);
     }
 
     private static JobExecution completedJob(final long executionId) {
@@ -231,8 +347,15 @@ class StagedGenerationStoreTest {
         }
 
         @Test
-        @DisplayName("a failed delegate close leaves a working file and registers nothing")
+        @DisplayName("a failed delegate close publishes nothing, registers nothing AND leaves no partial "
+                + "working file behind")
         void aFailedCloseCannotPublishAPartialFile() {
+            // This test asserted the opposite until the working file was recognised for what it is. A
+            // partial file abandoned here is owned by nobody: registration happens at completion, so it
+            // appears in no execution's registry, and the boundary listener's cleanup deletes only
+            // registered paths. It would have sat in the staging root at whatever length the failure left
+            // it - truncated batch output under a name that reads like real output - accumulating one
+            // copy per failed run until an operator noticed. See docs/decision-log.md entry DL-289.
             final JobExecution execution = completedJob(3);
             final StepExecution step = stepOf(execution);
             final Path completed =
@@ -240,6 +363,10 @@ class StagedGenerationStoreTest {
             final Path working = StagedGenerationStore.workingPath(completed);
             assertThatNoException().isThrownBy(() ->
                     Files.writeString(working, "partial", StandardCharsets.US_ASCII));
+            assertThat(working)
+                    .as("the partial file exists before the close, so its absence afterwards is the "
+                            + "adapter's doing and not an artefact of it never having been written")
+                    .exists();
             final ItemStreamWriter<String> delegate = mock();
             doThrow(new IllegalStateException("close failed")).when(delegate).close();
             final ItemStreamWriter<String> writer = StagedGenerationStore.completingWriter(
@@ -247,9 +374,49 @@ class StagedGenerationStoreTest {
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
             assertThatExceptionOfType(IllegalStateException.class)
+                    .as("the delegate's own failure is what propagates; the cleanup must not replace it")
+                    .isThrownBy(writer::close)
+                    .withMessage("close failed");
+
+            assertThat(working)
+                    .as("the unowned partial file is discarded where its path is known and trusted, "
+                            + "rather than left for a sweep that would have to guess at names")
+                    .doesNotExist();
+            assertThat(completed).doesNotExist();
+            assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
+        }
+
+        @Test
+        @DisplayName("a working file that cannot be sealed is discarded too, because a move that did not "
+                + "happen leaves the same unowned partial file")
+        void aFailedSealAlsoDiscardsTheWorkingFile() throws Exception {
+            // The other failure that leaves a working file behind. The delegate closes cleanly and the
+            // file is complete, but the atomic move onto the completed name is what would have made it a
+            // registered generation, so a move that fails leaves it in exactly the same unowned state.
+            // The container is blocked by a regular file occupying the directory the completed name would
+            // need, which is what makes the seal - not the close - the operation that fails.
+            final JobExecution execution = completedJob(5);
+            final StepExecution step = stepOf(execution);
+            final Path blockedContainer = stagingDirectory.resolve("occupied-container");
+            Files.writeString(blockedContainer, "not a directory", StandardCharsets.US_ASCII);
+            final Path completed = blockedContainer.resolve(BASE + ".G0000000005V00");
+            final Path working =
+                    StagedGenerationStore.workingPath(
+                            StagedGenerationStore.generationPath(stagingDirectory, BASE, 5));
+            Files.writeString(working, "sealable bytes", StandardCharsets.US_ASCII);
+            final ItemStreamWriter<String> delegate = mock();
+            final ItemStreamWriter<String> writer = StagedGenerationStore.completingWriter(
+                    delegate, step, BASE, working, completed,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+
+            assertThatExceptionOfType(UncheckedIOException.class)
+                    .as("the sealing failure is the one an operator reads")
                     .isThrownBy(writer::close);
 
-            assertThat(working).exists();
+            verify(delegate).close();
+            assertThat(working)
+                    .as("and the file that would have become a generation is gone rather than abandoned")
+                    .doesNotExist();
             assertThat(completed).doesNotExist();
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isZero();
         }
@@ -360,6 +527,46 @@ class StagedGenerationStoreTest {
         }
 
         @Test
+        @DisplayName("refuses a registered path that has become a symbolic link, without following it, "
+                + "and without uploading anything at all")
+        void aRegisteredSourceThatBecameALinkIsRefusedBeforeAnyUpload() throws Exception {
+            // Registration records a path; publication reads that path later. Between the two, the name
+            // can stop being the file that was registered. Validating with an ordinary regular-file test
+            // FOLLOWS a link, so the check would pass and the upload would then stream whatever the link
+            // now points at - into this job's own generation key, under this job's own base, indexed as
+            // this job's output. The trust re-establishment refuses the name instead of following it.
+            // See docs/decision-log.md entry DL-288.
+            final JobExecution execution = completedJob(15);
+            final StepExecution step = stepOf(execution);
+            final Path registered =
+                    StagedGenerationStore.generationPath(stagingDirectory, BASE, 15);
+            Files.writeString(registered, "the bytes that were staged", StandardCharsets.US_ASCII);
+            StagedGenerationStore.register(step, BASE, registered,
+                    StagedGenerationStore.STANDARD_RETENTION_LIMIT);
+            final Path substituted = stagingDirectory.resolve("not-this-jobs-output");
+            Files.writeString(substituted, "MUST NOT BE UPLOADED", StandardCharsets.US_ASCII);
+            Files.delete(registered);
+            try {
+                Files.createSymbolicLink(registered, substituted);
+            } catch (final UnsupportedOperationException | IOException linksUnavailable) {
+                return;
+            }
+
+            assertThatExceptionOfType(IllegalStateException.class)
+                    .isThrownBy(() -> store.publishRegistered(execution));
+
+            verify(objectStore, never())
+                    .upload(any(String.class), any(String.class), any(InputStream.class));
+            assertThat(uploaded)
+                    .as("nothing reached the durable store, so the substituted content was never "
+                            + "published under this job's generation key")
+                    .isEmpty();
+            assertThat(substituted)
+                    .as("and the link's target is untouched - it was neither read nor removed")
+                    .hasContent("MUST NOT BE UPLOADED");
+        }
+
+        @Test
         @DisplayName("rolls back an earlier upload when a later artifact fails")
         void aPartialPublicationIsRolledBack() throws Exception {
             final JobExecution execution = completedJob(14);
@@ -381,7 +588,16 @@ class StagedGenerationStoreTest {
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> store.publishRegistered(execution));
 
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000001V00");
+            // The rolled-back object has to STOP EXISTING, not merely stop being listed. An unqualified
+            // delete against the versioned staging bucket would have added a delete marker and left the
+            // uploaded bytes of a job that failed retrievable by version identifier - externally visible
+            // output of a failed job, which is the property this compensation exists to deny.
+            assertThat(versionsByKey)
+                    .as("every version of the rolled-back key is gone, and the store never issued an "
+                            + "unqualified delete")
+                    .doesNotContainKey(BASE + "/G0000000001V00");
+            assertThat(uploaded).doesNotContainKey(BASE + "/G0000000001V00");
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
         }
     }
@@ -423,9 +639,13 @@ class StagedGenerationStoreTest {
             assertThatExceptionOfType(RuntimeException.class)
                     .isThrownBy(() -> store.publishRegistered(execution));
 
-            // Both uploads had already succeeded when the alias failed, so both must be scratched.
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000001V00");
-            verify(objectStore).deleteObject(BUCKET, OTHER_BASE + "/G0000000001V00");
+            // Both uploads had already succeeded when the alias failed, so both must be scratched - and
+            // scratched by version, so that neither remains retrievable behind a delete marker.
+            assertThat(versionsByKey)
+                    .as("neither key holds any version afterwards")
+                    .doesNotContainKey(BASE + "/G0000000001V00")
+                    .doesNotContainKey(OTHER_BASE + "/G0000000001V00");
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
             // And the registry is intact, so the failure is visible as an unpublished job rather than as
             // a published one.
             assertThat(StagedGenerationStore.registeredArtifactCount(execution)).isEqualTo(2);
@@ -518,12 +738,15 @@ class StagedGenerationStoreTest {
             // read before the upload too, to allocate the generation number (DL-210); failing that would
             // fail the publication itself, which is a different property and has its own test below.
             final List<S3Resource> present = List.of(
-                    resource(BASE + "/G0000000001V00"), resource(BASE + "/G0000000002V00"),
-                    resource(BASE + "/G0000000003V00"), resource(BASE + "/G0000000004V00"),
-                    resource(BASE + "/G0000000005V00"), resource(BASE + "/G0000000006V00"));
+                    presentGeneration(BASE + "/G0000000001V00"),
+                    presentGeneration(BASE + "/G0000000002V00"),
+                    presentGeneration(BASE + "/G0000000003V00"),
+                    presentGeneration(BASE + "/G0000000004V00"),
+                    presentGeneration(BASE + "/G0000000005V00"),
+                    presentGeneration(BASE + "/G0000000006V00"));
             when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
             doThrow(new IllegalStateException("the rolled-off object could not be scratched"))
-                    .when(objectStore).deleteObject(any(String.class), any(String.class));
+                    .when(versionedObjectStore).deleteObject(any(DeleteObjectRequest.class));
 
             final List<StagedGenerationStore.PublishedGeneration> result =
                     store.publishRegistered(execution);
@@ -587,7 +810,8 @@ class StagedGenerationStoreTest {
                 throw new IllegalStateException("the base could not be acquired");
             };
             final StagedGenerationStore refusedStore =
-                    new StagedGenerationStore(objectStore, BUCKET, refusingLock);
+                    new StagedGenerationStore(objectStore, versionedObjectStore, BUCKET,
+                            refusingLock);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> refusedStore.publishRegistered(execution));
@@ -623,7 +847,8 @@ class StagedGenerationStoreTest {
                 throw new IllegalStateException("the base could not be acquired");
             };
             final StagedGenerationStore refusedStore =
-                    new StagedGenerationStore(objectStore, BUCKET, refusingLock);
+                    new StagedGenerationStore(objectStore, versionedObjectStore, BUCKET,
+                            refusingLock);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> refusedStore.publishFile(BASE, completed,
@@ -639,12 +864,15 @@ class StagedGenerationStoreTest {
             final Path completed =
                     completedFileHolding("bytes".getBytes(StandardCharsets.US_ASCII));
             final List<S3Resource> present = List.of(
-                    resource(BASE + "/G0000000001V00"), resource(BASE + "/G0000000002V00"),
-                    resource(BASE + "/G0000000003V00"), resource(BASE + "/G0000000004V00"),
-                    resource(BASE + "/G0000000005V00"), resource(BASE + "/G0000000006V00"));
+                    presentGeneration(BASE + "/G0000000001V00"),
+                    presentGeneration(BASE + "/G0000000002V00"),
+                    presentGeneration(BASE + "/G0000000003V00"),
+                    presentGeneration(BASE + "/G0000000004V00"),
+                    presentGeneration(BASE + "/G0000000005V00"),
+                    presentGeneration(BASE + "/G0000000006V00"));
             when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(present);
             doThrow(new IllegalStateException("the rolled-off object could not be scratched"))
-                    .when(objectStore).deleteObject(any(String.class), any(String.class));
+                    .when(versionedObjectStore).deleteObject(any(DeleteObjectRequest.class));
 
             final StagedGenerationStore.PublishedGeneration published = store.publishFile(
                     BASE, completed, StagedGenerationStore.STANDARD_RETENTION_LIMIT);
@@ -728,23 +956,34 @@ class StagedGenerationStoreTest {
         @DisplayName("keeps the five numerically newest standard generations and scratches the rest")
         void standardRetentionUsesNumericGenerationOrder() {
             final List<S3Resource> generations = List.of(
-                    resource(BASE + "/G0000000011V00"),
-                    resource(BASE + "/G0000000001V00"),
-                    resource(BASE + "/G0000000010V00"),
-                    resource(BASE + "/G0000000002V00"),
-                    resource(BASE + "/G0000000009V00"),
-                    resource(BASE + "/G0000000008V00"),
-                    resource(BASE + "/G0000000007V00"),
-                    resource(BASE + "/not-a-generation"));
+                    presentGeneration(BASE + "/G0000000011V00"),
+                    presentGeneration(BASE + "/G0000000001V00"),
+                    presentGeneration(BASE + "/G0000000010V00"),
+                    presentGeneration(BASE + "/G0000000002V00"),
+                    presentGeneration(BASE + "/G0000000009V00"),
+                    presentGeneration(BASE + "/G0000000008V00"),
+                    presentGeneration(BASE + "/G0000000007V00"),
+                    presentGeneration(BASE + "/not-a-generation"));
             when(objectStore.listObjects(BUCKET, BASE + "/")).thenReturn(generations);
 
             store.publishFile(BASE, completedFileHolding(new byte[] {1}),
                     StagedGenerationStore.STANDARD_RETENTION_LIMIT);
 
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000002V00");
-            verify(objectStore).deleteObject(BUCKET, BASE + "/G0000000001V00");
-            verify(objectStore, times(2)).deleteObject(eq(BUCKET), any(String.class));
-            verify(objectStore, never()).deleteObject(BUCKET, BASE + "/not-a-generation");
+            // SCRATCHED MEANS GONE. The legacy generation group scratched what rolled off its declared
+            // depth, which deletes the data set. On a versioned bucket an unqualified delete leaves every
+            // version of the rolled-off generation fetchable, so a base "at depth five" would still hold
+            // the bytes of every generation it had ever held. The two that rolled off must therefore hold
+            // no version at all, while the five kept and the non-generation object are untouched.
+            assertThat(versionsByKey)
+                    .doesNotContainKey(BASE + "/G0000000002V00")
+                    .doesNotContainKey(BASE + "/G0000000001V00")
+                    .containsKeys(BASE + "/G0000000011V00", BASE + "/G0000000010V00",
+                            BASE + "/G0000000009V00", BASE + "/G0000000008V00",
+                            BASE + "/G0000000007V00")
+                    .as("a name that is not a generation of this base is not this pass's to scratch")
+                    .containsKey(BASE + "/not-a-generation");
+            verify(versionedObjectStore, times(2)).deleteObject(any(DeleteObjectRequest.class));
+            verify(objectStore, never()).deleteObject(any(String.class), any(String.class));
         }
 
         @Test

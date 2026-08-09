@@ -31,6 +31,8 @@ import com.carddemo.util.BoundedKeysetIterator;
 import com.carddemo.util.SecureStagedFiles;
 import com.carddemo.util.TransactionRecordMapper;
 import io.awspring.cloud.s3.S3Operations;
+
+import software.amazon.awssdk.services.s3.S3Client;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.io.BufferedOutputStream;
@@ -453,6 +455,9 @@ public final class BackupTransactionJobConfig {
      * @param transactionRepository the transaction master
      * @param transactionScanRepository bounded sequential-read view of the transaction master
      * @param objectStore the object-store client used by the durable generation store
+     * @param versionedObjectStore the version-aware object-store client the generation store uses for
+     *                             its rollback and retention deletes, which must remove object versions
+     *                             on a versioned bucket rather than mask them behind a delete marker
      * @param publicationLock the per-base publication lock the generation store serializes with; this
      *                        job shares its archive base with the transaction-report job's unload step,
      *                        so the lock is what keeps the two from interleaving their retention passes
@@ -470,6 +475,7 @@ public final class BackupTransactionJobConfig {
             final TransactionRepository transactionRepository,
             final TransactionScanRepository transactionScanRepository,
             final S3Operations objectStore,
+            final S3Client versionedObjectStore,
             final GenerationPublicationLock publicationLock,
             final AwsProperties awsProperties,
             final MeterRegistry meterRegistry,
@@ -488,6 +494,7 @@ public final class BackupTransactionJobConfig {
         this.awsProperties = Objects.requireNonNull(awsProperties, "awsProperties");
         this.generationStore = new StagedGenerationStore(
                 Objects.requireNonNull(objectStore, "objectStore"),
+                Objects.requireNonNull(versionedObjectStore, "versionedObjectStore"),
                 this.awsProperties.s3().batchStagingBucket(),
                 Objects.requireNonNull(publicationLock, "publicationLock"));
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry");

@@ -48,6 +48,13 @@ import org.junit.jupiter.api.Test;
  * HTML documents, each assembled from thirty-four invariant literals interleaved with ten composed
  * lines, and its correctness is as much about record ORDER as about record content.
  *
+ * <p>It also owns the <strong>roster</strong> of published oracles, because a roster has to be held in
+ * one place to be closed at all. That roster carries <strong>five</strong> names and not four: the fifth
+ * is the 40-byte category-balance report line the {@code PRTCATBL} job stream emits. Its own byte
+ * comparison against a real run belongs to {@code batch/CategoryBalanceReportJobConfigIT}; what belongs
+ * here is that the file exists, is flat, holds whole records at its declared width, carries no separator
+ * and no non-ASCII byte, and has no aliased second copy - the same terms the other four are held to.
+ *
  * <h2>Which side is which, stated explicitly</h2>
  * <strong>The expected side is always the committed fixture bytes, and nothing else.</strong> No
  * expected value below is produced by calling the code under test, no output is snapshotted and the
@@ -226,15 +233,39 @@ final class ExpectedHtmlStatementFixtureContractTest {
     private static final String ORACLE_DIRECTORY = "/fixtures/expected/";
 
     /**
-     * The four oracle names and the record width each one publishes. The set is closed on purpose: a
-     * fifth oracle, a renamed one or an aliased duplicate changes the published contract and has to be
-     * made here deliberately rather than arrive unnoticed.
+     * Record width of the fifth oracle, written out rather than imported.
+     *
+     * <p>This class is a fixture contract and takes no dependency on the batch tier: a width read from
+     * the configuration that emits it would prove only that the emitter agrees with itself.
+     */
+    private static final int CATEGORY_BALANCE_REPORT_WIDTH = 40;
+
+    /** Content bytes one 40-byte category-balance report line carries before its trailing blanks. */
+    private static final int CATEGORY_BALANCE_CONTENT_WIDTH = 32;
+
+    /** File name of the fifth oracle, referenced by more than one assertion below. */
+    private static final String CATEGORY_BALANCE_ORACLE = "category-balance-report.txt";
+
+    /**
+     * The oracle names and the record width each one publishes. The set is closed on purpose: a new
+     * oracle, a renamed one or an aliased duplicate changes the published contract and has to be made
+     * here deliberately rather than arrive unnoticed.
+     *
+     * <p>There are <strong>five</strong>, not four. The four Gate 1 names it to expect - the 80-byte
+     * statement record, its 100-byte hypertext counterpart, the 133-byte report line and the 430-byte
+     * reject record - and the 40-byte category-balance report line the {@code PRTCATBL} job stream
+     * emits, whose stream declares {@code SORTOUT DCB=(LRECL=40)}. That fifth width is as much an
+     * external file format as the other four and went without an oracle while this roster was closed at
+     * four; its oracle is compared against a real run by
+     * {@code batch/CategoryBalanceReportJobConfigIT}, and it is enforced here on the same terms as its
+     * four siblings so that a width, a separator or a non-ASCII byte cannot drift into it unnoticed.
      */
     private static final Map<String, Integer> ORACLE_WIDTHS = Map.of(
             "statement.txt", TEXT_WIDTH,
             "statement-html.txt", HTML_WIDTH,
             "transaction-report.txt", 133,
-            "daily-reject.txt", 430);
+            "daily-reject.txt", 430,
+            CATEGORY_BALANCE_ORACLE, CATEGORY_BALANCE_REPORT_WIDTH);
 
     /** Filesystem root of the module's committed fixtures, for the aliased-duplicate search. */
     private static final String FIXTURE_ROOT = "src/test/resources/fixtures";
@@ -577,9 +608,16 @@ final class ExpectedHtmlStatementFixtureContractTest {
         }
 
         @Test
-        @DisplayName("the four oracles are published under exactly these four names, flat, each at its "
+        @DisplayName("the five oracles are published under exactly these five names, flat, each at its "
                 + "own width, and the HTML oracle has no aliased or duplicated copy")
         void theFourOraclesArePublishedUnderExactlyTheseNames() throws IOException {
+            assertThat(ORACLE_WIDTHS)
+                    .as("five published widths, not four: the 40-byte category-balance report line is as "
+                            + "much an external file format as the four Gate 1 names, and closing this "
+                            + "roster at four is what left it without an oracle")
+                    .hasSize(5)
+                    .containsEntry(CATEGORY_BALANCE_ORACLE,
+                            Integer.valueOf(CATEGORY_BALANCE_REPORT_WIDTH));
             for (final Map.Entry<String, Integer> oracle : ORACLE_WIDTHS.entrySet()) {
                 final String resource = ORACLE_DIRECTORY + oracle.getKey();
                 assertThat(records(resource, oracle.getValue()))
@@ -611,6 +649,59 @@ final class ExpectedHtmlStatementFixtureContractTest {
                     })
                     .extracting(path -> path.getFileName().toString())
                     .containsExactlyInAnyOrder("statement.txt", "statement-html.txt");
+        }
+
+        @Test
+        @DisplayName("the fifth oracle - the 40-byte category-balance report line - holds whole 40-byte "
+                + "records of 32 content bytes and 8 trailing blanks, carries no separator and no "
+                + "non-ASCII byte, and has no duplicated or aliased copy")
+        void theFifthOracleIsEnforcedOnTheSameTermsAsTheOtherFour() throws IOException {
+            final String resource = ORACLE_DIRECTORY + CATEGORY_BALANCE_ORACLE;
+            // records(...) proves divisibility by the declared width and the absence of both terminator
+            // bytes before it hands anything back, so a separator regression fails there rather than
+            // shifting every ordinal below by one.
+            final List<String> lines = records(resource, CATEGORY_BALANCE_REPORT_WIDTH);
+
+            assertThat(lines).as("%s must carry at least one record", resource).isNotEmpty();
+            assertThat(lines).allSatisfy(line -> {
+                assertThat(line.getBytes(StandardCharsets.US_ASCII).length)
+                        .as("a record length is a byte contract, so the measure is encoded bytes and "
+                                + "never character count: <%s>", line)
+                        .isEqualTo(CATEGORY_BALANCE_REPORT_WIDTH);
+                assertThat(line.substring(CATEGORY_BALANCE_CONTENT_WIDTH))
+                        .as("exactly eight trailing blanks. The reprojection declares a nine-byte run, "
+                                + "which would make a forty-first byte; the declared record length is the "
+                                + "dataset contract and resolves it to eight: <%s>", line)
+                        .isEqualTo(" ".repeat(
+                                CATEGORY_BALANCE_REPORT_WIDTH - CATEGORY_BALANCE_CONTENT_WIDTH));
+                assertThat(line.charAt(CATEGORY_BALANCE_CONTENT_WIDTH - 1))
+                        .as("and the content run reaches its last byte, so the eight blanks are the "
+                                + "trailer rather than the tail of an under-filled line: <%s>", line)
+                        .isNotEqualTo(' ');
+            });
+            assertThat(String.join("", lines).chars()
+                            .allMatch(character -> character >= 0x20 && character <= 0x7E))
+                    .as("every byte is printable US-ASCII, so no byte can have come from a locale or a "
+                            + "platform default charset")
+                    .isTrue();
+
+            final Path root = Paths.get(FIXTURE_ROOT);
+            final List<Path> found;
+            try (Stream<Path> tree = Files.walk(root)) {
+                found = tree.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().contains("category-balance"))
+                        .sorted()
+                        .toList();
+            }
+            assertThat(found)
+                    .as("exactly one category-balance oracle exists beneath the fixtures, flat in the "
+                            + "expected directory; a second copy would let a consumer bind to the wrong "
+                            + "bytes while every assertion above still passed against the right ones")
+                    .hasSize(1)
+                    .allSatisfy(path -> assertThat(path.getParent().getFileName().toString())
+                            .isEqualTo("expected"))
+                    .extracting(path -> path.getFileName().toString())
+                    .containsExactly(CATEGORY_BALANCE_ORACLE);
         }
     }
 

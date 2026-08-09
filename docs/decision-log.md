@@ -11381,6 +11381,292 @@ leave the write range earlier.
 
 ---
 
+### DL-286 — The fifth fixed output width carries a golden of its own, because a self-authored expectation cannot catch a misread layout
+
+**Context.** The estate emits five fixed output widths and Gate 1 names four. The four it names — 430,
+133, 80 and 100 bytes — each carry a committed golden. The fifth, the 40-byte category-balance report line
+the `PRTCATBL` job stream declares as `SORTOUT DCB=(LRECL=40)`, was implemented, documented, and verified
+only by expectations assembled inside its own integration test from that test's reading of the
+reprojection at lines 53 to 56 of the job member.
+
+**The problem with that arrangement, stated precisely.** The expectations were genuinely independent of
+the code under test: nothing in the test delegated to the job configuration, to the zoned-decimal codec or
+to any record mapper. Independence from the *implementation* is necessary and it is not sufficient. Both
+readings of the layout — the one in the production reprojection and the one in the test — were written by
+the same author from the same source lines, so a misreading is copied into both and the comparison passes.
+Every load-bearing decision about this width is of exactly that kind: whether the trailing run is eight
+blanks or nine (the reprojection's own filler declaration says nine, which would make a 41-byte record
+against a declared length of 40), whether the edit mask prints its leading zeros or blanks them (`DL-243`),
+and whether a negative balance renders a sign or its magnitude. A test that agreed with the production
+code about all three would have reported a pass while emitting a dataset every downstream reader would
+misparse.
+
+**Decision.** Commit `src/test/resources/fixtures/expected/category-balance-report.txt` — 53 separator-free
+40-byte records — as the fifth oracle, and make **that file** the verdict for this width. The bytes were
+authored from the reprojection and from the delivered `app/data/ASCII/tcatbal.txt` fixture, are held beside
+the other four oracles, are never regenerated from a run, and are never produced by calling the code under
+test.
+
+**What had to change in the test to make a committed expectation possible.** A committed expectation can
+only be compared against a state fixed in advance, and the state the report was previously produced over
+was not: the posting run this test drives moves category balances as a function of 300 input records
+passing through the accept-or-reject cascade, so a golden authored against it would have pinned the posting
+outcome rather than the report format. `batch/CategoryBalanceReportJobConfigIT` therefore adds its four
+discriminating rows **before** the posting run, launches the report job once over that fixed state — the 50
+delivered rows, one of which the added rows rewrite in place, plus three new ones — and compares the bytes
+the job wrote to a real local dataset with the bytes of the committed file as raw byte arrays. Adding the
+four rows before rather than after the golden run is what puts a non-zero magnitude, a negative balance and
+a balance filling all nine declared integer digits *inside* the committed expectation. The four rows are
+then re-applied after the posting run, because posting owns one of their keys, which restores exactly the
+state the posted-state assertions were written against.
+
+**What the in-test builder is for now.** Decomposition, and nothing else. It names which field of which
+record differs when the byte comparison fails, and it checks the report produced over the *posted* state
+field by field — which no committed file can do, for the reason above. It is no longer the verdict for the
+width, the mask, the separators or the ordering.
+
+**A roster is only closed if it is closed in one place.** The four-golden count was restated in five
+places, and every one of them was true of the tree and false of the contract. The roster now lives in
+`support/ExpectedHtmlStatementFixtureContractTest.ORACLE_WIDTHS` and in
+`e2e/GateVerificationTest.GOLDEN_WIDTHS`, both at five entries, and the Gate 8 sign-off predicate reads the
+map rather than an inline list — so a width added to the inventory cannot be omitted from the checklist,
+which is precisely how the fifth width came to be missing from it.
+
+*Verified by:* `batch/CategoryBalanceReportJobConfigIT`, whose first dynamic test is the byte comparison
+against the committed file; `support/ExpectedHtmlStatementFixtureContractTest`, which holds the roster at
+five and enforces the fifth oracle's width, its 32-content-plus-8-blank geometry, its freedom from
+separator and non-ASCII bytes and the absence of any aliased copy; and `e2e/GateVerificationTest`, whose
+five-width inventory, per-golden uniformity check and sign-off row all read the same roster.
+
+*Embodied in:* `src/test/resources/fixtures/expected/category-balance-report.txt` and the class
+documentation of `src/main/java/com/carddemo/batch/CategoryBalanceReportJobConfig.java`.
+
+### DL-287 — Deletion on the staging bucket is version-qualified, because an unqualified delete on a versioned bucket removes nothing
+
+**Context.** The staging bucket carries object versioning. It is created that way in both places it is
+created: the LocalStack bootstrap script enables versioning on `carddemo-batch-staging`, and
+`support/AbstractLocalStackIT.createBucketIfAbsent` applies it on the one creation path the test estate has.
+That is a deliberate durability posture and it is not in question here.
+
+**The problem it created.** `StagedGenerationStore` has two paths that remove objects, and both issued an
+unqualified delete through `S3Operations.deleteObject(bucket, key)`. On an unversioned bucket that removes
+the object. On a versioned bucket it does something entirely different: the service accepts the request,
+reports success, writes a **delete marker** as the key's new current version, and removes nothing. Every
+stored version stays fetchable by version identifier for as long as the bucket lives.
+
+Both paths exist precisely to make bytes stop existing, so both were failing at the only thing they are for.
+
+- **Rollback.** A publication that uploads two artifacts and fails on the second deletes the first, so that a
+  job the boundary listener will mark FAILED leaves no externally visible output. With an unqualified delete
+  the uploaded bytes of that failed job remained retrievable — externally visible output of a failed job,
+  which is the exact property the compensation exists to deny.
+- **Retention.** A base retaining five generations deletes the sixth-newest as each new one lands. With an
+  unqualified delete a base that reported "retaining five" after seven publications was holding all seven,
+  and would hold every generation ever published to it. Retention was measuring what an ordinary listing
+  showed rather than what the bucket held, so the depth was cosmetic and the growth unbounded.
+
+**Decision.** Both paths route through one private method, `purgeEveryVersionOf(bucket, key)`, which lists
+`listObjectVersions` to exhaustion, keeps only entries whose key is **exactly** equal to the target — a
+prefix match would also catch a longer key that merely starts with this generation's name — and deletes each
+stored version and each delete marker by its own `versionId`. The version identifier is what makes the call a
+deletion rather than a concealment; a request that omits it is accepted and adds a marker.
+
+**Why the store takes a second client.** `S3Operations`, the Spring abstraction the store uses for upload and
+for reads, exposes neither a version listing nor a version-qualified delete. Rather than reach around it with
+an ad-hoc call, the store now declares what it needs: its constructor takes an `S3Client` named
+`versionedObjectStore` alongside the `S3Operations` it already had, and `BackupTransactionJobConfig` — the one
+production construction site — passes the context's client through. The dependency is explicit and the two
+responsibilities stay separate: `S3Operations` uploads and reads, the SDK client performs the version work
+that only the SDK can express.
+
+**The same defect was in the test estate, and it made the production defect invisible.** `BatchAwsIntegrationIT`
+created a bucket of its own with a bare `createBucket`, which leaves versioning off, and asserted retention by
+listing current keys. Against an unversioned bucket an unqualified delete really does remove the object, so the
+test passed and could only ever pass. It now creates its bucket through `createBucketIfAbsent`, asserts
+`BucketVersioningStatus.ENABLED` *before* publishing anything so that a reversion fails loudly rather than
+quietly weakening every assertion below it, and asserts retention twice over: the current keys an operator
+sees, and the versions and delete markers the bucket actually holds — which must be exactly the five retained
+keys, with no marker anywhere. Its teardown was version-blind for the same reason and would have failed to
+empty the bucket at all; it now removes by identifier.
+
+**And test cleanup on shared buckets is now a named operation.** `AbstractLocalStackIT` gained
+`objectVersionsUnder`, `deleteObjectVersions` and `deleteEveryVersionUnder` — the last reading the prefix back
+and raising if anything remains, because a read-back is the only thing that distinguishes "deleted" from
+"delete-markered". The pre-existing `deleteObject` is kept, and its documentation now says plainly that it is
+an ordinary delete and is *not* cleanup: a specification that used it to tidy up after itself would leave its
+bytes in a bucket every later specification shares, and the next retention assertion downstream would be
+measuring this one's residue.
+
+*Verified by:* `batch/step/StagedGenerationStoreTest`, whose in-memory versioned store maintains a version
+ledger per key and **raises `AssertionError` if a delete arrives without a version identifier**, so an
+unqualified delete cannot pass there again — the rollback, alias-failure and retention cases all assert
+against that ledger and additionally assert the store never called the unqualified `S3Operations.deleteObject`;
+`batch/step/BatchAwsIntegrationIT`, which publishes seven generations against a real versioned LocalStack
+bucket and asserts the two rolled-off generations hold no version and no delete marker; and
+`AwsIntegrationIT`, which exercises the version listing against the shared staging bucket.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java` and
+`src/main/java/com/carddemo/batch/BackupTransactionJobConfig.java`.
+
+---
+
+### DL-288 — The publication path is re-established at the moment of use and the body is streamed from a verified handle, because a recorded path is not a promise
+
+**Context.** A step registers a completed generation by path when it seals it. The job-boundary publication
+reads that path later — after the step has ended, after every other step in the job has ended, and after the
+framework has decided the job completed. The gap is real time on a real filesystem, and the staging root is a
+directory, not a capability.
+
+**The problem.** Validation used `Files.isRegularFile(source)`, which **follows symbolic links**. A registered
+name that had since become a link therefore passed validation, and the upload that followed streamed whatever
+the link pointed at — into this job's own generation key, beneath this job's own logical base, indexed by the
+durable store as this job's output. Nothing downstream could tell the difference: the object exists, its key is
+well-formed, its generation number is the next one, and its content is somebody else's file. A second, narrower
+window sat between validation and the open, and a third between the open and the length report, since the size
+was read from the path rather than from the handle.
+
+**Decision.** Three changes, each closing one of those windows.
+
+- **Validation refuses rather than follows.** `requireCompletedSource` now calls
+  `SecureStagedFiles.isTrustedStagedArtifact(root, source)`, the same predicate the abnormal-disposition
+  cleanup already used: a regular file inspected **without following links**, a direct child of a directory
+  this process owns, with neither the file nor the directory writable outside its owner. A name that has
+  become a link, a directory or another account's file is refused with a diagnostic that says so.
+- **The open re-establishes trust and then proves continuity.** `openVerifiedSource` re-checks the predicate,
+  reads `BasicFileAttributes` with `NOFOLLOW_LINKS` before opening, opens with `LinkOption.NOFOLLOW_LINKS`, and
+  reads the attributes again through the same no-follow path afterwards. It compares `fileKey()` across the
+  pair — the filesystem's own identity for the file — and refuses if it changed. Re-checking alone would only
+  have moved the window; comparing identity across the open is what closes it, because a substitution in that
+  interval changes the key.
+- **The length is the handle's, not the path's.** The byte count reported to the object store is taken from the
+  post-open attributes, so the length declared and the bytes streamed come from the same inspection. Reading
+  `Files.size(path)` separately could disagree with the handle and would produce a truncated or over-declared
+  upload.
+
+**Why not simply trust the staging root.** Because the root is exactly what is being asserted about. The trust
+predicate is a statement about the root *and* the entry together — ownership and mode on both — and it is
+evaluated at each use rather than once at startup, since a directory's mode can change between the two.
+
+*Verified by:* `batch/step/StagedGenerationStoreTest`, which registers a real staged file, substitutes a
+symbolic link to another file under the registered name, and asserts publication is refused with nothing
+uploaded and the link's target neither read nor removed; the same class's streaming case, which asserts the
+reported content length equals the file's own length; and `AwsIntegrationIT`, which reads published objects
+back as exact bytes.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`.
+
+---
+
+### DL-289 — A working file is discarded by the writer that failed, because nothing else can identify it
+
+**Context.** `StagedGenerationStore.completingWriter` wraps a step's writer. The step writes into a
+`.working` file; on a clean close the working file is atomically sealed onto the completed generation name and
+**then** registered for publication. Registration at completion is deliberate — an unsealed file is not a
+generation and must not be publishable — and it has a consequence.
+
+**The problem.** Two failures leave a working file behind, and after either one the file is owned by nobody.
+Because registration had not happened, it appears in no execution's registry, and
+`discardLocalArtifactsOf` — the abnormal-disposition cleanup the boundary listener runs — deletes only
+registered paths and so cannot identify it. The residue is a truncated copy of whatever the step was writing,
+at whatever length the failure left it, sitting in the staging root under a name that reads like real batch
+output. One copy per failed run, accumulating until an operator noticed. The failures are the delegate's
+`close` throwing, and the atomic seal itself failing.
+
+**Decision.** The writer discards its own working file on both paths, and then rethrows the original failure.
+Three properties make that safe.
+
+- **The path is known, not guessed.** It is the exact working path this writer was constructed with, which the
+  store composed from the completed generation name. No name matching is involved — a sweep for files that
+  merely look like working files is precisely what the planted-decoy specification forbids.
+- **Trust is re-established immediately before the delete.** `isTrustedStagedArtifact` is applied to the path
+  again, so a name that has since become a link, a directory or another account's file is left alone rather
+  than followed. The same rule as `DL-288`, for the same reason: a cleanup that followed a link would delete
+  the link's target.
+- **It never raises.** The caller is already propagating the failure an operator has to act on, and a cleanup
+  problem must not displace it. A delete that could not happen is reported at warning level, naming the file
+  so the residue can be found by hand.
+
+**What this does not change.** A step that composed no working file at all — a strict reader refusing a
+missing input, for instance — still closes quietly and still leaves the reader's own diagnostic as the only
+one raised. That behaviour predates this entry and is unaffected: there is nothing to discard.
+
+*Verified by:* `batch/step/StagedGenerationStoreTest`. Its close-failure case previously asserted the partial
+file **exists** and now asserts it is gone, with the delegate's own exception still the one that propagates,
+and its message pinned; a second case blocks the seal by occupying the completed name's container with a
+regular file and asserts the same disposition for the sealing failure; and the produced-nothing case still
+asserts a quiet close.
+
+*Embodied in:* `src/main/java/com/carddemo/batch/step/StagedGenerationStore.java`.
+
+### DL-290 — Every route to a FAILED verdict discards the local generations that verdict orphans, not just the one that arrives already failed
+
+**Context.** `DL-211` records why the job-boundary listener sweeps its staging root at all: a job that did
+not complete publishes nothing, so its completed local generations name nothing durable, and leaving them
+accumulates one dead artifact per failed run. `DL-289` records the same reasoning one level down, for the
+working file a failed writer leaves. This entry records the arm of the listener that was missing from the
+first of those.
+
+**The gap.** `JobBoundaryListener.publishDurableArtifacts` reaches a FAILED outcome three different ways,
+and only one of them discarded.
+
+1. The execution **arrives** non-COMPLETED — a step failed, or the job was stopped. This arm discarded.
+2. The execution completed and registered artifacts, but **no generation store is available**. The method
+   wrote the failed verdict and returned.
+3. The execution completed and registered artifacts, and **the publication threw**. Same: verdict written,
+   return.
+
+Arms two and three both set the status to FAILED *after* the branch that performs the discard had already
+been passed, so neither reached it. A job ending FAILED by either route was left in precisely the state
+`DL-211` exists to prevent: completed local generations sitting in the staging root, readable, and — this is
+the part a directory listing does not convey — still resolvable. `StagedGenerationStore.currentLocalGeneration`
+answers "what is the current local generation of this base" by scanning the root, so a later component asking
+that question would have been handed the file of a job that published nothing. Indistinguishable from real
+output, and one copy per failed run.
+
+**Decision.** Both failure arms route through `failPublicationAndDiscardLocalArtifacts`, which writes the
+verdict and then discards. Three properties of it are deliberate.
+
+- **The verdict is written first.** The discard's own diagnostics describe an execution that did not
+  complete, and they are only true once the status says so; and the failure log names the registered
+  artifact count, which a reader expects to see against the failure rather than after it.
+- **The discard runs before this method returns**, which is what puts it before the terminal event —
+  `afterJob` emits that only once artifact publication has been attempted. A subscriber therefore never
+  learns a job FAILED while its local generations are still on disk. That ordering is asserted from inside
+  the notification rather than inferred from the source.
+- **The publication failure is the one that survives.** `discardLocalArtifactsOf` re-checks every
+  registered path, reports rather than raises on a file it cannot remove, and returns a count; the
+  `catch` around it covers the one remaining possibility, that reading the registry itself fails. A cleanup
+  problem must not replace the reason the publication failed, which is the only diagnostic an operator can
+  act on.
+
+**What is deliberately not done.** The registry is not cleared. The store clears it only when a publication
+commits, so a failed execution keeps its registrations and the artifact count stays readable to anything
+that inspects the failed execution afterwards. And a publication that **committed** keeps its local
+generations: the local file is the fixed-name view of output that is now durable, so the discard must not
+reach that path at all.
+
+**Why the previous specification did not catch it.** The publication-failure case was written against a
+mocked store and a registration naming `target/unpublishable-reject-generation`, a path nothing ever created.
+A registration naming a file that does not exist can be published, refused, and cleaned up without any of it
+touching a filesystem, so the strongest assertion such a test can make stops at status and event ordering —
+which both held. The case now stages a real completed generation and a real working sibling in the test's own
+temporary root, and asserts the deletion.
+
+*Verified by:* `config.BatchConfigTest.BoundaryDiagnostic` — `aFailedPublicationDiscardsTheLocalGenerationsItOrphaned`
+stages a real pair, forces the store to throw, and asserts the FAILED verdict with the store's own reason
+preserved as the cause, the completed file gone, the working sibling gone,
+`currentLocalGeneration` empty, and, captured from inside the notification, that the file was already gone
+when the terminal event fired; `anAbsentStoreDiscardsTheLocalGenerationsItCannotPublish` asserts the same
+disposition for the no-store arm, which has no exception to catch; and
+`durablePublicationPrecedesNotification` asserts the converse, that a committed publication keeps its local
+generation. Reverting the production change fails exactly the first two and no others.
+
+*Embodied in:* `src/main/java/com/carddemo/config/BatchConfig.java`.
+
+---
+
+---
+
 *This log is authored alongside the target module and is never edited by the code that cites it. A
 citation is a pointer into this document; the reasoning lives here in one place so that it cannot
 drift between the files that depend on it.*

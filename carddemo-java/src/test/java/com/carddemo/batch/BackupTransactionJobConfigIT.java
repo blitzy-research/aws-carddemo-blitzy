@@ -984,8 +984,14 @@ class BackupTransactionJobConfigIT extends AbstractPostgresAndLocalStackIT {
         RESERVED_IDS.forEach(this.transactionRepository::deleteById);
         if (this.hasPublished) {
             final String bucket = this.awsProperties.s3().batchStagingBucket();
-            stagedObjectKeysUnder(bucket, CANONICAL_ARCHIVE_BASE + "/")
-                    .forEach(key -> deleteStagedObject(bucket, key));
+            // Every version and every delete marker, not every current key. The staging bucket carries
+            // object versioning, so the key-by-key ordinary delete this used to perform removed nothing:
+            // it added a marker, which hid the archive from an ordinary listing while leaving its bytes -
+            // a whole transaction master, card numbers included - fetchable by version identifier in a
+            // bucket every later specification shares, one copy per run of this class. The helper reads
+            // the base back afterwards and raises if anything remains, so "restored" is proven rather
+            // than assumed. See docs/decision-log.md entry DL-287.
+            deleteEveryStagedVersionUnder(bucket, CANONICAL_ARCHIVE_BASE + "/");
             this.hasPublished = false;
         }
     }

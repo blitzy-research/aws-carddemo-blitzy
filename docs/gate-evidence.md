@@ -69,7 +69,7 @@ Two notes on running these, both recorded so a reader is not surprised by them:
 | **Requirement** | At least one production-representative input processed end to end locally, producing byte-equivalent output against the documented COBOL baseline. Mocked I/O does not satisfy this gate. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/failsafe-reports/`, and the golden fixtures under `src/test/resources/fixtures/expected/` |
-| **Standing result** | The four contractual output widths this gate names are asserted byte for byte against golden fixtures, by tests that read what the code actually wrote rather than what it was asked to write. A fifth fixed width the estate emits is verified at its own width and ordering by its job's integration test; it carries no golden because this gate names four expected outputs. |
+| **Standing result** | The four contractual output widths this gate names are asserted byte for byte against golden fixtures, by tests that read what the code actually wrote rather than what it was asked to write. A fifth fixed width the estate emits carries a golden of its own and is asserted the same way, by its job's integration test, over a database state that test fixes completely before the run. |
 
 The four widths this gate names, each with a golden fixture in the tree:
 
@@ -86,14 +86,31 @@ expectation is the encoded `fixtures/expected/transaction-archive.b64`, which
 four above was deleted rather than left to invite a vacuous assertion, and DL-219 records that. A row for
 it here would name a file that does not exist.
 
-**The estate emits a fifth fixed width, and it is not in the table above.** The category-balance report the
+**The estate emits a fifth fixed width, and it has its own golden.** The category-balance report the
 `PRTCATBL` job stream produces is **40 bytes** per line — 32 content bytes and an 8-byte trailer — declared
-by that stream as `SORTOUT DCB=(LRECL=40)`. It has no golden fixture because Gate 1 names four expected
-outputs and the fixtures mirror those four exactly. It is verified at its width, at its edited-balance
-formatting and at its three-key ascending ordering by `batch/CategoryBalanceReportJobConfigIT`, and the
-width itself is read from `CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` rather than repeated as a
-literal. An earlier revision of this page enumerated four widths as though they were the whole contract;
-the complete set is **40, 80, 100, 133 and 430**.
+by that stream as `SORTOUT DCB=(LRECL=40)`.
+
+| Output | Width | Golden fixture |
+| --- | ---: | --- |
+| Category-balance report line | 40 bytes, `RECFM=FB` — 32 content bytes and exactly 8 trailing blanks | `fixtures/expected/category-balance-report.txt` |
+
+The fixture holds 53 separator-free 40-byte records: one per delivered category-balance row, plus the
+three rows the test adds beyond the fifty and one it rewrites in place. It was authored from the
+reprojection at lines 53–56 of the job stream and from the delivered `tcatbal.txt` fixture, and it is
+**the verdict** for this width: `batch/CategoryBalanceReportJobConfigIT` fixes the database state
+completely, launches the job once, and compares the bytes the job wrote to a real local dataset with the
+bytes of the committed file as raw byte arrays. Its edited-balance formatting and its three-key ascending
+ordering are asserted in the same class, and the width itself is read from
+`CategoryBalanceReportJobConfig.REPORT_RECORD_LENGTH` rather than repeated as a literal. An earlier
+revision of this page enumerated four widths as though they were the whole contract, and for a while the
+fifth had an implementation and no committed expectation; the complete set is
+**40, 80, 100, 133 and 430**, and all five are golden-backed.
+
+A committed expectation is only possible over a state fixed in advance, which is why the golden run comes
+before the posting run rather than after it: the posting run's balances are a function of 300 input records
+passing through the accept-or-reject cascade, and a golden authored against them would pin the posting
+outcome rather than the report format. The report produced over the *posted* state is still checked field
+by field in the same class, and that check is decomposition rather than a second verdict.
 
 The parity traps these comparisons exist to catch are recorded in `decision-log.md` rather than restated
 here: truncating arithmetic with no `ROUNDED` clause anywhere in the estate, zoned-decimal sign overpunch,
@@ -265,15 +282,46 @@ Two composition facts make these fixtures genuinely representative rather than m
 daily transactions are 250 point-of-sale purchases and 50 operator-originated returns, so both signed
 directions of the balance computation are exercised; all 300 carry the same processing date, so
 date-window filtering has to be exercised by a separately constructed fixture rather than by this input.
-The 51 disclosure-group records form three complete seventeen-row groups, one of them the default group,
-which is what makes both the direct-hit and the default-fallback branch of the interest lookup reachable
-from seeded data alone.
+The 51 disclosure-group records form three complete seventeen-row groups — `A000000000`, `DEFAULT   ` and
+`ZEROAPR   `, all keys ten bytes wide including their padding — so every rate the interest lookup can
+resolve is seeded. What the seed cannot do is reach the **direct** lookup at all: every one of the 50
+seeded accounts carries ten spaces in its account-group-identifier field, so the first probe misses on
+every account and the padded default literal resolves every rate. Both the default-fallback branch and the
+zero-rate skip are therefore reachable from seeded data — the default group discloses type `03` category
+`0001` at zero — while the direct-hit branch, in both its non-zero and its zero-rate form, needs a
+constructed account naming a real group. `batch/InterestCalculationJobConfigIT` constructs both:
+`A000000000` for the non-zero direct hit and `ZEROAPR   ` for the direct hit whose disclosed rate is zero,
+each with a matching category balance. `V3__seed_reference_data.sql` records the same limitation at its own
+anomaly 4, so the seed and the evidence say the same thing.
 
 The twelve EBCDIC datasets under `app/data/EBCDIC/` are retained as encoding-fidelity reference. Two
 carry findings recorded in `decision-log.md`: the account dataset exists in duplicate under two names with
 byte-identical content, one of which no job references, and the user-security dataset has no ASCII
 counterpart — its content is fully recoverable from the provisioning job's in-stream card images, so no
 EBCDIC decode is required.
+
+### Fixture provenance: which comparison executed, and which was skipped
+
+The nine carried fixtures are byte-verbatim copies, and `support/FixtureContractTest` proves it in two
+layers that must not be conflated on this page. **One executes in every checkout; two execute only when the
+legacy tree is present beside the module and are reported as SKIPPED, never as passed, when it is not.**
+The module is required to build and validate with no reference to `app/`, so the optional layer cannot be
+mandatory — but a reader of this page is entitled to know which of the two produced the result in front of
+them.
+
+| Layer | When it runs | What a run reports | What it establishes |
+| --- | --- | --- | --- |
+| Pinned SHA-256 digest, one row per fixture — `eachFixtureMatchesItsPinnedDigest` | **Always.** It reads only the committed fixture, so it executes in every checkout, including one carrying no legacy tree at all | Nine executed rows | Any edit to any fixture, of any size, fails. The digest was measured from the legacy dataset with an independent tool when the suite was written, so recording it copies no legacy content |
+| Direct byte comparison against `app/data/ASCII/` — `everyFixtureIsByteIdenticalToItsDataset` | **Only when all nine legacy datasets are present.** Gated by a JUnit assumption | Executed, or SKIPPED with the reason | That the carried copies and the datasets are the same bytes today, not merely that they match a literal recorded once |
+| Digest of the authority itself — `thePinnedDigestsAreTheDigestsOfTheDatasets` | Same gate | Executed, or SKIPPED with the reason | That the pinned literals describe the authority, closing the loop between the citation layer and the comparison layer |
+
+Two properties keep the distinction from degrading into a silent narrowing. The gate is **all or nothing**:
+`theLegacyTreeIsWhollyPresentOrWhollyAbsent` executes unconditionally and fails a partially present tree, so
+a half-deleted `app/data/ASCII/` cannot let the direct comparison quietly cover some files while reporting
+as a clean skip. And a skip here is **not a Gate 1, 4 or 5 skip**: those gates are carried by the byte
+comparisons under Gate 1, by the seeds and named artefacts above, and by the contract tests under Gate 5,
+none of which consults `app/` at all. In this repository the legacy tree *is* present, so all three layers
+execute; the table records what a checkout without it would report.
 
 ---
 
@@ -284,12 +332,12 @@ EBCDIC decode is required.
 | **Requirement** | Every external interface verified by a local test that exercises the real contract. Self-certification is not acceptable. |
 | **Command** | `./mvnw -B clean verify` |
 | **Evidence artefact** | `target/failsafe-reports/` |
-| **Standing result** | All three external contracts are exercised against real endpoints — golden files, a real queue, and real HTTP — rather than against a builder's return value. The file-format contract spans **five** fixed widths, four of them golden-backed. |
+| **Standing result** | All three external contracts are exercised against real endpoints — golden files, a real queue, and real HTTP — rather than against a builder's return value. The file-format contract spans **five** fixed widths, every one of them golden-backed. |
 
 | Contract | How it is exercised |
 | --- | --- |
-| The four golden-backed fixed-width file formats | Byte-equality assertions against the golden fixtures listed under Gate 1, and a round trip of each through the real staging interface |
-| The fifth fixed-width file format — the 40-byte category-balance report line | Asserted at its width, its edited-balance formatting and its three-key ascending ordering by `batch/CategoryBalanceReportJobConfigIT`; `e2e/OnlineTransactionE2ETest` asserts that it is a fifth width rather than one of the four, so the two inventories cannot drift apart |
+| The four fixed-width file formats Gate 1 names | Byte-equality assertions against the golden fixtures listed under Gate 1, and a round trip of each through the real staging interface |
+| The fifth fixed-width file format — the 40-byte category-balance report line | Byte-equality assertion against `fixtures/expected/category-balance-report.txt`, plus its edited-balance formatting and its three-key ascending ordering, all by `batch/CategoryBalanceReportJobConfigIT`; `e2e/OnlineTransactionE2ETest` asserts that it is a fifth width rather than one of the four it stages, so the two inventories cannot drift apart |
 | The sign-on message and routing contract | Real HTTP requests asserting the message strings and the administrator/user routing outcome |
 | The batch trigger | The report-submission endpoint publishes to a **real** SQS FIFO queue on LocalStack; the test drains the queue and asserts the ordered card sequence, the four substituted date slots and the terminal `/*EOF` sentinel |
 
@@ -452,7 +500,7 @@ for the report job, it must keep exactly this shape.
 
 | Checklist item | Satisfying artefact | Standing result |
 | --- | --- | --- |
-| End-to-end verification | Golden fixtures at 80, 100, 133 and 430 bytes; the fifth 40-byte width verified by `batch/CategoryBalanceReportJobConfigIT` | Gate 1 above |
+| End-to-end verification | Golden fixtures at 40, 80, 100, 133 and 430 bytes; the 40-byte one compared against a real run by `batch/CategoryBalanceReportJobConfigIT`, the other four by `e2e/BatchPipelineE2ETest` | Gate 1 above |
 | Interface contract verification | Sign-on messages; the job-submission card image; a real SQS FIFO queue | Gate 5 above |
 | Performance baseline | `support/RunScopedPerformanceRecorder`, figures in this page's Gate 3 measured-runs table | **recorded**: six measured rows, dated and attributed to a named machine, each with its fixture volumes. Re-measure on your own hardware rather than quoting a row here |
 | Unsafe code audit | The scoped grep list | every count zero |

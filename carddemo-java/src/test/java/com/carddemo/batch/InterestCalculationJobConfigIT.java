@@ -135,6 +135,18 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * therefore both exercised by the same run, through the <strong>default</strong> group - not through the
  * all-zero third group - and no synthetic disclosure row is needed for either.
  *
+ * <p><strong>That covers the gate and not the resolver, so it is not the whole of the zero-rate
+ * branch.</strong> On the fallback path the account's own group identifier resolves nothing: the rate
+ * comes from a literal the program supplies after the first probe misses. Reaching a zero rate through a
+ * <em>direct</em> hit - the account's own group identifier resolving a row that discloses zero - is a
+ * different path through the resolver, and it is unreachable from the delivered seed for the same reason
+ * every direct hit is: every seeded account's group identifier is ten spaces. The seed's own migration
+ * says so and names what closes it - an account constructed with the padded zero-rate group plus a
+ * matching category balance - and that is what
+ * {@link #aDirectHitOnTheZeroRateGroupIsSkippedWithoutTouchingTheAccount()} installs. The two
+ * specifications are deliberately separate: one proves the gate closes on a fallback rate of zero, the
+ * other proves it closes on a directly resolved rate of zero without the fallback being entered at all.
+ *
  * <h2>Why the fallback is the only lookup path seeded data can reach</h2>
  *
  * <p>Measured byte by byte: all fifty seeded account rows carry a value that looks like a group
@@ -349,6 +361,15 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
 
     /** The bare word, without the padding the ten-character key field gives it. */
     private static final String UNPADDED_DEFAULT_GROUP = "DEFAULT";
+
+    /**
+     * The bare zero-rate group word, without the padding the ten-character key field gives it.
+     *
+     * <p>Held separately from the padded form so that the padded key can be asserted <em>against</em> it:
+     * a trimmed key resolves nothing, which is exactly how a direct-hit specification could silently
+     * degrade into a second copy of the fallback one.
+     */
+    private static final String UNPADDED_ZERO_RATE_GROUP = "ZEROAPR";
 
     /** The delivered daily-transaction fixture on the test classpath, the posting job's own input. */
     private static final String DAILY_TRANSACTION_FIXTURE = "dailytran.txt";
@@ -1381,10 +1402,139 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
         assertThat(result.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo(ZERO_AMOUNT);
     }
 
+    /**
+     * The zero-rate skip reached through a <strong>direct</strong> group hit, which is a different path
+     * through the resolver from the one the fallback reaches.
+     *
+     * <h2>Why the fallback proof is not this proof</h2>
+     *
+     * <p>The specification below this one reaches a rate of zero, and it reaches it through the padded
+     * default group: the constructed account leaves its group identifier blank exactly as every seeded
+     * account does, the direct probe misses, and the fallback resolves the rate. That covers the gate. It
+     * does <strong>not</strong> cover the resolver, because on that path the group identifier the account
+     * carries is never used to find anything - the rate comes from a literal the program supplies.
+     *
+     * <p>Reaching a zero rate <em>directly</em> means the account's own group identifier resolves a row,
+     * and that row discloses zero. Nothing in the delivered seed can do it: every seeded account's group
+     * identifier is ten spaces, so the first probe always misses, and the seed's own migration says so in
+     * as many words - covering the skip needs an account constructed with the padded zero-rate group plus a
+     * matching category balance. Without this specification the two arms are conflated: a resolver defect
+     * that returned the fallback group whenever the direct row disclosed zero - or one that mixed up which
+     * group a direct hit came from - would leave every other assertion in this file passing, because every
+     * other assertion either takes the fallback or takes a direct hit at a non-zero rate.
+     *
+     * <h2>The key is padded and the padding is load-bearing</h2>
+     *
+     * <p>The group identifier is ten characters and the literal is seven, so the seeded key carries exactly
+     * three trailing spaces. The account's own field is ten characters wide for the same reason. Trimming
+     * either would produce a key that matches nothing, the direct probe would miss, and this specification
+     * would silently become a second copy of the fallback one - which is why the padding is asserted here
+     * before the lookup is performed.
+     */
     @Test
     @Order(6)
-    @DisplayName("a zero rate skips the computation and the fee invocation together, and the fee produces "
-            + "no fee of any kind when the rate is non-zero")
+    @DisplayName("a constructed account naming the padded zero-rate group resolves it DIRECTLY, and that "
+            + "direct hit is skipped by the rate gate with no transaction, no fee and no balance movement")
+    void aDirectHitOnTheZeroRateGroupIsSkippedWithoutTouchingTheAccount() {
+        assertThat(TestDataFactory.ZERO_RATE_DISCLOSURE_GROUP_ID)
+                .as("the seven-character literal occupies a ten-character key field, so the key carries "
+                        + "THREE trailing spaces and the padding is part of it")
+                .isEqualTo(UNPADDED_ZERO_RATE_GROUP + "   ")
+                .hasSize(ACCOUNT_GROUP_ID_WIDTH)
+                .isNotEqualTo(TestDataFactory.FALLBACK_DISCLOSURE_GROUP_ID)
+                .isNotEqualTo(TestDataFactory.DIRECT_HIT_DISCLOSURE_GROUP_ID);
+        assertThat(this.disclosureGroupRepository.findById(new DisclosureGroupId(
+                UNPADDED_ZERO_RATE_GROUP, EARNING_TYPE, DISCLOSED_CATEGORY)))
+                .as("the bare word, trimmed of its padding, matches nothing at all - which is what would "
+                        + "turn this specification back into the fallback one without failing")
+                .isEmpty();
+
+        final DisclosureGroup disclosed = this.disclosureGroupRepository.findById(new DisclosureGroupId(
+                TestDataFactory.ZERO_RATE_DISCLOSURE_GROUP_ID, EARNING_TYPE, DISCLOSED_CATEGORY))
+                .orElseThrow(() -> new IllegalStateException("the reference seed must carry the padded"
+                        + " zero-rate disclosure group for type " + EARNING_TYPE + " category "
+                        + DISCLOSED_CATEGORY + "; it is the only real group identifier whose direct"
+                        + " resolution discloses a rate of zero"));
+        assertThat(disclosed.getDisIntRate())
+                .as("the row a direct hit resolves discloses zero, and it is the EARNING type - so the "
+                        + "zero comes from the group rather than from the type, which is what separates "
+                        + "this path from the fallback one")
+                .isEqualByComparingTo(ZERO_RATE);
+
+        installConstructedAccount(TestDataFactory.ZERO_RATE_DISCLOSURE_GROUP_ID);
+        final TransactionCategoryBalance row = new TransactionCategoryBalance(CONSTRUCTED_ACCOUNT,
+                EARNING_TYPE, DISCLOSED_CATEGORY, LOAD_BEARING_BALANCE);
+
+        final List<Transaction> written = new ArrayList<>();
+        final InterestCalculationService.GroupInterestResult result = this.interestCalculationService
+                .calculateGroupInterest(RUN_DATE, CONSTRUCTED_ACCOUNT, List.of(row),
+                        InterestCalculationProcessor.NO_TRAN_ID_SUFFIX, written::add);
+
+        assertThat(result.defaultGroupUsed())
+                .as("the direct probe HIT, so the single default probe was never performed. This is the "
+                        + "half of the zero-rate branch seeded data cannot reach at all")
+                .isFalse();
+        assertThat(result.rateGateSkipped())
+                .as("and the rate it resolved is zero, so the gate closed")
+                .isTrue();
+        assertThat(result.categoryInterests()).singleElement().satisfies(detail -> {
+            assertThat(detail.defaultGroupUsed())
+                    .as("the row itself records that it took no fallback")
+                    .isFalse();
+            assertThat(detail.disclosedRate())
+                    .as("read from the row the direct probe resolved, not from a literal")
+                    .isEqualByComparingTo(disclosed.getDisIntRate())
+                    .isEqualByComparingTo(ZERO_RATE);
+            assertThat(detail.rateGateSkipped()).isTrue();
+            assertThat(detail.monthlyInterest())
+                    .as("no computation ran, so the interest is zero rather than the truncated product "
+                            + "the same balance yields at the earning rate")
+                    .isEqualByComparingTo(ZERO_AMOUNT)
+                    .isNotEqualByComparingTo(TRUNCATED_INTEREST);
+            assertThat(detail.interestTransaction())
+                    .as("and no transaction is synthesized, whatever the balance")
+                    .isNull();
+            assertThat(detail.producedTransaction()).isFalse();
+            assertThat(detail.categoryBalance())
+                    .as("the skipped row's balance was large enough that a leaked computation would have "
+                            + "been obvious - it is the very pair the truncation assertions use")
+                    .isEqualByComparingTo(LOAD_BEARING_BALANCE);
+        });
+        assertThat(written)
+                .as("nothing was written to the sequential output either, so the skip is observable "
+                        + "outside the result as well as inside it")
+                .isEmpty();
+        assertThat(result.interestTransactions()).isEmpty();
+        assertThat(result.lastTranIdSuffix())
+                .as("the identifier counter did not advance, because minting an identifier is part of "
+                        + "writing a record and no record was written")
+                .isEqualTo(InterestCalculationProcessor.NO_TRAN_ID_SUFFIX);
+
+        assertThat(result.totalInterest())
+                .as("the running total is zero: the gate encloses BOTH the computation and the fee "
+                        + "invocation, so a zero rate skips the two together and the invoked fee "
+                        + "paragraph contributes nothing. Inventing fee logic for it would be feature "
+                        + "expansion that changes what an interest run outputs")
+                .isEqualByComparingTo(ZERO_AMOUNT);
+        assertThat(result.updatedAccount().getAcctCurrBal())
+                .as("so the control break posts a movement of zero and the balance is exactly what the "
+                        + "constructed account opened with")
+                .isEqualByComparingTo(CONSTRUCTED_OPENING_BALANCE);
+        assertThat(result.updatedAccount().getAcctCurrCycCredit())
+                .as("both cycle accumulators are still reset, because the control break rewrites the "
+                        + "account whether or not any row of the group accrued")
+                .isEqualByComparingTo(ZERO_AMOUNT);
+        assertThat(result.updatedAccount().getAcctCurrCycDebit()).isEqualByComparingTo(ZERO_AMOUNT);
+        assertThat(result.accountRewritten())
+                .as("and the rewrite did happen, so a zero movement is a posted zero rather than a "
+                        + "skipped write")
+                .isTrue();
+    }
+
+    @Test
+    @Order(7)
+    @DisplayName("a zero rate reached through the FALLBACK group skips the computation and the fee "
+            + "invocation together, and the fee produces no fee of any kind when the rate is non-zero")
     void theZeroRateGateSkipsTheComputationAndTheFeeTogether() {
         installConstructedAccount(TestDataFactory.SEEDED_ACCOUNT_GROUP_ID);
 
@@ -1504,7 +1654,7 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
     // ===============================================================================================
 
     @Test
-    @Order(7)
+    @Order(8)
     @DisplayName("the six-digit identifier suffix restarts on a second execution rather than continuing "
             + "from the first, and each execution owns its own generation")
     void theSuffixRestartsOnASecondExecution() throws Exception {
@@ -1554,7 +1704,7 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     @DisplayName("the step is timed on the registry the metrics endpoint publishes, and no threshold is "
             + "asserted over any figure")
     void theStepIsTimedAndNoThresholdIsAsserted() throws Exception {
@@ -1591,7 +1741,7 @@ class InterestCalculationJobConfigIT extends AbstractPostgresIT {
     }
 
     @Test
-    @Order(9)
+    @Order(10)
     @DisplayName("the eleven application tables are the whole business roster, and the framework's own "
             + "metadata is counted in none of them")
     void theApplicationRosterExcludesFrameworkMetadata() throws Exception {

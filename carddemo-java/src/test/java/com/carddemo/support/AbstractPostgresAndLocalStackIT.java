@@ -16,6 +16,8 @@
  */
 package com.carddemo.support;
 
+import com.carddemo.support.AbstractLocalStackIT.ObjectVersionRef;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -83,12 +85,21 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * constant so the two entry points into the emulator cannot drift apart, and the per-client call budgets
  * that make each individual call finite are inherited with the clients themselves.
  *
- * <h2>Restoring the shared state</h2>
+ * <h2>Restoring the shared state, on a bucket that carries object versioning</h2>
  * The emulator is shared, so an object a subclass stages outlives its test unless the subclass removes
- * it. {@link #deleteStagedObject(String, String)} is provided for exactly that, and a subclass calls it
- * from a callback that runs whatever its test's outcome - a half-staged bucket disrupts a neighbouring
- * specification as surely as a fully staged one, and the failure then belongs to a test that already
- * passed.
+ * it, and a subclass removes it from a callback that runs whatever its test's outcome - a half-staged
+ * bucket disrupts a neighbouring specification as surely as a fully staged one, and the failure then
+ * belongs to a test that already passed.
+ *
+ * <p><strong>Removal here means {@link #deleteEveryStagedVersionUnder(String, String)} and not an
+ * ordinary delete.</strong> Every bucket the emulator hands out carries object versioning, so an ordinary
+ * delete adds a delete marker rather than removing anything: the key disappears from an ordinary listing
+ * while every version of the object stays fetchable by version identifier, in a bucket every later
+ * specification shares. A teardown built on an ordinary delete would therefore report success, leave its
+ * bytes behind, and a retention or listing assertion downstream would be measuring this test's residue.
+ * The version-aware helper deletes by identifier and reads the prefix back to prove it is empty; a
+ * subclass that needs finer control composes {@link #stagedObjectVersionsUnder(String, String)} with
+ * {@link #deleteStagedObjectVersions(String, Iterable)}. See {@code docs/decision-log.md} entry DL-287.
  */
 @Timeout(value = AbstractLocalStackIT.EXTERNAL_BOUNDARY_TIMEOUT_SECONDS, unit = TimeUnit.SECONDS)
 public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT {
@@ -167,16 +178,6 @@ public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT
     }
 
     /**
-     * Removes one staged object, treating an absent object as success.
-     *
-     * @param bucket the bucket the object was staged into; must not be null
-     * @param key    the object key; must not be null
-     */
-    protected static void deleteStagedObject(final String bucket, final String key) {
-        AbstractLocalStackIT.deleteObject(bucket, key);
-    }
-
-    /**
      * Lists the staged object keys beneath one prefix.
      *
      * <p>A durable generation number is allocated by the store at publication time, against what the
@@ -200,6 +201,56 @@ public abstract class AbstractPostgresAndLocalStackIT extends AbstractPostgresIT
      */
     protected static BucketVersioningStatus stagingBucketVersioningStatus(final String bucket) {
         return AbstractLocalStackIT.bucketVersioningStatus(bucket);
+    }
+
+    /**
+     * Lists every version and every delete marker beneath one key prefix.
+     *
+     * <p>Delegated on the same terms as the other object-store helpers, because a subclass of this type
+     * addresses the same versioned bucket as a subclass of the other base and must be able to see what that
+     * bucket actually holds. An ordinary key listing reports only current versions and reports nothing for a
+     * key whose newest version is a delete marker, so a specification that measured its own footprint with
+     * one would under-report it.
+     *
+     * @param  bucket the bucket to inspect; must not be null
+     * @param  prefix the key prefix, which may be empty to cover the whole bucket; must not be null
+     * @return one reference per version and per delete marker
+     */
+    protected static List<ObjectVersionRef> stagedObjectVersionsUnder(final String bucket,
+            final String prefix) {
+        return AbstractLocalStackIT.objectVersionsUnder(bucket, prefix);
+    }
+
+    /**
+     * Removes exactly the versions and delete markers named, by identifier.
+     *
+     * @param  bucket the bucket to remove from; must not be null
+     * @param  doomed the versions and markers to remove; must not be null
+     * @return how many were removed
+     */
+    protected static int deleteStagedObjectVersions(final String bucket,
+            final Iterable<ObjectVersionRef> doomed) {
+        return AbstractLocalStackIT.deleteObjectVersions(bucket, doomed);
+    }
+
+    /**
+     * Empties one key prefix of every version and every delete marker, and proves it is empty afterwards.
+     *
+     * @param  bucket the bucket to empty within; must not be null
+     * @param  prefix the key prefix to empty; must not be null
+     * @return how many versions and delete markers were removed
+     */
+    protected static int deleteEveryStagedVersionUnder(final String bucket, final String prefix) {
+        return AbstractLocalStackIT.deleteEveryVersionUnder(bucket, prefix);
+    }
+
+    /**
+     * Returns the staging bucket the emulator was provisioned with, versioning already enabled.
+     *
+     * @return the bucket's name
+     */
+    protected static String stagingBucket() {
+        return AbstractLocalStackIT.stagingBucket();
     }
 
     // ---------------------------------------------------------------------------------------------
