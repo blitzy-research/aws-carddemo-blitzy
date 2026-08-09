@@ -120,7 +120,7 @@ position above is history; the column below is the result.
 | --- | :---: | --- | --- |
 | 1 — End-to-end boundary verification | **PASS (measured)** | four contracts compared byte for byte, expected equal to actual on every record and byte count; the fifth width compared by its own job test | `./mvnw -B clean verify` |
 | 2 — Zero-warning build | **PASS (measured)** | `BUILD SUCCESS`; zero compiler warnings across 252 production and 533 test sources under `-Werror` | `./mvnw -B clean verify` |
-| 3 — Performance baseline | **PASS (measured)** | three new measured rows, each with its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
+| 3 — Performance baseline | **PASS (measured)** | twelve dated rows, six of them from the recorded day across two runs, each beside its fixture volumes; no threshold anywhere | `./mvnw -B clean verify` |
 | 4 — Named validation artefacts | **PASS (measured)** | nine ASCII fixtures at their measured byte counts, twelve encoded datasets by name, ten seeded identities, five lookup cardinalities | `./mvnw -B clean verify` |
 | 5 — Interface contract verification | **PASS (measured)** | seven message texts over real HTTP, routing for both delivered types, seventeen cards drained from a real queue | `./mvnw -B clean verify` |
 | 6 — Unsafe and low-level code audit | **PASS (measured)** | every count zero, with the raw output of the scoped audit published | the grep list below |
